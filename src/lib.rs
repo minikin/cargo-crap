@@ -66,7 +66,7 @@
 //!
 //! // 3. Join complexity with coverage. Functions with no coverage data are
 //! //    treated as 0% covered (the pessimistic default, safest for CI gates).
-//! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic);
+//! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic).entries;
 //!
 //! // 4. Render the human-readable table to stdout.
 //! render(&entries, DEFAULT_THRESHOLD, Format::Human, &mut io::stdout())?;
@@ -90,7 +90,7 @@
 //!     &[] as &[&str],
 //! )?;
 //! let cov = coverage::parse_lcov(std::path::Path::new("lcov.info"))?;
-//! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic);
+//! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic).entries;
 //!
 //! let threshold = 30.0_f64;
 //! let crappy: Vec<_> = entries.iter().filter(|e| e.crap > threshold).collect();
@@ -125,7 +125,7 @@
 //!     &[] as &[&str],
 //! )?;
 //! let cov = coverage::parse_lcov(std::path::Path::new("lcov.info"))?;
-//! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic);
+//! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic).entries;
 //!
 //! // Load baseline saved by a previous `--format json --output baseline.json` run.
 //! let baseline = load_baseline(std::path::Path::new("baseline.json"))?;

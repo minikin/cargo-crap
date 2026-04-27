@@ -1,0 +1,16 @@
+test_tool = "nextest"
+jobs = 4
+timeout = 60
+
+# Prevent RUSTFLAGS="-D warnings" (set in CI) from failing mutants on warnings
+# rather than on actual test failures — otherwise results are unreliable.
+cap_lints = true
+
+# Enable built-in skip patterns (e.g. with_capacity).
+skip_calls_defaults = true
+
+# No point mutating pure output/logging calls — they don't affect logic.
+skip_calls = ["eprintln!", "write!", "writeln!"]
+
+# Don't mutate integration test files — only source logic matters.
+exclude_globs = ["tests/**/*.rs"]

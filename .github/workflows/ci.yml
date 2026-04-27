@@ -21,10 +21,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --all-targets
+      - uses: taiki-e/install-action@cargo-nextest
       - name: Test
-        run: cargo test --all-targets
+        run: cargo nextest run --all-targets
       - name: Doc tests
         run: cargo test --doc
 
@@ -49,10 +48,11 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
-      - name: Build (MSRV)
-        run: cargo build --all-targets
+      - uses: taiki-e/install-action@cargo-nextest
       - name: Test (MSRV)
-        run: cargo test --all-targets
+        run: cargo nextest run --all-targets
+      - name: Doc tests (MSRV)
+        run: cargo test --doc
 
   audit:
     name: Security audit
@@ -74,9 +74,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants
+          tool: cargo-mutants,cargo-nextest
       - name: Run mutation tests
-        run: cargo mutants --timeout 60
+        run: cargo mutants
       - name: Upload mutants output
         if: always()
         uses: actions/upload-artifact@v4

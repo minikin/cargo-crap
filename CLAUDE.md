@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Specs (THE LAW)
+
+All feature specs live in `specs/`. They are written in Gherkin style (Given/When/Then).
+
+- **Never modify a spec file without explicit permission from the user.**
+- When implementing a feature, treat its spec as the acceptance criteria.
+- When a spec needs to change (scope change, new edge case), propose the change and wait for approval before editing the file.
+
 ## Before committing
 
 Always run `just dev` before any commit. It runs fmt, clippy, and tests.

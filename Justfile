@@ -4,7 +4,7 @@ default:
 
 # Run all tests
 test:
-    cargo test --all-targets
+    cargo nextest run --all-targets
     cargo test --doc
 
 # Apply formatting
@@ -20,7 +20,7 @@ lint:
 check:
     cargo check --all-targets
 
-# Run all CI checks locally
+# Run all CI checks locally (requires cargo-nextest: cargo binstall cargo-nextest)
 ci: lint test
 
 # Dogfood: score cargo-crap against itself (requires cargo-llvm-cov)
@@ -29,3 +29,7 @@ dogfood:
     cargo run --release -- --lcov lcov.info --path src --threshold 15 --fail-above
 
 dev: fmt lint test dogfood
+
+# Full validation including mutation tests (slow)
+dev-full: dev
+    cargo mutants

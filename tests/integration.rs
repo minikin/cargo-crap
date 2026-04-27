@@ -36,7 +36,7 @@ fn end_to_end_pipeline_produces_ranked_scores() {
     );
 
     // 3. Merge with pessimistic policy (matches what a CI gate would do).
-    let entries = merge(complexity, coverage, MissingCoveragePolicy::Pessimistic);
+    let entries = merge(complexity, coverage, MissingCoveragePolicy::Pessimistic).entries;
     assert!(!entries.is_empty(), "merge produced no entries");
 
     // 4. Verify ordering: crappy must outrank moderate must outrank trivial.
@@ -95,7 +95,7 @@ fn json_output_round_trips() {
     let complexity =
         complexity::analyze_tree(&root.join("src"), &[] as &[&str]).expect("analyze_tree");
     let coverage = coverage::parse_lcov(&root.join("lcov.info")).expect("parse_lcov");
-    let entries = merge(complexity, coverage, MissingCoveragePolicy::Pessimistic);
+    let entries = merge(complexity, coverage, MissingCoveragePolicy::Pessimistic).entries;
 
     let mut buf = Vec::new();
     cargo_crap::report::render(&entries, 30.0, cargo_crap::report::Format::Json, &mut buf)

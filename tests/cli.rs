@@ -1212,3 +1212,42 @@ fn markdown_clean_summary_says_none_exceed() {
         .success()
         .stdout(predicate::str::contains("none exceed CRAP threshold"));
 }
+
+// --- Unmapped file warnings ---
+
+#[test]
+fn unmatched_lcov_emits_warning_to_stderr() {
+    // When --lcov paths don't match the source tree, warn_unmapped must
+    // print a warning to stderr naming the unmatched files. This test kills
+    // the `replace warn_unmapped with ()` mutant.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let lcov_path = dir.path().join("unmatched.lcov");
+    // Deliberately non-matching absolute path — nothing in the fixture src
+    // will suffix-match "/nonexistent/path/src/lib.rs".
+    std::fs::write(
+        &lcov_path,
+        "SF:/nonexistent/path/src/lib.rs\nDA:1,1\nend_of_record\n",
+    )
+    .expect("write lcov");
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(&lcov_path)
+        .assert()
+        .stderr(predicate::str::contains(
+            "had no matching entry in the LCOV report",
+        ));
+}
+
+#[test]
+fn no_warning_when_lcov_not_provided() {
+    // Without --lcov, warn_unmapped must stay silent.
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("warning:").not());
+}

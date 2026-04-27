@@ -280,4 +280,34 @@ mod tests {
         assert!(report.entries.iter().all(|e| e.status == DeltaStatus::New));
         assert!(report.removed.is_empty());
     }
+
+    #[test]
+    fn backslash_paths_match_forward_slash_baseline() {
+        // Kills: replace path_key -> String with String::new() or "xyzzy".into()
+        // Baseline was saved on Linux (forward slashes); current run is on
+        // Windows (backslashes). path_key must normalize them to the same key.
+        let current = vec![CrapEntry {
+            file: PathBuf::from("tests\\fixtures\\src\\lib.rs"),
+            function: "foo".into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap: 10.0,
+        }];
+        let baseline = vec![CrapEntry {
+            file: PathBuf::from("tests/fixtures/src/lib.rs"),
+            function: "foo".into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap: 5.0,
+        }];
+        let report = compute_delta(&current, &baseline);
+        assert_eq!(
+            report.entries[0].status,
+            DeltaStatus::Regressed,
+            "backslash path must match its forward-slash baseline counterpart"
+        );
+        assert!(report.removed.is_empty(), "no entries should be removed");
+    }
 }

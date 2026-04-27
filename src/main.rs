@@ -290,6 +290,26 @@ fn workspace_roots() -> Result<Vec<PathBuf>> {
     Ok(roots)
 }
 
+/// Emit a stderr warning listing source files with no LCOV match.
+///
+/// `unmapped_files` is empty when no `--lcov` was given (merge guarantees this),
+/// so the call is always safe and the guard lives here rather than at the call site.
+fn warn_unmapped(files: &[std::path::PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
+    let n = files.len();
+    eprintln!(
+        "warning: {} source file{} had no matching entry in the LCOV report \
+         — verify your --lcov path or coverage tool configuration:",
+        n,
+        if n == 1 { "" } else { "s" },
+    );
+    for f in files {
+        eprintln!("  {}", f.display());
+    }
+}
+
 /// Validate argument combinations that clap cannot express as declarative rules.
 fn validate_args(cli: &Cli) -> Result<()> {
     if !cli.workspace && !cli.path.exists() {
@@ -369,7 +389,9 @@ fn main() -> Result<()> {
     pb.finish_and_clear();
 
     // --- Merge + filters ---
-    let mut entries = merge(fns, coverage, missing_policy);
+    let merge_result = merge(fns, coverage, missing_policy);
+    warn_unmapped(&merge_result.unmapped_files);
+    let mut entries = merge_result.entries;
     apply_filters(
         &mut entries,
         &effective_allow,

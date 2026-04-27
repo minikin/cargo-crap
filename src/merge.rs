@@ -27,7 +27,7 @@ use crate::complexity::FunctionComplexity;
 use crate::coverage::FileCoverage;
 use crate::score::crap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// One row in the final report.
@@ -58,14 +58,29 @@ pub enum MissingCoveragePolicy {
     Skip,
 }
 
-/// Merge complexity and coverage data into a sorted `Vec<CrapEntry>`
-/// (highest score first).
+/// Output of [`merge`]: the scored entries plus any source files that had no
+/// matching entry in the LCOV report.
+pub struct MergeResult {
+    /// CRAP entries sorted by score descending.
+    pub entries: Vec<CrapEntry>,
+    /// Source files for which no coverage data could be found in the LCOV
+    /// report. Only populated when a non-empty coverage map was provided.
+    /// Non-empty here is a strong signal of a path-matching problem.
+    pub unmapped_files: Vec<PathBuf>,
+}
+
+/// Merge complexity and coverage data into a sorted [`MergeResult`]
+/// (entries ranked highest score first).
 pub fn merge(
     complexity: Vec<FunctionComplexity>,
     coverage: HashMap<PathBuf, FileCoverage>,
     policy: MissingCoveragePolicy,
-) -> Vec<CrapEntry> {
+) -> MergeResult {
     let index = PathIndex::build(&coverage);
+    let has_coverage = !coverage.is_empty();
+
+    let mut mapped_files: HashSet<PathBuf> = HashSet::new();
+    let mut seen_files: HashSet<PathBuf> = HashSet::new();
 
     let mut entries: Vec<CrapEntry> = complexity
         .into_iter()
@@ -73,6 +88,13 @@ pub fn merge(
             let cov = index
                 .lookup(&fc.file)
                 .map(|cov_file| cov_file.coverage_in_span(fc.start_line, fc.end_line));
+
+            if has_coverage {
+                if cov.is_some() {
+                    mapped_files.insert(fc.file.clone());
+                }
+                seen_files.insert(fc.file.clone());
+            }
 
             let cov_for_scoring = match (cov, policy) {
                 (Some(c), _) => c,
@@ -98,7 +120,17 @@ pub fn merge(
             .partial_cmp(&a.crap)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    entries
+
+    let mut unmapped_files: Vec<PathBuf> = seen_files
+        .into_iter()
+        .filter(|f| !mapped_files.contains(f))
+        .collect();
+    unmapped_files.sort();
+
+    MergeResult {
+        entries,
+        unmapped_files,
+    }
 }
 
 /// A path lookup index that handles absolute-vs-relative mismatches between
@@ -264,13 +296,13 @@ mod tests {
                 cyclomatic: 10.0,
             },
         ];
-        let entries = merge(
+        let result = merge(
             complexity,
             HashMap::new(),
             MissingCoveragePolicy::Pessimistic,
         );
-        assert_eq!(entries[0].function, "hard");
-        assert_eq!(entries[1].function, "easy");
+        assert_eq!(result.entries[0].function, "hard");
+        assert_eq!(result.entries[1].function, "easy");
     }
 
     #[test]
@@ -282,8 +314,8 @@ mod tests {
             end_line: 5,
             cyclomatic: 3.0,
         }];
-        let entries = merge(complexity, HashMap::new(), MissingCoveragePolicy::Skip);
-        assert!(entries.is_empty());
+        let result = merge(complexity, HashMap::new(), MissingCoveragePolicy::Skip);
+        assert!(result.entries.is_empty());
     }
 
     #[test]
@@ -314,5 +346,54 @@ mod tests {
         // succeed via suffix match.
         let found = index.lookup(Path::new("/somewhere/else/src/lib.rs"));
         assert!(found.is_some());
+    }
+
+    #[test]
+    fn unmapped_files_reported_when_lcov_provided() {
+        let mut cov_map = HashMap::new();
+        cov_map.insert(PathBuf::from("src/foo.rs"), cov_with(&[(1, 1)]));
+
+        let complexity = vec![
+            FunctionComplexity {
+                file: PathBuf::from("/project/src/foo.rs"),
+                name: "matched".into(),
+                start_line: 1,
+                end_line: 3,
+                cyclomatic: 1.0,
+            },
+            FunctionComplexity {
+                file: PathBuf::from("/project/src/bar.rs"),
+                name: "unmatched".into(),
+                start_line: 1,
+                end_line: 3,
+                cyclomatic: 1.0,
+            },
+        ];
+
+        let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        assert_eq!(
+            result.unmapped_files,
+            vec![PathBuf::from("/project/src/bar.rs")]
+        );
+    }
+
+    #[test]
+    fn no_unmapped_files_when_no_lcov_provided() {
+        let complexity = vec![FunctionComplexity {
+            file: PathBuf::from("src/foo.rs"),
+            name: "foo".into(),
+            start_line: 1,
+            end_line: 3,
+            cyclomatic: 1.0,
+        }];
+        let result = merge(
+            complexity,
+            HashMap::new(),
+            MissingCoveragePolicy::Pessimistic,
+        );
+        assert!(
+            result.unmapped_files.is_empty(),
+            "no lcov → no unmapped warnings"
+        );
     }
 }
