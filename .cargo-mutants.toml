@@ -1,5 +1,6 @@
 test_tool = "nextest"
 jobs = 4
+profile = "mutants"
 timeout = 60
 
 # Prevent RUSTFLAGS="-D warnings" (set in CI) from failing mutants on warnings

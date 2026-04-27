@@ -65,3 +65,7 @@ pkg-fmt = "zip"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[profile.mutants]
+inherits = "dev"
+debug = 0

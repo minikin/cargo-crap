@@ -30,6 +30,28 @@ dogfood:
 
 dev: fmt lint test dogfood
 
+# Mutation tests for a specific file: just mutants src/delta.rs
+mutants FILE:
+    cargo mutants --file {{FILE}}
+
 # Full validation including mutation tests (slow)
 dev-full: dev
     cargo mutants
+
+# Mutation tests only on files changed vs HEAD (uncommitted) or last commit
+dev-mutants-diff: dev
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # First: uncommitted changes (staged + unstaged)
+    files=$(git diff --name-only HEAD -- 'src/*.rs' 2>/dev/null || true)
+    # Fallback: files changed in the last commit
+    if [ -z "$files" ]; then
+        files=$(git diff --name-only HEAD~1 HEAD -- 'src/*.rs' 2>/dev/null || true)
+    fi
+    if [ -z "$files" ]; then
+        echo "No changed src/*.rs files — running all mutants"
+        cargo mutants
+    else
+        echo "Running mutants on: $files"
+        cargo mutants $(echo "$files" | sed 's/^/--file /' | tr '\n' ' ')
+    fi

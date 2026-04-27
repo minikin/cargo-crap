@@ -70,12 +70,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants,cargo-nextest
-      - name: Run mutation tests
+      - name: Run mutation tests (changed files only, PRs)
+        if: github.event_name == 'pull_request'
+        run: |
+          files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'src/*.rs' 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "No changed src/*.rs files — skipping mutants."
+            exit 0
+          fi
+          echo "Running mutants on: $files"
+          cargo mutants $(echo "$files" | sed 's/^/--file /' | tr '\n' ' ')
+      - name: Run mutation tests (full, main)
+        if: github.event_name == 'push'
         run: cargo mutants
       - name: Upload mutants output
         if: always()
