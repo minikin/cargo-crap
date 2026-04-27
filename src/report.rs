@@ -266,21 +266,58 @@ fn write_summary(
 
 // ─── Markdown rendering ─────────────────────────────────────────────────────
 
-/// Render a GFM markdown table. Coverage bars are replaced by plain
-/// percentages so the table renders correctly in any markdown renderer.
-fn render_markdown(
+/// Prepend the hidden HTML marker that lets CI identify and update the comment.
+fn write_pr_comment_marker(out: &mut dyn Write) -> Result<()> {
+    writeln!(out, "<!-- cargo-crap-report -->")?;
+    writeln!(out)?;
+    Ok(())
+}
+
+fn write_markdown_absolute_heading(
+    crappy: usize,
+    threshold: f64,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if crappy == 0 {
+        writeln!(out, "## ✅ No CRAP threshold violations")?;
+    } else {
+        writeln!(
+            out,
+            "## ⚠️ {crappy} function(s) exceed CRAP threshold {threshold}"
+        )?;
+    }
+    writeln!(out)?;
+    Ok(())
+}
+
+fn write_markdown_absolute_summary(
+    crappy: usize,
+    total: usize,
+    threshold: f64,
+    out: &mut dyn Write,
+) -> Result<()> {
+    writeln!(out)?;
+    if crappy == 0 {
+        writeln!(
+            out,
+            "✓ {total} function(s) analyzed; none exceed CRAP threshold {threshold}."
+        )?;
+    } else {
+        writeln!(
+            out,
+            "✗ {crappy}/{total} function(s) exceed CRAP threshold {threshold}."
+        )?;
+    }
+    Ok(())
+}
+
+fn write_markdown_entries_table(
     entries: &[CrapEntry],
     threshold: f64,
     out: &mut dyn Write,
 ) -> Result<()> {
-    if entries.is_empty() {
-        writeln!(out, "_No functions found._")?;
-        return Ok(());
-    }
-
     writeln!(out, "| | CRAP | CC | Cov % | Function | Location |")?;
     writeln!(out, "|---|---:|---:|---:|---|---|")?;
-
     for entry in entries {
         let grade = Grade::of(entry.crap, threshold);
         let cov = match entry.coverage {
@@ -299,26 +336,25 @@ fn render_markdown(
             entry.line,
         )?;
     }
-
-    writeln!(out)?;
-    let crappy = crappy_count(entries, threshold);
-    if crappy == 0 {
-        writeln!(
-            out,
-            "✓ {} function(s) analyzed; none exceed CRAP threshold {}.",
-            entries.len(),
-            threshold
-        )?;
-    } else {
-        writeln!(
-            out,
-            "✗ {}/{} function(s) exceed CRAP threshold {}.",
-            crappy,
-            entries.len(),
-            threshold
-        )?;
-    }
     Ok(())
+}
+
+/// Render a GFM markdown table. Coverage bars are replaced by plain
+/// percentages so the table renders correctly in any markdown renderer.
+fn render_markdown(
+    entries: &[CrapEntry],
+    threshold: f64,
+    out: &mut dyn Write,
+) -> Result<()> {
+    write_pr_comment_marker(out)?;
+    if entries.is_empty() {
+        writeln!(out, "_No functions found._")?;
+        return Ok(());
+    }
+    let crappy = crappy_count(entries, threshold);
+    write_markdown_absolute_heading(crappy, threshold, out)?;
+    write_markdown_entries_table(entries, threshold, out)?;
+    write_markdown_absolute_summary(crappy, entries.len(), threshold, out)
 }
 
 /// Format the Δ column value for a single delta entry.
@@ -347,20 +383,27 @@ fn write_markdown_removed(
     Ok(())
 }
 
-fn render_delta_markdown(
-    report: &DeltaReport,
+fn write_markdown_delta_heading(
+    regressions: usize,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if regressions == 0 {
+        writeln!(out, "## ✅ No CRAP regressions")?;
+    } else {
+        writeln!(out, "## ⚠️ {regressions} CRAP regression(s) detected")?;
+    }
+    writeln!(out)?;
+    Ok(())
+}
+
+fn write_delta_entries_table(
+    entries: &[crate::delta::DeltaEntry],
     threshold: f64,
     out: &mut dyn Write,
 ) -> Result<()> {
-    if report.entries.is_empty() && report.removed.is_empty() {
-        writeln!(out, "_No functions found._")?;
-        return Ok(());
-    }
-
     writeln!(out, "| | CRAP | Δ | CC | Cov % | Function | Location |")?;
     writeln!(out, "|---|---:|---:|---:|---:|---|---|")?;
-
-    for de in &report.entries {
+    for de in entries {
         let e = &de.current;
         let grade = Grade::of(e.crap, threshold);
         let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
@@ -377,12 +420,13 @@ fn render_delta_markdown(
             e.line,
         )?;
     }
+    Ok(())
+}
 
-    if !report.removed.is_empty() {
-        write_markdown_removed(&report.removed, out)?;
-    }
-
-    writeln!(out)?;
+fn write_markdown_delta_stats(
+    report: &DeltaReport,
+    out: &mut dyn Write,
+) -> Result<()> {
     let regressed = report
         .entries
         .iter()
@@ -403,12 +447,31 @@ fn render_delta_markdown(
         .iter()
         .filter(|e| e.status == DeltaStatus::Unchanged)
         .count();
+    writeln!(out)?;
     writeln!(
         out,
         "↑ {regressed} regressed · ↓ {improved} improved · ★ {new} new · · {unchanged} unchanged · — {} removed",
         report.removed.len(),
     )?;
     Ok(())
+}
+
+fn render_delta_markdown(
+    report: &DeltaReport,
+    threshold: f64,
+    out: &mut dyn Write,
+) -> Result<()> {
+    write_pr_comment_marker(out)?;
+    if report.entries.is_empty() && report.removed.is_empty() {
+        writeln!(out, "_No functions found._")?;
+        return Ok(());
+    }
+    write_markdown_delta_heading(report.regression_count(), out)?;
+    write_delta_entries_table(&report.entries, threshold, out)?;
+    if !report.removed.is_empty() {
+        write_markdown_removed(&report.removed, out)?;
+    }
+    write_markdown_delta_stats(report, out)
 }
 
 // ─── Summary-only rendering ──────────────────────────────────────────────────

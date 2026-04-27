@@ -103,6 +103,8 @@ jobs:
   self_score:
     name: Self-score
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -158,3 +160,56 @@ jobs:
           else
             echo "No baseline available — skipping regression check."
           fi
+
+      # --- On PRs: generate markdown comment and post/update on the PR ---
+      - name: Generate PR comment
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -f crap-current.json ]; then
+            cargo run --release -- \
+              --lcov lcov.info \
+              --workspace \
+              --exclude 'tests/fixtures/**' \
+              --baseline crap-current.json \
+              --format markdown \
+              --output crap-comment.md || true
+          else
+            cargo run --release -- \
+              --lcov lcov.info \
+              --workspace \
+              --exclude 'tests/fixtures/**' \
+              --format markdown \
+              --output crap-comment.md || true
+            printf '\n_No baseline available — showing absolute scores only._\n' >> crap-comment.md
+          fi
+
+      - name: Post or update PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('crap-comment.md')) return;
+            const body = fs.readFileSync('crap-comment.md', 'utf8');
+            const marker = '<!-- cargo-crap-report -->';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
