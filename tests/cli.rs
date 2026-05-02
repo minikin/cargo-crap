@@ -1361,3 +1361,93 @@ fn no_warning_when_lcov_not_provided() {
         .success()
         .stderr(predicate::str::contains("warning:").not());
 }
+
+// --- --format pr-comment ---------------------------------------------------
+
+#[test]
+fn pr_comment_format_starts_with_marker() {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("pr-comment")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert!(
+        stdout.starts_with("<!-- cargo-crap-report -->"),
+        "pr-comment output must start with the marker, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn pr_comment_format_with_baseline_hides_unchanged() {
+    // Identity baseline → all entries Unchanged → primary/details tables stay
+    // empty, but the breakdown still shows the unchanged count.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = dir.path().join("baseline.json");
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline_path)
+        .assert()
+        .success();
+
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--format")
+        .arg("pr-comment")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+
+    assert!(stdout.contains("## ✅ No CRAP regressions"));
+    assert!(
+        stdout.contains("unchanged"),
+        "breakdown line must mention unchanged count"
+    );
+    // No primary delta table when nothing regressed/new.
+    assert!(
+        !stdout.contains("| | CRAP | Δ"),
+        "primary delta table must be omitted when nothing regressed/new:\n{stdout}"
+    );
+    // Trivial fixture functions (clean, unchanged) must NOT show up by name.
+    assert!(
+        !stdout.contains("| `trivial`"),
+        "unchanged rows must be hidden:\n{stdout}"
+    );
+}
+
+#[test]
+fn pr_comment_format_regression_shows_warning_heading() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = regression_baseline(&dir);
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--format")
+        .arg("pr-comment")
+        .assert()
+        .stdout(predicate::str::contains("<!-- cargo-crap-report -->"))
+        .stdout(predicate::str::contains("## ⚠️"))
+        .stdout(predicate::str::contains("regression(s) detected"))
+        .stdout(predicate::str::contains("crappy"));
+}

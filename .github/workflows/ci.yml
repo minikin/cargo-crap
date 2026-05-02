@@ -171,14 +171,14 @@ jobs:
               --workspace \
               --exclude 'tests/fixtures/**' \
               --baseline crap-current.json \
-              --format markdown \
+              --format pr-comment \
               --output crap-comment.md || true
           else
             cargo run --release -- \
               --lcov lcov.info \
               --workspace \
               --exclude 'tests/fixtures/**' \
-              --format markdown \
+              --format pr-comment \
               --output crap-comment.md || true
             printf '\n_No baseline available — showing absolute scores only._\n' >> crap-comment.md
           fi

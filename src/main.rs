@@ -135,8 +135,13 @@ enum FormatArg {
     Json,
     /// GitHub Actions workflow commands — one `::warning` per crappy function.
     Github,
-    /// GitHub-Flavored Markdown table — suitable for PR comment bots.
+    /// GitHub-Flavored Markdown table — exhaustive, no row caps. Use this for
+    /// archived artifacts and docs pages.
     Markdown,
+    /// Opinionated PR-comment markdown — hides unchanged rows, caps each
+    /// section, collapses non-critical info into `<details>` blocks. Designed
+    /// for the GitHub PR comment use case where readability beats completeness.
+    PrComment,
 }
 
 impl From<FormatArg> for Format {
@@ -146,6 +151,7 @@ impl From<FormatArg> for Format {
             FormatArg::Json => Self::Json,
             FormatArg::Github => Self::GitHub,
             FormatArg::Markdown => Self::Markdown,
+            FormatArg::PrComment => Self::PrComment,
         }
     }
 }
