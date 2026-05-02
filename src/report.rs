@@ -1976,4 +1976,151 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("## ✅ No CRAP threshold violations"));
     }
+
+    // --- Mutation-killing tests --------------------------------------------
+
+    #[test]
+    fn pr_comment_hot_spots_filter_is_strict_above_threshold() {
+        // Kills: `crap > threshold` → `>=` in DeltaBuckets::from_report.
+        // An entry exactly at the threshold is NOT a hot spot.
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "exactly_at_threshold",
+                30.0,
+                Some(30.0),
+                DeltaStatus::Unchanged,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            !s.contains("Top hot spots"),
+            "crap == threshold must NOT be a hot spot:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_above_threshold_filter_is_strict() {
+        // Kills: `e.crap > threshold` → `>=`, `<`, `==` in above_threshold_sorted.
+        // Threshold = 30; test entries at 29.9 (below), 30.0 (exactly), 30.1 (above).
+        let entries = vec![
+            CrapEntry {
+                file: PathBuf::from("src/a.rs"),
+                function: "below".into(),
+                line: 1,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 29.9,
+            },
+            CrapEntry {
+                file: PathBuf::from("src/a.rs"),
+                function: "exactly".into(),
+                line: 2,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 30.0,
+            },
+            CrapEntry {
+                file: PathBuf::from("src/a.rs"),
+                function: "above".into(),
+                line: 3,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 30.1,
+            },
+        ];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::PrComment, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+
+        // Only `above` must appear in the table; the headline still shows it.
+        assert!(s.contains("`above`"), "above-threshold must appear:\n{s}");
+        assert!(
+            !s.contains("`below`"),
+            "below-threshold must NOT appear:\n{s}"
+        );
+        assert!(
+            !s.contains("`exactly`"),
+            "exactly-at-threshold must NOT appear (filter is strict >):\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_absolute_table_contains_above_threshold_rows() {
+        // Kills: above_threshold_sorted → vec![] (empty stub),
+        //        write_pr_comment_abs_table → Ok(()) (no-op stub).
+        // A function above threshold must appear in the rendered table body.
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("src/a.rs"),
+            function: "very_crappy".into(),
+            line: 42,
+            cyclomatic: 10.0,
+            coverage: Some(0.0),
+            crap: 110.0,
+        }];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::PrComment, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("`very_crappy`"),
+            "above-threshold function must appear as a row:\n{s}"
+        );
+        // The table separator must also appear (proving the table itself was emitted).
+        assert!(
+            s.contains("|---|---:|---:|---:|---|---|"),
+            "table header separator must be present:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_truncation_only_when_strictly_over_cap() {
+        // Kills: `total > MAX_ROWS_PER_SECTION` → `>=` in write_truncation_if_capped.
+        // Exactly MAX_ROWS_PER_SECTION rows (25) → no truncation footer.
+        let entries: Vec<DeltaEntry> = (0..MAX_ROWS_PER_SECTION)
+            .map(|i| {
+                delta_entry(
+                    "src/a.rs",
+                    &format!("fn_{i:02}"),
+                    100.0 - i as f64,
+                    Some(1.0),
+                    DeltaStatus::Regressed,
+                )
+            })
+            .collect();
+        let report = DeltaReport {
+            entries,
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            !s.contains("…and 0 more"),
+            "no truncation footer when count == MAX:\n{s}"
+        );
+        assert!(
+            !s.contains("see CI artifact"),
+            "no truncation footer at all when count == MAX:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_breakdown_reflects_actual_unchanged_count() {
+        // Kills: `unchanged_count -> usize` replaced with `1` (constant stub).
+        // Build a report with 3 Unchanged entries → breakdown must show "3 unchanged",
+        // not "1 unchanged".
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry("src/a.rs", "u1", 5.0, Some(5.0), DeltaStatus::Unchanged),
+                delta_entry("src/a.rs", "u2", 5.0, Some(5.0), DeltaStatus::Unchanged),
+                delta_entry("src/a.rs", "u3", 5.0, Some(5.0), DeltaStatus::Unchanged),
+                delta_entry("src/a.rs", "r", 12.0, Some(5.0), DeltaStatus::Regressed),
+            ],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            s.contains("· 3 unchanged ·"),
+            "breakdown must report 3 unchanged, got:\n{s}"
+        );
+    }
 }
