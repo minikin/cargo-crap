@@ -732,7 +732,10 @@ fn write_pr_comment_primary(
     {
         write_pr_comment_row(out, de, threshold, prefix)?;
     }
-    write_truncation_if_capped(out, total)
+    if total > MAX_ROWS_PER_SECTION {
+        write_truncation_footer(out, total - MAX_ROWS_PER_SECTION)?;
+    }
+    Ok(())
 }
 
 fn write_pr_comment_improved_section(
