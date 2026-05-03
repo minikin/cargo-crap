@@ -1,6 +1,6 @@
 # Spec 04 — --jobs N flag for parallel analysis
 
-**Status:** Pending  
+**Status:** Implemented  
 **Effort:** Low  
 **Module:** `src/complexity.rs` (`analyze_tree`), `src/main.rs`
 

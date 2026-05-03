@@ -19,21 +19,22 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// How much a CRAP score must change before it is called a regression or
-/// improvement. Avoids noise from floating-point rounding between runs.
-const EPSILON: f64 = 0.01;
+/// Default tolerance for regression detection. Deltas with absolute value at
+/// or below this count as `Unchanged` rather than `Regressed` / `Improved`.
+/// Override with `--epsilon` or the `epsilon` config key.
+pub const DEFAULT_EPSILON: f64 = 0.01;
 
 /// Change status of a single function relative to the baseline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DeltaStatus {
-    /// Score increased by more than [`EPSILON`] — needs attention.
+    /// Score increased by more than the epsilon — needs attention.
     Regressed,
-    /// Score decreased by more than [`EPSILON`] — improved since baseline.
+    /// Score decreased by more than the epsilon — improved since baseline.
     Improved,
     /// Function was not present in the baseline (e.g. newly added code).
     New,
-    /// Score changed by ≤ [`EPSILON`] — effectively unchanged.
+    /// Score changed by ≤ epsilon — effectively unchanged.
     Unchanged,
 }
 
@@ -100,9 +101,13 @@ fn path_key(p: &Path) -> String {
 /// `GITHUB_WORKSPACE`). Functions with no matching baseline entry are marked
 /// [`DeltaStatus::New`]; baseline functions absent in the current run become
 /// [`RemovedEntry`]s.
+///
+/// `epsilon` is the tolerance for the regression detector — see
+/// [`DEFAULT_EPSILON`].
 pub fn compute_delta(
     current: &[CrapEntry],
     baseline: &[CrapEntry],
+    epsilon: f64,
 ) -> DeltaReport {
     let baseline_index: HashMap<(String, String), f64> = baseline
         .iter()
@@ -124,9 +129,9 @@ pub fn compute_delta(
                 None => (None, DeltaStatus::New),
                 Some(b) => {
                     let d = e.crap - b;
-                    let status = if d > EPSILON {
+                    let status = if d > epsilon {
                         DeltaStatus::Regressed
-                    } else if d < -EPSILON {
+                    } else if d < -epsilon {
                         DeltaStatus::Improved
                     } else {
                         DeltaStatus::Unchanged
@@ -182,7 +187,7 @@ mod tests {
 
     #[test]
     fn new_when_not_in_baseline() {
-        let report = compute_delta(&[entry("foo", 5.0)], &[]);
+        let report = compute_delta(&[entry("foo", 5.0)], &[], DEFAULT_EPSILON);
         assert_eq!(report.entries[0].status, DeltaStatus::New);
         assert!(report.entries[0].baseline_crap.is_none());
         assert!(report.entries[0].delta.is_none());
@@ -190,7 +195,7 @@ mod tests {
 
     #[test]
     fn regressed_when_score_increased() {
-        let report = compute_delta(&[entry("foo", 10.0)], &[entry("foo", 5.0)]);
+        let report = compute_delta(&[entry("foo", 10.0)], &[entry("foo", 5.0)], DEFAULT_EPSILON);
         assert_eq!(report.entries[0].status, DeltaStatus::Regressed);
         assert_eq!(report.entries[0].baseline_crap, Some(5.0));
         assert!((report.entries[0].delta.unwrap() - 5.0).abs() < 1e-9);
@@ -198,60 +203,80 @@ mod tests {
 
     #[test]
     fn improved_when_score_decreased() {
-        let report = compute_delta(&[entry("foo", 3.0)], &[entry("foo", 8.0)]);
+        let report = compute_delta(&[entry("foo", 3.0)], &[entry("foo", 8.0)], DEFAULT_EPSILON);
         assert_eq!(report.entries[0].status, DeltaStatus::Improved);
         assert!((report.entries[0].delta.unwrap() + 5.0).abs() < 1e-9);
     }
 
     #[test]
     fn unchanged_within_epsilon() {
-        let report = compute_delta(&[entry("foo", 5.005)], &[entry("foo", 5.0)]);
+        let report = compute_delta(
+            &[entry("foo", 5.005)],
+            &[entry("foo", 5.0)],
+            DEFAULT_EPSILON,
+        );
         assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
     }
 
     #[test]
     fn epsilon_boundary_regression_is_exclusive() {
-        // delta = exactly EPSILON must be Unchanged, not Regressed.
+        // delta = exactly DEFAULT_EPSILON must be Unchanged, not Regressed.
         // Kills: replacing `>` with `>=` in the Regressed branch.
         //
-        // Use baseline=0.0 so `current - 0.0 == EPSILON` exactly in floating
-        // point. Using `5.0 + EPSILON - 5.0` causes catastrophic cancellation
-        // that yields a value slightly below EPSILON, making the `>=` mutant
+        // Use baseline=0.0 so `current - 0.0 == DEFAULT_EPSILON` exactly in floating
+        // point. Using `5.0 + DEFAULT_EPSILON - 5.0` causes catastrophic cancellation
+        // that yields a value slightly below DEFAULT_EPSILON, making the `>=` mutant
         // indistinguishable from the original `>`.
-        let report = compute_delta(&[entry("foo", EPSILON)], &[entry("foo", 0.0)]);
+        let report = compute_delta(
+            &[entry("foo", DEFAULT_EPSILON)],
+            &[entry("foo", 0.0)],
+            DEFAULT_EPSILON,
+        );
         assert_eq!(
             report.entries[0].status,
             DeltaStatus::Unchanged,
-            "delta == EPSILON must be Unchanged, not Regressed"
+            "delta == DEFAULT_EPSILON must be Unchanged, not Regressed"
         );
     }
 
     #[test]
     fn above_epsilon_is_regressed() {
-        // delta strictly above EPSILON must be Regressed.
+        // delta strictly above DEFAULT_EPSILON must be Regressed.
         // Paired with the boundary test to pin both sides of the comparison.
-        let report = compute_delta(&[entry("foo", EPSILON + 0.001)], &[entry("foo", 0.0)]);
+        let report = compute_delta(
+            &[entry("foo", DEFAULT_EPSILON + 0.001)],
+            &[entry("foo", 0.0)],
+            DEFAULT_EPSILON,
+        );
         assert_eq!(report.entries[0].status, DeltaStatus::Regressed);
     }
 
     #[test]
     fn epsilon_boundary_improvement_is_exclusive() {
-        // delta = exactly -EPSILON must be Unchanged, not Improved.
+        // delta = exactly -DEFAULT_EPSILON must be Unchanged, not Improved.
         // Kills: replacing `<` with `<=` in the Improved branch.
         // Same zero-baseline trick to guarantee exact floating-point equality.
-        let report = compute_delta(&[entry("foo", 0.0)], &[entry("foo", EPSILON)]);
+        let report = compute_delta(
+            &[entry("foo", 0.0)],
+            &[entry("foo", DEFAULT_EPSILON)],
+            DEFAULT_EPSILON,
+        );
         assert_eq!(
             report.entries[0].status,
             DeltaStatus::Unchanged,
-            "delta == -EPSILON must be Unchanged, not Improved"
+            "delta == -DEFAULT_EPSILON must be Unchanged, not Improved"
         );
     }
 
     #[test]
     fn below_negative_epsilon_is_improved() {
-        // delta strictly below -EPSILON must be Improved.
+        // delta strictly below -DEFAULT_EPSILON must be Improved.
         // Paired with the boundary test to pin both sides.
-        let report = compute_delta(&[entry("foo", 0.0)], &[entry("foo", EPSILON + 0.001)]);
+        let report = compute_delta(
+            &[entry("foo", 0.0)],
+            &[entry("foo", DEFAULT_EPSILON + 0.001)],
+            DEFAULT_EPSILON,
+        );
         assert_eq!(report.entries[0].status, DeltaStatus::Improved);
     }
 
@@ -260,6 +285,7 @@ mod tests {
         let report = compute_delta(
             &[entry("bar", 2.0)],
             &[entry("foo", 5.0), entry("bar", 2.0)],
+            DEFAULT_EPSILON,
         );
         assert_eq!(report.removed.len(), 1);
         assert_eq!(report.removed[0].function, "foo");
@@ -271,14 +297,14 @@ mod tests {
         let current = vec![entry("foo", 10.0), entry("bar", 2.0), entry("baz", 1.0)];
         let baseline = vec![entry("foo", 5.0), entry("bar", 8.0)];
         // foo: regressed(+5), bar: improved(-6), baz: new
-        let report = compute_delta(&current, &baseline);
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
         assert_eq!(report.regression_count(), 1);
     }
 
     #[test]
     fn empty_baseline_marks_everything_new() {
         let current = vec![entry("a", 1.0), entry("b", 2.0)];
-        let report = compute_delta(&current, &[]);
+        let report = compute_delta(&current, &[], DEFAULT_EPSILON);
         assert!(report.entries.iter().all(|e| e.status == DeltaStatus::New));
         assert!(report.removed.is_empty());
     }
@@ -308,7 +334,7 @@ mod tests {
             crap: 5.0,
             crate_name: None,
         }];
-        let report = compute_delta(&current, &baseline);
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
         assert_eq!(
             report.entries[0].status,
             DeltaStatus::New,
@@ -343,13 +369,39 @@ mod tests {
             crap: 5.0,
             crate_name: None,
         }];
-        let report = compute_delta(&current, &baseline);
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
         assert_eq!(
             report.entries[0].status,
             DeltaStatus::Regressed,
             "backslash path must match its forward-slash baseline counterpart"
         );
         assert!(report.removed.is_empty());
+    }
+
+    // --- tunable epsilon ---------------------------------------------------
+
+    #[test]
+    fn custom_epsilon_zero_catches_sub_default_deltas() {
+        // delta = 0.001 is below DEFAULT_EPSILON (0.01) and would normally
+        // be Unchanged — but with epsilon=0.0 any positive delta is a regression.
+        let report = compute_delta(&[entry("foo", 10.001)], &[entry("foo", 10.0)], 0.0);
+        assert_eq!(report.entries[0].status, DeltaStatus::Regressed);
+    }
+
+    #[test]
+    fn custom_epsilon_tolerates_drift_within_band() {
+        // delta = 0.4 is well above DEFAULT_EPSILON; with a relaxed
+        // epsilon=0.5 it should still classify as Unchanged.
+        let report = compute_delta(&[entry("foo", 10.4)], &[entry("foo", 10.0)], 0.5);
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+    }
+
+    #[test]
+    fn custom_epsilon_zero_is_strict_on_both_sides() {
+        // Improvements must also use the custom epsilon: -0.001 with eps=0.0
+        // is Improved, not Unchanged.
+        let report = compute_delta(&[entry("foo", 9.999)], &[entry("foo", 10.0)], 0.0);
+        assert_eq!(report.entries[0].status, DeltaStatus::Improved);
     }
 
     // --- load_baseline contract --------------------------------------------

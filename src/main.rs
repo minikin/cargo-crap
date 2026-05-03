@@ -110,6 +110,19 @@ struct Cli {
     /// baseline: `--format json --output baseline.json`.
     #[arg(long, value_name = "FILE")]
     output: Option<PathBuf>,
+
+    /// Maximum number of threads used for parallel source-file analysis.
+    /// Defaults to rayon's host-sized pool. Useful in memory-constrained
+    /// CI/Docker environments. Falls back to `.cargo-crap.toml` → host default.
+    #[arg(long, value_name = "N")]
+    jobs: Option<usize>,
+
+    /// Tolerance used by the regression detector. CRAP-score deltas with
+    /// absolute value at or below this count as `Unchanged` rather than
+    /// `Regressed` / `Improved`. Falls back to `.cargo-crap.toml` →
+    /// built-in default (0.01).
+    #[arg(long, value_name = "VALUE", allow_negative_numbers = true)]
+    epsilon: Option<f64>,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -192,16 +205,21 @@ struct WorkspaceMember {
 
 /// Walk source trees and discover Cargo workspace members in one pass.
 ///
-/// In `--workspace` mode: discovers all members via `cargo metadata`, walks
-/// each member's root, and returns both the function list and the member
-/// metadata (used downstream to tag entries with their owning crate).
-///
-/// In single-path mode: walks just `path`, returns no members.
+/// Caps rayon's global thread pool to `jobs` first, so the parallel
+/// `analyze_tree` walk respects user-set bounds. In `--workspace` mode also
+/// discovers all members via `cargo metadata` and walks each member's root.
 fn analyze_sources(
     workspace: bool,
     path: &std::path::Path,
     excludes: &[String],
+    jobs: Option<usize>,
 ) -> Result<(Vec<complexity::FunctionComplexity>, Vec<WorkspaceMember>)> {
+    if let Some(n) = jobs {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build_global()
+            .with_context(|| format!("configuring rayon thread pool to {n} threads"))?;
+    }
     if workspace {
         let members = workspace_members()?;
         let mut all = Vec::new();
@@ -367,6 +385,14 @@ fn validate_args(cli: &Cli) -> Result<()> {
     if cli.fail_regression && cli.baseline.is_none() {
         bail!("--fail-regression requires --baseline");
     }
+    if matches!(cli.jobs, Some(0)) {
+        bail!("invalid --jobs value: must be a positive integer");
+    }
+    if let Some(eps) = cli.epsilon
+        && eps < 0.0
+    {
+        bail!("invalid --epsilon value: must be non-negative");
+    }
     Ok(())
 }
 
@@ -375,13 +401,14 @@ fn do_render(
     entries: &[cargo_crap::merge::CrapEntry],
     baseline: Option<&PathBuf>,
     threshold: f64,
+    epsilon: f64,
     format: Format,
     summary: bool,
     out: &mut dyn Write,
 ) -> Result<(bool, bool)> {
     if let Some(baseline_path) = baseline {
         let baseline_data = load_baseline(baseline_path)?;
-        let report = compute_delta(entries, &baseline_data);
+        let report = compute_delta(entries, &baseline_data, epsilon);
         let has_crappy = crappy_count(entries, threshold) > 0;
         let has_regression = report.regression_count() > 0;
         if summary {
@@ -424,6 +451,11 @@ fn main() -> Result<()> {
     let fail_above = cli.fail_above || config.fail_above.unwrap_or(false);
     let fail_regression = cli.fail_regression || config.fail_regression.unwrap_or(false);
 
+    let epsilon = cli
+        .epsilon
+        .or(config.epsilon)
+        .unwrap_or(cargo_crap::delta::DEFAULT_EPSILON);
+
     let mut effective_exclude = config.exclude;
     effective_exclude.extend(cli.exclude);
     let mut effective_allow = config.allow;
@@ -431,7 +463,12 @@ fn main() -> Result<()> {
 
     // --- Analysis ---
     let pb = spinner("Analyzing source files…");
-    let (fns, members) = analyze_sources(cli.workspace, &cli.path, &effective_exclude)?;
+    let (fns, members) = analyze_sources(
+        cli.workspace,
+        &cli.path,
+        &effective_exclude,
+        cli.jobs.or(config.jobs),
+    )?;
 
     pb.set_message("Parsing coverage report…");
     let coverage = load_coverage(cli.lcov.as_ref())?;
@@ -455,6 +492,7 @@ fn main() -> Result<()> {
         &entries,
         cli.baseline.as_ref(),
         threshold,
+        epsilon,
         cli.format.into(),
         cli.summary,
         out_box.as_mut(),

@@ -1,6 +1,6 @@
 # Spec 08 — Tunable --epsilon for regression detection
 
-**Status:** Pending  
+**Status:** Implemented  
 **Effort:** Low  
 **Module:** `src/delta.rs`, `src/main.rs`
 

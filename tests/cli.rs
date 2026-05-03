@@ -1628,3 +1628,229 @@ fn pr_comment_format_regression_shows_warning_heading() {
         .stdout(predicate::str::contains("regression(s) detected"))
         .stdout(predicate::str::contains("crappy"));
 }
+
+// --- --jobs ---------------------------------------------------------------
+
+#[test]
+fn jobs_one_succeeds() {
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--jobs")
+        .arg("1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("crappy"));
+}
+
+#[test]
+fn jobs_four_succeeds_and_matches_default() {
+    let baseline = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("baseline run");
+    let with_jobs = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--jobs")
+        .arg("4")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("--jobs 4 run");
+    assert_eq!(
+        baseline.stdout, with_jobs.stdout,
+        "--jobs N must produce identical output to a default run"
+    );
+}
+
+#[test]
+fn jobs_zero_is_rejected() {
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--jobs")
+        .arg("0")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--jobs"));
+}
+
+#[test]
+fn jobs_configurable_via_config_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(".cargo-crap.toml"), "jobs = 2\n").expect("write config");
+    let path_arg = std::fs::canonicalize(fixture_src()).expect("canonicalize fixture");
+    cmd()
+        .current_dir(dir.path())
+        .arg("--path")
+        .arg(&path_arg)
+        .assert()
+        .success();
+}
+
+// --- --epsilon ------------------------------------------------------------
+
+#[test]
+fn epsilon_zero_catches_small_regression() {
+    let runtime_crap = runtime_crap_score("crappy");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = synthetic_baseline(&dir, "crappy", runtime_crap - 0.005);
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--fail-regression")
+        .assert()
+        .success();
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--epsilon")
+        .arg("0.0")
+        .arg("--fail-regression")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn epsilon_relaxed_tolerates_modest_drift() {
+    let runtime_crap = runtime_crap_score("crappy");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = synthetic_baseline(&dir, "crappy", runtime_crap - 0.4);
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--fail-regression")
+        .assert()
+        .failure();
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--epsilon")
+        .arg("0.5")
+        .arg("--fail-regression")
+        .assert()
+        .success();
+}
+
+#[test]
+fn epsilon_negative_is_rejected() {
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--epsilon")
+        .arg("-1.0")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--epsilon"));
+}
+
+#[test]
+fn epsilon_zero_is_accepted() {
+    // Pins the strict-`<` boundary in validate_args. With `<=` the validator
+    // would reject `--epsilon 0.0` (a documented setting) before the run
+    // even started; success here kills that mutant.
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--epsilon")
+        .arg("0.0")
+        .assert()
+        .success();
+}
+
+#[test]
+fn epsilon_configurable_via_config_file() {
+    let runtime_crap = runtime_crap_score("crappy");
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(".cargo-crap.toml"), "epsilon = 0.5\n").expect("write config");
+    let baseline_path = synthetic_baseline(&dir, "crappy", runtime_crap - 0.4);
+
+    let abs_src = std::fs::canonicalize(fixture_src()).expect("canonicalize fixture");
+    let abs_lcov = std::fs::canonicalize(fixture_lcov()).expect("canonicalize lcov");
+    cmd()
+        .current_dir(dir.path())
+        .arg("--path")
+        .arg(&abs_src)
+        .arg("--lcov")
+        .arg(&abs_lcov)
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--fail-regression")
+        .assert()
+        .success();
+}
+
+// --- helpers for --epsilon tests ------------------------------------------
+
+fn runtime_crap_score(function_name: &str) -> f64 {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("baseline-build run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("valid envelope JSON");
+    for entry in envelope["entries"].as_array().expect("entries array") {
+        if entry["function"] == function_name {
+            return entry["crap"].as_f64().expect("crap is a number");
+        }
+    }
+    panic!("function {function_name:?} not found in fixture run");
+}
+
+fn synthetic_baseline(
+    dir: &tempfile::TempDir,
+    function: &str,
+    crap_score: f64,
+) -> std::path::PathBuf {
+    let baseline = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "entries": [{
+            "file": "tests/fixtures/sample_project/src/lib.rs",
+            "function": function,
+            "line": 24,
+            "cyclomatic": 12.0,
+            "coverage": 100.0,
+            "crap": crap_score
+        }]
+    });
+    let path = dir.path().join("epsilon-baseline.json");
+    std::fs::write(&path, baseline.to_string()).expect("write baseline");
+    path
+}

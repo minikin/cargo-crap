@@ -108,6 +108,8 @@ Example output:
 | `--fail-above`                                     | off           | Exit 1 if any function exceeds `--threshold`.                                                                                                                                                                                                   |
 | `--baseline <FILE>`                                | —             | JSON from a previous `--format json` run. Enables delta mode (shows Δ column).                                                                                                                                                                  |
 | `--fail-regression`                                | off           | Exit 1 if any function's score increased since `--baseline`. Requires `--baseline`.                                                                                                                                                             |
+| `--epsilon <VALUE>`                                | `0.01`        | Tolerance for the regression detector. Score deltas with absolute value at or below this count as `Unchanged`. Set to `0.0` to flag every increase, or higher to tolerate noisy coverage. Must be non-negative.                                |
+| `--jobs <N>`                                       | host CPUs     | Cap parallel source-file analysis at `N` threads. Useful in memory-constrained CI/Docker environments. Must be a positive integer.                                                                                                              |
 | `--output <FILE>`                                  | —             | Write output to FILE instead of stdout (useful for saving JSON baselines).                                                                                                                                                                      |
 
 ### JSON output schema
@@ -157,6 +159,8 @@ fail-above = true
 missing = "pessimistic"   # pessimistic | optimistic | skip
 exclude = ["tests/**", "benches/**"]
 allow   = ["generated::*"]
+epsilon = 0.01            # regression-detector tolerance
+jobs    = 4               # cap parallel analysis at 4 threads
 ```
 
 All keys are optional. Unknown keys are rejected to catch typos.

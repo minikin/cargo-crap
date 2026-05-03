@@ -54,6 +54,16 @@ pub struct Config {
 
     /// Exit non-zero if any function regressed since `--baseline`.
     pub fail_regression: Option<bool>,
+
+    /// Maximum number of threads used by `analyze_tree` for parallel file
+    /// analysis. `None` lets rayon size the pool to the host. Must be
+    /// non-zero when set.
+    pub jobs: Option<usize>,
+
+    /// Tolerance for the regression detector. Score deltas with absolute
+    /// value at or below this are reported as `Unchanged`. Must be
+    /// non-negative when set.
+    pub epsilon: Option<f64>,
 }
 
 /// Walk up from `start` until `.cargo-crap.toml` is found.

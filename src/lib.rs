@@ -114,7 +114,7 @@
 //! ```no_run
 //! use cargo_crap::{
 //!     complexity, coverage,
-//!     delta::{compute_delta, load_baseline},
+//!     delta::{DEFAULT_EPSILON, compute_delta, load_baseline},
 //!     merge::{MissingCoveragePolicy, merge},
 //!     report::{Format, render_delta},
 //! };
@@ -129,7 +129,7 @@
 //!
 //! // Load baseline saved by a previous `--format json --output baseline.json` run.
 //! let baseline = load_baseline(std::path::Path::new("baseline.json"))?;
-//! let report = compute_delta(&entries, &baseline);
+//! let report = compute_delta(&entries, &baseline, DEFAULT_EPSILON);
 //!
 //! // Exit non-zero if any function regressed.
 //! if report.regression_count() > 0 {
