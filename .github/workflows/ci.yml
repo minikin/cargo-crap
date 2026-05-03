@@ -197,8 +197,11 @@ jobs:
           fi
 
       # --- On PRs: generate markdown comment and post/update on the PR ---
+      # `always()` runs these steps even when the Regression check above
+      # exits non-zero — that's exactly when we want the comment to land,
+      # because it tells the reviewer *what* regressed.
       - name: Generate PR comment
-        if: github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request'
         run: |
           if [ -f baseline/crap-current.json ] && grep -q '"version"' baseline/crap-current.json; then
             cargo run --release -- \
@@ -219,7 +222,7 @@ jobs:
           fi
 
       - name: Post or update PR comment
-        if: github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
