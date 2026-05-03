@@ -180,12 +180,23 @@ Then  every Location cell has that prefix removed
 And   no Location cell starts with `/`
 ```
 
-### Scenario: Single rendered entry leaves the path untouched
+### Scenario: Single-entry (or no-overlap) paths fall back to CWD stripping
 
 ```
-Given exactly one entry to render
+Given fewer than two rendered entries (or entries that share no path-component prefix)
+And   every rendered file path is under the current working directory
 When  the pr-comment renders
-Then  the Location cell is the entry's path verbatim (no prefix stripping)
+Then  every Location cell has the CWD prefix removed
+And   no Location cell starts with `/`
+```
+
+### Scenario: Path outside CWD with no common prefix is left untouched
+
+```
+Given a rendered entry whose file path is NOT under the current working directory
+And   no longest-common-prefix can be derived from other rendered entries
+When  the pr-comment renders
+Then  the Location cell is the entry's path verbatim
 ```
 
 ### Scenario: Absolute markdown still emits the full table

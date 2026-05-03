@@ -594,8 +594,7 @@ fn render_delta_markdown(
 ///
 /// Operates on path *components*, never byte prefixes — so `/a/foo` and
 /// `/a/foobar` share `/a`, not `/a/foo`. Returns an empty `PathBuf` when
-/// fewer than two paths are supplied (a single-entry comment is more
-/// readable with the path intact than collapsed to a filename).
+/// fewer than two paths are supplied or when the paths share no prefix.
 fn longest_common_path_prefix(paths: &[PathBuf]) -> PathBuf {
     if paths.len() < 2 {
         return PathBuf::new();
@@ -614,6 +613,27 @@ fn longest_common_path_prefix(paths: &[PathBuf]) -> PathBuf {
         }
     }
     first[..common_len].iter().collect()
+}
+
+/// Pick a path prefix to strip from PR-comment Location cells.
+///
+/// Multi-entry runs use the longest common path-component prefix. When that
+/// prefix is empty (single-entry, or entries diverging at the root) we fall
+/// back to the current working directory if every rendered path is under it
+/// — this is what turns `/home/runner/work/repo/repo/src/lib.rs` into
+/// `src/lib.rs` on a CI run with one new function. Paths that aren't under
+/// CWD pass through unchanged.
+fn compute_render_prefix(paths: &[PathBuf]) -> PathBuf {
+    let lcp = longest_common_path_prefix(paths);
+    if !lcp.as_os_str().is_empty() {
+        return lcp;
+    }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if !cwd.as_os_str().is_empty() && !paths.is_empty() && paths.iter().all(|p| p.starts_with(&cwd))
+    {
+        return cwd;
+    }
+    PathBuf::new()
 }
 
 /// Strip `prefix` from `path` and return a display string. Falls back to the
@@ -752,8 +772,9 @@ impl<'a> DeltaBuckets<'a> {
         }
     }
 
-    /// Longest path prefix common to every entry that will render. Includes
-    /// capped-out rows — the cap doesn't change which paths participate.
+    /// Path prefix to strip from rendered Location cells. Includes capped-out
+    /// rows — the cap doesn't change which paths participate. Falls back to
+    /// CWD when no longest-common-prefix exists; see [`compute_render_prefix`].
     fn common_prefix(&self) -> PathBuf {
         let mut paths: Vec<PathBuf> = Vec::new();
         for de in self
@@ -768,7 +789,7 @@ impl<'a> DeltaBuckets<'a> {
         for r in &self.removed {
             paths.push(r.file.clone());
         }
-        longest_common_path_prefix(&paths)
+        compute_render_prefix(&paths)
     }
 }
 
@@ -981,7 +1002,7 @@ fn write_pr_comment_abs_table(
         return Ok(());
     }
     let paths: Vec<PathBuf> = above.iter().map(|e| e.file.clone()).collect();
-    let prefix = longest_common_path_prefix(&paths);
+    let prefix = compute_render_prefix(&paths);
     writeln!(out)?;
     writeln!(out, "| | CRAP | CC | Cov % | Function | Location |")?;
     writeln!(out, "|---|---:|---:|---:|---|---|")?;
@@ -1712,6 +1733,33 @@ mod tests {
         assert_eq!(longest_common_path_prefix(&paths), PathBuf::new());
     }
 
+    // --- compute_render_prefix CWD fallback --------------------------------
+
+    #[test]
+    fn render_prefix_empty_paths_returns_empty() {
+        // Kills: replacing `&&` with `||` in the CWD-fallback guard chain.
+        // With OR semantics, an empty `paths` list combined with a non-empty
+        // CWD would return CWD, which is wrong — there's nothing to render.
+        assert_eq!(compute_render_prefix(&[]), PathBuf::new());
+    }
+
+    #[test]
+    fn render_prefix_paths_outside_cwd_returns_empty() {
+        // Kills: replacing `&&` with `||` between the `paths.is_empty()` and
+        // `paths.iter().all(starts_with cwd)` clauses. A path that is not
+        // under CWD must not trigger CWD stripping.
+        let outside = PathBuf::from("/tmp/definitely_not_under_cwd_xyzzy/foo.rs");
+        assert_eq!(compute_render_prefix(&[outside]), PathBuf::new());
+    }
+
+    #[test]
+    fn render_prefix_falls_back_to_cwd_when_path_under_cwd() {
+        // Pins the happy path: single under-CWD entry → returns CWD as prefix.
+        let cwd = std::env::current_dir().expect("cwd");
+        let inside = cwd.join("nested").join("foo.rs");
+        assert_eq!(compute_render_prefix(&[inside]), cwd);
+    }
+
     // --- pr-comment renderer (delta) ---------------------------------------
 
     fn delta_entry(
@@ -2008,7 +2056,9 @@ mod tests {
     }
 
     #[test]
-    fn pr_comment_single_entry_path_unchanged() {
+    fn pr_comment_path_outside_cwd_unchanged() {
+        // Single entry whose absolute path is NOT under the test runner's CWD:
+        // no LCP, no CWD overlap, so the path passes through verbatim.
         let report = DeltaReport {
             entries: vec![delta_entry(
                 "/home/runner/work/repo/src/a.rs",
@@ -2022,7 +2072,36 @@ mod tests {
         let s = render_delta_pr_to_string(&report);
         assert!(
             s.contains("/home/runner/work/repo/src/a.rs"),
-            "single entry must keep its full path:\n{s}"
+            "path outside CWD must remain absolute:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_single_entry_under_cwd_strips_against_cwd() {
+        // Build an entry whose path is under the test runner's CWD. The CWD
+        // fallback in `compute_render_prefix` should strip that prefix and
+        // leave the relative form (`dummy/foo.rs:1`) in the rendered table.
+        let cwd = std::env::current_dir().expect("cwd");
+        let test_file = cwd.join("dummy_under_cwd").join("foo.rs");
+        let test_file_str = test_file.to_str().expect("utf8 path").to_string();
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                &test_file_str,
+                "only",
+                12.0,
+                Some(5.0),
+                DeltaStatus::Regressed,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            s.contains("`dummy_under_cwd/foo.rs:1`"),
+            "single under-CWD entry must be stripped to a relative path:\n{s}"
+        );
+        assert!(
+            !s.contains(cwd.to_str().expect("utf8 cwd")),
+            "CWD prefix must not appear after stripping:\n{s}"
         );
     }
 
