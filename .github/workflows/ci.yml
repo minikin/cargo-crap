@@ -105,6 +105,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
+      # Needed to list previous main runs and download their artifacts via
+      # `gh run list` and `actions/download-artifact@v4 run-id:`.
+      actions: read
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -139,19 +142,40 @@ jobs:
           path: crap-current.json
           retention-days: 90
 
-      # --- On PRs: download baseline and fail on any regression ---
-      # NOTE: extract to a dedicated `baseline/` folder. Without `path:` the
-      # action would write `crap-current.json` to a subfolder named after the
-      # artifact (`crap-baseline/`), but to be unambiguous we point at our own
-      # path so the file *cannot* collide with the local `crap-current.json`
-      # produced by the Score step (which holds THIS PR's data).
-      - name: Download baseline (PRs only)
+      # --- On PRs: download the baseline uploaded by the latest successful
+      # main run. `actions/download-artifact@v4` only sees the *current*
+      # workflow run by default, so we resolve main's latest successful
+      # run-id with the gh CLI and pass it explicitly.
+      - name: Resolve baseline run-id (PRs only)
         if: github.event_name == 'pull_request'
+        id: baseline_run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID=$(gh run list \
+            --repo "${{ github.repository }}" \
+            --workflow ci.yml \
+            --branch main \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId // empty')
+          if [ -z "$RUN_ID" ]; then
+            echo "No successful main run yet — baseline will be skipped."
+          else
+            echo "Found main run: $RUN_ID"
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Download baseline (PRs only)
+        if: github.event_name == 'pull_request' && steps.baseline_run.outputs.run_id != ''
         uses: actions/download-artifact@v4
         with:
           name: crap-baseline
           path: baseline
-        continue-on-error: true # first PR after a fresh repo has no baseline yet
+          run-id: ${{ steps.baseline_run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true # artifact may have expired (90-day retention)
 
       - name: Regression check (PRs only)
         if: github.event_name == 'pull_request'
