@@ -118,11 +118,26 @@ pub fn render(
     }
 }
 
+/// Schema/release version stamped onto every JSON envelope so consumers can
+/// detect breaking changes between releases. Mirrors the crate version.
+pub const SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// JSON wire format for `--format json` output and `--baseline` input.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Envelope {
+    pub version: String,
+    pub entries: Vec<CrapEntry>,
+}
+
 fn render_json(
     entries: &[CrapEntry],
     out: &mut dyn Write,
 ) -> Result<()> {
-    serde_json::to_writer_pretty(&mut *out, entries)?;
+    let envelope = Envelope {
+        version: SCHEMA_VERSION.to_string(),
+        entries: entries.to_vec(),
+    };
+    serde_json::to_writer_pretty(&mut *out, &envelope)?;
     out.write_all(b"\n")?;
     Ok(())
 }
@@ -1144,12 +1159,14 @@ fn render_delta_json(
 ) -> Result<()> {
     #[derive(serde::Serialize)]
     struct DeltaOutput<'a> {
+        version: &'static str,
         entries: &'a [DeltaEntry],
         removed: &'a [crate::delta::RemovedEntry],
     }
     serde_json::to_writer_pretty(
         &mut *out,
         &DeltaOutput {
+            version: SCHEMA_VERSION,
             entries: &report.entries,
             removed: &report.removed,
         },
@@ -1376,11 +1393,21 @@ mod tests {
     }
 
     #[test]
-    fn json_output_is_valid_json() {
+    fn json_output_is_envelope_with_version_and_entries() {
         let mut buf = Vec::new();
         render(&sample(), 30.0, Format::Json, &mut buf).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&buf).unwrap();
-        assert!(parsed.is_array());
+        assert!(parsed.is_object(), "JSON output must be an envelope object");
+        assert_eq!(
+            parsed["version"].as_str(),
+            Some(SCHEMA_VERSION),
+            "version field must equal SCHEMA_VERSION"
+        );
+        assert!(
+            parsed["entries"].is_array(),
+            "entries field must be an array"
+        );
+        assert_eq!(parsed["entries"].as_array().map(|a| a.len()), Some(2));
     }
 
     #[test]

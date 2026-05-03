@@ -104,5 +104,9 @@ fn json_output_round_trips() {
     // If this parses, the output is well-formed.
     let parsed: serde_json::Value =
         serde_json::from_slice(&buf).expect("JSON output must be parseable");
-    assert!(parsed.is_array());
+    assert!(parsed.is_object(), "JSON output must be an envelope object");
+    assert!(
+        parsed["entries"].is_array(),
+        "envelope must contain an `entries` array"
+    );
 }

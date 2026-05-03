@@ -19,6 +19,15 @@ fn cmd() -> Command {
     Command::cargo_bin("cargo-crap").expect("binary must be built")
 }
 
+/// Parse `--format json` stdout and return the envelope's `entries` array.
+/// All callers want to inspect entries; the wrapper object is mostly noise
+/// outside of dedicated version-field tests.
+fn parse_entries(stdout: &str) -> serde_json::Value {
+    let envelope: serde_json::Value =
+        serde_json::from_str(stdout).expect("stdout must be valid JSON");
+    envelope["entries"].clone()
+}
+
 // --- Basic invocation ---
 
 #[test]
@@ -68,7 +77,7 @@ fn without_lcov_functions_are_scored_pessimistically() {
 // --- JSON output ---
 
 #[test]
-fn json_output_is_valid_json_array() {
+fn json_output_is_envelope_with_entries_array() {
     let output = cmd()
         .arg("--path")
         .arg(fixture_src())
@@ -80,9 +89,38 @@ fn json_output_is_valid_json_array() {
         .expect("run");
 
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let parsed: serde_json::Value =
+    let envelope: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout must be valid JSON");
-    assert!(parsed.is_array(), "JSON output must be an array");
+    assert!(
+        envelope.is_object(),
+        "JSON output must be an envelope object"
+    );
+    assert!(
+        envelope["entries"].is_array(),
+        "envelope must contain an `entries` array"
+    );
+}
+
+#[test]
+fn json_envelope_has_version_field_matching_crate_version() {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(
+        envelope["version"].as_str(),
+        Some(env!("CARGO_PKG_VERSION")),
+        "version field must equal the running crate version"
+    );
 }
 
 #[test]
@@ -98,7 +136,7 @@ fn json_entries_have_required_fields() {
         .expect("run");
 
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let entries: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let entries = parse_entries(&stdout);
     let first = &entries[0];
     assert!(
         first.get("function").is_some(),
@@ -159,7 +197,7 @@ fn top_limits_output_rows() {
         .expect("run");
 
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let entries: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let entries = parse_entries(&stdout);
     assert_eq!(
         entries.as_array().map(|a| a.len()),
         Some(1),
@@ -200,7 +238,7 @@ fn missing_skip_drops_uncovered_functions_from_output() {
         .expect("run");
 
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let entries: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let entries = parse_entries(&stdout);
     assert_eq!(
         entries.as_array().map(|a| a.len()),
         Some(0),
@@ -227,7 +265,7 @@ fn min_filter_keeps_only_entries_at_or_above_cutoff() {
         .expect("run");
 
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let entries: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let entries = parse_entries(&stdout);
 
     for entry in entries.as_array().expect("array") {
         let crap = entry["crap"].as_f64().expect("crap is a number");
@@ -307,7 +345,7 @@ fn exclude_drops_matching_files_from_output() {
         .expect("run");
 
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let entries: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let entries = parse_entries(&stdout);
     assert_eq!(
         entries.as_array().map(|a| a.len()),
         Some(0),
@@ -341,8 +379,8 @@ fn allow_suppresses_matching_function() {
         .arg("json")
         .output()
         .expect("run");
-    let before: serde_json::Value =
-        serde_json::from_slice(&output_before.stdout).expect("valid JSON");
+    let before_stdout = String::from_utf8(output_before.stdout).expect("utf8");
+    let before = parse_entries(&before_stdout);
     let names_before: Vec<_> = before
         .as_array()
         .unwrap()
@@ -366,8 +404,8 @@ fn allow_suppresses_matching_function() {
         .arg("json")
         .output()
         .expect("run");
-    let after: serde_json::Value =
-        serde_json::from_slice(&output_after.stdout).expect("valid JSON");
+    let after_stdout = String::from_utf8(output_after.stdout).expect("utf8");
+    let after = parse_entries(&after_stdout);
     let names_after: Vec<_> = after
         .as_array()
         .unwrap()
@@ -396,7 +434,7 @@ fn allow_wildcard_suppresses_all_matching() {
         .expect("run");
 
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let entries: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let entries = parse_entries(&stdout);
     assert_eq!(
         entries.as_array().map(|a| a.len()),
         Some(0),
@@ -436,10 +474,21 @@ fn output_writes_to_file() {
         .success();
 
     let content = std::fs::read_to_string(&out_path).expect("output file must exist");
-    let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
-    assert!(parsed.is_array(), "--output must write a JSON array");
+    let envelope: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
     assert!(
-        !parsed.as_array().unwrap().is_empty(),
+        envelope.is_object(),
+        "--output must write a JSON envelope object"
+    );
+    assert_eq!(
+        envelope["version"].as_str(),
+        Some(env!("CARGO_PKG_VERSION")),
+        "version field must be stamped on file output"
+    );
+    let entries = envelope["entries"]
+        .as_array()
+        .expect("envelope must contain an entries array");
+    assert!(
+        !entries.is_empty(),
         "output file must contain at least one entry"
     );
 }
@@ -567,14 +616,17 @@ fn fail_regression_exits_zero_when_nothing_regressed() {
 
 /// Synthetic baseline JSON with `crappy` at a low score so the real run looks like a regression.
 fn regression_baseline(dir: &tempfile::TempDir) -> std::path::PathBuf {
-    let baseline = serde_json::json!([{
-        "file": "tests/fixtures/sample_project/src/lib.rs",
-        "function": "crappy",
-        "line": 24,
-        "cyclomatic": 12.0,
-        "coverage": 100.0,
-        "crap": 1.0
-    }]);
+    let baseline = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "entries": [{
+            "file": "tests/fixtures/sample_project/src/lib.rs",
+            "function": "crappy",
+            "line": 24,
+            "cyclomatic": 12.0,
+            "coverage": 100.0,
+            "crap": 1.0
+        }]
+    });
     let path = dir.path().join("baseline.json");
     std::fs::write(&path, baseline.to_string()).expect("write baseline");
     path
@@ -666,14 +718,17 @@ fn markdown_format_with_regression_shows_delta_row() {
 
 /// Baseline JSON with a function that doesn't exist in the fixture source.
 fn removed_baseline(dir: &tempfile::TempDir) -> std::path::PathBuf {
-    let baseline = serde_json::json!([{
-        "file": "tests/fixtures/sample_project/src/lib.rs",
-        "function": "phantom_that_was_deleted",
-        "line": 1,
-        "cyclomatic": 1.0,
-        "coverage": 100.0,
-        "crap": 1.0
-    }]);
+    let baseline = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "entries": [{
+            "file": "tests/fixtures/sample_project/src/lib.rs",
+            "function": "phantom_that_was_deleted",
+            "line": 1,
+            "cyclomatic": 1.0,
+            "coverage": 100.0,
+            "crap": 1.0
+        }]
+    });
     let path = dir.path().join("baseline.json");
     std::fs::write(&path, baseline.to_string()).expect("write baseline");
     path
@@ -725,7 +780,14 @@ fn delta_human_no_functions_found_when_everything_excluded() {
     let dir = tempfile::tempdir().expect("tempdir");
     let baseline_path = dir.path().join("baseline.json");
     // Empty baseline — no entries or removed.
-    std::fs::write(&baseline_path, "[]").expect("write empty baseline");
+    std::fs::write(
+        &baseline_path,
+        format!(
+            r#"{{"version":"{}","entries":[]}}"#,
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .expect("write empty baseline");
 
     cmd()
         .arg("--path")
@@ -1006,7 +1068,8 @@ fn workspace_flag_analyzes_workspace_members() {
         .arg("json")
         .assert()
         .success()
-        .stdout(predicate::str::is_match(r"^\[").expect("json starts with ["))
+        .stdout(predicate::str::is_match(r"^\{").expect("json envelope starts with {"))
+        .stdout(predicate::str::contains("\"entries\""))
         .stdout(predicate::str::contains("function"));
 }
 
@@ -1021,7 +1084,7 @@ fn cargo_subcommand_form_strips_crap_argument() {
         .args(["crap", "--path", fixture_src(), "--format", "json"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match(r"^\[").expect("json starts with ["));
+        .stdout(predicate::str::is_match(r"^\{").expect("json envelope starts with {"));
 }
 
 // --- exit-code gate: --fail-regression with an actual regression ---
@@ -1442,8 +1505,8 @@ fn workspace_json_includes_crate_field() {
         .output()
         .expect("run");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
-    let arr = parsed.as_array().expect("json array");
+    let entries = parse_entries(&stdout);
+    let arr = entries.as_array().expect("json array");
     assert!(!arr.is_empty(), "workspace must produce entries");
     for entry in arr {
         let crate_field = entry.get("crate").and_then(|v| v.as_str()).unwrap_or("");
@@ -1467,8 +1530,8 @@ fn workspace_json_omits_crate_field_when_not_workspace() {
         .output()
         .expect("run");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
-    for entry in parsed.as_array().expect("array") {
+    let entries = parse_entries(&stdout);
+    for entry in entries.as_array().expect("array") {
         assert!(
             entry.get("crate").is_none(),
             "non-workspace entry must not serialize a `crate` field: {entry}"

@@ -80,12 +80,13 @@ impl DeltaReport {
 pub fn load_baseline(path: &Path) -> Result<Vec<CrapEntry>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading baseline {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| {
+    let envelope: crate::report::Envelope = serde_json::from_str(&raw).with_context(|| {
         format!(
             "parsing baseline {} — must be JSON from `cargo crap --format json`",
             path.display()
         )
-    })
+    })?;
+    Ok(envelope.entries)
 }
 
 fn path_key(p: &Path) -> String {
@@ -349,5 +350,34 @@ mod tests {
             "backslash path must match its forward-slash baseline counterpart"
         );
         assert!(report.removed.is_empty());
+    }
+
+    // --- load_baseline contract --------------------------------------------
+
+    #[test]
+    fn load_baseline_accepts_wrapped_envelope() {
+        // The format produced by `cargo crap --format json` since spec 02.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("wrapped.json");
+        std::fs::write(
+            &path,
+            r#"{"version":"0.0.2","entries":[{"file":"src/lib.rs","function":"foo","line":1,"cyclomatic":1.0,"coverage":100.0,"crap":1.0}]}"#,
+        )
+        .expect("write");
+        let entries = load_baseline(&path).expect("wrapped baseline must parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].function, "foo");
+    }
+
+    #[test]
+    fn load_baseline_rejects_bare_array() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("legacy.json");
+        std::fs::write(
+            &path,
+            r#"[{"file":"src/lib.rs","function":"foo","line":1,"cyclomatic":1.0,"coverage":100.0,"crap":1.0}]"#,
+        )
+        .expect("write");
+        assert!(load_baseline(&path).is_err());
     }
 }

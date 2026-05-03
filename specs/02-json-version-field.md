@@ -1,6 +1,6 @@
 # Spec 02 — Version field in JSON output
 
-**Status:** Pending  
+**Status:** Implemented  
 **Effort:** Low  
 **Module:** `src/report.rs`
 
