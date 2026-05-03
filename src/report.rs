@@ -2080,7 +2080,8 @@ mod tests {
     fn pr_comment_single_entry_under_cwd_strips_against_cwd() {
         // Build an entry whose path is under the test runner's CWD. The CWD
         // fallback in `compute_render_prefix` should strip that prefix and
-        // leave the relative form (`dummy/foo.rs:1`) in the rendered table.
+        // leave the relative form in the rendered table. Use the platform
+        // separator so this works on Windows too.
         let cwd = std::env::current_dir().expect("cwd");
         let test_file = cwd.join("dummy_under_cwd").join("foo.rs");
         let test_file_str = test_file.to_str().expect("utf8 path").to_string();
@@ -2095,9 +2096,12 @@ mod tests {
             removed: vec![],
         };
         let s = render_delta_pr_to_string(&report);
+        let sep = std::path::MAIN_SEPARATOR_STR;
+        let expected = format!("`dummy_under_cwd{sep}foo.rs:1`");
         assert!(
-            s.contains("`dummy_under_cwd/foo.rs:1`"),
-            "single under-CWD entry must be stripped to a relative path:\n{s}"
+            s.contains(&expected),
+            "single under-CWD entry must be stripped to a relative path \
+             (expected to contain {expected:?}):\n{s}"
         );
         assert!(
             !s.contains(cwd.to_str().expect("utf8 cwd")),
