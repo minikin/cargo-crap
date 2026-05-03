@@ -102,13 +102,47 @@ Example output:
 | `--missing {pessimistic,optimistic,skip}`          | `pessimistic` | How to score a function with no coverage data.                                                                                                                                                                                                  |
 | `--exclude <GLOB>`                                 | —             | Skip files matching this pattern (repeatable). `**` crosses directories.                                                                                                                                                                        |
 | `--allow <GLOB>`                                   | —             | Suppress functions whose names match this pattern (repeatable). `*` matches `::`.                                                                                                                                                               |
-| `--format {human,json,github,markdown,pr-comment}` | `human`       | Output format. `github` emits `::warning` annotations. `markdown` emits a GFM table (exhaustive). `pr-comment` is the opinionated PR-bot variant: hides unchanged rows, caps each section, collapses non-critical info into `<details>` blocks. |
+| `--format {human,json,github,markdown,pr-comment}` | `human`       | Output format. `json` emits a versioned envelope (see [JSON output schema](#json-output-schema) below). `github` emits `::warning` annotations. `markdown` emits a GFM table (exhaustive). `pr-comment` is the opinionated PR-bot variant: hides unchanged rows, caps each section, collapses non-critical info into `<details>` blocks. |
 | `--summary`                                        | off           | Print only aggregate stats (total, crappy count, worst offender) — no per-function table. In `--workspace` mode this becomes the per-crate summary plus the aggregate line.                                                                     |
 | `--workspace`                                      | off           | Analyze all Cargo workspace members (discovered via `cargo metadata`). Ignores `--path`. Adds a *Per-crate summary* table to human and markdown output, and a `crate` field to JSON entries.                                                    |
 | `--fail-above`                                     | off           | Exit 1 if any function exceeds `--threshold`.                                                                                                                                                                                                   |
 | `--baseline <FILE>`                                | —             | JSON from a previous `--format json` run. Enables delta mode (shows Δ column).                                                                                                                                                                  |
 | `--fail-regression`                                | off           | Exit 1 if any function's score increased since `--baseline`. Requires `--baseline`.                                                                                                                                                             |
 | `--output <FILE>`                                  | —             | Write output to FILE instead of stdout (useful for saving JSON baselines).                                                                                                                                                                      |
+
+### JSON output schema
+
+`--format json` produces a versioned envelope. The `version` mirrors the
+running crate version so consumers can guard against schema changes between
+releases.
+
+```jsonc
+// cargo crap --format json
+{
+  "version": "0.0.2",
+  "entries": [
+    {
+      "file": "src/lib.rs",
+      "function": "do_thing",
+      "line": 12,
+      "cyclomatic": 4.0,
+      "coverage": 75.0,        // null when no coverage data was found
+      "crap": 5.5625,
+      "crate": "my-crate"      // present only with --workspace
+    }
+  ]
+}
+
+// cargo crap --format json --baseline baseline.json
+{
+  "version": "0.0.2",
+  "entries": [ /* DeltaEntry — current + baseline_crap + delta + status */ ],
+  "removed": [ /* RemovedEntry — function, file, baseline_crap */ ]
+}
+```
+
+`--baseline` only reads files in this envelope shape; bare-array baselines
+from older runs must be regenerated.
 
 ## Configuration file
 
