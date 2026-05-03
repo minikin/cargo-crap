@@ -158,3 +158,11 @@ pub mod delta;
 pub mod merge;
 pub mod report;
 pub mod score;
+
+/// The crate version, exposed as a string at runtime.
+///
+/// Mirrors `env!("CARGO_PKG_VERSION")` so downstream tooling can read the
+/// installed `cargo-crap` version without re-implementing the lookup.
+pub fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
