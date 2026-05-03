@@ -42,6 +42,12 @@ pub struct CrapEntry {
     /// coverage report didn't mention the file.
     pub coverage: Option<f64>,
     pub crap: f64,
+    /// Cargo workspace member name, set by `--workspace` runs after the
+    /// entry's file path has been suffix-matched against a member root.
+    /// Always `None` for non-workspace runs and for older baselines that
+    /// pre-date this field.
+    #[serde(rename = "crate", default, skip_serializing_if = "Option::is_none")]
+    pub crate_name: Option<String>,
 }
 
 /// How to treat functions we have complexity data for but no coverage data.
@@ -111,6 +117,7 @@ pub fn merge(
                 cyclomatic: fc.cyclomatic,
                 coverage: cov,
                 crap: crap_score,
+                crate_name: None,
             })
         })
         .collect();

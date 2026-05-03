@@ -1,6 +1,6 @@
 # Spec 11 — Automatic PR comment with CRAP summary
 
-**Status:** Pending
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/report.rs`, `src/main.rs`, `.github/workflows/ci.yml`
 

@@ -192,6 +192,7 @@ fn render_human(
         writeln!(out, "No functions found.")?;
         return Ok(());
     }
+    write_per_crate_human(entries, threshold, out)?;
     let table = build_table(entries, threshold);
     writeln!(out, "{table}")?;
     write_summary(
@@ -200,6 +201,105 @@ fn render_human(
         entries.len(),
         threshold,
     )
+}
+
+/// One row in the per-crate rollup table.
+struct CrateRollup {
+    name: String,
+    total: usize,
+    crappy: usize,
+}
+
+/// Aggregate `entries` by `crate_name`. Entries without a crate name are
+/// excluded — the rollup is only meaningful in workspace mode where a
+/// `--workspace` run has tagged each entry. Sorted alphabetically by name.
+fn crate_rollups(
+    entries: &[CrapEntry],
+    threshold: f64,
+) -> Vec<CrateRollup> {
+    use std::collections::BTreeMap;
+    let mut by_name: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for e in entries {
+        if let Some(name) = &e.crate_name {
+            let slot = by_name.entry(name.clone()).or_default();
+            slot.0 += 1;
+            if e.crap > threshold {
+                slot.1 += 1;
+            }
+        }
+    }
+    by_name
+        .into_iter()
+        .map(|(name, (total, crappy))| CrateRollup {
+            name,
+            total,
+            crappy,
+        })
+        .collect()
+}
+
+fn has_crate_data(entries: &[CrapEntry]) -> bool {
+    entries.iter().any(|e| e.crate_name.is_some())
+}
+
+/// Write the per-crate rollup as a comfy-table block. No-op when no entry
+/// carries a crate name (i.e. non-workspace runs).
+fn write_per_crate_human(
+    entries: &[CrapEntry],
+    threshold: f64,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let rollups = crate_rollups(entries, threshold);
+    if rollups.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "Per-crate summary:")?;
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL);
+    table.set_header(vec![
+        Cell::new("Crate").add_attribute(Attribute::Bold),
+        Cell::new("Functions").add_attribute(Attribute::Bold),
+        Cell::new("Crappy").add_attribute(Attribute::Bold),
+    ]);
+    table
+        .column_mut(1)
+        .unwrap()
+        .set_cell_alignment(CellAlignment::Right);
+    table
+        .column_mut(2)
+        .unwrap()
+        .set_cell_alignment(CellAlignment::Right);
+    for r in &rollups {
+        table.add_row(vec![
+            Cell::new(&r.name),
+            Cell::new(r.total),
+            Cell::new(r.crappy),
+        ]);
+    }
+    writeln!(out, "{table}")?;
+    Ok(())
+}
+
+/// Markdown variant of the per-crate rollup. No-op when no entry carries
+/// a crate name.
+fn write_per_crate_markdown(
+    entries: &[CrapEntry],
+    threshold: f64,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let rollups = crate_rollups(entries, threshold);
+    if rollups.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "## Per-crate summary")?;
+    writeln!(out)?;
+    writeln!(out, "| Crate | Functions | Crappy |")?;
+    writeln!(out, "|---|---:|---:|")?;
+    for r in &rollups {
+        writeln!(out, "| {} | {} | {} |", r.name, r.total, r.crappy)?;
+    }
+    writeln!(out)?;
+    Ok(())
 }
 
 /// Build the full comfy-table for a slice of entries.
@@ -366,6 +466,7 @@ fn render_markdown(
     }
     let crappy = crappy_count(entries, threshold);
     write_markdown_absolute_heading(crappy, threshold, out)?;
+    write_per_crate_markdown(entries, threshold, out)?;
     write_markdown_entries_table(entries, threshold, out)?;
     write_markdown_absolute_summary(crappy, entries.len(), threshold, out)
 }
@@ -922,6 +1023,12 @@ pub fn render_summary(
     threshold: f64,
     out: &mut dyn Write,
 ) -> Result<()> {
+    // Workspace summary mode: lead with the per-crate rollup so the user
+    // sees which crate to drill into. The aggregate one-liner still follows
+    // for the global view.
+    if has_crate_data(entries) {
+        write_per_crate_human(entries, threshold, out)?;
+    }
     let total = entries.len();
     let crappy = crappy_count(entries, threshold);
     // entries are already sorted descending by CRAP score by merge::merge.
@@ -1233,6 +1340,7 @@ mod tests {
                 cyclomatic: 1.0,
                 coverage: Some(100.0),
                 crap: 1.0,
+                crate_name: None,
             },
             CrapEntry {
                 file: PathBuf::from("a.rs"),
@@ -1241,6 +1349,7 @@ mod tests {
                 cyclomatic: 10.0,
                 coverage: Some(0.0),
                 crap: 110.0,
+                crate_name: None,
             },
         ]
     }
@@ -1278,6 +1387,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(100.0),
             crap: 1.0,
+            crate_name: None,
         }];
         let mut buf = Vec::new();
         render(&all_clean, 30.0, Format::Human, &mut buf).unwrap();
@@ -1324,6 +1434,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: None,
             crap: 1.0,
+            crate_name: None,
         }];
         let mut buf = Vec::new();
         render(&entries, 30.0, Format::Human, &mut buf).unwrap();
@@ -1341,6 +1452,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(44.4),
             crap: 1.0,
+            crate_name: None,
         }];
         let mut buf = Vec::new();
         render(&entries, 30.0, Format::Human, &mut buf).unwrap();
@@ -1359,6 +1471,7 @@ mod tests {
                 cyclomatic: 8.0,
                 coverage: Some(0.0),
                 crap: 72.0,
+                crate_name: None,
             },
             CrapEntry {
                 file: PathBuf::from("a.rs"),
@@ -1367,6 +1480,7 @@ mod tests {
                 cyclomatic: 10.0,
                 coverage: Some(0.0),
                 crap: 110.0,
+                crate_name: None,
             },
         ];
         let mut buf = Vec::new();
@@ -1464,6 +1578,7 @@ mod tests {
             cyclomatic: 5.0,
             coverage: Some(0.0),
             crap: 20.0,
+            crate_name: None,
         }];
         let mut buf = Vec::new();
         render(&entries, 30.0, Format::Human, &mut buf).unwrap();
@@ -1515,6 +1630,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(100.0),
             crap: 1.0,
+            crate_name: None,
         }];
         let mut buf = Vec::new();
         render(&all_clean, 30.0, Format::GitHub, &mut buf).unwrap();
@@ -1535,6 +1651,7 @@ mod tests {
             cyclomatic: 10.0,
             coverage: Some(0.0),
             crap: 110.0,
+            crate_name: None,
         }];
         let mut buf = Vec::new();
         render(&entries, 30.0, Format::GitHub, &mut buf).unwrap();
@@ -1612,6 +1729,7 @@ mod tests {
                 cyclomatic: 5.0,
                 coverage: Some(80.0),
                 crap,
+                crate_name: None,
             },
             baseline_crap: baseline,
             delta: baseline.map(|b| crap - b),
@@ -1954,6 +2072,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(100.0),
             crap: 1.0,
+            crate_name: None,
         }];
         let mut buf = Vec::new();
         render(&entries, 30.0, Format::PrComment, &mut buf).unwrap();
@@ -1970,6 +2089,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(100.0),
             crap: 1.0,
+            crate_name: None,
         }];
         let mut buf = Vec::new();
         render(&entries, 30.0, Format::PrComment, &mut buf).unwrap();
@@ -2012,6 +2132,7 @@ mod tests {
                 cyclomatic: 1.0,
                 coverage: Some(100.0),
                 crap: 29.9,
+                crate_name: None,
             },
             CrapEntry {
                 file: PathBuf::from("src/a.rs"),
@@ -2020,6 +2141,7 @@ mod tests {
                 cyclomatic: 1.0,
                 coverage: Some(100.0),
                 crap: 30.0,
+                crate_name: None,
             },
             CrapEntry {
                 file: PathBuf::from("src/a.rs"),
@@ -2028,6 +2150,7 @@ mod tests {
                 cyclomatic: 1.0,
                 coverage: Some(100.0),
                 crap: 30.1,
+                crate_name: None,
             },
         ];
         let mut buf = Vec::new();
@@ -2058,6 +2181,7 @@ mod tests {
             cyclomatic: 10.0,
             coverage: Some(0.0),
             crap: 110.0,
+            crate_name: None,
         }];
         let mut buf = Vec::new();
         render(&entries, 30.0, Format::PrComment, &mut buf).unwrap();
@@ -2122,5 +2246,143 @@ mod tests {
             s.contains("· 3 unchanged ·"),
             "breakdown must report 3 unchanged, got:\n{s}"
         );
+    }
+
+    // --- Per-crate rollup --------------------------------------------------
+
+    fn entry(
+        crate_name: Option<&str>,
+        function: &str,
+        crap: f64,
+    ) -> CrapEntry {
+        CrapEntry {
+            file: PathBuf::from("src/lib.rs"),
+            function: function.into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap,
+            crate_name: crate_name.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn crate_rollups_aggregate_per_crate() {
+        let entries = vec![
+            entry(Some("alpha"), "a1", 1.0),
+            entry(Some("alpha"), "a2", 35.0), // crappy at threshold 30
+            entry(Some("beta"), "b1", 5.0),
+        ];
+        let rollups = crate_rollups(&entries, 30.0);
+        assert_eq!(rollups.len(), 2);
+        assert_eq!(rollups[0].name, "alpha");
+        assert_eq!(rollups[0].total, 2);
+        assert_eq!(rollups[0].crappy, 1);
+        assert_eq!(rollups[1].name, "beta");
+        assert_eq!(rollups[1].total, 1);
+        assert_eq!(rollups[1].crappy, 0);
+    }
+
+    #[test]
+    fn crate_rollups_ignore_untagged_entries() {
+        // Kills: dropping the `if let Some(name)` guard would produce a phantom
+        // empty-name row; keeping the guard correctly skips untagged entries.
+        let entries = vec![
+            entry(None, "untagged", 5.0),
+            entry(Some("alpha"), "a1", 1.0),
+        ];
+        let rollups = crate_rollups(&entries, 30.0);
+        assert_eq!(rollups.len(), 1);
+        assert_eq!(rollups[0].name, "alpha");
+    }
+
+    #[test]
+    fn crate_rollups_crappy_uses_strict_above() {
+        // Kills: replacing `>` with `>=` in the crappy count.
+        let entries = vec![
+            entry(Some("alpha"), "exactly", 30.0),
+            entry(Some("alpha"), "above", 30.1),
+        ];
+        let rollups = crate_rollups(&entries, 30.0);
+        assert_eq!(
+            rollups[0].crappy, 1,
+            "exactly-at-threshold must NOT count as crappy"
+        );
+    }
+
+    #[test]
+    fn has_crate_data_detects_any_tagged_entry() {
+        let untagged = vec![entry(None, "x", 1.0), entry(None, "y", 2.0)];
+        let one_tagged = vec![entry(None, "x", 1.0), entry(Some("alpha"), "y", 2.0)];
+        assert!(!has_crate_data(&untagged));
+        assert!(has_crate_data(&one_tagged));
+    }
+
+    #[test]
+    fn write_per_crate_human_noop_when_no_crate_data() {
+        let entries = vec![entry(None, "x", 1.0)];
+        let mut buf = Vec::new();
+        write_per_crate_human(&entries, 30.0, &mut buf).unwrap();
+        assert!(
+            buf.is_empty(),
+            "no per-crate output when no entry has crate_name"
+        );
+    }
+
+    #[test]
+    fn write_per_crate_markdown_emits_gfm_table() {
+        let entries = vec![entry(Some("alpha"), "a1", 1.0)];
+        let mut buf = Vec::new();
+        write_per_crate_markdown(&entries, 30.0, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("## Per-crate summary"));
+        assert!(s.contains("| Crate | Functions | Crappy |"));
+        assert!(s.contains("| alpha | 1 | 0 |"));
+    }
+
+    #[test]
+    fn render_human_includes_per_crate_section_when_workspace() {
+        let entries = vec![entry(Some("alpha"), "a1", 1.0)];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::Human, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("Per-crate summary:"),
+            "human render must include per-crate section when entries are tagged:\n{s}"
+        );
+        assert!(s.contains("alpha"));
+    }
+
+    #[test]
+    fn render_human_omits_per_crate_section_when_no_workspace_data() {
+        let entries = vec![entry(None, "a1", 1.0)];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::Human, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            !s.contains("Per-crate summary"),
+            "non-workspace runs must not show per-crate section:\n{s}"
+        );
+    }
+
+    #[test]
+    fn render_summary_leads_with_per_crate_table_for_workspace() {
+        let entries = vec![entry(Some("alpha"), "a1", 1.0)];
+        let mut buf = Vec::new();
+        render_summary(&entries, 30.0, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("Per-crate summary:"));
+        // Aggregate one-liner still follows.
+        assert!(s.contains("Analyzed: 1"));
+    }
+
+    #[test]
+    fn render_summary_skips_per_crate_when_not_workspace() {
+        let entries = vec![entry(None, "a1", 1.0)];
+        let mut buf = Vec::new();
+        render_summary(&entries, 30.0, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(!s.contains("Per-crate summary"));
+        assert!(s.contains("Analyzed: 1"));
     }
 }

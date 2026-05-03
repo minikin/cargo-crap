@@ -1362,6 +1362,120 @@ fn no_warning_when_lcov_not_provided() {
         .stderr(predicate::str::contains("warning:").not());
 }
 
+// --- per-crate rollup (--workspace) ---------------------------------------
+
+fn workspace_fixture() -> &'static str {
+    "tests/fixtures/sample_workspace"
+}
+
+#[test]
+fn workspace_human_output_includes_per_crate_summary() {
+    // CWD must be inside the workspace so `cargo metadata` discovers it.
+    let output = cmd()
+        .current_dir(workspace_fixture())
+        .arg("--workspace")
+        .arg("--missing")
+        .arg("optimistic")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert!(
+        stdout.contains("Per-crate summary:"),
+        "workspace human output must include the per-crate summary:\n{stdout}"
+    );
+    assert!(stdout.contains("alpha"), "alpha must appear in summary");
+    assert!(stdout.contains("beta"), "beta must appear in summary");
+}
+
+#[test]
+fn single_crate_output_omits_per_crate_summary() {
+    // Running against a plain --path (no --workspace) must not print
+    // a per-crate section even though the binary itself supports it.
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert!(
+        !stdout.contains("Per-crate summary"),
+        "single-crate output must not include per-crate section:\n{stdout}"
+    );
+}
+
+#[test]
+fn workspace_summary_flag_shows_only_crate_table() {
+    let output = cmd()
+        .current_dir(workspace_fixture())
+        .arg("--workspace")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--summary")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert!(stdout.contains("Per-crate summary:"));
+    // Per-function table border must be absent — comfy-table uses ╞ in row 2 of
+    // the per-crate table too, but the column count is different. Look for
+    // function names from the fixture instead.
+    assert!(
+        !stdout.contains("alpha_branchy"),
+        "summary mode must not list per-function rows:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("beta_only"),
+        "summary mode must not list per-function rows:\n{stdout}"
+    );
+}
+
+#[test]
+fn workspace_json_includes_crate_field() {
+    let output = cmd()
+        .current_dir(workspace_fixture())
+        .arg("--workspace")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    let arr = parsed.as_array().expect("json array");
+    assert!(!arr.is_empty(), "workspace must produce entries");
+    for entry in arr {
+        let crate_field = entry.get("crate").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            crate_field == "alpha" || crate_field == "beta",
+            "every entry must carry crate=alpha|beta, got {crate_field:?} for entry {entry}"
+        );
+    }
+}
+
+#[test]
+fn workspace_json_omits_crate_field_when_not_workspace() {
+    // No --workspace → crate field must NOT appear in serialized output.
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    for entry in parsed.as_array().expect("array") {
+        assert!(
+            entry.get("crate").is_none(),
+            "non-workspace entry must not serialize a `crate` field: {entry}"
+        );
+    }
+}
+
 // --- --format pr-comment ---------------------------------------------------
 
 #[test]

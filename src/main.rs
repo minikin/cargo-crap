@@ -182,24 +182,65 @@ fn build_allow_set(patterns: &[String]) -> Result<GlobSet> {
     builder.build().context("building allow glob set")
 }
 
-/// Walk source trees for either a single path or all workspace members.
-fn collect_complexity(
+/// One Cargo workspace member: package name + the directory containing its
+/// `Cargo.toml`.
+#[derive(Debug, Clone)]
+struct WorkspaceMember {
+    name: String,
+    dir: PathBuf,
+}
+
+/// Walk source trees and discover Cargo workspace members in one pass.
+///
+/// In `--workspace` mode: discovers all members via `cargo metadata`, walks
+/// each member's root, and returns both the function list and the member
+/// metadata (used downstream to tag entries with their owning crate).
+///
+/// In single-path mode: walks just `path`, returns no members.
+fn analyze_sources(
     workspace: bool,
     path: &std::path::Path,
     excludes: &[String],
-) -> Result<Vec<complexity::FunctionComplexity>> {
+) -> Result<(Vec<complexity::FunctionComplexity>, Vec<WorkspaceMember>)> {
     if workspace {
-        let roots = workspace_roots()?;
+        let members = workspace_members()?;
         let mut all = Vec::new();
-        for root in &roots {
-            let fns = complexity::analyze_tree(root, excludes)
-                .with_context(|| format!("analyzing {}", root.display()))?;
+        for m in &members {
+            let fns = complexity::analyze_tree(&m.dir, excludes)
+                .with_context(|| format!("analyzing {}", m.dir.display()))?;
             all.extend(fns);
         }
-        Ok(all)
+        Ok((all, members))
     } else {
-        complexity::analyze_tree(path, excludes)
-            .with_context(|| format!("analyzing {}", path.display()))
+        let fns = complexity::analyze_tree(path, excludes)
+            .with_context(|| format!("analyzing {}", path.display()))?;
+        Ok((fns, Vec::new()))
+    }
+}
+
+/// Assign a Cargo workspace member name to each entry by matching the entry's
+/// file path against member root directories. When a path lies inside more
+/// than one root (nested workspaces), the longest match wins so the deepest
+/// crate claims the file. No-op when `members` is empty.
+fn assign_crate_names(
+    entries: &mut [cargo_crap::merge::CrapEntry],
+    members: &[WorkspaceMember],
+) {
+    if members.is_empty() {
+        return;
+    }
+    // Pre-sort roots by descending path length so the first containing match
+    // is also the deepest.
+    let mut sorted: Vec<&WorkspaceMember> = members.iter().collect();
+    sorted.sort_by_key(|m| std::cmp::Reverse(m.dir.as_os_str().len()));
+
+    for entry in entries.iter_mut() {
+        for m in &sorted {
+            if entry.file.starts_with(&m.dir) {
+                entry.crate_name = Some(m.name.clone());
+                break;
+            }
+        }
     }
 }
 
@@ -260,12 +301,12 @@ fn spinner(msg: &'static str) -> ProgressBar {
     pb
 }
 
-/// Discover all workspace member roots via `cargo metadata`.
+/// Discover all workspace members via `cargo metadata`.
 ///
-/// Returns a list of `manifest_path` parent directories (one per member crate)
-/// that should be walked for Rust source files. Falls back to `[cwd]` if
-/// `cargo metadata` fails — e.g., when running outside a Cargo workspace.
-fn workspace_roots() -> Result<Vec<PathBuf>> {
+/// Returns one [`WorkspaceMember`] per member crate (name + the directory
+/// containing its `Cargo.toml`). Used both to walk source trees and to
+/// assign a `crate` field to each `CrapEntry` for per-crate rollup.
+fn workspace_members() -> Result<Vec<WorkspaceMember>> {
     let output = std::process::Command::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .output()
@@ -279,21 +320,23 @@ fn workspace_roots() -> Result<Vec<PathBuf>> {
     let meta: serde_json::Value =
         serde_json::from_slice(&output.stdout).context("parsing `cargo metadata` output")?;
 
-    let roots: Vec<PathBuf> = meta["packages"]
+    let members: Vec<WorkspaceMember> = meta["packages"]
         .as_array()
         .context("`cargo metadata` output missing `packages`")?
         .iter()
         .filter_map(|pkg| {
-            pkg["manifest_path"]
+            let name = pkg["name"].as_str()?.to_string();
+            let dir = pkg["manifest_path"]
                 .as_str()
-                .and_then(|p| PathBuf::from(p).parent().map(|d| d.to_path_buf()))
+                .and_then(|p| PathBuf::from(p).parent().map(|d| d.to_path_buf()))?;
+            Some(WorkspaceMember { name, dir })
         })
         .collect();
 
-    if roots.is_empty() {
+    if members.is_empty() {
         bail!("`cargo metadata` returned no packages");
     }
-    Ok(roots)
+    Ok(members)
 }
 
 /// Emit a stderr warning listing source files with no LCOV match.
@@ -388,7 +431,7 @@ fn main() -> Result<()> {
 
     // --- Analysis ---
     let pb = spinner("Analyzing source files…");
-    let fns = collect_complexity(cli.workspace, &cli.path, &effective_exclude)?;
+    let (fns, members) = analyze_sources(cli.workspace, &cli.path, &effective_exclude)?;
 
     pb.set_message("Parsing coverage report…");
     let coverage = load_coverage(cli.lcov.as_ref())?;
@@ -398,6 +441,7 @@ fn main() -> Result<()> {
     let merge_result = merge(fns, coverage, missing_policy);
     warn_unmapped(&merge_result.unmapped_files);
     let mut entries = merge_result.entries;
+    assign_crate_names(&mut entries, &members);
     apply_filters(
         &mut entries,
         &effective_allow,

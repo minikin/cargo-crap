@@ -92,23 +92,23 @@ Example output:
 
 ## Flags
 
-| Flag                                      | Default       | Purpose                                                                                                 |
-| ----------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------- |
-| `--lcov <FILE>`                           | —             | LCOV file from `cargo llvm-cov` or `cargo tarpaulin`.                                                   |
-| `--path <DIR>`                            | `.`           | Root to walk for `.rs` files (respects `.gitignore`).                                                   |
-| `--threshold <N>`                         | `30`          | Score above which a function is flagged.                                                                |
-| `--min <SCORE>`                           | —             | Hide entries below this score.                                                                          |
-| `--top <N>`                               | —             | Show only the N worst offenders.                                                                        |
-| `--missing {pessimistic,optimistic,skip}` | `pessimistic` | How to score a function with no coverage data.                                                          |
-| `--exclude <GLOB>`                        | —             | Skip files matching this pattern (repeatable). `**` crosses directories.                                |
-| `--allow <GLOB>`                          | —             | Suppress functions whose names match this pattern (repeatable). `*` matches `::`.                       |
-| `--format {human,json,github,markdown}`   | `human`       | Output format. `github` emits `::warning` annotations for GitHub Actions. `markdown` emits a GFM table. |
-| `--summary`                               | off           | Print only aggregate stats (total, crappy count, worst offender) — no per-function table.               |
-| `--workspace`                             | off           | Analyze all Cargo workspace members (discovered via `cargo metadata`). Ignores `--path`.                |
-| `--fail-above`                            | off           | Exit 1 if any function exceeds `--threshold`.                                                           |
-| `--baseline <FILE>`                       | —             | JSON from a previous `--format json` run. Enables delta mode (shows Δ column).                          |
-| `--fail-regression`                       | off           | Exit 1 if any function's score increased since `--baseline`. Requires `--baseline`.                     |
-| `--output <FILE>`                         | —             | Write output to FILE instead of stdout (useful for saving JSON baselines).                              |
+| Flag                                               | Default       | Purpose                                                                                                                                                                                                                                         |
+| -------------------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--lcov <FILE>`                                    | —             | LCOV file from `cargo llvm-cov` or `cargo tarpaulin`.                                                                                                                                                                                           |
+| `--path <DIR>`                                     | `.`           | Root to walk for `.rs` files (respects `.gitignore`).                                                                                                                                                                                           |
+| `--threshold <N>`                                  | `30`          | Score above which a function is flagged.                                                                                                                                                                                                        |
+| `--min <SCORE>`                                    | —             | Hide entries below this score.                                                                                                                                                                                                                  |
+| `--top <N>`                                        | —             | Show only the N worst offenders.                                                                                                                                                                                                                |
+| `--missing {pessimistic,optimistic,skip}`          | `pessimistic` | How to score a function with no coverage data.                                                                                                                                                                                                  |
+| `--exclude <GLOB>`                                 | —             | Skip files matching this pattern (repeatable). `**` crosses directories.                                                                                                                                                                        |
+| `--allow <GLOB>`                                   | —             | Suppress functions whose names match this pattern (repeatable). `*` matches `::`.                                                                                                                                                               |
+| `--format {human,json,github,markdown,pr-comment}` | `human`       | Output format. `github` emits `::warning` annotations. `markdown` emits a GFM table (exhaustive). `pr-comment` is the opinionated PR-bot variant: hides unchanged rows, caps each section, collapses non-critical info into `<details>` blocks. |
+| `--summary`                                        | off           | Print only aggregate stats (total, crappy count, worst offender) — no per-function table. In `--workspace` mode this becomes the per-crate summary plus the aggregate line.                                                                     |
+| `--workspace`                                      | off           | Analyze all Cargo workspace members (discovered via `cargo metadata`). Ignores `--path`. Adds a *Per-crate summary* table to human and markdown output, and a `crate` field to JSON entries.                                                    |
+| `--fail-above`                                     | off           | Exit 1 if any function exceeds `--threshold`.                                                                                                                                                                                                   |
+| `--baseline <FILE>`                                | —             | JSON from a previous `--format json` run. Enables delta mode (shows Δ column).                                                                                                                                                                  |
+| `--fail-regression`                                | off           | Exit 1 if any function's score increased since `--baseline`. Requires `--baseline`.                                                                                                                                                             |
+| `--output <FILE>`                                  | —             | Write output to FILE instead of stdout (useful for saving JSON baselines).                                                                                                                                                                      |
 
 ## Configuration file
 
@@ -224,6 +224,57 @@ they are introduced, not weeks later.
     name: crap-baseline
 - run: cargo llvm-cov --lcov --output-path lcov.info
 - run: cargo crap --lcov lcov.info --baseline baseline.json --fail-regression
+```
+
+### PR comment bot
+
+`--format pr-comment` produces a sticky comment that surfaces regressions
+and new functions in the primary table and tucks improvements / removed
+functions / above-threshold hot-spots into collapsed `<details>` blocks.
+A hidden marker (`<!-- cargo-crap-report -->`) lets the script update an
+existing comment instead of posting duplicates. The job needs
+`pull-requests: write`.
+
+```yaml
+self_score:
+  permissions:
+    pull-requests: write
+  steps:
+    # ...generate lcov.info and download the baseline as above...
+
+    - name: Generate PR comment
+      if: github.event_name == 'pull_request'
+      run: |
+        cargo crap \
+          --lcov lcov.info \
+          --baseline baseline.json \
+          --format pr-comment \
+          --output crap-comment.md
+
+    - name: Post or update PR comment
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync('crap-comment.md', 'utf8');
+          const marker = '<!-- cargo-crap-report -->';
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          const existing = comments.find(c => c.body.startsWith(marker));
+          const args = {
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body,
+          };
+          if (existing) {
+            await github.rest.issues.updateComment({ ...args, comment_id: existing.id });
+          } else {
+            await github.rest.issues.createComment({ ...args, issue_number: context.issue.number });
+          }
 ```
 
 ## Prior art and references

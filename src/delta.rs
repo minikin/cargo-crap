@@ -175,6 +175,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(100.0),
             crap,
+            crate_name: None,
         }
     }
 
@@ -295,6 +296,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(100.0),
             crap: 5.0,
+            crate_name: None,
         }];
         let baseline = vec![CrapEntry {
             file: PathBuf::from("src/main.rs"), // different file, same function name
@@ -303,6 +305,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(100.0),
             crap: 5.0,
+            crate_name: None,
         }];
         let report = compute_delta(&current, &baseline);
         assert_eq!(
@@ -328,6 +331,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(100.0),
             crap: 10.0,
+            crate_name: None,
         }];
         let baseline = vec![CrapEntry {
             file: PathBuf::from("tests/fixtures/src/lib.rs"),
@@ -336,6 +340,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(100.0),
             crap: 5.0,
+            crate_name: None,
         }];
         let report = compute_delta(&current, &baseline);
         assert_eq!(

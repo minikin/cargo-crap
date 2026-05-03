@@ -1,6 +1,6 @@
 # Spec 05 — Per-crate rollup in --workspace
 
-**Status:** Pending  
+**Status:** Implemented  
 **Effort:** Medium  
 **Module:** `src/report.rs`, `src/main.rs`
 
