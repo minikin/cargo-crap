@@ -177,10 +177,15 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true # artifact may have expired (90-day retention)
 
+      # The `grep '"version"'` guard distinguishes a usable baseline (current
+      # envelope schema) from a stale one that cargo-crap would reject at
+      # parse time. When the format evolves the next merge to main re-uploads
+      # the new shape; PRs in the gap just skip the comparison rather than
+      # failing CI.
       - name: Regression check (PRs only)
         if: github.event_name == 'pull_request'
         run: |
-          if [ -f baseline/crap-current.json ]; then
+          if [ -f baseline/crap-current.json ] && grep -q '"version"' baseline/crap-current.json; then
             cargo run --release -- \
               --lcov lcov.info \
               --workspace \
@@ -188,14 +193,14 @@ jobs:
               --baseline baseline/crap-current.json \
               --fail-regression
           else
-            echo "No baseline available — skipping regression check."
+            echo "No usable baseline available — skipping regression check."
           fi
 
       # --- On PRs: generate markdown comment and post/update on the PR ---
       - name: Generate PR comment
         if: github.event_name == 'pull_request'
         run: |
-          if [ -f baseline/crap-current.json ]; then
+          if [ -f baseline/crap-current.json ] && grep -q '"version"' baseline/crap-current.json; then
             cargo run --release -- \
               --lcov lcov.info \
               --workspace \
