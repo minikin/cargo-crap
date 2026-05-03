@@ -140,22 +140,28 @@ jobs:
           retention-days: 90
 
       # --- On PRs: download baseline and fail on any regression ---
+      # NOTE: extract to a dedicated `baseline/` folder. Without `path:` the
+      # action would write `crap-current.json` to a subfolder named after the
+      # artifact (`crap-baseline/`), but to be unambiguous we point at our own
+      # path so the file *cannot* collide with the local `crap-current.json`
+      # produced by the Score step (which holds THIS PR's data).
       - name: Download baseline (PRs only)
         if: github.event_name == 'pull_request'
         uses: actions/download-artifact@v4
         with:
           name: crap-baseline
+          path: baseline
         continue-on-error: true # first PR after a fresh repo has no baseline yet
 
       - name: Regression check (PRs only)
         if: github.event_name == 'pull_request'
         run: |
-          if [ -f crap-current.json ]; then
+          if [ -f baseline/crap-current.json ]; then
             cargo run --release -- \
               --lcov lcov.info \
               --workspace \
               --exclude 'tests/fixtures/**' \
-              --baseline crap-current.json \
+              --baseline baseline/crap-current.json \
               --fail-regression
           else
             echo "No baseline available — skipping regression check."
@@ -165,12 +171,12 @@ jobs:
       - name: Generate PR comment
         if: github.event_name == 'pull_request'
         run: |
-          if [ -f crap-current.json ]; then
+          if [ -f baseline/crap-current.json ]; then
             cargo run --release -- \
               --lcov lcov.info \
               --workspace \
               --exclude 'tests/fixtures/**' \
-              --baseline crap-current.json \
+              --baseline baseline/crap-current.json \
               --format pr-comment \
               --output crap-comment.md || true
           else

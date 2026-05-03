@@ -219,11 +219,14 @@ they are introduced, not weeks later.
     path: baseline.json
 
 # On pull requests — download baseline and compare
+# NOTE: actions/download-artifact@v4 extracts to a subfolder named after the
+# artifact by default — pin `path:` so the file lands somewhere predictable.
 - uses: actions/download-artifact@v4
   with:
     name: crap-baseline
+    path: baseline
 - run: cargo llvm-cov --lcov --output-path lcov.info
-- run: cargo crap --lcov lcov.info --baseline baseline.json --fail-regression
+- run: cargo crap --lcov lcov.info --baseline baseline/baseline.json --fail-regression
 ```
 
 ### PR comment bot
