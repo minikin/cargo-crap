@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+  "title": "cargo-crap absolute report (v1)",
+  "description": "Wire format produced by `cargo crap --format json` (without `--baseline`).",
+  "type": "object",
+  "required": ["version", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the JSON Schema this document conforms to."
+    },
+    "version": {
+      "type": "string",
+      "description": "cargo-crap crate version that produced this report.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+"
+    },
+    "entries": {
+      "type": "array",
+      "description": "Per-function CRAP entries, sorted by score descending.",
+      "items": { "$ref": "#/definitions/CrapEntry" }
+    }
+  },
+  "definitions": {
+    "CrapEntry": {
+      "type": "object",
+      "required": ["file", "function", "line", "cyclomatic", "coverage", "crap"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Source file containing the function. Absolute on workspace runs, relative otherwise."
+        },
+        "function": {
+          "type": "string",
+          "description": "Function name. Methods include the impl-type prefix, e.g. `Foo::bar`."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed first line of the function."
+        },
+        "cyclomatic": {
+          "type": "number",
+          "minimum": 1,
+          "description": "McCabe cyclomatic complexity. Always >= 1."
+        },
+        "coverage": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Coverage percentage in [0, 100], or null when no coverage data was found for this file."
+        },
+        "crap": {
+          "type": "number",
+          "minimum": 1,
+          "description": "CRAP = comp(m)^2 * (1 - cov(m)/100)^3 + comp(m). Floor of 1.0."
+        },
+        "crate": {
+          "type": "string",
+          "description": "Cargo workspace member name. Present only on `--workspace` runs."
+        }
+      }
+    }
+  }
+}

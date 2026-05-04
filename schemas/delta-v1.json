@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v1.json",
+  "title": "cargo-crap delta report (v1)",
+  "description": "Wire format produced by `cargo crap --format json --baseline FILE`.",
+  "type": "object",
+  "required": ["version", "entries", "removed"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+"
+    },
+    "entries": {
+      "type": "array",
+      "description": "Per-function entries from the current run, each annotated with its delta against the baseline.",
+      "items": { "$ref": "#/definitions/DeltaEntry" }
+    },
+    "removed": {
+      "type": "array",
+      "description": "Functions present in the baseline but absent from the current run.",
+      "items": { "$ref": "#/definitions/RemovedEntry" }
+    }
+  },
+  "definitions": {
+    "DeltaEntry": {
+      "type": "object",
+      "description": "A `CrapEntry` (flattened) plus delta-mode fields.",
+      "required": [
+        "file",
+        "function",
+        "line",
+        "cyclomatic",
+        "coverage",
+        "crap",
+        "baseline_crap",
+        "delta",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string" },
+        "function": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "cyclomatic": { "type": "number", "minimum": 1 },
+        "coverage": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100
+        },
+        "crap": { "type": "number", "minimum": 1 },
+        "crate": { "type": "string" },
+        "baseline_crap": {
+          "type": ["number", "null"],
+          "description": "CRAP score from the baseline run; null when this function is new."
+        },
+        "delta": {
+          "type": ["number", "null"],
+          "description": "current.crap - baseline_crap; null when this function is new."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["regressed", "improved", "new", "unchanged"],
+          "description": "Change category relative to the baseline."
+        }
+      }
+    },
+    "RemovedEntry": {
+      "type": "object",
+      "required": ["function", "file", "baseline_crap"],
+      "additionalProperties": false,
+      "properties": {
+        "function": { "type": "string" },
+        "file": { "type": "string" },
+        "baseline_crap": {
+          "type": "number",
+          "minimum": 1,
+          "description": "CRAP score the function had in the baseline."
+        }
+      }
+    }
+  }
+}

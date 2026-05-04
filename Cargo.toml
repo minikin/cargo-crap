@@ -50,6 +50,7 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+jsonschema = { version = "0.46", default-features = false }
 
 # cargo-binstall: download a pre-built binary instead of compiling from source.
 # Archive naming matches the release workflow: cargo-crap-v{version}-{target}.tar.gz

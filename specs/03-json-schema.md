@@ -1,6 +1,6 @@
 # Spec 03 — Published JSON Schema
 
-**Status:** Pending  
+**Status:** Implemented  
 **Effort:** Low  
 **Depends on:** Spec 02 (version wrapper object)
 

@@ -149,6 +149,138 @@ fn json_entries_have_required_fields() {
     );
 }
 
+// --- JSON Schema (spec 03) -----------------------------------------------
+
+const REPORT_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json";
+
+const DELTA_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v1.json";
+
+fn compile_schema(path: &str) -> jsonschema::Validator {
+    let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("schema must be valid JSON");
+    jsonschema::validator_for(&value).expect("schema must compile")
+}
+
+fn assert_valid(
+    validator: &jsonschema::Validator,
+    instance: &serde_json::Value,
+) {
+    let errors: Vec<_> = validator
+        .iter_errors(instance)
+        .map(|e| format!("{}: {}", e.instance_path(), e))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "schema validation failed:\n{}",
+        errors.join("\n")
+    );
+}
+
+#[test]
+fn json_output_includes_schema_url() {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        envelope["$schema"].as_str(),
+        Some(REPORT_SCHEMA_URL),
+        "absolute envelope must include the published $schema URL"
+    );
+}
+
+#[test]
+fn json_output_validates_against_published_schema() {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let validator = compile_schema("schemas/report-v1.json");
+    assert_valid(&validator, &value);
+}
+
+#[test]
+fn empty_entries_array_validates_against_schema() {
+    // Excluding every .rs file via --exclude leaves no entries; the envelope
+    // must still validate against the published schema.
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--exclude")
+        .arg("**/*.rs")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert!(
+        value["entries"]
+            .as_array()
+            .expect("entries array")
+            .is_empty(),
+        "expected empty entries for this scenario"
+    );
+    let validator = compile_schema("schemas/report-v1.json");
+    assert_valid(&validator, &value);
+}
+
+#[test]
+fn delta_json_output_validates_against_delta_schema() {
+    // Build a baseline against the same fixture, then re-run with --baseline
+    // to produce a delta envelope and validate it against the delta schema.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = dir.path().join("baseline.json");
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline_path)
+        .assert()
+        .success();
+
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("delta run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        value["$schema"].as_str(),
+        Some(DELTA_SCHEMA_URL),
+        "delta envelope must include the delta $schema URL"
+    );
+    let validator = compile_schema("schemas/delta-v1.json");
+    assert_valid(&validator, &value);
+}
+
 // --- --fail-above ---
 
 #[test]
