@@ -2617,13 +2617,13 @@ mod tests {
         };
         let links = SourceLinks::new("https://github.com/o/r".into(), "sha1".into());
         let s = render_delta_pr_with_links(&report, &links);
-        // PathBuf::display uses platform separators, so build the expected
-        // tail the same way and assert containment instead of full equality.
-        let rel = std::path::Path::new("src").join("schema.rs");
-        let expected = format!("https://github.com/o/r/blob/sha1/{}#L1", rel.display());
+        // GitHub URLs always use forward slashes — `url_for` normalizes
+        // backslashes — so the expected literal is the same on every OS.
+        let expected = "https://github.com/o/r/blob/sha1/src/schema.rs#L1";
         assert!(
-            s.contains(&expected),
-            "URL must use CWD-stripped path (expected {expected:?}):\n{s}"
+            s.contains(expected),
+            "URL must use CWD-stripped path with forward slashes \
+             (expected {expected:?}):\n{s}"
         );
         assert!(!s.contains("/blob/sha1//"), "no double slash in URL:\n{s}");
     }
