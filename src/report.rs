@@ -40,17 +40,20 @@ impl SourceLinks {
     }
 
     /// Build a deep link to `file` at `line` on the configured ref.
+    ///
+    /// GitHub URLs require forward slashes regardless of host OS. On
+    /// Windows `Path::display()` emits `src\foo.rs`, which would land in
+    /// the URL verbatim and 404 on github.com — so we normalize backslashes
+    /// to forward slashes before composing the URL.
     pub fn url_for(
         &self,
         file: &Path,
         line: usize,
     ) -> String {
+        let path = file.to_string_lossy().replace('\\', "/");
         format!(
             "{}/blob/{}/{}#L{}",
-            self.repo_url,
-            self.commit_ref,
-            file.display(),
-            line,
+            self.repo_url, self.commit_ref, path, line
         )
     }
 }
@@ -2525,6 +2528,20 @@ mod tests {
             "trailing slash must be normalized: {url}"
         );
         assert!(url.contains("/repo/blob/abc123/"));
+    }
+
+    #[test]
+    fn source_links_url_uses_forward_slashes_even_for_windows_input() {
+        // GitHub URLs always use `/`. A Windows-style backslash path must
+        // be normalized before it lands in the URL, otherwise links break
+        // on github.com regardless of which OS rendered them.
+        let l = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
+        let url = l.url_for(Path::new(r"src\foo.rs"), 1);
+        assert!(
+            !url.contains('\\'),
+            "URL must contain no backslashes, got: {url}"
+        );
+        assert_eq!(url, "https://github.com/o/r/blob/sha/src/foo.rs#L1");
     }
 
     #[test]
