@@ -52,17 +52,20 @@ Then  every rendered Function cell has the form ``[`<name>`](<repo-url>/blob/<re
 And   every rendered Location cell has the form ``[`<displayed-loc>`](<repo-url>/blob/<ref>/<path>#L<line>)``
 ```
 
-### Scenario: Link URL uses the LCP/CWD-stripped path so it resolves on GitHub
+### Scenario: Link URL uses the CWD-relative path (NOT the display LCP)
 
 ```
-Given an entry whose AST-discovered file path is absolute (e.g.
-      `/home/runner/work/repo/repo/src/main.rs`) — typical for
-      `--workspace` runs where cargo metadata returns absolute paths
-And   the run's CWD is the repo root (`/home/runner/work/repo/repo`)
+Given two or more rendered entries whose AST-discovered paths are
+      absolute and live under CWD (e.g. cargo metadata under --workspace
+      returns `/home/runner/work/repo/repo/src/main.rs` etc.)
 And   --repo-url + --commit-ref are set
 When  the pr-comment renders
-Then  the markdown link target uses the path relative to that CWD/LCP
+Then  the markdown link target uses the path stripped only of CWD
       (e.g. `<repo-url>/blob/<ref>/src/main.rs#L<line>`)
+And   the URL keeps any directory segments shared by all rendered rows
+      (the visible Location text may strip them via LCP — that's a
+      readability rule and it must NOT propagate to the URL, or links
+      land at `host/repo/blob/<sha>/main.rs` and 404)
 And   the URL contains exactly one `/blob/` separator (no `//blob/`)
 And   the URL contains no leading `/` between `<ref>/` and the path
 ```
@@ -232,17 +235,26 @@ Apply to both the backtick-wrapped Function name and the backtick-wrapped
 
 ### Path used in the URL
 
-Always the **prefix-stripped** form of `entry.file` — the same prefix used to
-produce the display string (longest common path-component prefix, with CWD
-fallback). This is what makes the URL resolve on GitHub: in CI the prefix
-falls back to the repo checkout root, so an absolute
-`/home/runner/work/repo/repo/src/main.rs` becomes the repo-relative
-`src/main.rs` in the URL.
+The display rule and the URL rule use **different** prefixes — this is the
+whole point.
 
-If stripping leaves the path still absolute (no LCP, path not under CWD —
-unusual outside of test fixtures or odd local invocations), the row falls
-back to plain code spans without links. A `host/repo/blob/<sha>//abs/...`
-URL would 404, and a broken link is worse than no link.
+- **Display** keeps using `compute_render_prefix`: longest common
+  path-component prefix across rendered rows, falling back to CWD when LCP
+  is empty. This shortens the visible Location text to whatever is
+  meaningful in context.
+- **URL** is computed by `link_path`, which strips **only CWD**. If
+  `entry.file` is already relative, it's used verbatim (cargo crap returns
+  repo-relative paths when not invoked with `--workspace`). Otherwise we
+  strip CWD and that's the URL path.
+
+The two MUST stay decoupled. A rendered set that happens to live entirely
+under `src/` will shrink the visible Location to `report.rs:64`, but the
+URL must remain `<repo-url>/blob/<ref>/src/report.rs#L64` — sharing the LCP
+between display and URL would silently ship 404s.
+
+If `link_path` returns `None` (path absolute and not under CWD), the row
+renders as plain code spans without a link. A broken
+`host/repo/blob/<sha>//abs/...` URL is worse than no link at all.
 
 ### `Format::Json` / `Format::Github` / `Format::Human`
 

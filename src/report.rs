@@ -55,25 +55,24 @@ impl SourceLinks {
     }
 }
 
-/// Decide what to embed into a `/blob/<ref>/...` URL for `path`.
+/// Decide what path to embed into a `/blob/<ref>/...` URL for `path`.
 ///
-/// Returns the prefix-stripped, repo-relative form when stripping succeeds
-/// and produces a relative path. Returns `None` when the result would still
-/// be absolute (no LCP, path outside CWD) — those rows render without links
-/// because a `host/repo/blob/<sha>//abs/...` URL would 404.
-fn link_path(
-    path: &Path,
-    prefix: &Path,
-) -> Option<PathBuf> {
-    if !prefix.as_os_str().is_empty()
-        && let Ok(rel) = path.strip_prefix(prefix)
-    {
-        return Some(rel.to_path_buf());
-    }
+/// The URL prefix is **always the repo root (== CWD)**, never the LCP used
+/// for the visible Location text. If we shared the LCP, a rendered set that
+/// happens to live entirely under `src/` would strip `src/` from the URL
+/// too, yielding `host/repo/blob/<sha>/main.rs` which 404s.
+///
+/// Returns the repo-relative form when `path` is already relative (cargo
+/// crap reports relative paths when not invoked with `--workspace`) or
+/// absolute under CWD. Returns `None` otherwise — those rows fall back to
+/// plain code spans rather than emit a broken
+/// `host/repo/blob/<sha>//abs/...` URL.
+fn link_path(path: &Path) -> Option<PathBuf> {
     if path.is_relative() {
         return Some(path.to_path_buf());
     }
-    None
+    let cwd = std::env::current_dir().ok()?;
+    path.strip_prefix(&cwd).ok().map(|p| p.to_path_buf())
 }
 
 /// Wrap `inner` (already-formatted, e.g. with backticks) in a markdown link
@@ -83,10 +82,9 @@ fn linkify(
     inner: String,
     links: Option<&SourceLinks>,
     file: &Path,
-    prefix: &Path,
     line: usize,
 ) -> String {
-    match (links, link_path(file, prefix)) {
+    match (links, link_path(file)) {
         (Some(l), Some(p)) => format!("[{inner}]({})", l.url_for(&p, line)),
         _ => inner,
     }
@@ -547,7 +545,6 @@ fn write_markdown_entries_table(
     entries: &[CrapEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
-    prefix: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
     writeln!(out, "| | CRAP | CC | Cov % | Function | Location |")?;
@@ -562,14 +559,12 @@ fn write_markdown_entries_table(
             format!("`{}`", entry.function),
             links,
             &entry.file,
-            prefix,
             entry.line,
         );
         let loc = linkify(
             format!("`{}:{}`", entry.file.display(), entry.line),
             links,
             &entry.file,
-            prefix,
             entry.line,
         );
         writeln!(
@@ -602,9 +597,7 @@ fn render_markdown(
     let crappy = crappy_count(entries, threshold);
     write_markdown_absolute_heading(crappy, threshold, out)?;
     write_per_crate_markdown(entries, threshold, out)?;
-    let paths: Vec<PathBuf> = entries.iter().map(|e| e.file.clone()).collect();
-    let prefix = compute_render_prefix(&paths);
-    write_markdown_entries_table(entries, threshold, links, &prefix, out)?;
+    write_markdown_entries_table(entries, threshold, links, out)?;
     write_markdown_absolute_summary(crappy, entries.len(), threshold, out)
 }
 
@@ -651,7 +644,6 @@ fn write_delta_entries_table(
     entries: &[crate::delta::DeltaEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
-    prefix: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
     writeln!(out, "| | CRAP | Δ | CC | Cov % | Function | Location |")?;
@@ -660,12 +652,11 @@ fn write_delta_entries_table(
         let e = &de.current;
         let grade = Grade::of(e.crap, threshold);
         let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
-        let func = linkify(format!("`{}`", e.function), links, &e.file, prefix, e.line);
+        let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
         let loc = linkify(
             format!("`{}:{}`", e.file.display(), e.line),
             links,
             &e.file,
-            prefix,
             e.line,
         );
         writeln!(
@@ -728,13 +719,7 @@ fn render_delta_markdown(
         return Ok(());
     }
     write_markdown_delta_heading(report.regression_count(), out)?;
-    let paths: Vec<PathBuf> = report
-        .entries
-        .iter()
-        .map(|e| e.current.file.clone())
-        .collect();
-    let prefix = compute_render_prefix(&paths);
-    write_delta_entries_table(&report.entries, threshold, links, &prefix, out)?;
+    write_delta_entries_table(&report.entries, threshold, links, out)?;
     if !report.removed.is_empty() {
         write_markdown_removed(&report.removed, out)?;
     }
@@ -815,14 +800,8 @@ fn write_pr_comment_row(
     let grade = Grade::of(e.crap, threshold);
     let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
     let loc_text = strip_to_display(&e.file, prefix);
-    let func = linkify(format!("`{}`", e.function), links, &e.file, prefix, e.line);
-    let loc = linkify(
-        format!("`{loc_text}:{}`", e.line),
-        links,
-        &e.file,
-        prefix,
-        e.line,
-    );
+    let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
+    let loc = linkify(format!("`{loc_text}:{}`", e.line), links, &e.file, e.line);
     writeln!(
         out,
         "| {} | {:.1} | {} | {} | {} | {} | {} |",
@@ -848,14 +827,8 @@ fn write_pr_comment_abs_row(
     let grade = Grade::of(e.crap, threshold);
     let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
     let loc_text = strip_to_display(&e.file, prefix);
-    let func = linkify(format!("`{}`", e.function), links, &e.file, prefix, e.line);
-    let loc = linkify(
-        format!("`{loc_text}:{}`", e.line),
-        links,
-        &e.file,
-        prefix,
-        e.line,
-    );
+    let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
+    let loc = linkify(format!("`{loc_text}:{}`", e.line), links, &e.file, e.line);
     writeln!(
         out,
         "| {} | {:.1} | {} | {} | {} | {} |",
@@ -2639,12 +2612,69 @@ mod tests {
     }
 
     #[test]
+    fn pr_comment_link_url_does_not_strip_lcp_when_lcp_is_below_repo_root() {
+        // Regression test for the original CI bug: when every rendered
+        // entry lives under `src/`, the LCP (used for visible Location
+        // text) is `<cwd>/src`. The URL must NOT inherit that — it has to
+        // strip CWD only, otherwise `host/repo/blob/<sha>/main.rs` 404s
+        // (the repo path is `src/main.rs`).
+        let cwd = std::env::current_dir().expect("cwd");
+        let a = cwd.join("src").join("a.rs");
+        let b = cwd.join("src").join("b.rs");
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry(
+                    a.to_str().unwrap(),
+                    "fn_a",
+                    12.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+                delta_entry(
+                    b.to_str().unwrap(),
+                    "fn_b",
+                    14.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+            ],
+            removed: vec![],
+        };
+        let links = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
+        let s = render_delta_pr_with_links(&report, &links);
+        assert!(
+            s.contains("/blob/sha/src/a.rs#L1"),
+            "URL must keep the src/ segment (CWD-relative, not LCP-relative):\n{s}"
+        );
+        assert!(
+            !s.contains("/blob/sha/a.rs#L1"),
+            "URL must not strip src/ even when it's the LCP across rendered rows:\n{s}"
+        );
+    }
+
+    #[test]
     fn pr_comment_skips_link_when_path_cannot_be_made_repo_relative() {
-        // Path NOT under CWD and no LCP with anything else → link_path
-        // returns None and the row falls back to plain code spans.
+        // Path NOT under CWD → link_path returns None and the row falls
+        // back to plain code spans. Use `std::env::temp_dir()` because a
+        // Unix-style `/totally/elsewhere/foo.rs` is treated as RELATIVE on
+        // Windows (no drive letter), which would defeat the test;
+        // `temp_dir()` is absolute on every platform and reliably outside
+        // the cargo-project CWD.
+        let outside = std::env::temp_dir()
+            .join("cargo_crap_link_test")
+            .join("foo.rs");
+        assert!(
+            outside.is_absolute(),
+            "test setup: temp path must be absolute"
+        );
+        let cwd = std::env::current_dir().expect("cwd");
+        assert!(
+            !outside.starts_with(&cwd),
+            "test setup: temp path must not be under CWD"
+        );
         let report = DeltaReport {
             entries: vec![delta_entry(
-                "/totally/elsewhere/foo.rs",
+                outside.to_str().expect("utf8"),
                 "stranger",
                 12.0,
                 Some(5.0),
