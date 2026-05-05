@@ -52,14 +52,31 @@ Then  every rendered Function cell has the form ``[`<name>`](<repo-url>/blob/<re
 And   every rendered Location cell has the form ``[`<displayed-loc>`](<repo-url>/blob/<ref>/<path>#L<line>)``
 ```
 
-### Scenario: Link URL uses the full original path, not the LCP-stripped display path
+### Scenario: Link URL uses the LCP/CWD-stripped path so it resolves on GitHub
 
 ```
-Given a single rendered entry whose Location text is stripped to `:160`
-And   the entry's full path is `src/schema.rs`
-When  the pr-comment renders with --repo-url X --commit-ref Y
-Then  the markdown link target is `X/blob/Y/src/schema.rs#L160`
-And   the visible link text is `:160` (display rule unchanged)
+Given an entry whose AST-discovered file path is absolute (e.g.
+      `/home/runner/work/repo/repo/src/main.rs`) — typical for
+      `--workspace` runs where cargo metadata returns absolute paths
+And   the run's CWD is the repo root (`/home/runner/work/repo/repo`)
+And   --repo-url + --commit-ref are set
+When  the pr-comment renders
+Then  the markdown link target uses the path relative to that CWD/LCP
+      (e.g. `<repo-url>/blob/<ref>/src/main.rs#L<line>`)
+And   the URL contains exactly one `/blob/` separator (no `//blob/`)
+And   the URL contains no leading `/` between `<ref>/` and the path
+```
+
+### Scenario: Path that cannot be made repo-relative falls back to plain text
+
+```
+Given an entry whose path is NOT under CWD and shares no LCP with other
+      rendered entries (so prefix-stripping leaves it absolute)
+And   --repo-url + --commit-ref are set
+When  the pr-comment renders
+Then  the Function and Location cells are NOT wrapped in markdown links
+      (a `host/repo/blob/sha//abs/path` URL would 404)
+And   the row still renders with plain code spans
 ```
 
 ### Scenario: Trailing slash on --repo-url is normalized
@@ -215,14 +232,17 @@ Apply to both the backtick-wrapped Function name and the backtick-wrapped
 
 ### Path used in the URL
 
-Always the **original** `entry.file` (a full or repo-relative path produced by
-the AST walk), never the LCP-stripped display string. The display string is a
-human-readable hint; the link must resolve in the repo.
+Always the **prefix-stripped** form of `entry.file` — the same prefix used to
+produce the display string (longest common path-component prefix, with CWD
+fallback). This is what makes the URL resolve on GitHub: in CI the prefix
+falls back to the repo checkout root, so an absolute
+`/home/runner/work/repo/repo/src/main.rs` becomes the repo-relative
+`src/main.rs` in the URL.
 
-When `entry.file` is absolute, the link will only resolve if the absolute
-path is also a valid repo path, which it normally isn't. Local runs without
-flags don't produce links anyway, and CI runs `cargo crap` from the repo root
-so paths are repo-relative — covered by an integration test.
+If stripping leaves the path still absolute (no LCP, path not under CWD —
+unusual outside of test fixtures or odd local invocations), the row falls
+back to plain code spans without links. A `host/repo/blob/<sha>//abs/...`
+URL would 404, and a broken link is worse than no link.
 
 ### `Format::Json` / `Format::Github` / `Format::Human`
 

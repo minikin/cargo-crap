@@ -55,17 +55,40 @@ impl SourceLinks {
     }
 }
 
+/// Decide what to embed into a `/blob/<ref>/...` URL for `path`.
+///
+/// Returns the prefix-stripped, repo-relative form when stripping succeeds
+/// and produces a relative path. Returns `None` when the result would still
+/// be absolute (no LCP, path outside CWD) — those rows render without links
+/// because a `host/repo/blob/<sha>//abs/...` URL would 404.
+fn link_path(
+    path: &Path,
+    prefix: &Path,
+) -> Option<PathBuf> {
+    if !prefix.as_os_str().is_empty()
+        && let Ok(rel) = path.strip_prefix(prefix)
+    {
+        return Some(rel.to_path_buf());
+    }
+    if path.is_relative() {
+        return Some(path.to_path_buf());
+    }
+    None
+}
+
 /// Wrap `inner` (already-formatted, e.g. with backticks) in a markdown link
-/// when `links` is `Some`, otherwise return it as-is.
+/// iff both `links` and a usable (repo-relative) URL path are available;
+/// otherwise return `inner` unchanged.
 fn linkify(
     inner: String,
     links: Option<&SourceLinks>,
     file: &Path,
+    prefix: &Path,
     line: usize,
 ) -> String {
-    match links {
-        Some(l) => format!("[{inner}]({})", l.url_for(file, line)),
-        None => inner,
+    match (links, link_path(file, prefix)) {
+        (Some(l), Some(p)) => format!("[{inner}]({})", l.url_for(&p, line)),
+        _ => inner,
     }
 }
 
@@ -524,6 +547,7 @@ fn write_markdown_entries_table(
     entries: &[CrapEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
+    prefix: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
     writeln!(out, "| | CRAP | CC | Cov % | Function | Location |")?;
@@ -538,12 +562,14 @@ fn write_markdown_entries_table(
             format!("`{}`", entry.function),
             links,
             &entry.file,
+            prefix,
             entry.line,
         );
         let loc = linkify(
             format!("`{}:{}`", entry.file.display(), entry.line),
             links,
             &entry.file,
+            prefix,
             entry.line,
         );
         writeln!(
@@ -576,7 +602,9 @@ fn render_markdown(
     let crappy = crappy_count(entries, threshold);
     write_markdown_absolute_heading(crappy, threshold, out)?;
     write_per_crate_markdown(entries, threshold, out)?;
-    write_markdown_entries_table(entries, threshold, links, out)?;
+    let paths: Vec<PathBuf> = entries.iter().map(|e| e.file.clone()).collect();
+    let prefix = compute_render_prefix(&paths);
+    write_markdown_entries_table(entries, threshold, links, &prefix, out)?;
     write_markdown_absolute_summary(crappy, entries.len(), threshold, out)
 }
 
@@ -623,6 +651,7 @@ fn write_delta_entries_table(
     entries: &[crate::delta::DeltaEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
+    prefix: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
     writeln!(out, "| | CRAP | Δ | CC | Cov % | Function | Location |")?;
@@ -631,11 +660,12 @@ fn write_delta_entries_table(
         let e = &de.current;
         let grade = Grade::of(e.crap, threshold);
         let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
-        let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
+        let func = linkify(format!("`{}`", e.function), links, &e.file, prefix, e.line);
         let loc = linkify(
             format!("`{}:{}`", e.file.display(), e.line),
             links,
             &e.file,
+            prefix,
             e.line,
         );
         writeln!(
@@ -698,7 +728,13 @@ fn render_delta_markdown(
         return Ok(());
     }
     write_markdown_delta_heading(report.regression_count(), out)?;
-    write_delta_entries_table(&report.entries, threshold, links, out)?;
+    let paths: Vec<PathBuf> = report
+        .entries
+        .iter()
+        .map(|e| e.current.file.clone())
+        .collect();
+    let prefix = compute_render_prefix(&paths);
+    write_delta_entries_table(&report.entries, threshold, links, &prefix, out)?;
     if !report.removed.is_empty() {
         write_markdown_removed(&report.removed, out)?;
     }
@@ -779,8 +815,14 @@ fn write_pr_comment_row(
     let grade = Grade::of(e.crap, threshold);
     let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
     let loc_text = strip_to_display(&e.file, prefix);
-    let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
-    let loc = linkify(format!("`{loc_text}:{}`", e.line), links, &e.file, e.line);
+    let func = linkify(format!("`{}`", e.function), links, &e.file, prefix, e.line);
+    let loc = linkify(
+        format!("`{loc_text}:{}`", e.line),
+        links,
+        &e.file,
+        prefix,
+        e.line,
+    );
     writeln!(
         out,
         "| {} | {:.1} | {} | {} | {} | {} | {} |",
@@ -806,8 +848,14 @@ fn write_pr_comment_abs_row(
     let grade = Grade::of(e.crap, threshold);
     let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
     let loc_text = strip_to_display(&e.file, prefix);
-    let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
-    let loc = linkify(format!("`{loc_text}:{}`", e.line), links, &e.file, e.line);
+    let func = linkify(format!("`{}`", e.function), links, &e.file, prefix, e.line);
+    let loc = linkify(
+        format!("`{loc_text}:{}`", e.line),
+        links,
+        &e.file,
+        prefix,
+        e.line,
+    );
     writeln!(
         out,
         "| {} | {:.1} | {} | {} | {} | {} |",
@@ -2560,13 +2608,16 @@ mod tests {
     }
 
     #[test]
-    fn pr_comment_link_url_uses_original_path_not_stripped() {
-        // Single-entry path → LCP is empty and the path is left absolute
-        // (outside-CWD case). The link URL must still use the *original*
-        // entry.file, regardless of what the visible Location text shows.
+    fn pr_comment_link_url_uses_path_relative_to_cwd() {
+        // Simulate a CI run: cargo metadata produces an absolute path under
+        // the checkout root (== CWD). The display rule strips CWD; the link
+        // URL must use the *same* repo-relative form so it resolves on
+        // GitHub. A `/blob/<sha>//abs/...` URL would 404.
+        let cwd = std::env::current_dir().expect("cwd");
+        let abs = cwd.join("src").join("schema.rs");
         let report = DeltaReport {
             entries: vec![delta_entry(
-                "/abs/repo/src/schema.rs",
+                abs.to_str().expect("utf8"),
                 "compile_schema",
                 12.0,
                 Some(5.0),
@@ -2576,9 +2627,37 @@ mod tests {
         };
         let links = SourceLinks::new("https://github.com/o/r".into(), "sha1".into());
         let s = render_delta_pr_with_links(&report, &links);
+        // PathBuf::display uses platform separators, so build the expected
+        // tail the same way and assert containment instead of full equality.
+        let rel = std::path::Path::new("src").join("schema.rs");
+        let expected = format!("https://github.com/o/r/blob/sha1/{}#L1", rel.display());
         assert!(
-            s.contains("https://github.com/o/r/blob/sha1//abs/repo/src/schema.rs#L1"),
-            "link target must be derived from the full original path:\n{s}"
+            s.contains(&expected),
+            "URL must use CWD-stripped path (expected {expected:?}):\n{s}"
+        );
+        assert!(!s.contains("/blob/sha1//"), "no double slash in URL:\n{s}");
+    }
+
+    #[test]
+    fn pr_comment_skips_link_when_path_cannot_be_made_repo_relative() {
+        // Path NOT under CWD and no LCP with anything else → link_path
+        // returns None and the row falls back to plain code spans.
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "/totally/elsewhere/foo.rs",
+                "stranger",
+                12.0,
+                Some(5.0),
+                DeltaStatus::Regressed,
+            )],
+            removed: vec![],
+        };
+        let links = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
+        let s = render_delta_pr_with_links(&report, &links);
+        assert!(s.contains("`stranger`"), "function name must still render");
+        assert!(
+            !s.contains("](https://"),
+            "no link expected when path can't be made repo-relative:\n{s}"
         );
     }
 
