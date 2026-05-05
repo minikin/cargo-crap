@@ -98,8 +98,14 @@ fn json_output_round_trips() {
     let entries = merge(complexity, coverage, MissingCoveragePolicy::Pessimistic).entries;
 
     let mut buf = Vec::new();
-    cargo_crap::report::render(&entries, 30.0, cargo_crap::report::Format::Json, &mut buf)
-        .expect("render");
+    cargo_crap::report::render(
+        &entries,
+        30.0,
+        cargo_crap::report::Format::Json,
+        None,
+        &mut buf,
+    )
+    .expect("render");
 
     // If this parses, the output is well-formed.
     let parsed: serde_json::Value =

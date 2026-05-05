@@ -200,8 +200,15 @@ jobs:
       # `always()` runs these steps even when the Regression check above
       # exits non-zero — that's exactly when we want the comment to land,
       # because it tells the reviewer *what* regressed.
+      # `pull_request.head.sha` is the actual commit users browse on the PR
+      # branch; `github.sha` on a pull_request event is the synthetic merge
+      # commit and won't resolve in `/blob/<sha>/...` URLs. Both vars are
+      # GitHub-managed (not user input) — safe to interpolate via env:.
       - name: Generate PR comment
         if: always() && github.event_name == 'pull_request'
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          COMMIT_REF: ${{ github.event.pull_request.head.sha }}
         run: |
           if [ -f baseline/crap-current.json ] && grep -q '"version"' baseline/crap-current.json; then
             cargo run --release -- \
@@ -210,6 +217,8 @@ jobs:
               --exclude 'tests/fixtures/**' \
               --baseline baseline/crap-current.json \
               --format pr-comment \
+              --repo-url "$REPO_URL" \
+              --commit-ref "$COMMIT_REF" \
               --output crap-comment.md || true
           else
             cargo run --release -- \
@@ -217,6 +226,8 @@ jobs:
               --workspace \
               --exclude 'tests/fixtures/**' \
               --format pr-comment \
+              --repo-url "$REPO_URL" \
+              --commit-ref "$COMMIT_REF" \
               --output crap-comment.md || true
             printf '\n_No baseline available — showing absolute scores only._\n' >> crap-comment.md
           fi

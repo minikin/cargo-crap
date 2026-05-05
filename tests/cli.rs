@@ -1761,6 +1761,122 @@ fn pr_comment_format_regression_shows_warning_heading() {
         .stdout(predicate::str::contains("crappy"));
 }
 
+// --- --repo-url / --commit-ref (spec 12) ---------------------------------
+
+/// Pin the link rendering for `--format pr-comment`: when both flags are
+/// passed, every Function and Location cell becomes a markdown link to the
+/// repo at that commit.
+#[test]
+fn pr_comment_with_repo_and_ref_emits_links() {
+    let stdout = cmd()
+        .env_remove("GITHUB_SERVER_URL")
+        .env_remove("GITHUB_REPOSITORY")
+        .env_remove("GITHUB_SHA")
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("pr-comment")
+        .arg("--threshold")
+        .arg("0") // force every fixture function above threshold so the table renders
+        .arg("--repo-url")
+        .arg("https://github.com/owner/repo")
+        .arg("--commit-ref")
+        .arg("deadbeef")
+        .output()
+        .expect("run")
+        .stdout;
+    let stdout = String::from_utf8(stdout).expect("utf8");
+    assert!(
+        stdout.contains("](https://github.com/owner/repo/blob/deadbeef/"),
+        "expected at least one link to GitHub source, got:\n{stdout}"
+    );
+}
+
+/// Without either flag and with no GITHUB_* env vars, the renderer must
+/// fall back to the plain code-span output (no markdown links).
+#[test]
+fn pr_comment_without_repo_or_env_emits_no_links() {
+    let stdout = cmd()
+        .env_remove("GITHUB_SERVER_URL")
+        .env_remove("GITHUB_REPOSITORY")
+        .env_remove("GITHUB_SHA")
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("pr-comment")
+        .arg("--threshold")
+        .arg("0")
+        .output()
+        .expect("run")
+        .stdout;
+    let stdout = String::from_utf8(stdout).expect("utf8");
+    assert!(
+        !stdout.contains("](https://"),
+        "no markdown links expected without flags or env vars:\n{stdout}"
+    );
+}
+
+/// GitHub Actions env vars (GITHUB_SERVER_URL + GITHUB_REPOSITORY + GITHUB_SHA)
+/// must produce links when no CLI flags are passed.
+#[test]
+fn pr_comment_picks_up_github_env_vars() {
+    let stdout = cmd()
+        .env("GITHUB_SERVER_URL", "https://example.com")
+        .env("GITHUB_REPOSITORY", "acme/widget")
+        .env("GITHUB_SHA", "feedface")
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("pr-comment")
+        .arg("--threshold")
+        .arg("0")
+        .output()
+        .expect("run")
+        .stdout;
+    let stdout = String::from_utf8(stdout).expect("utf8");
+    assert!(
+        stdout.contains("](https://example.com/acme/widget/blob/feedface/"),
+        "env-var defaults must drive link generation:\n{stdout}"
+    );
+}
+
+/// CLI flags override env vars when both are present.
+#[test]
+fn cli_flags_override_github_env_vars() {
+    let stdout = cmd()
+        .env("GITHUB_SERVER_URL", "https://example.com")
+        .env("GITHUB_REPOSITORY", "acme/widget")
+        .env("GITHUB_SHA", "env_sha")
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("pr-comment")
+        .arg("--threshold")
+        .arg("0")
+        .arg("--commit-ref")
+        .arg("cli_sha")
+        .output()
+        .expect("run")
+        .stdout;
+    let stdout = String::from_utf8(stdout).expect("utf8");
+    assert!(
+        stdout.contains("/blob/cli_sha/"),
+        "CLI --commit-ref must override GITHUB_SHA:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("/blob/env_sha/"),
+        "env GITHUB_SHA must not appear when overridden:\n{stdout}"
+    );
+}
+
 // --- --jobs ---------------------------------------------------------------
 
 #[test]

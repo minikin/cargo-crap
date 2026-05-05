@@ -11,7 +11,10 @@ use cargo_crap::{
     complexity, coverage,
     delta::{compute_delta, load_baseline},
     merge::{MissingCoveragePolicy, merge},
-    report::{Format, crappy_count, render, render_delta, render_delta_summary, render_summary},
+    report::{
+        Format, SourceLinks, crappy_count, render, render_delta, render_delta_summary,
+        render_summary,
+    },
     score::DEFAULT_THRESHOLD,
 };
 use clap::{Parser, ValueEnum};
@@ -123,6 +126,19 @@ struct Cli {
     /// built-in default (0.01).
     #[arg(long, value_name = "VALUE", allow_negative_numbers = true)]
     epsilon: Option<f64>,
+
+    /// Base URL of the source-hosting repo (e.g. `https://github.com/owner/repo`).
+    /// Combined with `--commit-ref`, makes Function and Location cells in
+    /// `pr-comment` / `markdown` output clickable links to GitHub source.
+    /// Defaults from `GITHUB_SERVER_URL` + `GITHUB_REPOSITORY` when those env
+    /// vars are set (e.g. inside GitHub Actions).
+    #[arg(long, value_name = "URL")]
+    repo_url: Option<String>,
+
+    /// Commit SHA or branch name to deep-link into. Defaults from `GITHUB_SHA`
+    /// when set. Has no effect unless `--repo-url` is also set.
+    #[arg(long, value_name = "REF")]
+    commit_ref: Option<String>,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -396,36 +412,64 @@ fn validate_args(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
-fn do_render(
-    entries: &[cargo_crap::merge::CrapEntry],
-    baseline: Option<&PathBuf>,
+/// Bundles the render-time options threaded into [`do_render`]. Bundling
+/// keeps the helper's signature under clippy's argument-count limit and makes
+/// call sites readable as "what to render" + "where to render it".
+struct RenderOpts<'a> {
     threshold: f64,
     epsilon: f64,
     format: Format,
     summary: bool,
+    links: Option<&'a SourceLinks>,
+}
+
+/// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
+fn do_render(
+    entries: &[cargo_crap::merge::CrapEntry],
+    baseline: Option<&PathBuf>,
+    opts: &RenderOpts,
     out: &mut dyn Write,
 ) -> Result<(bool, bool)> {
     if let Some(baseline_path) = baseline {
         let baseline_data = load_baseline(baseline_path)?;
-        let report = compute_delta(entries, &baseline_data, epsilon);
-        let has_crappy = crappy_count(entries, threshold) > 0;
+        let report = compute_delta(entries, &baseline_data, opts.epsilon);
+        let has_crappy = crappy_count(entries, opts.threshold) > 0;
         let has_regression = report.regression_count() > 0;
-        if summary {
+        if opts.summary {
             render_delta_summary(&report, out)?;
         } else {
-            render_delta(&report, threshold, format, out)?;
+            render_delta(&report, opts.threshold, opts.format, opts.links, out)?;
         }
         Ok((has_crappy, has_regression))
     } else {
-        let has_crappy = crappy_count(entries, threshold) > 0;
-        if summary {
-            render_summary(entries, threshold, out)?;
+        let has_crappy = crappy_count(entries, opts.threshold) > 0;
+        if opts.summary {
+            render_summary(entries, opts.threshold, out)?;
         } else {
-            render(entries, threshold, format, out)?;
+            render(entries, opts.threshold, opts.format, opts.links, out)?;
         }
         Ok((has_crappy, false))
     }
+}
+
+/// Resolve `--repo-url` / `--commit-ref` against the GitHub Actions env vars,
+/// returning `Some(SourceLinks)` only when both pieces are present. Either
+/// missing — or both missing — results in `None` (plain rendering, no links).
+fn resolve_source_links(
+    cli_repo_url: Option<String>,
+    cli_commit_ref: Option<String>,
+) -> Option<SourceLinks> {
+    let repo_url = cli_repo_url.or_else(|| {
+        let server = std::env::var("GITHUB_SERVER_URL").ok()?;
+        let repo = std::env::var("GITHUB_REPOSITORY").ok()?;
+        Some(format!(
+            "{}/{}",
+            server.trim_end_matches('/'),
+            repo.trim_start_matches('/')
+        ))
+    })?;
+    let commit_ref = cli_commit_ref.or_else(|| std::env::var("GITHUB_SHA").ok())?;
+    Some(SourceLinks::new(repo_url, commit_ref))
 }
 
 fn main() -> Result<()> {
@@ -488,15 +532,16 @@ fn main() -> Result<()> {
 
     // --- Render ---
     let mut out_box = open_output(cli.output.as_ref())?;
-    let (has_crappy, has_regression) = do_render(
-        &entries,
-        cli.baseline.as_ref(),
+    let links = resolve_source_links(cli.repo_url, cli.commit_ref);
+    let opts = RenderOpts {
         threshold,
         epsilon,
-        cli.format.into(),
-        cli.summary,
-        out_box.as_mut(),
-    )?;
+        format: cli.format.into(),
+        summary: cli.summary,
+        links: links.as_ref(),
+    };
+    let (has_crappy, has_regression) =
+        do_render(&entries, cli.baseline.as_ref(), &opts, out_box.as_mut())?;
 
     if (fail_above && has_crappy) || (fail_regression && has_regression) {
         std::process::exit(1);
