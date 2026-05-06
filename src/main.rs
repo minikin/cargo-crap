@@ -8,7 +8,8 @@
 
 use anyhow::{Context, Result, bail};
 use cargo_crap::{
-    complexity, coverage,
+    complexity,
+    coverage::{self, FileCoverage},
     delta::{compute_delta, load_baseline},
     merge::{MissingCoveragePolicy, merge},
     report::{
@@ -20,6 +21,7 @@ use cargo_crap::{
 use clap::{Parser, ValueEnum};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
@@ -299,9 +301,7 @@ fn apply_filters(
 }
 
 /// Parse the LCOV file if one was provided, returning an empty map otherwise.
-fn load_coverage(
-    lcov: Option<&PathBuf>
-) -> Result<std::collections::HashMap<std::path::PathBuf, cargo_crap::coverage::FileCoverage>> {
+fn load_coverage(lcov: Option<&PathBuf>) -> Result<HashMap<PathBuf, FileCoverage>> {
     match lcov {
         Some(path) => coverage::parse_lcov(path)
             .with_context(|| format!("parsing LCOV file {}", path.display())),

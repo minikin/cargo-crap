@@ -17,6 +17,7 @@
 use crate::merge::MissingCoveragePolicy;
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::fs;
 use std::path::Path;
 
 /// Persistent settings loaded from `.cargo-crap.toml`.
@@ -80,7 +81,7 @@ pub fn load(start: &Path) -> Result<Config> {
     loop {
         let candidate = dir.join(".cargo-crap.toml");
         if candidate.exists() {
-            let raw = std::fs::read_to_string(&candidate)
+            let raw = fs::read_to_string(&candidate)
                 .with_context(|| format!("reading {}", candidate.display()))?;
             let cfg: Config =
                 toml::from_str(&raw).with_context(|| format!("parsing {}", candidate.display()))?;
@@ -99,10 +100,10 @@ mod tests {
     use std::io::Write;
 
     fn write_config(
-        dir: &std::path::Path,
+        dir: &Path,
         content: &str,
     ) {
-        let mut f = std::fs::File::create(dir.join(".cargo-crap.toml")).unwrap();
+        let mut f = fs::File::create(dir.join(".cargo-crap.toml")).unwrap();
         f.write_all(content.as_bytes()).unwrap();
     }
 
@@ -143,7 +144,7 @@ allow = ["Foo::*"]
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path(), "threshold = 15.0\n");
         let subdir = dir.path().join("src");
-        std::fs::create_dir(&subdir).unwrap();
+        fs::create_dir(&subdir).unwrap();
         // Start from a subdirectory — should walk up and find the config.
         let cfg = load(&subdir).unwrap();
         assert_eq!(cfg.threshold, Some(15.0));
