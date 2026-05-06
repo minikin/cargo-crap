@@ -234,3 +234,194 @@ fn write_delta_summary(
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::sample;
+    use super::super::{Format, render};
+    use super::*;
+    use std::path::PathBuf;
+
+    fn entry(
+        crate_name: Option<&str>,
+        function: &str,
+        crap: f64,
+    ) -> CrapEntry {
+        CrapEntry {
+            file: PathBuf::from("src/lib.rs"),
+            function: function.into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap,
+            crate_name: crate_name.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn human_output_mentions_every_function() {
+        let mut buf = Vec::new();
+        render(&sample(), 30.0, Format::Human, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("clean"));
+        assert!(s.contains("crappy"));
+    }
+
+    #[test]
+    fn human_summary_shows_tick_when_all_clean() {
+        // Kills: render_human's `crappy_count == 0` replaced with `!= 0`.
+        let all_clean = vec![CrapEntry {
+            file: PathBuf::from("a.rs"),
+            function: "clean".into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap: 1.0,
+            crate_name: None,
+        }];
+        let mut buf = Vec::new();
+        render(&all_clean, 30.0, Format::Human, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains('✓'),
+            "summary must show ✓ when nothing is crappy"
+        );
+        assert!(
+            !s.contains('✗'),
+            "summary must not show ✗ when nothing is crappy"
+        );
+    }
+
+    #[test]
+    fn human_summary_shows_cross_with_correct_count() {
+        // Kills: severity check `== Crappy` replaced with `== Clean` (count stays 0),
+        //        and `crappy_count += 1` replaced with *= 1 (count stays 0).
+        //
+        // Note: ✓ appears in the row icon for the clean function, so we check
+        // the summary count rather than the absence of ✓ in the full output.
+        let mut buf = Vec::new();
+        render(&sample(), 30.0, Format::Human, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains('✗'), "output must show ✗ for crappy functions");
+        assert!(s.contains("1/2"), "summary must report 1 out of 2 crappy");
+    }
+
+    #[test]
+    fn empty_entries_prints_no_functions_found() {
+        let mut buf = Vec::new();
+        render(&[], 30.0, Format::Human, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("No functions found."));
+    }
+
+    #[test]
+    fn missing_coverage_shows_dash_in_table() {
+        // Pins: match entry.coverage { None => "—" } in build_row.
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("a.rs"),
+            function: "foo".into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: None,
+            crap: 1.0,
+            crate_name: None,
+        }];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::Human, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains('—'), "None coverage must render as —");
+    }
+
+    #[test]
+    fn some_coverage_shows_formatted_number() {
+        // Pins: match entry.coverage { Some(c) => format!("{c:.1}") } in build_row.
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("a.rs"),
+            function: "foo".into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(44.4),
+            crap: 1.0,
+            crate_name: None,
+        }];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::Human, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("44.4"), "Some(44.4) must render as 44.4");
+    }
+
+    #[test]
+    fn human_summary_correct_for_all_crappy() {
+        // Two entries both above threshold — count must be 2/2.
+        let both_crappy = vec![
+            CrapEntry {
+                file: PathBuf::from("a.rs"),
+                function: "bad".into(),
+                line: 1,
+                cyclomatic: 8.0,
+                coverage: Some(0.0),
+                crap: 72.0,
+                crate_name: None,
+            },
+            CrapEntry {
+                file: PathBuf::from("a.rs"),
+                function: "worse".into(),
+                line: 10,
+                cyclomatic: 10.0,
+                coverage: Some(0.0),
+                crap: 110.0,
+                crate_name: None,
+            },
+        ];
+        let mut buf = Vec::new();
+        render(&both_crappy, 30.0, Format::Human, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("2/2"), "both functions crappy, must report 2/2");
+    }
+
+    #[test]
+    fn moderate_grade_shows_warning_triangle_in_output() {
+        // A function scored strictly between threshold/3 and threshold must
+        // show ▲ in the table, never ✓ or ✗.
+        // score=20, threshold=30 → Moderate tier.
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("a.rs"),
+            function: "watch_me".into(),
+            line: 1,
+            cyclomatic: 5.0,
+            coverage: Some(0.0),
+            crap: 20.0,
+            crate_name: None,
+        }];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::Human, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains('▲'), "moderate score must show ▲");
+        assert!(!s.contains('✗'), "moderate score must not show ✗");
+    }
+
+    #[test]
+    fn render_human_includes_per_crate_section_when_workspace() {
+        let entries = vec![entry(Some("alpha"), "a1", 1.0)];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::Human, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("Per-crate summary:"),
+            "human render must include per-crate section when entries are tagged:\n{s}"
+        );
+        assert!(s.contains("alpha"));
+    }
+
+    #[test]
+    fn render_human_omits_per_crate_section_when_no_workspace_data() {
+        let entries = vec![entry(None, "a1", 1.0)];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::Human, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            !s.contains("Per-crate summary"),
+            "non-workspace runs must not show per-crate section:\n{s}"
+        );
+    }
+}

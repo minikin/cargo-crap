@@ -79,3 +79,85 @@ pub(crate) fn delta_display(de: &DeltaEntry) -> String {
         DeltaStatus::Unchanged => String::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- coverage_bar ---
+
+    #[test]
+    fn coverage_bar_is_all_empty_for_zero_percent() {
+        // Kills: filled = pct * 10 replaced with 10 - pct * 10, or always 0.
+        let bar = coverage_bar(Some(0.0));
+        assert!(
+            bar.starts_with("░░░░░░░░░░"),
+            "0% must start with 10 empty blocks, got: {bar}"
+        );
+        assert!(bar.contains("0.0%"), "0% must include numeric label");
+    }
+
+    #[test]
+    fn coverage_bar_is_all_full_for_100_percent() {
+        // Kills: filled = pct * 10 replaced with 0, or empty/full swapped.
+        let bar = coverage_bar(Some(100.0));
+        assert!(
+            bar.starts_with("██████████"),
+            "100% must start with 10 full blocks, got: {bar}"
+        );
+        assert!(bar.contains("100.0%"), "100% must include numeric label");
+    }
+
+    #[test]
+    fn coverage_bar_is_half_full_for_50_percent() {
+        // Kills: rounding errors that shift the boundary, filled/empty swap.
+        let bar = coverage_bar(Some(50.0));
+        assert!(
+            bar.starts_with("█████░░░░░"),
+            "50% must have 5 full then 5 empty blocks, got: {bar}"
+        );
+    }
+
+    #[test]
+    fn coverage_bar_none_is_all_empty_with_dash() {
+        // Already exercised indirectly, but this pins the direct function contract.
+        let bar = coverage_bar(None);
+        assert!(
+            bar.contains("░░░░░░░░░░"),
+            "None must render with all-empty bar, got: {bar}"
+        );
+        assert!(bar.contains("—"), "None must use — instead of a percentage");
+    }
+
+    // --- Grade tiers ---
+
+    #[test]
+    fn grade_tier_boundaries_are_correct() {
+        // With threshold=30, the three zones are:
+        //   Clean:    score ≤ 10  (≤ threshold/3)
+        //   Moderate: 10 < score ≤ 30
+        //   Crappy:   score > 30
+        //
+        // Kills: > replaced with >=, wrong divisor, tiers swapped.
+        assert_eq!(
+            Grade::of(10.0, 30.0).icon(),
+            "✓",
+            "exactly threshold/3 → Clean"
+        );
+        assert_eq!(
+            Grade::of(10.001, 30.0).icon(),
+            "▲",
+            "just above threshold/3 → Moderate"
+        );
+        assert_eq!(
+            Grade::of(30.0, 30.0).icon(),
+            "▲",
+            "exactly threshold → Moderate (not Crappy)"
+        );
+        assert_eq!(
+            Grade::of(30.001, 30.0).icon(),
+            "✗",
+            "just above threshold → Crappy"
+        );
+    }
+}

@@ -483,3 +483,900 @@ pub(crate) fn render_pr_comment(
     let above = above_threshold_sorted(entries, threshold);
     write_pr_comment_abs_table(out, &above, threshold, links)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Format, render};
+    use super::*;
+
+    fn delta_entry(
+        file: &str,
+        function: &str,
+        crap: f64,
+        baseline: Option<f64>,
+        status: DeltaStatus,
+    ) -> DeltaEntry {
+        DeltaEntry {
+            current: CrapEntry {
+                file: PathBuf::from(file),
+                function: function.into(),
+                line: 1,
+                cyclomatic: 5.0,
+                coverage: Some(80.0),
+                crap,
+                crate_name: None,
+            },
+            baseline_crap: baseline,
+            delta: baseline.map(|b| crap - b),
+            status,
+        }
+    }
+
+    fn render_delta_pr_to_string(report: &DeltaReport) -> String {
+        let mut buf = Vec::new();
+        render_delta_pr_comment(report, 30.0, None, &mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn render_delta_pr_with_links(
+        report: &DeltaReport,
+        links: &SourceLinks,
+    ) -> String {
+        let mut buf = Vec::new();
+        render_delta_pr_comment(report, 30.0, Some(links), &mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    // --- Path-prefix helper -------------------------------------------------
+
+    #[test]
+    fn lcp_empty_for_fewer_than_two_paths() {
+        assert_eq!(longest_common_path_prefix(&[]), PathBuf::new());
+        assert_eq!(
+            longest_common_path_prefix(&[PathBuf::from("/a/b/c")]),
+            PathBuf::new()
+        );
+    }
+
+    #[test]
+    fn lcp_finds_component_wise_prefix() {
+        let paths = vec![
+            PathBuf::from("/home/runner/work/repo/src/a.rs"),
+            PathBuf::from("/home/runner/work/repo/src/b.rs"),
+            PathBuf::from("/home/runner/work/repo/tests/c.rs"),
+        ];
+        assert_eq!(
+            longest_common_path_prefix(&paths),
+            PathBuf::from("/home/runner/work/repo")
+        );
+    }
+
+    #[test]
+    fn lcp_does_not_collapse_partial_component() {
+        // /a/foo and /a/foobar must share /a, not /a/foo.
+        let paths = vec![PathBuf::from("/a/foo"), PathBuf::from("/a/foobar")];
+        assert_eq!(longest_common_path_prefix(&paths), PathBuf::from("/a"));
+    }
+
+    #[test]
+    fn lcp_no_overlap_returns_empty() {
+        let paths = vec![PathBuf::from("src/a.rs"), PathBuf::from("tests/b.rs")];
+        assert_eq!(longest_common_path_prefix(&paths), PathBuf::new());
+    }
+
+    // --- compute_render_prefix CWD fallback --------------------------------
+
+    #[test]
+    fn render_prefix_empty_paths_returns_empty() {
+        // Kills: replacing `&&` with `||` in the CWD-fallback guard chain.
+        // With OR semantics, an empty `paths` list combined with a non-empty
+        // CWD would return CWD, which is wrong — there's nothing to render.
+        assert_eq!(compute_render_prefix(&[]), PathBuf::new());
+    }
+
+    #[test]
+    fn render_prefix_paths_outside_cwd_returns_empty() {
+        // Kills: replacing `&&` with `||` between the `paths.is_empty()` and
+        // `paths.iter().all(starts_with cwd)` clauses. A path that is not
+        // under CWD must not trigger CWD stripping.
+        let outside = PathBuf::from("/tmp/definitely_not_under_cwd_xyzzy/foo.rs");
+        assert_eq!(compute_render_prefix(&[outside]), PathBuf::new());
+    }
+
+    #[test]
+    fn render_prefix_falls_back_to_cwd_when_path_under_cwd() {
+        // Pins the happy path: single under-CWD entry → returns CWD as prefix.
+        let cwd = std::env::current_dir().expect("cwd");
+        let inside = cwd.join("nested").join("foo.rs");
+        assert_eq!(compute_render_prefix(&[inside]), cwd);
+    }
+
+    // --- pr-comment renderer (delta) ---------------------------------------
+
+    #[test]
+    fn pr_comment_starts_with_marker() {
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "foo",
+                10.0,
+                Some(5.0),
+                DeltaStatus::Regressed,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            s.starts_with("<!-- cargo-crap-report -->"),
+            "pr-comment must start with marker"
+        );
+    }
+
+    #[test]
+    fn pr_comment_hides_unchanged_rows() {
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry(
+                    "src/a.rs",
+                    "regressed_fn",
+                    12.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+                delta_entry(
+                    "src/a.rs",
+                    "unchanged_fn",
+                    5.0,
+                    Some(5.0),
+                    DeltaStatus::Unchanged,
+                ),
+            ],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(s.contains("regressed_fn"));
+        assert!(
+            !s.contains("unchanged_fn"),
+            "unchanged rows must be hidden, got:\n{s}"
+        );
+        // But the count must still appear in the breakdown.
+        assert!(s.contains("1 unchanged"));
+    }
+
+    #[test]
+    fn pr_comment_regressed_sorted_by_abs_delta_desc() {
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry(
+                    "src/a.rs",
+                    "small_jump",
+                    6.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+                delta_entry(
+                    "src/a.rs",
+                    "big_jump",
+                    50.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+                delta_entry(
+                    "src/a.rs",
+                    "medium_jump",
+                    15.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+            ],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        let big_pos = s.find("big_jump").unwrap();
+        let med_pos = s.find("medium_jump").unwrap();
+        let small_pos = s.find("small_jump").unwrap();
+        assert!(
+            big_pos < med_pos && med_pos < small_pos,
+            "order wrong:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_new_after_regressed_sorted_by_crap_desc() {
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry(
+                    "src/a.rs",
+                    "regressed_fn",
+                    12.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+                delta_entry("src/a.rs", "small_new", 2.0, None, DeltaStatus::New),
+                delta_entry("src/a.rs", "big_new", 40.0, None, DeltaStatus::New),
+            ],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        let reg_pos = s.find("regressed_fn").unwrap();
+        let big_new_pos = s.find("big_new").unwrap();
+        let small_new_pos = s.find("small_new").unwrap();
+        assert!(
+            reg_pos < big_new_pos && big_new_pos < small_new_pos,
+            "Regressed must precede New; New must be CRAP-desc:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_improved_in_collapsed_details() {
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "improved_fn",
+                3.0,
+                Some(10.0),
+                DeltaStatus::Improved,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            s.contains("<details><summary>↓ 1 improved</summary>"),
+            "improved must be inside <details>, got:\n{s}"
+        );
+        assert!(s.contains("improved_fn"));
+        assert!(s.contains("</details>"));
+    }
+
+    #[test]
+    fn pr_comment_removed_in_collapsed_details() {
+        let report = DeltaReport {
+            entries: vec![],
+            removed: vec![RemovedEntry {
+                function: "gone_fn".into(),
+                file: PathBuf::from("src/a.rs"),
+                baseline_crap: 8.0,
+            }],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(s.contains("<details><summary>— 1 removed</summary>"));
+        assert!(s.contains("gone_fn"));
+    }
+
+    #[test]
+    fn pr_comment_hot_spots_block_only_when_above_threshold() {
+        // Unchanged + above threshold (30) → appears.
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry(
+                    "src/a.rs",
+                    "hot_fn",
+                    80.0,
+                    Some(80.0),
+                    DeltaStatus::Unchanged,
+                ),
+                delta_entry(
+                    "src/a.rs",
+                    "cool_fn",
+                    5.0,
+                    Some(5.0),
+                    DeltaStatus::Unchanged,
+                ),
+            ],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            s.contains("🔥 Top hot spots above threshold"),
+            "hot spots block missing:\n{s}"
+        );
+        assert!(s.contains("hot_fn"));
+        assert!(
+            !s.contains("cool_fn"),
+            "below-threshold unchanged must not appear"
+        );
+    }
+
+    #[test]
+    fn pr_comment_hot_spots_block_omitted_when_empty() {
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "small",
+                5.0,
+                Some(5.0),
+                DeltaStatus::Unchanged,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            !s.contains("Top hot spots"),
+            "hot spots block must be omitted when nothing qualifies:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_caps_primary_table_at_25_with_truncation_footer() {
+        let entries: Vec<DeltaEntry> = (0..30)
+            .map(|i| {
+                delta_entry(
+                    "src/a.rs",
+                    &format!("fn_{i:02}"),
+                    100.0 - i as f64, // descending CRAP so abs delta also descends
+                    Some(1.0),
+                    DeltaStatus::Regressed,
+                )
+            })
+            .collect();
+        let report = DeltaReport {
+            entries,
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+
+        // Top 25 present, last 5 omitted.
+        assert!(s.contains("fn_00"));
+        assert!(s.contains("fn_24"));
+        assert!(!s.contains("fn_25"), "row 26 must be capped out");
+        assert!(s.contains("…and 5 more"));
+    }
+
+    #[test]
+    fn pr_comment_strips_longest_common_path_prefix() {
+        // Mix src/ and tests/ paths so the longest common prefix stops at the
+        // repo root, leaving `src/...` and `tests/...` visible.
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry(
+                    "/home/runner/work/repo/src/a.rs",
+                    "fn_a",
+                    12.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+                delta_entry(
+                    "/home/runner/work/repo/tests/b.rs",
+                    "fn_b",
+                    14.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+            ],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            s.contains("`src/a.rs:1`"),
+            "expected stripped path src/a.rs, got:\n{s}"
+        );
+        assert!(s.contains("`tests/b.rs:1`"));
+        assert!(
+            !s.contains("/home/runner"),
+            "common prefix must be stripped:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_path_outside_cwd_unchanged() {
+        // Single entry whose absolute path is NOT under the test runner's CWD:
+        // no LCP, no CWD overlap, so the path passes through verbatim.
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "/home/runner/work/repo/src/a.rs",
+                "only",
+                12.0,
+                Some(5.0),
+                DeltaStatus::Regressed,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            s.contains("/home/runner/work/repo/src/a.rs"),
+            "path outside CWD must remain absolute:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_single_entry_under_cwd_strips_against_cwd() {
+        // Build an entry whose path is under the test runner's CWD. The CWD
+        // fallback in `compute_render_prefix` should strip that prefix and
+        // leave the relative form in the rendered table. Use the platform
+        // separator so this works on Windows too.
+        let cwd = std::env::current_dir().expect("cwd");
+        let test_file = cwd.join("dummy_under_cwd").join("foo.rs");
+        let test_file_str = test_file.to_str().expect("utf8 path").to_string();
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                &test_file_str,
+                "only",
+                12.0,
+                Some(5.0),
+                DeltaStatus::Regressed,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        let sep = std::path::MAIN_SEPARATOR_STR;
+        let expected = format!("`dummy_under_cwd{sep}foo.rs:1`");
+        assert!(
+            s.contains(&expected),
+            "single under-CWD entry must be stripped to a relative path \
+             (expected to contain {expected:?}):\n{s}"
+        );
+        assert!(
+            !s.contains(cwd.to_str().expect("utf8 cwd")),
+            "CWD prefix must not appear after stripping:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_clean_headline_when_no_regressions() {
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "improved_fn",
+                3.0,
+                Some(10.0),
+                DeltaStatus::Improved,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(s.contains("## ✅ No CRAP regressions"));
+    }
+
+    #[test]
+    fn pr_comment_breakdown_line_after_headline() {
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry("src/a.rs", "r", 12.0, Some(5.0), DeltaStatus::Regressed),
+                delta_entry("src/a.rs", "n", 8.0, None, DeltaStatus::New),
+                delta_entry("src/a.rs", "i", 3.0, Some(8.0), DeltaStatus::Improved),
+                delta_entry("src/a.rs", "u", 5.0, Some(5.0), DeltaStatus::Unchanged),
+            ],
+            removed: vec![RemovedEntry {
+                function: "gone".into(),
+                file: PathBuf::from("src/a.rs"),
+                baseline_crap: 4.0,
+            }],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(s.contains("↑ 1 regressed · ★ 1 new · ↓ 1 improved · 1 unchanged · — 1 removed"));
+    }
+
+    // --- pr-comment renderer (absolute, no baseline) -----------------------
+
+    #[test]
+    fn pr_comment_absolute_starts_with_marker() {
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("src/a.rs"),
+            function: "foo".into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap: 1.0,
+            crate_name: None,
+        }];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::PrComment, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.starts_with("<!-- cargo-crap-report -->"));
+    }
+
+    #[test]
+    fn pr_comment_absolute_no_violations_shows_pass_heading() {
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("src/a.rs"),
+            function: "foo".into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap: 1.0,
+            crate_name: None,
+        }];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::PrComment, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("## ✅ No CRAP threshold violations"));
+    }
+
+    // --- Mutation-killing tests --------------------------------------------
+
+    #[test]
+    fn pr_comment_hot_spots_filter_is_strict_above_threshold() {
+        // Kills: `crap > threshold` → `>=` in DeltaBuckets::from_report.
+        // An entry exactly at the threshold is NOT a hot spot.
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "exactly_at_threshold",
+                30.0,
+                Some(30.0),
+                DeltaStatus::Unchanged,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            !s.contains("Top hot spots"),
+            "crap == threshold must NOT be a hot spot:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_above_threshold_filter_is_strict() {
+        // Kills: `e.crap > threshold` → `>=`, `<`, `==` in above_threshold_sorted.
+        // Threshold = 30; test entries at 29.9 (below), 30.0 (exactly), 30.1 (above).
+        let entries = vec![
+            CrapEntry {
+                file: PathBuf::from("src/a.rs"),
+                function: "below".into(),
+                line: 1,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 29.9,
+                crate_name: None,
+            },
+            CrapEntry {
+                file: PathBuf::from("src/a.rs"),
+                function: "exactly".into(),
+                line: 2,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 30.0,
+                crate_name: None,
+            },
+            CrapEntry {
+                file: PathBuf::from("src/a.rs"),
+                function: "above".into(),
+                line: 3,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 30.1,
+                crate_name: None,
+            },
+        ];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::PrComment, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+
+        // Only `above` must appear in the table; the headline still shows it.
+        assert!(s.contains("`above`"), "above-threshold must appear:\n{s}");
+        assert!(
+            !s.contains("`below`"),
+            "below-threshold must NOT appear:\n{s}"
+        );
+        assert!(
+            !s.contains("`exactly`"),
+            "exactly-at-threshold must NOT appear (filter is strict >):\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_absolute_table_contains_above_threshold_rows() {
+        // Kills: above_threshold_sorted → vec![] (empty stub),
+        //        write_pr_comment_abs_table → Ok(()) (no-op stub).
+        // A function above threshold must appear in the rendered table body.
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("src/a.rs"),
+            function: "very_crappy".into(),
+            line: 42,
+            cyclomatic: 10.0,
+            coverage: Some(0.0),
+            crap: 110.0,
+            crate_name: None,
+        }];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::PrComment, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("`very_crappy`"),
+            "above-threshold function must appear as a row:\n{s}"
+        );
+        // The table separator must also appear (proving the table itself was emitted).
+        assert!(
+            s.contains("|---|---:|---:|---:|---|---|"),
+            "table header separator must be present:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_truncation_only_when_strictly_over_cap() {
+        // Kills: `total > MAX_ROWS_PER_SECTION` → `>=` in write_truncation_if_capped.
+        // Exactly MAX_ROWS_PER_SECTION rows (25) → no truncation footer.
+        let entries: Vec<DeltaEntry> = (0..MAX_ROWS_PER_SECTION)
+            .map(|i| {
+                delta_entry(
+                    "src/a.rs",
+                    &format!("fn_{i:02}"),
+                    100.0 - i as f64,
+                    Some(1.0),
+                    DeltaStatus::Regressed,
+                )
+            })
+            .collect();
+        let report = DeltaReport {
+            entries,
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            !s.contains("…and 0 more"),
+            "no truncation footer when count == MAX:\n{s}"
+        );
+        assert!(
+            !s.contains("see CI artifact"),
+            "no truncation footer at all when count == MAX:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_breakdown_reflects_actual_unchanged_count() {
+        // Kills: `unchanged_count -> usize` replaced with `1` (constant stub).
+        // Build a report with 3 Unchanged entries → breakdown must show "3 unchanged",
+        // not "1 unchanged".
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry("src/a.rs", "u1", 5.0, Some(5.0), DeltaStatus::Unchanged),
+                delta_entry("src/a.rs", "u2", 5.0, Some(5.0), DeltaStatus::Unchanged),
+                delta_entry("src/a.rs", "u3", 5.0, Some(5.0), DeltaStatus::Unchanged),
+                delta_entry("src/a.rs", "r", 12.0, Some(5.0), DeltaStatus::Regressed),
+            ],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            s.contains("· 3 unchanged ·"),
+            "breakdown must report 3 unchanged, got:\n{s}"
+        );
+    }
+
+    // --- Source links (spec 12) --------------------------------------------
+
+    #[test]
+    fn pr_comment_no_links_when_links_arg_is_none() {
+        // Default rendering (None) must not contain markdown links — the
+        // table cells stay as plain code spans.
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "foo",
+                12.0,
+                Some(5.0),
+                DeltaStatus::Regressed,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            !s.contains("](https://"),
+            "no links expected when links arg is None:\n{s}"
+        );
+        assert!(s.contains("`foo`"), "function name must still render");
+    }
+
+    #[test]
+    fn pr_comment_links_function_and_location_when_set() {
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "foo",
+                12.0,
+                Some(5.0),
+                DeltaStatus::Regressed,
+            )],
+            removed: vec![],
+        };
+        let links = SourceLinks::new("https://github.com/owner/repo".into(), "deadbeef".into());
+        let s = render_delta_pr_with_links(&report, &links);
+        let url = "https://github.com/owner/repo/blob/deadbeef/src/a.rs#L1";
+        // Function cell wrapped in a link.
+        assert!(
+            s.contains(&format!("[`foo`]({url})")),
+            "function cell must be a markdown link, got:\n{s}"
+        );
+        // Location cell wrapped in a link too. The visible text uses the
+        // LCP-stripped form (single entry → CWD fallback or absolute), but
+        // the URL must always use the original path.
+        let loc_link_target = format!("]({url})");
+        let count = s.matches(&loc_link_target).count();
+        assert!(
+            count >= 2,
+            "both Function and Location must link to the same URL, got count={count}:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_link_url_uses_path_relative_to_cwd() {
+        // Simulate a CI run: cargo metadata produces an absolute path under
+        // the checkout root (== CWD). The display rule strips CWD; the link
+        // URL must use the *same* repo-relative form so it resolves on
+        // GitHub. A `/blob/<sha>//abs/...` URL would 404.
+        let cwd = std::env::current_dir().expect("cwd");
+        let abs = cwd.join("src").join("schema.rs");
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                abs.to_str().expect("utf8"),
+                "compile_schema",
+                12.0,
+                Some(5.0),
+                DeltaStatus::Regressed,
+            )],
+            removed: vec![],
+        };
+        let links = SourceLinks::new("https://github.com/o/r".into(), "sha1".into());
+        let s = render_delta_pr_with_links(&report, &links);
+        // GitHub URLs always use forward slashes — `url_for` normalizes
+        // backslashes — so the expected literal is the same on every OS.
+        let expected = "https://github.com/o/r/blob/sha1/src/schema.rs#L1";
+        assert!(
+            s.contains(expected),
+            "URL must use CWD-stripped path with forward slashes \
+             (expected {expected:?}):\n{s}"
+        );
+        assert!(!s.contains("/blob/sha1//"), "no double slash in URL:\n{s}");
+    }
+
+    #[test]
+    fn pr_comment_link_url_does_not_strip_lcp_when_lcp_is_below_repo_root() {
+        // Regression test for the original CI bug: when every rendered
+        // entry lives under `src/`, the LCP (used for visible Location
+        // text) is `<cwd>/src`. The URL must NOT inherit that — it has to
+        // strip CWD only, otherwise `host/repo/blob/<sha>/main.rs` 404s
+        // (the repo path is `src/main.rs`).
+        let cwd = std::env::current_dir().expect("cwd");
+        let a = cwd.join("src").join("a.rs");
+        let b = cwd.join("src").join("b.rs");
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry(
+                    a.to_str().unwrap(),
+                    "fn_a",
+                    12.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+                delta_entry(
+                    b.to_str().unwrap(),
+                    "fn_b",
+                    14.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+            ],
+            removed: vec![],
+        };
+        let links = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
+        let s = render_delta_pr_with_links(&report, &links);
+        assert!(
+            s.contains("/blob/sha/src/a.rs#L1"),
+            "URL must keep the src/ segment (CWD-relative, not LCP-relative):\n{s}"
+        );
+        assert!(
+            !s.contains("/blob/sha/a.rs#L1"),
+            "URL must not strip src/ even when it's the LCP across rendered rows:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_skips_link_when_path_cannot_be_made_repo_relative() {
+        // Path NOT under CWD → link_path returns None and the row falls
+        // back to plain code spans. Use `std::env::temp_dir()` because a
+        // Unix-style `/totally/elsewhere/foo.rs` is treated as RELATIVE on
+        // Windows (no drive letter), which would defeat the test;
+        // `temp_dir()` is absolute on every platform and reliably outside
+        // the cargo-project CWD.
+        let outside = std::env::temp_dir()
+            .join("cargo_crap_link_test")
+            .join("foo.rs");
+        assert!(
+            outside.is_absolute(),
+            "test setup: temp path must be absolute"
+        );
+        let cwd = std::env::current_dir().expect("cwd");
+        assert!(
+            !outside.starts_with(&cwd),
+            "test setup: temp path must not be under CWD"
+        );
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                outside.to_str().expect("utf8"),
+                "stranger",
+                12.0,
+                Some(5.0),
+                DeltaStatus::Regressed,
+            )],
+            removed: vec![],
+        };
+        let links = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
+        let s = render_delta_pr_with_links(&report, &links);
+        assert!(s.contains("`stranger`"), "function name must still render");
+        assert!(
+            !s.contains("](https://"),
+            "no link expected when path can't be made repo-relative:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_removed_entries_are_not_linked() {
+        // Removed functions don't exist on HEAD — linking them would 404.
+        let report = DeltaReport {
+            entries: vec![],
+            removed: vec![RemovedEntry {
+                function: "gone_fn".into(),
+                file: PathBuf::from("src/a.rs"),
+                baseline_crap: 8.0,
+            }],
+        };
+        let links = SourceLinks::new("https://github.com/owner/repo".into(), "sha".into());
+        let s = render_delta_pr_with_links(&report, &links);
+        assert!(s.contains("gone_fn"));
+        assert!(
+            !s.contains("](https://"),
+            "removed entries must not be wrapped in links:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_hot_spots_get_links() {
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "hot_fn",
+                80.0,
+                Some(80.0),
+                DeltaStatus::Unchanged,
+            )],
+            removed: vec![],
+        };
+        let links = SourceLinks::new("https://github.com/owner/repo".into(), "sha".into());
+        let s = render_delta_pr_with_links(&report, &links);
+        assert!(
+            s.contains("[`hot_fn`](https://github.com/owner/repo/blob/sha/src/a.rs#L1)"),
+            "hot-spot Function cell must be a link:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_improved_get_links() {
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "improved_fn",
+                3.0,
+                Some(10.0),
+                DeltaStatus::Improved,
+            )],
+            removed: vec![],
+        };
+        let links = SourceLinks::new("https://github.com/owner/repo".into(), "sha".into());
+        let s = render_delta_pr_with_links(&report, &links);
+        assert!(
+            s.contains("[`improved_fn`](https://github.com/owner/repo/blob/sha/src/a.rs#L1)"),
+            "improved Function cell must be a link:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pr_comment_absolute_table_gets_links() {
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("src/a.rs"),
+            function: "very_crappy".into(),
+            line: 42,
+            cyclomatic: 10.0,
+            coverage: Some(0.0),
+            crap: 110.0,
+            crate_name: None,
+        }];
+        let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into());
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::PrComment, Some(&links), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("[`very_crappy`](https://github.com/o/r/blob/abc/src/a.rs#L42)"),
+            "absolute pr-comment must link Function:\n{s}"
+        );
+    }
+}

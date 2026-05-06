@@ -32,28 +32,12 @@ mod summary;
 mod types;
 
 #[cfg(test)]
-mod tests;
+mod test_support;
 
 // Re-exports — the rest of the crate depends on these names being on `report`.
 pub use json::{DELTA_SCHEMA_URL, Envelope, REPORT_SCHEMA_URL, SCHEMA_VERSION};
 pub use links::SourceLinks;
 pub use summary::{render_delta_summary, render_summary};
-
-// Internal re-exports so the colocated `tests` module can keep using
-// `use super::*;` without sprinkling submodule paths everywhere.
-#[cfg(test)]
-pub(crate) use github::gha_escape;
-#[cfg(test)]
-pub(crate) use per_crate::{
-    crate_rollups, has_crate_data, write_per_crate_human, write_per_crate_markdown,
-};
-#[cfg(test)]
-pub(crate) use pr_comment::{
-    MAX_ROWS_PER_SECTION, compute_render_prefix, longest_common_path_prefix,
-    render_delta_pr_comment,
-};
-#[cfg(test)]
-pub(crate) use types::{Grade, coverage_bar};
 
 /// Output format for the report.
 #[derive(Debug, Clone, Copy)]
@@ -138,4 +122,16 @@ pub fn crappy_count(
         .iter()
         .filter(|e| Severity::classify(e.crap, threshold) == Severity::Crappy)
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_support::sample;
+
+    #[test]
+    fn crappy_count_respects_threshold() {
+        assert_eq!(crappy_count(&sample(), 30.0), 1);
+        assert_eq!(crappy_count(&sample(), 200.0), 0);
+    }
 }

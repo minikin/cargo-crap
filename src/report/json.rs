@@ -82,3 +82,51 @@ pub(crate) fn render_delta_json(
     out.write_all(b"\n")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::sample;
+    use super::super::{Format, render};
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn json_output_is_envelope_with_version_and_entries() {
+        let mut buf = Vec::new();
+        render(&sample(), 30.0, Format::Json, None, &mut buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert!(parsed.is_object(), "JSON output must be an envelope object");
+        assert_eq!(
+            parsed["version"].as_str(),
+            Some(SCHEMA_VERSION),
+            "version field must equal SCHEMA_VERSION"
+        );
+        assert!(
+            parsed["entries"].is_array(),
+            "entries field must be an array"
+        );
+        assert_eq!(parsed["entries"].as_array().map(|a| a.len()), Some(2));
+    }
+
+    #[test]
+    fn json_format_unaffected_by_links() {
+        use super::super::SourceLinks;
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("src/a.rs"),
+            function: "foo".into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap: 1.0,
+            crate_name: None,
+        }];
+        let links = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::Json, Some(&links), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            !s.contains("](https://"),
+            "JSON output must not contain markdown links:\n{s}"
+        );
+    }
+}

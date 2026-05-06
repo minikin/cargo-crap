@@ -106,3 +106,97 @@ pub(crate) fn gha_escape(s: &str) -> String {
         .replace('\r', "%0D")
         .replace('\n', "%0A")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::sample;
+    use super::super::{Format, render};
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn github_format_emits_warning_for_crappy_function() {
+        // Kills: missing the crappy-only guard (`entry.crap > threshold`).
+        let mut buf = Vec::new();
+        render(&sample(), 30.0, Format::GitHub, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("::warning"),
+            "crappy function must produce a ::warning annotation"
+        );
+        // The annotation must name the function that is crappy.
+        assert!(
+            s.contains("crappy"),
+            "annotation must mention the crappy function"
+        );
+    }
+
+    #[test]
+    fn github_format_clean_function_produces_no_annotation() {
+        // Kills: emitting annotations for all functions regardless of threshold.
+        let mut buf = Vec::new();
+        render(&sample(), 30.0, Format::GitHub, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        // "clean" (crap=1.0) is well below threshold=30 and must be silent.
+        assert!(
+            !s.lines()
+                .any(|l| l.contains("clean") && l.contains("::warning")),
+            "clean function must not produce an annotation"
+        );
+    }
+
+    #[test]
+    fn github_format_all_clean_produces_empty_output() {
+        // Kills: unconditionally writing output regardless of score.
+        let all_clean = vec![CrapEntry {
+            file: PathBuf::from("a.rs"),
+            function: "clean".into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap: 1.0,
+            crate_name: None,
+        }];
+        let mut buf = Vec::new();
+        render(&all_clean, 30.0, Format::GitHub, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.is_empty(),
+            "no crappy functions must produce no output, got: {s:?}"
+        );
+    }
+
+    #[test]
+    fn github_format_annotation_contains_file_and_line() {
+        // Pins: the file= and line= parameters are present and non-empty.
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("src/lib.rs"),
+            function: "bad".into(),
+            line: 42,
+            cyclomatic: 10.0,
+            coverage: Some(0.0),
+            crap: 110.0,
+            crate_name: None,
+        }];
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::GitHub, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("line=42"),
+            "annotation must include the line number"
+        );
+        assert!(
+            s.contains("lib.rs"),
+            "annotation must include the file name"
+        );
+    }
+
+    #[test]
+    fn gha_escape_encodes_special_characters() {
+        // Pins: special chars that would break workflow-command parsing.
+        assert_eq!(gha_escape("a%b"), "a%25b");
+        assert_eq!(gha_escape("a\rb"), "a%0Db");
+        assert_eq!(gha_escape("a\nb"), "a%0Ab");
+        assert_eq!(gha_escape("plain"), "plain"); // no-op for clean strings
+    }
+}

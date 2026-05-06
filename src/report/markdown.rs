@@ -221,3 +221,35 @@ pub(crate) fn render_delta_markdown(
     }
     write_markdown_delta_stats(report, out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Format, render};
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn markdown_format_also_emits_links() {
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("src/a.rs"),
+            function: "foo".into(),
+            line: 7,
+            cyclomatic: 1.0,
+            coverage: Some(50.0),
+            crap: 5.0,
+            crate_name: None,
+        }];
+        let links = SourceLinks::new("https://github.com/o/r".into(), "main".into());
+        let mut buf = Vec::new();
+        render(&entries, 30.0, Format::Markdown, Some(&links), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("[`foo`](https://github.com/o/r/blob/main/src/a.rs#L7)"),
+            "markdown format must link Function:\n{s}"
+        );
+        assert!(
+            s.contains("[`src/a.rs:7`](https://github.com/o/r/blob/main/src/a.rs#L7)"),
+            "markdown format must link Location:\n{s}"
+        );
+    }
+}

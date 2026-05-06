@@ -91,3 +91,46 @@ pub fn render_delta_summary(
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn entry(
+        crate_name: Option<&str>,
+        function: &str,
+        crap: f64,
+    ) -> CrapEntry {
+        CrapEntry {
+            file: PathBuf::from("src/lib.rs"),
+            function: function.into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap,
+            crate_name: crate_name.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn render_summary_leads_with_per_crate_table_for_workspace() {
+        let entries = vec![entry(Some("alpha"), "a1", 1.0)];
+        let mut buf = Vec::new();
+        render_summary(&entries, 30.0, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("Per-crate summary:"));
+        // Aggregate one-liner still follows.
+        assert!(s.contains("Analyzed: 1"));
+    }
+
+    #[test]
+    fn render_summary_skips_per_crate_when_not_workspace() {
+        let entries = vec![entry(None, "a1", 1.0)];
+        let mut buf = Vec::new();
+        render_summary(&entries, 30.0, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(!s.contains("Per-crate summary"));
+        assert!(s.contains("Analyzed: 1"));
+    }
+}

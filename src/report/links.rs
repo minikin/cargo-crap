@@ -86,3 +86,43 @@ pub(crate) fn linkify(
         _ => inner,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_links_url_for_joins_components_with_one_slash() {
+        let l = SourceLinks::new("https://github.com/owner/repo".into(), "abc123".into());
+        let url = l.url_for(Path::new("src/foo.rs"), 42);
+        assert_eq!(
+            url,
+            "https://github.com/owner/repo/blob/abc123/src/foo.rs#L42"
+        );
+    }
+
+    #[test]
+    fn source_links_strips_trailing_slash_from_repo_url() {
+        let l = SourceLinks::new("https://github.com/owner/repo/".into(), "abc123".into());
+        let url = l.url_for(Path::new("src/foo.rs"), 1);
+        assert!(
+            !url.contains("repo//blob"),
+            "trailing slash must be normalized: {url}"
+        );
+        assert!(url.contains("/repo/blob/abc123/"));
+    }
+
+    #[test]
+    fn source_links_url_uses_forward_slashes_even_for_windows_input() {
+        // GitHub URLs always use `/`. A Windows-style backslash path must
+        // be normalized before it lands in the URL, otherwise links break
+        // on github.com regardless of which OS rendered them.
+        let l = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
+        let url = l.url_for(Path::new(r"src\foo.rs"), 1);
+        assert!(
+            !url.contains('\\'),
+            "URL must contain no backslashes, got: {url}"
+        );
+        assert_eq!(url, "https://github.com/o/r/blob/sha/src/foo.rs#L1");
+    }
+}
