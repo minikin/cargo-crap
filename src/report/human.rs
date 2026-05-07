@@ -439,4 +439,48 @@ mod tests {
             "non-workspace runs must not show per-crate section:\n{s}"
         );
     }
+
+    #[test]
+    fn delta_human_summary_counts_moved_correctly() {
+        // Kills: replace `e.status == DeltaStatus::Moved` with `!=` in
+        // write_delta_summary. With 1 Moved and 3 non-Moved the correct
+        // count (1) differs from the mutated count (3) in the rendered
+        // line, so the assertion catches the flipped operator.
+        use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
+        let mk_entry = |fn_name: &str, status: DeltaStatus| DeltaEntry {
+            current: CrapEntry {
+                file: PathBuf::from("src/a.rs"),
+                function: fn_name.into(),
+                line: 1,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 1.0,
+                crate_name: None,
+            },
+            baseline_crap: Some(1.0),
+            delta: Some(0.0),
+            status,
+            previous_file: None,
+        };
+        let report = DeltaReport {
+            entries: vec![
+                mk_entry("moved_fn", DeltaStatus::Moved),
+                mk_entry("u1", DeltaStatus::Unchanged),
+                mk_entry("u2", DeltaStatus::Unchanged),
+                mk_entry("u3", DeltaStatus::Unchanged),
+            ],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_human(&report, 30.0, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("↔ 1 moved"),
+            "human delta summary must report 1 moved, not 3:\n{s}"
+        );
+        assert!(
+            !s.contains("↔ 3 moved"),
+            "human delta summary must NOT count non-moved as moved:\n{s}"
+        );
+    }
 }
