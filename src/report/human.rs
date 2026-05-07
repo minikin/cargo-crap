@@ -188,10 +188,12 @@ fn build_delta_row(
 
     // Location reads `<new-loc>:<line> ← <previous_file>` when the entry
     // moved, so reviewers see both endpoints without an extra column.
-    let location = match &de.previous_file {
-        Some(prev) => format!("{}:{} ← {}", e.file.display(), e.line, prev.display()),
-        None => format!("{}:{}", e.file.display(), e.line),
-    };
+    let prev_suffix = de
+        .previous_file
+        .as_ref()
+        .map(|p| format!(" ← {}", p.display()))
+        .unwrap_or_default();
+    let location = format!("{}:{}{prev_suffix}", e.file.display(), e.line);
 
     vec![
         Cell::new(grade.icon()).fg(color),

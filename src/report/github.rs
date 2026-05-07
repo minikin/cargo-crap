@@ -81,13 +81,14 @@ pub(crate) fn render_delta_github(
         let cov_str = e.coverage.map_or("—".into(), |c| format!("{c:.1}%"));
         // For score-changed moves, surface the previous location so the
         // annotation tells reviewers where the regression originated.
-        let moved_str = match &de.previous_file {
-            Some(prev) => {
+        let moved_str = de
+            .previous_file
+            .as_ref()
+            .map(|prev| {
                 let prev_disp = prev.strip_prefix(&cwd).unwrap_or(prev);
                 format!(" (moved from {})", prev_disp.display())
-            },
-            None => String::new(),
-        };
+            })
+            .unwrap_or_default();
         let message = format!(
             "{fn_name} CRAP={crap:.1}{delta}{moved} CC={cc} cov={cov}",
             fn_name = e.function,

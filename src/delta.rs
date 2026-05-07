@@ -119,6 +119,138 @@ fn classify_score(
     }
 }
 
+/// Build the initial DeltaEntry for a single current-side entry against
+/// the pass-1 (file, function) index. Sets `previous_file = None` (pass 2
+/// fills it in for paired moves).
+fn build_pass_one_entry(
+    e: &CrapEntry,
+    baseline_entry: Option<&CrapEntry>,
+    epsilon: f64,
+) -> DeltaEntry {
+    let (baseline_crap, delta, status) = match baseline_entry {
+        None => (None, None, DeltaStatus::New),
+        Some(b) => {
+            let d = e.crap - b.crap;
+            (Some(b.crap), Some(d), classify_score(d, epsilon))
+        },
+    };
+    DeltaEntry {
+        current: e.clone(),
+        baseline_crap,
+        delta,
+        status,
+        previous_file: None,
+    }
+}
+
+/// Pass 1 — exact `(file_path, function_name)` match. Returns the entry
+/// list (some still `New`, awaiting pass 2) and the set of baseline keys
+/// that were matched (so pass 2 / removed-collection can skip them).
+fn pass_one_exact(
+    current: &[CrapEntry],
+    baseline: &[CrapEntry],
+    epsilon: f64,
+) -> (Vec<DeltaEntry>, HashSet<(String, String)>) {
+    let baseline_index: HashMap<(String, String), &CrapEntry> = baseline
+        .iter()
+        .map(|e| ((path_key(&e.file), e.function.clone()), e))
+        .collect();
+    let mut matched: HashSet<(String, String)> = HashSet::new();
+    let entries = current
+        .iter()
+        .map(|e| {
+            let key = (path_key(&e.file), e.function.clone());
+            let baseline_entry = baseline_index.get(&key).copied();
+            if baseline_entry.is_some() {
+                matched.insert(key);
+            }
+            build_pass_one_entry(e, baseline_entry, epsilon)
+        })
+        .collect();
+    (entries, matched)
+}
+
+/// Apply a single move pairing in place: fill in baseline_crap / delta /
+/// previous_file and choose the right status (`Moved` for pure relocations,
+/// the score-status otherwise).
+fn apply_move_pairing(
+    entry: &mut DeltaEntry,
+    baseline_entry: &CrapEntry,
+    epsilon: f64,
+) {
+    let d = entry.current.crap - baseline_entry.crap;
+    let score_status = classify_score(d, epsilon);
+    entry.baseline_crap = Some(baseline_entry.crap);
+    entry.delta = Some(d);
+    entry.previous_file = Some(baseline_entry.file.clone());
+    entry.status = match score_status {
+        DeltaStatus::Unchanged => DeltaStatus::Moved,
+        other => other,
+    };
+}
+
+/// Pass 2 — name-only fallback over the unmatched. Pairings happen only
+/// when a name appears exactly once on each side (the unambiguous case).
+fn pass_two_name_fallback(
+    entries: &mut [DeltaEntry],
+    baseline: &[CrapEntry],
+    matched: &mut HashSet<(String, String)>,
+    epsilon: f64,
+) {
+    let mut new_idx_by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, de) in entries.iter().enumerate() {
+        if de.status == DeltaStatus::New {
+            new_idx_by_name
+                .entry(de.current.function.clone())
+                .or_default()
+                .push(i);
+        }
+    }
+    let mut baseline_unmatched_by_name: HashMap<String, Vec<&CrapEntry>> = HashMap::new();
+    for e in baseline {
+        let key = (path_key(&e.file), e.function.clone());
+        if !matched.contains(&key) {
+            baseline_unmatched_by_name
+                .entry(e.function.clone())
+                .or_default()
+                .push(e);
+        }
+    }
+    for (name, new_idxs) in &new_idx_by_name {
+        if new_idxs.len() != 1 {
+            continue;
+        }
+        let Some(baseline_group) = baseline_unmatched_by_name.get(name) else {
+            continue;
+        };
+        if baseline_group.len() != 1 {
+            continue;
+        }
+        let baseline_entry = baseline_group[0];
+        apply_move_pairing(&mut entries[new_idxs[0]], baseline_entry, epsilon);
+        matched.insert((
+            path_key(&baseline_entry.file),
+            baseline_entry.function.clone(),
+        ));
+    }
+}
+
+/// Collect baseline entries with no surviving pair into [`RemovedEntry`]s.
+fn collect_removed(
+    baseline: &[CrapEntry],
+    matched: &HashSet<(String, String)>,
+) -> Vec<RemovedEntry> {
+    baseline
+        .iter()
+        .filter(|e| !matched.contains(&(path_key(&e.file), e.function.clone())))
+        .map(|e| RemovedEntry {
+            function: e.function.clone(),
+            file: e.file.clone(),
+            baseline_crap: e.crap,
+        })
+        .collect()
+}
+
 /// Join current results against a baseline and compute per-function deltas.
 ///
 /// **Two-pass match** (spec 13):
@@ -142,110 +274,9 @@ pub fn compute_delta(
     baseline: &[CrapEntry],
     epsilon: f64,
 ) -> DeltaReport {
-    // ─── Pass 1: exact (file, function) match ────────────────────────────
-    let baseline_index: HashMap<(String, String), &CrapEntry> = baseline
-        .iter()
-        .map(|e| ((path_key(&e.file), e.function.clone()), e))
-        .collect();
-
-    let mut matched: HashSet<(String, String)> = HashSet::new();
-
-    let mut entries: Vec<DeltaEntry> = current
-        .iter()
-        .map(|e| {
-            let key = (path_key(&e.file), e.function.clone());
-            let baseline_entry = baseline_index.get(&key).copied();
-            if baseline_entry.is_some() {
-                matched.insert(key);
-            }
-
-            let (baseline_crap, delta, status) = match baseline_entry {
-                None => (None, None, DeltaStatus::New),
-                Some(b) => {
-                    let d = e.crap - b.crap;
-                    (Some(b.crap), Some(d), classify_score(d, epsilon))
-                },
-            };
-
-            DeltaEntry {
-                current: e.clone(),
-                baseline_crap,
-                delta,
-                status,
-                previous_file: None,
-            }
-        })
-        .collect();
-
-    // ─── Pass 2: name-only fallback over the unmatched ───────────────────
-    //
-    // Build name → indices/entries lookups separately for the New (current)
-    // side and the unmatched-baseline side. Pairings only happen when the
-    // count is exactly 1 on both sides (unambiguous).
-    let mut new_idx_by_name: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, de) in entries.iter().enumerate() {
-        if de.status == DeltaStatus::New {
-            new_idx_by_name
-                .entry(de.current.function.clone())
-                .or_default()
-                .push(i);
-        }
-    }
-
-    let mut baseline_unmatched_by_name: HashMap<String, Vec<&CrapEntry>> = HashMap::new();
-    for e in baseline {
-        let key = (path_key(&e.file), e.function.clone());
-        if !matched.contains(&key) {
-            baseline_unmatched_by_name
-                .entry(e.function.clone())
-                .or_default()
-                .push(e);
-        }
-    }
-
-    // Apply unique-name pairings.
-    for (name, new_idxs) in &new_idx_by_name {
-        if new_idxs.len() != 1 {
-            continue; // Ambiguous on the current side.
-        }
-        let baseline_group = match baseline_unmatched_by_name.get(name) {
-            Some(g) if g.len() == 1 => g,
-            _ => continue, // No match, or ambiguous on the baseline side.
-        };
-        let baseline_entry = baseline_group[0];
-        let entry = &mut entries[new_idxs[0]];
-        let d = entry.current.crap - baseline_entry.crap;
-        let score_status = classify_score(d, epsilon);
-        entry.baseline_crap = Some(baseline_entry.crap);
-        entry.delta = Some(d);
-        entry.previous_file = Some(baseline_entry.file.clone());
-        // Pure-move (no meaningful score change) gets the dedicated status;
-        // score-changed moves keep Regressed / Improved.
-        entry.status = match score_status {
-            DeltaStatus::Unchanged => DeltaStatus::Moved,
-            other => other,
-        };
-        // Mark the baseline entry as paired so it doesn't end up in `removed`.
-        let baseline_key = (
-            path_key(&baseline_entry.file),
-            baseline_entry.function.clone(),
-        );
-        matched.insert(baseline_key);
-    }
-
-    let removed: Vec<RemovedEntry> = baseline
-        .iter()
-        .filter(|e| {
-            let key = (path_key(&e.file), e.function.clone());
-            !matched.contains(&key)
-        })
-        .map(|e| RemovedEntry {
-            function: e.function.clone(),
-            file: e.file.clone(),
-            baseline_crap: e.crap,
-        })
-        .collect();
-
+    let (mut entries, mut matched) = pass_one_exact(current, baseline, epsilon);
+    pass_two_name_fallback(&mut entries, baseline, &mut matched, epsilon);
+    let removed = collect_removed(baseline, &matched);
     DeltaReport { entries, removed }
 }
 

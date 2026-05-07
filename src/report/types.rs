@@ -70,14 +70,33 @@ pub(crate) fn coverage_bar(pct: Option<f64>) -> String {
 /// Format the Δ column value for a single delta entry.
 ///
 /// Shared by the human delta table and the markdown / pr-comment renderers.
+/// `Moved` rows leave the Δ column blank — the `← <prev>` annotation in
+/// the Location cell already communicates the relocation, and matching
+/// `Unchanged`'s blank Δ keeps the score-status semantics consistent
+/// (Moved = "no meaningful score change").
 pub(crate) fn delta_display(de: &DeltaEntry) -> String {
     match de.status {
         DeltaStatus::Regressed | DeltaStatus::Improved => {
             format!("{:+.1}", de.delta.unwrap())
         },
         DeltaStatus::New => "NEW".to_string(),
-        DeltaStatus::Moved => "MOVED".to_string(),
-        DeltaStatus::Unchanged => String::new(),
+        DeltaStatus::Unchanged | DeltaStatus::Moved => String::new(),
+    }
+}
+
+/// Render a Location-cell string, optionally appending `← <prev>` when the
+/// entry was paired by name across files. Used by the markdown renderer
+/// (where there's no prefix-stripping) and exists separately for the
+/// pr-comment renderer (which also strips the LCP). Splitting the format
+/// keeps the per-renderer row writers simple.
+pub(crate) fn format_location_with_prev(
+    file: &std::path::Path,
+    line: usize,
+    previous_file: Option<&std::path::Path>,
+) -> String {
+    match previous_file {
+        Some(prev) => format!("`{}:{}` ← `{}`", file.display(), line, prev.display()),
+        None => format!("`{}:{}`", file.display(), line),
     }
 }
 

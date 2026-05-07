@@ -5,7 +5,7 @@
 
 use super::links::{SourceLinks, linkify};
 use super::per_crate::write_per_crate_markdown;
-use super::types::{Grade, delta_display};
+use super::types::{Grade, delta_display, format_location_with_prev};
 use super::write_pr_comment_marker;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::merge::CrapEntry;
@@ -149,10 +149,7 @@ fn write_delta_entries_table(
         let grade = Grade::of(e.crap, threshold);
         let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
         let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
-        let loc_text = match &de.previous_file {
-            Some(prev) => format!("`{}:{}` ← `{}`", e.file.display(), e.line, prev.display()),
-            None => format!("`{}:{}`", e.file.display(), e.line),
-        };
+        let loc_text = format_location_with_prev(&e.file, e.line, de.previous_file.as_deref());
         let loc = linkify(loc_text, links, &e.file, e.line);
         writeln!(
             out,
