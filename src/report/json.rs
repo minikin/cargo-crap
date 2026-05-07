@@ -31,7 +31,11 @@ macro_rules! schema_url {
 pub const REPORT_SCHEMA_URL: &str = schema_url!("report-v1.json");
 
 /// Stable HTTPS URL of the JSON Schema describing the delta envelope shape.
-pub const DELTA_SCHEMA_URL: &str = schema_url!("delta-v1.json");
+///
+/// Bumped to `delta-v2.json` in spec 13: adds the `moved` status value and
+/// the optional `previous_file` field. Consumers reading v1 see one new
+/// enum value and one new optional field — strictly additive.
+pub const DELTA_SCHEMA_URL: &str = schema_url!("delta-v2.json");
 
 /// JSON wire format for `--format json` output and `--baseline` input.
 #[derive(serde::Serialize, serde::Deserialize)]

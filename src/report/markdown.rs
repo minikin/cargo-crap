@@ -149,12 +149,11 @@ fn write_delta_entries_table(
         let grade = Grade::of(e.crap, threshold);
         let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
         let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
-        let loc = linkify(
-            format!("`{}:{}`", e.file.display(), e.line),
-            links,
-            &e.file,
-            e.line,
-        );
+        let loc_text = match &de.previous_file {
+            Some(prev) => format!("`{}:{}` ← `{}`", e.file.display(), e.line, prev.display()),
+            None => format!("`{}:{}`", e.file.display(), e.line),
+        };
+        let loc = linkify(loc_text, links, &e.file, e.line);
         writeln!(
             out,
             "| {} | {:.1} | {} | {} | {} | {} | {} |",
@@ -189,6 +188,11 @@ fn write_markdown_delta_stats(
         .iter()
         .filter(|e| e.status == DeltaStatus::New)
         .count();
+    let moved = report
+        .entries
+        .iter()
+        .filter(|e| e.status == DeltaStatus::Moved)
+        .count();
     let unchanged = report
         .entries
         .iter()
@@ -197,7 +201,7 @@ fn write_markdown_delta_stats(
     writeln!(out)?;
     writeln!(
         out,
-        "↑ {regressed} regressed · ↓ {improved} improved · ★ {new} new · · {unchanged} unchanged · — {} removed",
+        "↑ {regressed} regressed · ↓ {improved} improved · ★ {new} new · ↔ {moved} moved · · {unchanged} unchanged · — {} removed",
         report.removed.len(),
     )?;
     Ok(())

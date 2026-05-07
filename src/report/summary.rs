@@ -75,6 +75,11 @@ pub fn render_delta_summary(
         .iter()
         .filter(|e| e.status == DeltaStatus::New)
         .count();
+    let moved = report
+        .entries
+        .iter()
+        .filter(|e| e.status == DeltaStatus::Moved)
+        .count();
     let unchanged = report
         .entries
         .iter()
@@ -82,10 +87,11 @@ pub fn render_delta_summary(
         .count();
     writeln!(
         out,
-        "{}  {}  {}  {}  {}",
+        "{}  {}  {}  {}  {}  {}",
         format!("↑ {regressed} regressed").red(),
         format!("↓ {improved} improved").green(),
         format!("★ {new} new").yellow(),
+        format!("↔ {moved} moved").cyan(),
         format!("· {unchanged} unchanged").dimmed(),
         format!("— {} removed", report.removed.len()).dimmed(),
     )?;

@@ -36,6 +36,12 @@ pub enum DeltaStatus {
     New,
     /// Score changed by ≤ epsilon — effectively unchanged.
     Unchanged,
+    /// Function moved to a different file with no meaningful score change
+    /// (≤ epsilon). The baseline location is preserved in
+    /// [`DeltaEntry::previous_file`]. Score-changed moves keep their
+    /// score-status (`Regressed` / `Improved`); `Moved` is exclusively for
+    /// pure relocations.
+    Moved,
 }
 
 /// One function from the current run, annotated with its change since the baseline.
@@ -48,6 +54,11 @@ pub struct DeltaEntry {
     /// `current.crap − baseline_crap`; `None` when this function is new.
     pub delta: Option<f64>,
     pub status: DeltaStatus,
+    /// Set when this function existed at a different path in the baseline
+    /// (paired by name during the second-pass matcher). `None` for
+    /// first-pass exact matches and genuinely-new entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_file: Option<PathBuf>,
 }
 
 /// A function present in the baseline but absent in the current run.
@@ -94,13 +105,35 @@ fn path_key(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
+/// Classify a numeric delta against the epsilon tolerance.
+fn classify_score(
+    delta: f64,
+    epsilon: f64,
+) -> DeltaStatus {
+    if delta > epsilon {
+        DeltaStatus::Regressed
+    } else if delta < -epsilon {
+        DeltaStatus::Improved
+    } else {
+        DeltaStatus::Unchanged
+    }
+}
+
 /// Join current results against a baseline and compute per-function deltas.
 ///
-/// **Join key**: exact `(file_path, function_name)` pair. This is reliable
-/// when both runs use the same checkout path (local dev, or CI with a fixed
-/// `GITHUB_WORKSPACE`). Functions with no matching baseline entry are marked
-/// [`DeltaStatus::New`]; baseline functions absent in the current run become
-/// [`RemovedEntry`]s.
+/// **Two-pass match** (spec 13):
+///
+/// 1. Exact `(file_path, function_name)` pair — the original behaviour.
+/// 2. Among entries Pass 1 left as `New` (current side) and the unmatched
+///    baseline entries (Removed side), pair any function name that appears
+///    **exactly once** on each side. Score-unchanged pairings become
+///    [`DeltaStatus::Moved`]; score-changed pairings keep their
+///    `Regressed` / `Improved` status. Either way, the entry's
+///    `previous_file` records the baseline location.
+///
+/// Ambiguous names (multiple unmatched entries with the same name) are
+/// left unpaired — there's no way to tell which moved where. They keep
+/// their `New` / Removed status.
 ///
 /// `epsilon` is the tolerance for the regression detector — see
 /// [`DEFAULT_EPSILON`].
@@ -109,34 +142,28 @@ pub fn compute_delta(
     baseline: &[CrapEntry],
     epsilon: f64,
 ) -> DeltaReport {
-    let baseline_index: HashMap<(String, String), f64> = baseline
+    // ─── Pass 1: exact (file, function) match ────────────────────────────
+    let baseline_index: HashMap<(String, String), &CrapEntry> = baseline
         .iter()
-        .map(|e| ((path_key(&e.file), e.function.clone()), e.crap))
+        .map(|e| ((path_key(&e.file), e.function.clone()), e))
         .collect();
 
     let mut matched: HashSet<(String, String)> = HashSet::new();
 
-    let entries: Vec<DeltaEntry> = current
+    let mut entries: Vec<DeltaEntry> = current
         .iter()
         .map(|e| {
             let key = (path_key(&e.file), e.function.clone());
-            let baseline_crap = baseline_index.get(&key).copied();
-            if baseline_crap.is_some() {
+            let baseline_entry = baseline_index.get(&key).copied();
+            if baseline_entry.is_some() {
                 matched.insert(key);
             }
 
-            let (delta, status) = match baseline_crap {
-                None => (None, DeltaStatus::New),
+            let (baseline_crap, delta, status) = match baseline_entry {
+                None => (None, None, DeltaStatus::New),
                 Some(b) => {
-                    let d = e.crap - b;
-                    let status = if d > epsilon {
-                        DeltaStatus::Regressed
-                    } else if d < -epsilon {
-                        DeltaStatus::Improved
-                    } else {
-                        DeltaStatus::Unchanged
-                    };
-                    (Some(d), status)
+                    let d = e.crap - b.crap;
+                    (Some(b.crap), Some(d), classify_score(d, epsilon))
                 },
             };
 
@@ -145,9 +172,66 @@ pub fn compute_delta(
                 baseline_crap,
                 delta,
                 status,
+                previous_file: None,
             }
         })
         .collect();
+
+    // ─── Pass 2: name-only fallback over the unmatched ───────────────────
+    //
+    // Build name → indices/entries lookups separately for the New (current)
+    // side and the unmatched-baseline side. Pairings only happen when the
+    // count is exactly 1 on both sides (unambiguous).
+    let mut new_idx_by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, de) in entries.iter().enumerate() {
+        if de.status == DeltaStatus::New {
+            new_idx_by_name
+                .entry(de.current.function.clone())
+                .or_default()
+                .push(i);
+        }
+    }
+
+    let mut baseline_unmatched_by_name: HashMap<String, Vec<&CrapEntry>> = HashMap::new();
+    for e in baseline {
+        let key = (path_key(&e.file), e.function.clone());
+        if !matched.contains(&key) {
+            baseline_unmatched_by_name
+                .entry(e.function.clone())
+                .or_default()
+                .push(e);
+        }
+    }
+
+    // Apply unique-name pairings.
+    for (name, new_idxs) in &new_idx_by_name {
+        if new_idxs.len() != 1 {
+            continue; // Ambiguous on the current side.
+        }
+        let baseline_group = match baseline_unmatched_by_name.get(name) {
+            Some(g) if g.len() == 1 => g,
+            _ => continue, // No match, or ambiguous on the baseline side.
+        };
+        let baseline_entry = baseline_group[0];
+        let entry = &mut entries[new_idxs[0]];
+        let d = entry.current.crap - baseline_entry.crap;
+        let score_status = classify_score(d, epsilon);
+        entry.baseline_crap = Some(baseline_entry.crap);
+        entry.delta = Some(d);
+        entry.previous_file = Some(baseline_entry.file.clone());
+        // Pure-move (no meaningful score change) gets the dedicated status;
+        // score-changed moves keep Regressed / Improved.
+        entry.status = match score_status {
+            DeltaStatus::Unchanged => DeltaStatus::Moved,
+            other => other,
+        };
+        // Mark the baseline entry as paired so it doesn't end up in `removed`.
+        let baseline_key = (
+            path_key(&baseline_entry.file),
+            baseline_entry.function.clone(),
+        );
+        matched.insert(baseline_key);
+    }
 
     let removed: Vec<RemovedEntry> = baseline
         .iter()
@@ -310,12 +394,15 @@ mod tests {
     }
 
     #[test]
-    fn functions_in_different_files_are_not_matched() {
-        // Kills: replace path_key -> String with String::new() or "xyzzy".into()
+    fn functions_in_different_files_pair_as_moved() {
+        // Spec 13: a function with the same name in only one file on each
+        // side gets paired by name during the second-pass matcher. Same
+        // CC + coverage + crap → status `Moved`, not `New`/`Removed`.
         //
-        // If path_key collapses to a constant, ("", "foo") in current matches
-        // ("", "foo") in baseline regardless of file — "foo" would appear as
-        // Unchanged instead of New, and the baseline entry would not be Removed.
+        // Also kills: `path_key -> String` collapsing to a constant.
+        // Under that mutation, pass 1 would falsely match these as
+        // Unchanged with previous_file = None — distinguishable from the
+        // correct (Moved, Some(src/main.rs)) outcome.
         let current = vec![CrapEntry {
             file: PathBuf::from("src/lib.rs"),
             function: "foo".into(),
@@ -337,13 +424,17 @@ mod tests {
         let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
         assert_eq!(
             report.entries[0].status,
-            DeltaStatus::New,
-            "foo in src/lib.rs must not match foo in src/main.rs"
+            DeltaStatus::Moved,
+            "foo unique on each side must pair as Moved"
         );
         assert_eq!(
-            report.removed.len(),
-            1,
-            "baseline foo must appear as removed"
+            report.entries[0].previous_file,
+            Some(PathBuf::from("src/main.rs")),
+            "previous_file must record the baseline location"
+        );
+        assert!(
+            report.removed.is_empty(),
+            "paired baseline entry must not appear as removed"
         );
     }
 
@@ -431,5 +522,150 @@ mod tests {
         )
         .expect("write");
         assert!(load_baseline(&path).is_err());
+    }
+
+    // ─── Move-aware delta detection (spec 13) ────────────────────────────
+
+    /// Build a CrapEntry parameterized by file + function + score so the
+    /// move-detection scenarios can mint pairs without copy-paste.
+    fn entry_in(
+        file: &str,
+        function: &str,
+        crap: f64,
+    ) -> CrapEntry {
+        CrapEntry {
+            file: PathBuf::from(file),
+            function: function.into(),
+            line: 1,
+            cyclomatic: 5.0,
+            coverage: Some(100.0),
+            crap,
+            crate_name: None,
+        }
+    }
+
+    #[test]
+    fn move_detected_for_unique_name_same_score() {
+        // Pure refactor: function moves between files with identical CC,
+        // coverage and crap → status `Moved`, previous_file recorded,
+        // baseline entry NOT in `removed`.
+        let baseline = vec![entry_in("src/old.rs", "render", 5.0)];
+        let current = vec![entry_in("src/new.rs", "render", 5.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Moved);
+        assert_eq!(
+            report.entries[0].previous_file,
+            Some(PathBuf::from("src/old.rs"))
+        );
+        assert_eq!(report.entries[0].baseline_crap, Some(5.0));
+        assert!(report.removed.is_empty());
+    }
+
+    #[test]
+    fn moved_with_regression_keeps_regressed_status() {
+        // Function moved AND got worse — the score-status takes precedence
+        // over the bare `Moved` label, but previous_file still records the
+        // move so renderers can show "Regressed, moved from <prev>".
+        let baseline = vec![entry_in("src/old.rs", "render", 5.0)];
+        let current = vec![entry_in("src/new.rs", "render", 12.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Regressed);
+        assert_eq!(
+            report.entries[0].previous_file,
+            Some(PathBuf::from("src/old.rs"))
+        );
+        assert_eq!(report.entries[0].delta, Some(7.0));
+        assert_eq!(report.regression_count(), 1);
+        assert!(report.removed.is_empty());
+    }
+
+    #[test]
+    fn moved_with_improvement_keeps_improved_status() {
+        // Symmetry test: moved + got better → Improved, not Moved.
+        let baseline = vec![entry_in("src/old.rs", "render", 12.0)];
+        let current = vec![entry_in("src/new.rs", "render", 5.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Improved);
+        assert_eq!(
+            report.entries[0].previous_file,
+            Some(PathBuf::from("src/old.rs"))
+        );
+    }
+
+    #[test]
+    fn ambiguous_names_left_unpaired() {
+        // Two `helper`s on each side → can't tell which moved where.
+        // Both baseline entries become Removed; both current entries stay
+        // New with previous_file = None.
+        let baseline = vec![
+            entry_in("src/a.rs", "helper", 5.0),
+            entry_in("src/b.rs", "helper", 5.0),
+        ];
+        let current = vec![
+            entry_in("src/c.rs", "helper", 5.0),
+            entry_in("src/d.rs", "helper", 5.0),
+        ];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries.len(), 2);
+        for de in &report.entries {
+            assert_eq!(de.status, DeltaStatus::New, "ambiguous → New");
+            assert!(
+                de.previous_file.is_none(),
+                "ambiguous → no previous_file pairing"
+            );
+        }
+        assert_eq!(report.removed.len(), 2, "both baseline entries are removed");
+    }
+
+    #[test]
+    fn truly_new_function_stays_new() {
+        // Name does not appear in baseline → unchanged behaviour: New.
+        let current = vec![entry_in("src/a.rs", "brand_new", 5.0)];
+        let baseline = vec![entry_in("src/a.rs", "something_else", 5.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        let new_entry = report
+            .entries
+            .iter()
+            .find(|e| e.current.function == "brand_new")
+            .expect("brand_new missing");
+        assert_eq!(new_entry.status, DeltaStatus::New);
+        assert!(new_entry.previous_file.is_none());
+    }
+
+    #[test]
+    fn truly_removed_function_stays_removed() {
+        // Name does not appear in current → unchanged behaviour: Removed.
+        let current = vec![entry_in("src/a.rs", "kept", 5.0)];
+        let baseline = vec![
+            entry_in("src/a.rs", "kept", 5.0),
+            entry_in("src/a.rs", "deleted", 8.0),
+        ];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0].function, "deleted");
+    }
+
+    #[test]
+    fn exact_path_match_takes_precedence_over_name_fallback() {
+        // `foo` lives at the same path on both sides AND another `foo`
+        // exists in the baseline at a different path. The pass-1 exact
+        // pair must win; the second `foo` must NOT trigger a name-only
+        // pairing (which would be ambiguous: 1 unmatched current, 1
+        // unmatched baseline) — but in fact the current side has zero
+        // unmatched `foo`s after pass 1, so pass 2 finds no candidate
+        // and the orphan baseline `foo` lands in `removed`.
+        let baseline = vec![
+            entry_in("src/a.rs", "foo", 5.0),
+            entry_in("src/b.rs", "foo", 7.0),
+        ];
+        let current = vec![entry_in("src/a.rs", "foo", 5.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        // Pass 1: src/a.rs:foo matches exactly → Unchanged, no previous_file.
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+        assert!(report.entries[0].previous_file.is_none());
+        // Pass 2: no unmatched current entry to pair → src/b.rs:foo is
+        // a genuine deletion.
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0].file, PathBuf::from("src/b.rs"));
     }
 }

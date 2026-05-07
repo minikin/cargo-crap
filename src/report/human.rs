@@ -182,8 +182,15 @@ fn build_delta_row(
     let delta_cell = match de.status {
         DeltaStatus::Regressed => Cell::new(delta_text).fg(Color::Red),
         DeltaStatus::Improved => Cell::new(delta_text).fg(Color::Green),
-        DeltaStatus::New => Cell::new(delta_text).fg(Color::Yellow),
+        DeltaStatus::New | DeltaStatus::Moved => Cell::new(delta_text).fg(Color::Yellow),
         DeltaStatus::Unchanged => Cell::new(delta_text),
+    };
+
+    // Location reads `<new-loc>:<line> ← <previous_file>` when the entry
+    // moved, so reviewers see both endpoints without an extra column.
+    let location = match &de.previous_file {
+        Some(prev) => format!("{}:{} ← {}", e.file.display(), e.line, prev.display()),
+        None => format!("{}:{}", e.file.display(), e.line),
     };
 
     vec![
@@ -193,7 +200,7 @@ fn build_delta_row(
         Cell::new(e.cyclomatic as usize),
         Cell::new(coverage_bar(e.coverage)),
         Cell::new(&e.function),
-        Cell::new(format!("{}:{}", e.file.display(), e.line)),
+        Cell::new(location),
     ]
 }
 
@@ -216,6 +223,11 @@ fn write_delta_summary(
         .iter()
         .filter(|e| e.status == DeltaStatus::New)
         .count();
+    let moved = report
+        .entries
+        .iter()
+        .filter(|e| e.status == DeltaStatus::Moved)
+        .count();
     let unchanged = report
         .entries
         .iter()
@@ -225,10 +237,11 @@ fn write_delta_summary(
 
     writeln!(
         out,
-        "{}  {}  {}  {}  {}",
+        "{}  {}  {}  {}  {}  {}",
         format!("↑ {regressed} regressed").red(),
         format!("↓ {improved} improved").green(),
         format!("★ {new} new").yellow(),
+        format!("↔ {moved} moved").cyan(),
         format!("· {unchanged} unchanged").dimmed(),
         format!("— {removed} removed").dimmed(),
     )?;

@@ -155,7 +155,7 @@ const REPORT_SCHEMA_URL: &str =
     "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json";
 
 const DELTA_SCHEMA_URL: &str =
-    "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v1.json";
+    "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json";
 
 fn compile_schema(path: &str) -> jsonschema::Validator {
     let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
@@ -277,7 +277,7 @@ fn delta_json_output_validates_against_delta_schema() {
         Some(DELTA_SCHEMA_URL),
         "delta envelope must include the delta $schema URL"
     );
-    let validator = compile_schema("schemas/delta-v1.json");
+    let validator = compile_schema("schemas/delta-v2.json");
     assert_valid(&validator, &value);
 }
 

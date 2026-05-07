@@ -76,6 +76,7 @@ pub(crate) fn delta_display(de: &DeltaEntry) -> String {
             format!("{:+.1}", de.delta.unwrap())
         },
         DeltaStatus::New => "NEW".to_string(),
+        DeltaStatus::Moved => "MOVED".to_string(),
         DeltaStatus::Unchanged => String::new(),
     }
 }

@@ -99,7 +99,15 @@ fn write_pr_comment_row(
     let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
     let loc_text = strip_to_display(&e.file, prefix);
     let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
-    let loc = linkify(format!("`{loc_text}:{}`", e.line), links, &e.file, e.line);
+    let loc_inner = match &de.previous_file {
+        Some(prev) => format!(
+            "`{loc_text}:{}` ← `{}`",
+            e.line,
+            strip_to_display(prev, prefix),
+        ),
+        None => format!("`{loc_text}:{}`", e.line),
+    };
+    let loc = linkify(loc_inner, links, &e.file, e.line);
     writeln!(
         out,
         "| {} | {:.1} | {} | {} | {} | {} | {} |",
@@ -175,6 +183,7 @@ struct DeltaBuckets<'a> {
     regressed: Vec<&'a DeltaEntry>,
     new_entries: Vec<&'a DeltaEntry>,
     improved: Vec<&'a DeltaEntry>,
+    moved: Vec<&'a DeltaEntry>,
     hot_spots: Vec<&'a DeltaEntry>,
     removed: Vec<&'a RemovedEntry>,
 }
@@ -205,6 +214,15 @@ impl<'a> DeltaBuckets<'a> {
             .collect();
         improved.sort_by(|a, b| abs_delta(b).total_cmp(&abs_delta(a)));
 
+        let mut moved: Vec<&DeltaEntry> = report
+            .entries
+            .iter()
+            .filter(|e| e.status == DeltaStatus::Moved)
+            .collect();
+        // Sort moves by current CRAP desc so the most-impactful relocations
+        // come first when the section is collapsed/capped.
+        moved.sort_by(|a, b| b.current.crap.total_cmp(&a.current.crap));
+
         let mut hot_spots: Vec<&DeltaEntry> = report
             .entries
             .iter()
@@ -219,6 +237,7 @@ impl<'a> DeltaBuckets<'a> {
             regressed,
             new_entries,
             improved,
+            moved,
             hot_spots,
             removed,
         }
@@ -234,9 +253,15 @@ impl<'a> DeltaBuckets<'a> {
             .iter()
             .chain(&self.new_entries)
             .chain(&self.improved)
+            .chain(&self.moved)
             .chain(&self.hot_spots)
         {
             paths.push(de.current.file.clone());
+            // Moved entries also contribute their baseline location so the
+            // computed LCP shortens both ends of the `... ← prev` display.
+            if let Some(prev) = &de.previous_file {
+                paths.push(prev.clone());
+            }
         }
         for r in &self.removed {
             paths.push(r.file.clone());
@@ -267,9 +292,10 @@ fn write_pr_comment_breakdown(
 ) -> Result<()> {
     writeln!(
         out,
-        "↑ {} regressed · ★ {} new · ↓ {} improved · {} unchanged · — {} removed",
+        "↑ {} regressed · ★ {} new · ↔ {} moved · ↓ {} improved · {} unchanged · — {} removed",
         b.regressed.len(),
         b.new_entries.len(),
+        b.moved.len(),
         b.improved.len(),
         unchanged,
         b.removed.len(),
@@ -325,6 +351,33 @@ fn write_pr_comment_improved_section(
         write_pr_comment_row(out, de, threshold, prefix, links)?;
     }
     write_truncation_if_capped(out, b.improved.len())?;
+    writeln!(out)?;
+    writeln!(out, "</details>")?;
+    Ok(())
+}
+
+/// Pure-move details block — entries whose body and score are unchanged
+/// but whose file path differs from the baseline. Score-changed moves
+/// stay in the primary table (Regressed) or improvements section.
+fn write_pr_comment_moved_section(
+    out: &mut dyn Write,
+    b: &DeltaBuckets,
+    threshold: f64,
+    prefix: &Path,
+    links: Option<&SourceLinks>,
+) -> Result<()> {
+    if b.moved.is_empty() {
+        return Ok(());
+    }
+    writeln!(out)?;
+    writeln!(out, "<details><summary>↔ {} moved</summary>", b.moved.len())?;
+    writeln!(out)?;
+    writeln!(out, "| | CRAP | Δ | CC | Cov % | Function | Location |")?;
+    writeln!(out, "|---|---:|---:|---:|---:|---|---|")?;
+    for de in b.moved.iter().take(MAX_ROWS_PER_SECTION) {
+        write_pr_comment_row(out, de, threshold, prefix, links)?;
+    }
+    write_truncation_if_capped(out, b.moved.len())?;
     writeln!(out)?;
     writeln!(out, "</details>")?;
     Ok(())
@@ -413,6 +466,7 @@ pub(crate) fn render_delta_pr_comment(
     write_pr_comment_breakdown(out, &buckets, unchanged_count(report))?;
     write_pr_comment_primary(out, &buckets, threshold, &prefix, links)?;
     write_pr_comment_improved_section(out, &buckets, threshold, &prefix, links)?;
+    write_pr_comment_moved_section(out, &buckets, threshold, &prefix, links)?;
     write_pr_comment_hot_spots_section(out, &buckets, threshold, &prefix, links)?;
     write_pr_comment_removed_section(out, &buckets, &prefix)
 }
@@ -509,6 +563,7 @@ mod tests {
             baseline_crap: baseline,
             delta: baseline.map(|b| crap - b),
             status,
+            previous_file: None,
         }
     }
 
@@ -729,6 +784,47 @@ mod tests {
     }
 
     #[test]
+    fn pr_comment_moved_in_collapsed_details() {
+        let mut entry = delta_entry("src/new.rs", "render", 5.0, Some(5.0), DeltaStatus::Moved);
+        entry.previous_file = Some(PathBuf::from("src/old.rs"));
+        let report = DeltaReport {
+            entries: vec![entry],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            s.contains("<details><summary>↔ 1 moved</summary>"),
+            "moved must be inside <details>, got:\n{s}"
+        );
+        // The location cell shows both endpoints. LCP between the two paths
+        // is `src`, so the visible text strips it on both sides.
+        assert!(s.contains("← `old.rs`"), "must show prev path:\n{s}");
+        // Δ column reads MOVED for pure relocations.
+        assert!(s.contains("MOVED"), "must show MOVED in Δ column:\n{s}");
+        // Breakdown reflects the move.
+        assert!(s.contains("↔ 1 moved"));
+    }
+
+    #[test]
+    fn pr_comment_moved_section_omitted_when_empty() {
+        let report = DeltaReport {
+            entries: vec![delta_entry(
+                "src/a.rs",
+                "foo",
+                5.0,
+                Some(5.0),
+                DeltaStatus::Unchanged,
+            )],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(
+            !s.contains("↔ 0 moved</summary>"),
+            "empty moved section must be omitted, got:\n{s}"
+        );
+    }
+
+    #[test]
     fn pr_comment_removed_in_collapsed_details() {
         let report = DeltaReport {
             entries: vec![],
@@ -943,7 +1039,9 @@ mod tests {
             }],
         };
         let s = render_delta_pr_to_string(&report);
-        assert!(s.contains("↑ 1 regressed · ★ 1 new · ↓ 1 improved · 1 unchanged · — 1 removed"));
+        assert!(s.contains(
+            "↑ 1 regressed · ★ 1 new · ↔ 0 moved · ↓ 1 improved · 1 unchanged · — 1 removed"
+        ));
     }
 
     // --- pr-comment renderer (absolute, no baseline) -----------------------
