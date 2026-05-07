@@ -1,6 +1,6 @@
 [package]
 name = "cargo-crap"
-version = "0.0.2"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["cargo-crap contributors"]

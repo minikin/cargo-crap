@@ -297,4 +297,59 @@ mod tests {
             "markdown stats line must NOT count non-moved as moved:\n{s}"
         );
     }
+
+    #[test]
+    fn delta_markdown_location_uses_format_location_with_prev_helper() {
+        // Kills: replace `format_location_with_prev -> String` with
+        // `String::new()` or `"xyzzy".into()`. The helper is the only
+        // producer of the Location backtick text in delta-markdown rows;
+        // checking for the exact `<file>:<line>` and `<file>:<line> ← <prev>`
+        // strings catches both stub mutants.
+        use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
+        let regular = DeltaEntry {
+            current: CrapEntry {
+                file: PathBuf::from("src/a.rs"),
+                function: "fn_a".into(),
+                line: 7,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 1.0,
+                crate_name: None,
+            },
+            baseline_crap: Some(1.0),
+            delta: Some(0.0),
+            status: DeltaStatus::Unchanged,
+            previous_file: None,
+        };
+        let moved = DeltaEntry {
+            current: CrapEntry {
+                file: PathBuf::from("src/new.rs"),
+                function: "fn_b".into(),
+                line: 42,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 1.0,
+                crate_name: None,
+            },
+            baseline_crap: Some(1.0),
+            delta: Some(0.0),
+            status: DeltaStatus::Moved,
+            previous_file: Some(PathBuf::from("src/old.rs")),
+        };
+        let report = DeltaReport {
+            entries: vec![regular, moved],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_markdown(&report, 30.0, None, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("`src/a.rs:7`"),
+            "non-moved row must show `<file>:<line>` location, got:\n{s}"
+        );
+        assert!(
+            s.contains("`src/new.rs:42` ← `src/old.rs`"),
+            "moved row must show `<new>:<line> ← <prev>` location, got:\n{s}"
+        );
+    }
 }
