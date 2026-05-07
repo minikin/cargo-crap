@@ -210,4 +210,72 @@ mod tests {
         assert_eq!(gha_escape("a\nb"), "a%0Ab");
         assert_eq!(gha_escape("plain"), "plain"); // no-op for clean strings
     }
+
+    #[test]
+    fn delta_github_annotation_includes_moved_from_when_previous_file_set() {
+        // Spec 13: a regressed entry that also moved files surfaces the
+        // baseline location in the annotation message. Pins the
+        // `previous_file` arm of the `Option::map` in render_delta_github
+        // so it's exercised by the dogfood self-score run (otherwise
+        // CRAP would tick up via reduced coverage on the new code path).
+        use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
+        let report = DeltaReport {
+            entries: vec![DeltaEntry {
+                current: CrapEntry {
+                    file: PathBuf::from("src/new.rs"),
+                    function: "render".into(),
+                    line: 7,
+                    cyclomatic: 5.0,
+                    coverage: Some(50.0),
+                    crap: 35.0,
+                    crate_name: None,
+                },
+                baseline_crap: Some(20.0),
+                delta: Some(15.0),
+                status: DeltaStatus::Regressed,
+                previous_file: Some(PathBuf::from("src/old.rs")),
+            }],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_github(&report, 30.0, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("(moved from src/old.rs)"),
+            "annotation must surface the baseline location, got:\n{s}"
+        );
+        assert!(s.contains("::warning"), "must still emit warning");
+    }
+
+    #[test]
+    fn delta_github_skips_pure_moves() {
+        // Pins: pure-move entries (no score change) are not warnings.
+        // The match arm in `should_warn` returns false for `Moved`.
+        use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
+        let report = DeltaReport {
+            entries: vec![DeltaEntry {
+                current: CrapEntry {
+                    file: PathBuf::from("src/new.rs"),
+                    function: "render".into(),
+                    line: 1,
+                    cyclomatic: 5.0,
+                    coverage: Some(80.0),
+                    crap: 5.0,
+                    crate_name: None,
+                },
+                baseline_crap: Some(5.0),
+                delta: Some(0.0),
+                status: DeltaStatus::Moved,
+                previous_file: Some(PathBuf::from("src/old.rs")),
+            }],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_github(&report, 30.0, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.is_empty(),
+            "pure moves must not emit warnings, got: {s:?}"
+        );
+    }
 }
