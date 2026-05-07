@@ -64,8 +64,16 @@ syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
                         ├──────────────▶ src/delta.rs  (optional --baseline)
                         │               DeltaReport { entries, removed }
                         ▼
-                  src/report.rs
-                  (human / JSON / GitHub / Markdown)
+                  src/report/             dispatcher in src/report.rs
+                  ├── types.rs            Grade, coverage_bar, delta_display
+                  ├── links.rs            SourceLinks, linkify
+                  ├── per_crate.rs        crate rollup
+                  ├── human.rs            comfy-table
+                  ├── json.rs             versioned envelope
+                  ├── github.rs           ::warning annotations
+                  ├── markdown.rs         exhaustive GFM
+                  ├── pr_comment.rs       opinionated PR comment
+                  └── summary.rs          --summary aggregate
 ```
 
 **`src/score.rs`** — Pure formula: `CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)`. No I/O, no dependencies on other modules.
@@ -79,11 +87,11 @@ syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
 - **Slow path**: component-wise suffix matching for relative LCOV paths (e.g., `src/foo.rs` matches `/home/alice/project/src/foo.rs`).
 - **Critical invariant**: relative paths are never canonicalized against CWD (regression test `relative_coverage_paths_are_not_resolved_against_cwd` pins this).
 
-**`src/delta.rs`** — Baseline comparison. `load_baseline` deserializes a previous `--format json` run; `compute_delta` joins current `CrapEntry` list against it by `(file, function)` key, producing `DeltaStatus` (Regressed / Improved / New / Unchanged) and a `removed` list for functions gone since the baseline.
+**`src/delta.rs`** — Baseline comparison. `load_baseline` deserializes a previous `--format json` run; `compute_delta` runs a two-pass match (spec 13): pass 1 joins by exact `(file, function)` key, pass 2 falls back to function-name-only matching for any unpaired entries on both sides — when the name appears exactly once on each side it's reported as a move (`DeltaStatus::Moved` for pure relocations; `Regressed` / `Improved` keep their score-status, with `previous_file` set so renderers can show "moved from X"). Ambiguous names (multiple of the same name) stay unpaired. The `DeltaStatus` set is `Regressed / Improved / New / Unchanged / Moved`; baseline functions never paired land in `removed`.
 
 **`src/config.rs`** — Optional `.cargo-crap.toml` loader. Walks up from CWD until the file is found; returns `Config::default()` if absent. Uses `#[serde(deny_unknown_fields)]` to catch typos. CLI flags always override config values.
 
-**`src/report.rs`** — Renders `Vec<CrapEntry>` or `DeltaReport` in four formats: human (colored Unicode table), JSON (serde), GitHub Actions (`::warning` annotations), and Markdown (GFM table). `render_summary` / `render_delta_summary` print aggregate-only output when `--summary` is set.
+**`src/report/`** — Renders `Vec<CrapEntry>` or `DeltaReport` in five formats: human (colored Unicode table), JSON (versioned envelope), GitHub Actions (`::warning` annotations), Markdown (exhaustive GFM table), and pr-comment (opinionated PR-comment with capped sections + `<details>` blocks). The entry file `src/report.rs` is a thin dispatcher (`Format` enum, `render` / `render_delta` / `render_summary` / `render_delta_summary`); each format lives in a sibling submodule. Cross-cutting helpers (`Grade`, `coverage_bar`, `delta_display`) live in `report/types.rs`; optional GitHub source-link wrapping (`SourceLinks`, `linkify`) lives in `report/links.rs`; per-crate rollup tables (workspace mode) live in `report/per_crate.rs`. Each submodule owns its `#[cfg(test)] mod tests` block; shared fixtures (e.g. `sample()`) live in `report/test_support.rs`.
 
 **`src/main.rs`** — CLI via `clap`. Handles the `cargo crap` subcommand invocation by stripping the leading `crap` argument when detected. Heavy logic is extracted into `validate_args`, `collect_complexity`, `apply_filters`, `load_coverage`, and `do_render` to keep `main` CC below 15.
 

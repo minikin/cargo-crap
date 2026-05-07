@@ -106,8 +106,8 @@ Example output:
 | `--summary`                                        | off           | Print only aggregate stats (total, crappy count, worst offender) — no per-function table. In `--workspace` mode this becomes the per-crate summary plus the aggregate line.                                                                                                                                                              |
 | `--workspace`                                      | off           | Analyze all Cargo workspace members (discovered via `cargo metadata`). Ignores `--path`. Adds a *Per-crate summary* table to human and markdown output, and a `crate` field to JSON entries.                                                                                                                                             |
 | `--fail-above`                                     | off           | Exit 1 if any function exceeds `--threshold`.                                                                                                                                                                                                                                                                                            |
-| `--baseline <FILE>`                                | —             | JSON from a previous `--format json` run. Enables delta mode (shows Δ column).                                                                                                                                                                                                                                                           |
-| `--fail-regression`                                | off           | Exit 1 if any function's score increased since `--baseline`. Requires `--baseline`.                                                                                                                                                                                                                                                      |
+| `--baseline <FILE>`                                | —             | JSON from a previous `--format json` run. Enables delta mode (shows Δ column). Functions that moved between files (same name, body unchanged) are detected and reported as `Moved` rather than as separate New + Removed entries; renderers show `← <previous_file>` next to the new location.                                          |
+| `--fail-regression`                                | off           | Exit 1 if any function's score increased since `--baseline`. `Moved` (pure relocation, no score change) is not a regression.                                                                                                                                                                                                             |
 | `--epsilon <VALUE>`                                | `0.01`        | Tolerance for the regression detector. Score deltas with absolute value at or below this count as `Unchanged`. Set to `0.0` to flag every increase, or higher to tolerate noisy coverage. Must be non-negative.                                                                                                                          |
 | `--jobs <N>`                                       | host CPUs     | Cap parallel source-file analysis at `N` threads. Useful in memory-constrained CI/Docker environments. Must be a positive integer.                                                                                                                                                                                                       |
 | `--output <FILE>`                                  | —             | Write output to FILE instead of stdout (useful for saving JSON baselines).                                                                                                                                                                                                                                                               |
@@ -121,7 +121,7 @@ generate types directly from the schema.
 | Variant                    | Schema                                                                                                       |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Absolute (no `--baseline`) | [`schemas/report-v1.json`](https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json) |
-| Delta (with `--baseline`)  | [`schemas/delta-v1.json`](https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v1.json)   |
+| Delta (with `--baseline`)  | [`schemas/delta-v2.json`](https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json)   |
 
 ```jsonc
 // cargo crap --format json
@@ -143,9 +143,9 @@ generate types directly from the schema.
 
 // cargo crap --format json --baseline baseline.json
 {
-  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v1.json",
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json",
   "version": "0.0.2",
-  "entries": [ /* DeltaEntry — current + baseline_crap + delta + status */ ],
+  "entries": [ /* DeltaEntry — current + baseline_crap + delta + status (+ optional previous_file when moved) */ ],
   "removed": [ /* RemovedEntry — function, file, baseline_crap */ ]
 }
 ```
