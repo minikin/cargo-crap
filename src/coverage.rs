@@ -15,7 +15,7 @@
 //! We only consume `SF`, `DA`, and `end_of_record`. Function-level records
 //! (`FN`/`FNDA`) are tempting but unreliable: they tell us where a function
 //! *starts* but not where it *ends*, so we can't compute coverage of the
-//! function's body from them. Instead we intersect the line-level `DA`
+//! function's body from them. Instead, we intersect the line-level `DA`
 //! records with spans we already have from the AST.
 
 use anyhow::{Context, Result};
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Only lines that appear in a `DA` record are tracked — these are the
 /// "executable" lines per LLVM's coverage mapping. Blank lines, comments,
-/// and purely-declarative lines (use statements, struct definitions) do
+/// and purely declarative lines (use statements, struct definitions) do
 /// not appear here, and we treat them as "not applicable" rather than
 /// "uncovered".
 #[derive(Debug, Default, Clone)]
