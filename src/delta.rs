@@ -283,6 +283,7 @@ pub fn compute_delta(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

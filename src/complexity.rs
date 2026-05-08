@@ -322,6 +322,7 @@ pub fn analyze_tree<S: AsRef<str>>(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use std::io::Write;

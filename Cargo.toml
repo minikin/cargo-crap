@@ -89,6 +89,3 @@ cast_precision_loss = "allow"
 # `HashMap<K, V, S: BuildHasher>` to keep the surface clean. The default
 # hasher is the only one anyone passes in practice.
 implicit_hasher = "allow"
-# `float_cmp`: tests compare exact CRAP scores intentionally — the formula
-# is deterministic and produces the same bits across runs.
-float_cmp = "allow"
