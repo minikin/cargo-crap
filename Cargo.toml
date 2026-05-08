@@ -69,3 +69,6 @@ codegen-units = 1
 [profile.mutants]
 inherits = "dev"
 debug = 0
+
+[lints.clippy]
+pedantic = { level = "warn" }
