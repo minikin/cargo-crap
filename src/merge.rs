@@ -77,11 +77,10 @@ pub struct MergeResult {
 
 /// Merge complexity and coverage data into a sorted [`MergeResult`]
 /// (entries ranked highest score first).
-// `coverage` is only read as `&coverage` in the body, but every caller
-// has just constructed the map and never reuses it — taking it by value
-// avoids forcing every caller to write `&cov` and matches the consuming
-// nature of the pipeline (merge produces the final report).
-#[expect(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers always have a fresh HashMap they don't reuse; taking by value matches the consuming pipeline and avoids `&cov` boilerplate at every call site"
+)]
 #[must_use]
 pub fn merge(
     complexity: Vec<FunctionComplexity>,

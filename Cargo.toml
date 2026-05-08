@@ -77,6 +77,10 @@ pedantic = { level = "warn", priority = -1 }
 # the attribute when the underlying reason goes away (test no longer
 # compares floats, helper no longer takes by value, etc.).
 allow_attributes = "warn"
+# Require every `#[expect]` / `#[allow]` to carry a `reason = "..."` so
+# the rationale lives next to the attribute instead of being lost in a
+# commit message.
+allow_attributes_without_reason = "warn"
 
 # Pedantic lints we deliberately accept globally:
 # `missing_errors_doc`: cargo-crap is a binary tool — most public Result-

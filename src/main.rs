@@ -34,10 +34,10 @@ use std::time::Duration;
     long_about = None,
     version
 )]
-// Many bool fields here come from clap-derived `--flag` switches
-// (`--workspace`, `--summary`, `--fail-above`, `--fail-regression`).
-// They're not a struct-design smell — they're CLI flags.
-#[expect(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the bools come from clap-derived `--flag` switches (--workspace, --summary, --fail-above, --fail-regression); not a struct-design smell"
+)]
 struct Cli {
     /// Path to an LCOV coverage file (e.g. from `cargo llvm-cov --lcov --output-path lcov.info`).
     ///

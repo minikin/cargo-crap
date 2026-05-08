@@ -6,7 +6,10 @@
 //! is silently broken, because the two layers disagree about what a "path"
 //! is until you wire them together.
 
-#![expect(clippy::float_cmp)]
+#![expect(
+    clippy::float_cmp,
+    reason = "CC and coverage are deterministic from the fixture; exact equality is the right comparison"
+)]
 
 use cargo_crap::complexity;
 use cargo_crap::coverage;

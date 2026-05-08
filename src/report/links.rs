@@ -23,11 +23,10 @@ pub struct SourceLinks {
 impl SourceLinks {
     /// Trims a trailing `/` off `repo_url` so URL composition produces exactly
     /// one slash between the base and `/blob/...`.
-    //
-    // Owned-String params: callers always have a fresh String (built from
-    // CLI flags or env vars) and `commit_ref` is moved into `self`. Taking
-    // `&str` would force a redundant `.to_string()` in every caller.
-    #[expect(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "callers always have fresh Strings (CLI flags / env vars); commit_ref is moved into self; taking `&str` would force `.to_string()` at every call site"
+    )]
     #[must_use]
     pub fn new(
         repo_url: String,

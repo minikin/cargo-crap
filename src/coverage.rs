@@ -102,7 +102,10 @@ pub fn parse_lcov(path: &Path) -> Result<HashMap<PathBuf, FileCoverage>> {
 }
 
 #[cfg(test)]
-#[expect(clippy::float_cmp)]
+#[expect(
+    clippy::float_cmp,
+    reason = "coverage % is computed from integer line counts; exact equality is the right comparison"
+)]
 mod tests {
     use super::*;
     use std::io::Write;

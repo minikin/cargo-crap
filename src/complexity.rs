@@ -322,7 +322,10 @@ pub fn analyze_tree<S: AsRef<str>>(
 }
 
 #[cfg(test)]
-#[expect(clippy::float_cmp)]
+#[expect(
+    clippy::float_cmp,
+    reason = "CC counter increments by integer steps stored as f64; exact equality is the right comparison"
+)]
 mod tests {
     use super::*;
     use std::io::Write;

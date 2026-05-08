@@ -283,7 +283,10 @@ pub fn compute_delta(
 }
 
 #[cfg(test)]
-#[expect(clippy::float_cmp)]
+#[expect(
+    clippy::float_cmp,
+    reason = "CRAP-score deltas are deterministic floats; exact equality is the right comparison"
+)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
