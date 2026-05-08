@@ -6,7 +6,7 @@
 //! is silently broken, because the two layers disagree about what a "path"
 //! is until you wire them together.
 
-#![allow(clippy::float_cmp)]
+#![expect(clippy::float_cmp)]
 
 use cargo_crap::complexity;
 use cargo_crap::coverage;

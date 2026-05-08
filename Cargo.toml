@@ -72,6 +72,11 @@ debug = 0
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+# Require `#[expect(clippy::rule)]` instead of `#[allow(clippy::rule)]`.
+# `expect` errors if the lint stops firing, forcing maintainers to remove
+# the attribute when the underlying reason goes away (test no longer
+# compares floats, helper no longer takes by value, etc.).
+allow_attributes = "warn"
 
 # Pedantic lints we deliberately accept globally:
 # `missing_errors_doc`: cargo-crap is a binary tool — most public Result-
