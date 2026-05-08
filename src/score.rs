@@ -23,7 +23,7 @@
 
 /// The default threshold above which a function is considered "crappy".
 ///
-/// This matches the value used in the original Crap4j tool and NDepend.
+/// This matches the value used in the original Crap4j tool and `NDepend`.
 pub const DEFAULT_THRESHOLD: f64 = 30.0;
 
 /// Compute the CRAP score for a single function.
@@ -40,6 +40,7 @@ pub const DEFAULT_THRESHOLD: f64 = 30.0;
 /// assert_eq!(crap(1.0, 100.0), 1.0);          // trivial, tested
 /// assert_eq!(crap(6.0, 0.0), 42.0);           // moderately complex, untested
 /// ```
+#[must_use]
 pub fn crap(
     complexity: f64,
     coverage_pct: f64,
@@ -58,6 +59,7 @@ pub enum Severity {
 }
 
 impl Severity {
+    #[must_use]
     pub fn classify(
         score: f64,
         threshold: f64,

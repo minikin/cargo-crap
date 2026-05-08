@@ -51,7 +51,7 @@ assert_cmd = "2"
 predicates = "3"
 jsonschema = { version = "0.46", default-features = false }
 
-# cargo-binstall: download a pre-built binary instead of compiling from source.
+# cargo-binstall: download a pre-built binary instead of compiling from a source.
 # Archive naming matches the release workflow: cargo-crap-v{version}-{target}.tar.gz
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/cargo-crap-{ target }.tar.gz"
@@ -71,4 +71,24 @@ inherits = "dev"
 debug = 0
 
 [lints.clippy]
-pedantic = { level = "warn" }
+pedantic = { level = "warn", priority = -1 }
+
+# Pedantic lints we deliberately accept globally:
+# `missing_errors_doc`: cargo-crap is a binary tool — most public Result-
+#  returning fns are internal pipeline plumbing; an `# Errors` section
+#  per fn would be boilerplate that obscures the real docs.
+missing_errors_doc = "allow"
+# `cast_possible_truncation` / `cast_sign_loss` / `cast_precision_loss`:
+# we cast between usize / u32 / f64 deliberately for line numbers (always
+# << u32::MAX) and CC scores (small positive integers). The lossiness is
+# intentional and load-bearing — narrowing back is the correct semantic.
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+# `implicit_hasher`: public APIs take `HashMap<K, V>` rather than
+# `HashMap<K, V, S: BuildHasher>` to keep the surface clean. The default
+# hasher is the only one anyone passes in practice.
+implicit_hasher = "allow"
+# `float_cmp`: tests compare exact CRAP scores intentionally — the formula
+# is deterministic and produces the same bits across runs.
+float_cmp = "allow"

@@ -34,6 +34,10 @@ use std::time::Duration;
     long_about = None,
     version
 )]
+// Many bool fields here come from clap-derived `--flag` switches
+// (`--workspace`, `--summary`, `--fail-above`, `--fail-regression`).
+// They're not a struct-design smell — they're CLI flags.
+#[expect(clippy::struct_excessive_bools)]
 struct Cli {
     /// Path to an LCOV coverage file (e.g. from `cargo llvm-cov --lcov --output-path lcov.info`).
     ///
@@ -305,7 +309,7 @@ fn load_coverage(lcov: Option<&PathBuf>) -> Result<HashMap<PathBuf, FileCoverage
     match lcov {
         Some(path) => coverage::parse_lcov(path)
             .with_context(|| format!("parsing LCOV file {}", path.display())),
-        None => Ok(Default::default()),
+        None => Ok(HashMap::new()),
     }
 }
 
@@ -362,7 +366,7 @@ fn workspace_members() -> Result<Vec<WorkspaceMember>> {
             let name = pkg["name"].as_str()?.to_string();
             let dir = pkg["manifest_path"]
                 .as_str()
-                .and_then(|p| PathBuf::from(p).parent().map(|d| d.to_path_buf()))?;
+                .and_then(|p| PathBuf::from(p).parent().map(std::path::Path::to_path_buf))?;
             Some(WorkspaceMember { name, dir })
         })
         .collect();

@@ -114,6 +114,7 @@ pub(crate) fn write_pr_comment_marker(out: &mut dyn Write) -> Result<()> {
 
 /// How many entries exceed the threshold — used by the CLI to decide the
 /// process exit code.
+#[must_use]
 pub fn crappy_count(
     entries: &[CrapEntry],
     threshold: f64,

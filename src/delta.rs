@@ -80,6 +80,7 @@ pub struct DeltaReport {
 
 impl DeltaReport {
     /// Number of functions whose CRAP score increased since the baseline.
+    #[must_use]
     pub fn regression_count(&self) -> usize {
         self.entries
             .iter()
@@ -119,7 +120,7 @@ fn classify_score(
     }
 }
 
-/// Build the initial DeltaEntry for a single current-side entry against
+/// Build the initial `DeltaEntry` for a single current-side entry against
 /// the pass-1 (file, function) index. Sets `previous_file = None` (pass 2
 /// fills it in for paired moves).
 fn build_pass_one_entry(
@@ -170,8 +171,8 @@ fn pass_one_exact(
     (entries, matched)
 }
 
-/// Apply a single move pairing in place: fill in baseline_crap / delta /
-/// previous_file and choose the right status (`Moved` for pure relocations,
+/// Apply a single move pairing in place: fill in `baseline_crap` / delta /
+/// `previous_file` and choose the right status (`Moved` for pure relocations,
 /// the score-status otherwise).
 fn apply_move_pairing(
     entry: &mut DeltaEntry,
@@ -269,6 +270,7 @@ fn collect_removed(
 ///
 /// `epsilon` is the tolerance for the regression detector — see
 /// [`DEFAULT_EPSILON`].
+#[must_use]
 pub fn compute_delta(
     current: &[CrapEntry],
     baseline: &[CrapEntry],
@@ -557,7 +559,7 @@ mod tests {
 
     // ─── Move-aware delta detection (spec 13) ────────────────────────────
 
-    /// Build a CrapEntry parameterized by file + function + score so the
+    /// Build a `CrapEntry` parameterized by file + function + score so the
     /// move-detection scenarios can mint pairs without copy-paste.
     fn entry_in(
         file: &str,

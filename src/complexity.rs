@@ -28,7 +28,7 @@ pub struct FunctionComplexity {
     pub start_line: usize,
     /// 1-indexed last line of the function (inclusive).
     pub end_line: usize,
-    /// McCabe cyclomatic complexity, minimum 1.0.
+    /// `McCabe` cyclomatic complexity, minimum 1.0.
     pub cyclomatic: f64,
 }
 
@@ -67,10 +67,7 @@ fn has_attr(
 /// matched — we only skip the common, unambiguous case.
 fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
-        a.path().is_ident("cfg")
-            && a.parse_args::<syn::Ident>()
-                .map(|id| id == "test")
-                .unwrap_or(false)
+        a.path().is_ident("cfg") && a.parse_args::<syn::Ident>().is_ok_and(|id| id == "test")
     })
 }
 
@@ -291,7 +288,7 @@ pub fn analyze_tree<S: AsRef<str>>(
                         return None;
                     },
                 };
-                if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                if !entry.file_type().is_some_and(|t| t.is_file()) {
                     return None;
                 }
                 if entry.path().extension().and_then(|e| e.to_str()) != Some("rs") {
@@ -374,11 +371,11 @@ fn check(x: i32) -> &'static str {
     #[test]
     fn multiple_functions_are_all_found() {
         let f = write_temp(
-            r#"
+            r"
 fn a() {}
 fn b() {}
 fn c() {}
-"#,
+",
         );
         let fns = analyze_file(f.path()).expect("analyze");
         let names: Vec<_> = fns.iter().map(|fc| fc.name.as_str()).collect();
@@ -474,7 +471,7 @@ fn c() {}
     #[test]
     fn impl_methods_are_found() {
         let f = write_temp(
-            r#"
+            r"
 struct Foo;
 impl Foo {
     fn bar(&self) -> i32 { 1 }
@@ -482,7 +479,7 @@ impl Foo {
         if x > 0 { x } else { -x }
     }
 }
-"#,
+",
         );
         let fns = analyze_file(f.path()).expect("analyze");
         let names: Vec<_> = fns.iter().map(|fc| fc.name.as_str()).collect();
@@ -508,14 +505,14 @@ impl Foo {
     fn test_functions_are_excluded() {
         // Kills: removing the `has_attr(&node.attrs, "test")` early return.
         let f = write_temp(
-            r#"
+            r"
 fn real() -> i32 { 42 }
 
 #[test]
 fn test_real() {
     assert_eq!(real(), 42);
 }
-"#,
+",
         );
         let fns = analyze_file(f.path()).expect("analyze");
         let names: Vec<_> = fns.iter().map(|fc| fc.name.as_str()).collect();
@@ -531,7 +528,7 @@ fn test_real() {
         // Kills: removing the visit_item_mod override (all three functions
         // inside the module would otherwise appear).
         let f = write_temp(
-            r#"
+            r"
 fn real() -> i32 { 42 }
 
 #[cfg(test)]
@@ -545,7 +542,7 @@ mod tests {
         assert_eq!(real(), 42);
     }
 }
-"#,
+",
         );
         let fns = analyze_file(f.path()).expect("analyze");
         let names: Vec<_> = fns.iter().map(|fc| fc.name.as_str()).collect();
@@ -567,11 +564,11 @@ mod tests {
         // Also kills: replacing is_cfg_test with `true` — everything would
         // look like a test module and be skipped.
         let f = write_temp(
-            r#"
+            r"
 mod inner {
     pub fn in_module() -> i32 { 1 }
 }
-"#,
+",
         );
         let fns = analyze_file(f.path()).expect("analyze");
         let names: Vec<_> = fns.iter().map(|fc| fc.name.as_str()).collect();
@@ -606,10 +603,10 @@ mod extra {
     fn only_test_attribute_is_filtered_not_other_attributes() {
         // A fn with an unrelated attribute (#[allow(...)]) must NOT be excluded.
         let f = write_temp(
-            r#"
+            r"
 #[allow(dead_code)]
 fn allowed() -> i32 { 42 }
-"#,
+",
         );
         let fns = analyze_file(f.path()).expect("analyze");
         let names: Vec<_> = fns.iter().map(|fc| fc.name.as_str()).collect();

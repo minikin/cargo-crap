@@ -115,7 +115,7 @@ mod tests {
             cyclomatic: 1.0,
             coverage: Some(100.0),
             crap,
-            crate_name: crate_name.map(|s| s.to_string()),
+            crate_name: crate_name.map(std::string::ToString::to_string),
         }
     }
 

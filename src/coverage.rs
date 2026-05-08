@@ -44,6 +44,7 @@ impl FileCoverage {
     /// composed entirely of declarative code (`fn sig() -> Type;`, unreachable
     /// macro expansions, etc.) genuinely has nothing to cover and should not
     /// be penalized.
+    #[must_use]
     pub fn coverage_in_span(
         &self,
         start: usize,

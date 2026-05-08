@@ -23,6 +23,12 @@ pub struct SourceLinks {
 impl SourceLinks {
     /// Trims a trailing `/` off `repo_url` so URL composition produces exactly
     /// one slash between the base and `/blob/...`.
+    //
+    // Owned-String params: callers always have a fresh String (built from
+    // CLI flags or env vars) and `commit_ref` is moved into `self`. Taking
+    // `&str` would force a redundant `.to_string()` in every caller.
+    #[expect(clippy::needless_pass_by_value)]
+    #[must_use]
     pub fn new(
         repo_url: String,
         commit_ref: String,
@@ -39,6 +45,7 @@ impl SourceLinks {
     /// Windows `Path::display()` emits `src\foo.rs`, which would land in
     /// the URL verbatim and 404 on github.com — so we normalize backslashes
     /// to forward slashes before composing the URL.
+    #[must_use]
     pub fn url_for(
         &self,
         file: &Path,
@@ -69,7 +76,9 @@ fn link_path(path: &Path) -> Option<PathBuf> {
         return Some(path.to_path_buf());
     }
     let cwd = std::env::current_dir().ok()?;
-    path.strip_prefix(&cwd).ok().map(|p| p.to_path_buf())
+    path.strip_prefix(&cwd)
+        .ok()
+        .map(std::path::Path::to_path_buf)
 }
 
 /// Wrap `inner` (already-formatted, e.g. with backticks) in a markdown link

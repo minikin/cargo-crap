@@ -331,7 +331,7 @@ fn top_limits_output_rows() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     let entries = parse_entries(&stdout);
     assert_eq!(
-        entries.as_array().map(|a| a.len()),
+        entries.as_array().map(Vec::len),
         Some(1),
         "--top 1 must return exactly 1 entry"
     );
@@ -372,7 +372,7 @@ fn missing_skip_drops_uncovered_functions_from_output() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     let entries = parse_entries(&stdout);
     assert_eq!(
-        entries.as_array().map(|a| a.len()),
+        entries.as_array().map(Vec::len),
         Some(0),
         "--missing skip with no lcov must produce empty output"
     );
@@ -479,7 +479,7 @@ fn exclude_drops_matching_files_from_output() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     let entries = parse_entries(&stdout);
     assert_eq!(
-        entries.as_array().map(|a| a.len()),
+        entries.as_array().map(Vec::len),
         Some(0),
         "--exclude '**/*.rs' must produce empty output"
     );
@@ -568,7 +568,7 @@ fn allow_wildcard_suppresses_all_matching() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     let entries = parse_entries(&stdout);
     assert_eq!(
-        entries.as_array().map(|a| a.len()),
+        entries.as_array().map(Vec::len),
         Some(0),
         "--allow '*' must suppress all entries"
     );
@@ -1820,7 +1820,7 @@ fn pr_comment_without_repo_or_env_emits_no_links() {
     );
 }
 
-/// GitHub Actions env vars (GITHUB_SERVER_URL + GITHUB_REPOSITORY + GITHUB_SHA)
+/// GitHub Actions env vars (`GITHUB_SERVER_URL` + `GITHUB_REPOSITORY` + `GITHUB_SHA`)
 /// must produce links when no CLI flags are passed.
 #[test]
 fn pr_comment_picks_up_github_env_vars() {

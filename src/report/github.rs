@@ -75,7 +75,7 @@ pub(crate) fn render_delta_github(
 
         let file = e.file.strip_prefix(&cwd).unwrap_or(&e.file);
         let delta_str = match de.delta {
-            Some(d) => format!(" (Δ{:+.1})", d),
+            Some(d) => format!(" (Δ{d:+.1})"),
             None => " (new)".to_string(),
         };
         let cov_str = e.coverage.map_or("—".into(), |c| format!("{c:.1}%"));

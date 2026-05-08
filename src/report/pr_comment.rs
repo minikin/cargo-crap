@@ -80,8 +80,7 @@ fn strip_to_display(
         return path.display().to_string();
     }
     path.strip_prefix(prefix)
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| path.display().to_string())
+        .map_or_else(|_| path.display().to_string(), |p| p.display().to_string())
 }
 
 // ─── Row writers ────────────────────────────────────────────────────────────
@@ -908,7 +907,7 @@ mod tests {
                 delta_entry(
                     "src/a.rs",
                     &format!("fn_{i:02}"),
-                    100.0 - i as f64, // descending CRAP so abs delta also descends
+                    100.0 - f64::from(i), // descending CRAP so abs delta also descends
                     Some(1.0),
                     DeltaStatus::Regressed,
                 )

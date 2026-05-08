@@ -109,7 +109,10 @@ mod tests {
             parsed["entries"].is_array(),
             "entries field must be an array"
         );
-        assert_eq!(parsed["entries"].as_array().map(|a| a.len()), Some(2));
+        assert_eq!(
+            parsed["entries"].as_array().map(std::vec::Vec::len),
+            Some(2)
+        );
     }
 
     #[test]
