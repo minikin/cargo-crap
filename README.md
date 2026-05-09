@@ -101,7 +101,7 @@ Example output:
 | `--top <N>`                                        | —             | Show only the N worst offenders.                                                                                                                                                                                                                                                                                                         |
 | `--missing {pessimistic,optimistic,skip}`          | `pessimistic` | How to score a function with no coverage data.                                                                                                                                                                                                                                                                                           |
 | `--exclude <GLOB>`                                 | —             | Skip files matching this pattern (repeatable). `**` crosses directories.                                                                                                                                                                                                                                                                 |
-| `--allow <GLOB>`                                   | —             | Suppress functions whose names match this pattern (repeatable). `*` matches `::`.                                                                                                                                                                                                                                                        |
+| `--allow <GLOB>`                                   | —             | Suppress matching functions (repeatable). An entry containing `/` or `**` is a path glob and matches the file the function is in (e.g. `src/generated/**`); otherwise it matches the function name and `*` crosses `::` (e.g. `Foo::*`). Path globs analyze the file but hide its functions — distinct from `--exclude`, which skips files at walk time. |
 | `--format {human,json,github,markdown,pr-comment}` | `human`       | Output format. `json` emits a versioned envelope (see [JSON output schema](#json-output-schema) below). `github` emits `::warning` annotations. `markdown` emits a GFM table (exhaustive). `pr-comment` is the opinionated PR-bot variant: hides unchanged rows, caps each section, collapses non-critical info into `<details>` blocks. |
 | `--summary`                                        | off           | Print only aggregate stats (total, crappy count, worst offender) — no per-function table. In `--workspace` mode this becomes the per-crate summary plus the aggregate line.                                                                                                                                                              |
 | `--workspace`                                      | off           | Analyze all Cargo workspace members (discovered via `cargo metadata`). Ignores `--path`. Adds a *Per-crate summary* table to human and markdown output, and a `crate` field to JSON entries.                                                                                                                                             |
@@ -165,7 +165,9 @@ threshold = 30.0
 fail-above = true
 missing = "pessimistic"   # pessimistic | optimistic | skip
 exclude = ["tests/**", "benches/**"]
-allow   = ["generated::*"]
+# `allow` accepts both function-name globs and path globs (any entry
+# containing `/` or `**` is a path glob).
+allow   = ["generated::*", "src/generated/**"]
 epsilon = 0.01            # regression-detector tolerance
 jobs    = 4               # cap parallel analysis at 4 threads
 ```
