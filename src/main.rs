@@ -177,6 +177,10 @@ enum FormatArg {
     /// section, collapses non-critical info into `<details>` blocks. Designed
     /// for the GitHub PR comment use case where readability beats completeness.
     PrComment,
+    /// SARIF 2.1.0 JSON for upload to GitHub Code Scanning, VS Code, and
+    /// other static-analysis tools. Each crappy function becomes one
+    /// warning-level result. Incompatible with `--baseline`.
+    Sarif,
 }
 
 impl From<FormatArg> for Format {
@@ -187,6 +191,7 @@ impl From<FormatArg> for Format {
             FormatArg::Github => Self::GitHub,
             FormatArg::Markdown => Self::Markdown,
             FormatArg::PrComment => Self::PrComment,
+            FormatArg::Sarif => Self::Sarif,
         }
     }
 }

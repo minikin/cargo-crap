@@ -18,7 +18,7 @@
 use crate::delta::DeltaReport;
 use crate::merge::CrapEntry;
 use crate::score::Severity;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::io::Write;
 
 mod github;
@@ -28,6 +28,7 @@ mod links;
 mod markdown;
 mod per_crate;
 mod pr_comment;
+mod sarif;
 mod summary;
 mod types;
 
@@ -60,6 +61,11 @@ pub enum Format {
     /// improvements / removed / hot-spots into collapsed `<details>` blocks.
     /// Capped per section. Use `Markdown` for the exhaustive report.
     PrComment,
+    /// SARIF 2.1.0 JSON — the format consumed by GitHub Code Scanning,
+    /// VS Code, rust-analyzer, and most static-analysis tooling. Each
+    /// crappy function becomes one `result` with `level: "warning"`,
+    /// pointing at the function's start line.
+    Sarif,
 }
 
 /// Render `entries` in the requested format to `out`.
@@ -80,6 +86,7 @@ pub fn render(
         Format::GitHub => github::render_github(entries, threshold, out),
         Format::Markdown => markdown::render_markdown(entries, threshold, links, out),
         Format::PrComment => pr_comment::render_pr_comment(entries, threshold, links, out),
+        Format::Sarif => sarif::render_sarif(entries, threshold, out),
     }
 }
 
@@ -101,6 +108,13 @@ pub fn render_delta(
         Format::GitHub => github::render_delta_github(report, threshold, out),
         Format::Markdown => markdown::render_delta_markdown(report, threshold, links, out),
         Format::PrComment => pr_comment::render_delta_pr_comment(report, threshold, links, out),
+        // SARIF describes the *current* set of findings, not deltas. The
+        // upstream consumers (GitHub Code Scanning, VS Code) don't model
+        // baseline diffs, so combining `--baseline` with `--format sarif`
+        // is rejected rather than silently emitting an unrelated shape.
+        Format::Sarif => bail!(
+            "--format sarif is incompatible with --baseline; use --format json for delta output"
+        ),
     }
 }
 

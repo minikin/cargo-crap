@@ -586,6 +586,144 @@ fn allow_invalid_glob_exits_with_error() {
         .stderr(predicate::str::contains("invalid allow pattern"));
 }
 
+// --- --format sarif (spec 07) ---
+
+#[test]
+fn sarif_output_is_valid_json_with_required_envelope() {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--format")
+        .arg("sarif")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+
+    assert_eq!(
+        v["version"].as_str(),
+        Some("2.1.0"),
+        "SARIF version field must be \"2.1.0\""
+    );
+    assert!(
+        v["$schema"]
+            .as_str()
+            .is_some_and(|s| s.contains("sarif-2.1.0")),
+        "$schema must reference SARIF 2.1.0, got: {:?}",
+        v["$schema"]
+    );
+    let runs = v["runs"].as_array().expect("runs must be an array");
+    assert_eq!(runs.len(), 1, "expected exactly one run");
+    let driver = &runs[0]["tool"]["driver"];
+    assert_eq!(driver["name"].as_str(), Some("cargo-crap"));
+}
+
+#[test]
+fn sarif_output_contains_a_result_for_a_crappy_fixture_function() {
+    // Without --lcov, `crappy` is treated as 0% covered and lands well
+    // above the default threshold of 30. It must appear as a SARIF result
+    // pointing at lib.rs.
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--format")
+        .arg("sarif")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let results = v["runs"][0]["results"]
+        .as_array()
+        .expect("results must be an array");
+    let crappy = results
+        .iter()
+        .find(|r| {
+            r["message"]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("crappy"))
+        })
+        .expect("expected one result for `crappy`");
+    assert_eq!(crappy["level"].as_str(), Some("warning"));
+    let region = &crappy["locations"][0]["physicalLocation"]["region"];
+    assert!(
+        region["startLine"].as_u64().unwrap_or(0) > 0,
+        "startLine must be a positive line number"
+    );
+    let uri = crappy["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+        .as_str()
+        .expect("uri must be a string");
+    assert!(
+        uri.ends_with("lib.rs"),
+        "result must point at lib.rs, got: {uri}"
+    );
+}
+
+#[test]
+fn sarif_output_with_high_threshold_has_empty_results() {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--threshold")
+        .arg("10000")
+        .arg("--format")
+        .arg("sarif")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(v["version"].as_str(), Some("2.1.0"));
+    let results = v["runs"][0]["results"]
+        .as_array()
+        .expect("results array must exist even when empty");
+    assert!(
+        results.is_empty(),
+        "no entry should exceed a 10000 threshold, got: {results:?}"
+    );
+}
+
+#[test]
+fn sarif_with_fail_above_exits_one_when_threshold_exceeded() {
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--format")
+        .arg("sarif")
+        .arg("--fail-above")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn sarif_with_baseline_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline = dir.path().join("baseline.json");
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline)
+        .assert()
+        .success();
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("sarif")
+        .arg("--baseline")
+        .arg(&baseline)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--baseline"));
+}
+
 // --- --output ---
 
 #[test]
