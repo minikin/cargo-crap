@@ -38,18 +38,20 @@ mutants FILE:
 dev-full: dev
     cargo mutants
 
-# Mutation tests only on files changed vs HEAD (uncommitted) or last commit
+# Mutation tests only on files changed vs HEAD (uncommitted) or last commit.
+# The 'src/**/*.rs' pathspec catches files inside subdirectories
+# (src/report/sarif.rs, etc.) — a plain 'src/*.rs' would skip them.
 dev-mutants-diff: dev
     #!/usr/bin/env bash
     set -euo pipefail
     # First: uncommitted changes (staged + unstaged)
-    files=$(git diff --name-only HEAD -- 'src/*.rs' 2>/dev/null || true)
+    files=$(git diff --name-only HEAD -- 'src/**/*.rs' 'src/*.rs' 2>/dev/null || true)
     # Fallback: files changed in the last commit
     if [ -z "$files" ]; then
-        files=$(git diff --name-only HEAD~1 HEAD -- 'src/*.rs' 2>/dev/null || true)
+        files=$(git diff --name-only HEAD~1 HEAD -- 'src/**/*.rs' 'src/*.rs' 2>/dev/null || true)
     fi
     if [ -z "$files" ]; then
-        echo "No changed src/*.rs files — running all mutants"
+        echo "No changed src/**/*.rs files — running all mutants"
         cargo mutants
     else
         echo "Running mutants on: $files"
