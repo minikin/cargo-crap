@@ -24,7 +24,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
@@ -97,11 +97,16 @@ struct Cli {
     #[arg(long)]
     fail_above: bool,
 
-    /// Suppress functions whose names match these glob patterns.
-    /// Supports `*` (matches any sequence of characters, including `::`)
-    /// and `?`. May be repeated.
+    /// Suppress functions matching these glob patterns. May be repeated.
+    ///
+    /// An entry containing `/` or `**` is treated as a path glob and matches
+    /// the file in which the function is defined; otherwise it matches the
+    /// function name. Path globs analyze the file but hide its functions
+    /// from the report — distinct from `--exclude`, which skips files at
+    /// walk time.
     ///
     /// Examples: `--allow 'Foo::*'`  `--allow 'generated_*'`
+    ///           `--allow 'src/generated/**'`  `--allow 'tests/**'`
     #[arg(long, value_name = "GLOB")]
     allow: Vec<String>,
 
@@ -202,11 +207,19 @@ fn strip_cargo_subcommand(mut args: Vec<String>) -> Vec<String> {
     args
 }
 
+/// True when an `--allow` entry should be treated as a path glob rather than a
+/// function-name glob. The rule is intentionally simple: contains `/` or `**`.
+/// This is documented in the `--allow` help text so users can predict the
+/// classification.
+fn is_path_allow_pattern(pattern: &str) -> bool {
+    pattern.contains('/') || pattern.contains("**")
+}
+
 /// Build a `GlobSet` for matching function names from allow-list patterns.
 ///
 /// Unlike file-path exclusions, we do NOT set `literal_separator` — this lets
 /// `*` match across `::` so that `"Foo::*"` suppresses all methods on `Foo`.
-fn build_allow_set(patterns: &[String]) -> Result<GlobSet> {
+fn build_allow_set(patterns: &[&str]) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for pat in patterns {
         let glob = GlobBuilder::new(pat)
@@ -215,6 +228,44 @@ fn build_allow_set(patterns: &[String]) -> Result<GlobSet> {
         builder.add(glob);
     }
     builder.build().context("building allow glob set")
+}
+
+/// Build a `GlobSet` for matching file paths from allow-list patterns.
+///
+/// Mirrors `--exclude`'s build (`literal_separator(true)` so `*` stays within
+/// one path component and `**` is required to cross directories).
+fn build_path_allow_set(patterns: &[&str]) -> Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for pat in patterns {
+        let glob = GlobBuilder::new(pat)
+            .literal_separator(true)
+            .build()
+            .with_context(|| format!("invalid allow pattern: {pat:?}"))?;
+        builder.add(glob);
+    }
+    builder.build().context("building allow path glob set")
+}
+
+/// True if any path-glob in `set` matches a component-suffix of `path`.
+///
+/// Walking suffixes lets a relative pattern like `src/generated/**` match an
+/// absolute file path like `/home/u/project/src/generated/foo.rs` without the
+/// caller having to know which form `entry.file` takes.
+fn path_set_matches_suffix(
+    set: &GlobSet,
+    path: &Path,
+) -> bool {
+    if set.is_empty() {
+        return false;
+    }
+    let components: Vec<_> = path.components().collect();
+    for i in 0..components.len() {
+        let suffix: PathBuf = components[i..].iter().collect();
+        if set.is_match(&suffix) {
+            return true;
+        }
+    }
+    false
 }
 
 /// One Cargo workspace member: package name + the directory containing its
@@ -285,6 +336,10 @@ fn assign_crate_names(
 }
 
 /// Apply allow-list, min-score, and top-N filters to the entry list in place.
+///
+/// `--allow` entries split into two buckets via [`is_path_allow_pattern`]:
+/// path globs match the entry's source file, function-name globs match the
+/// entry's function name. An entry is dropped when either set matches.
 fn apply_filters(
     entries: &mut Vec<cargo_crap::merge::CrapEntry>,
     allow_patterns: &[String],
@@ -292,8 +347,15 @@ fn apply_filters(
     top: Option<usize>,
 ) -> Result<()> {
     if !allow_patterns.is_empty() {
-        let allow_set = build_allow_set(allow_patterns)?;
-        entries.retain(|e| !allow_set.is_match(&e.function));
+        let (path_pats, name_pats): (Vec<&str>, Vec<&str>) = allow_patterns
+            .iter()
+            .map(String::as_str)
+            .partition(|p| is_path_allow_pattern(p));
+        let name_set = build_allow_set(&name_pats)?;
+        let path_set = build_path_allow_set(&path_pats)?;
+        entries.retain(|e| {
+            !name_set.is_match(&e.function) && !path_set_matches_suffix(&path_set, &e.file)
+        });
     }
     if let Some(min) = min {
         entries.retain(|e| e.crap >= min);
@@ -551,4 +613,57 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_glob_classifier_keeps_function_patterns() {
+        assert!(!is_path_allow_pattern("trivial"));
+        assert!(!is_path_allow_pattern("Foo::*"));
+        assert!(!is_path_allow_pattern("generated_*"));
+        assert!(!is_path_allow_pattern("*"));
+    }
+
+    #[test]
+    fn path_glob_classifier_recognizes_path_patterns() {
+        assert!(is_path_allow_pattern("src/generated/**"));
+        assert!(is_path_allow_pattern("tests/**"));
+        assert!(is_path_allow_pattern("**/build.rs"));
+        assert!(is_path_allow_pattern("a/b"));
+    }
+
+    #[test]
+    fn path_set_matches_relative_pattern_against_absolute_file() {
+        let set = build_path_allow_set(&["src/generated/**"]).unwrap();
+        let abs = Path::new("/home/u/project/src/generated/foo.rs");
+        assert!(path_set_matches_suffix(&set, abs));
+    }
+
+    #[test]
+    fn path_set_does_not_match_unrelated_file() {
+        let set = build_path_allow_set(&["src/generated/**"]).unwrap();
+        let other = Path::new("/home/u/project/src/main.rs");
+        assert!(!path_set_matches_suffix(&set, other));
+    }
+
+    #[test]
+    fn empty_path_set_is_no_op() {
+        let set = build_path_allow_set(&[]).unwrap();
+        assert!(!path_set_matches_suffix(&set, Path::new("any/path.rs")));
+    }
+
+    #[test]
+    fn path_set_respects_literal_separator() {
+        // `src/*` matches direct children of `src/`, but `*` must not cross a
+        // separator — so `src/generated/foo.rs` (a grandchild) does not match.
+        // Crossing directories requires `**`.
+        let set = build_path_allow_set(&["src/*"]).unwrap();
+        assert!(!path_set_matches_suffix(
+            &set,
+            Path::new("/abs/proj/src/generated/foo.rs"),
+        ));
+    }
 }

@@ -11,7 +11,9 @@
 //! fail-above = true
 //! missing = "pessimistic"
 //! exclude = ["tests/**", "benches/**"]
-//! allow = ["generated::*"]
+//! # `allow` accepts both function-name globs and path globs (any entry
+//! # containing `/` or `**` is treated as a path glob).
+//! allow = ["generated::*", "src/generated/**"]
 //! ```
 
 use crate::merge::MissingCoveragePolicy;

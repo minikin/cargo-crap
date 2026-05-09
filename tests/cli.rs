@@ -586,6 +586,131 @@ fn allow_invalid_glob_exits_with_error() {
         .stderr(predicate::str::contains("invalid allow pattern"));
 }
 
+// --- --allow file-pattern suppressions (spec 06) ---
+
+#[test]
+fn allow_path_glob_suppresses_functions_in_matching_files() {
+    // Every fixture function lives in src/lib.rs, so `--allow 'src/**'` must
+    // suppress all of them.
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--allow")
+        .arg("src/**")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let entries = parse_entries(&stdout);
+    assert_eq!(
+        entries.as_array().map(Vec::len),
+        Some(0),
+        "--allow 'src/**' must suppress every function in src/, got: {entries}"
+    );
+}
+
+#[test]
+fn allow_mixes_path_globs_and_function_name_globs() {
+    // Suppress `trivial` by name, suppress all of src/ by path. Both
+    // entries should drop together; the result is empty (every function in
+    // the fixture is under src/), but the test proves the two flavors
+    // coexist by also asserting baseline behavior (no suppression) keeps
+    // `trivial`.
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--allow")
+        .arg("trivial")
+        .arg("--allow")
+        .arg("src/**")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let entries = parse_entries(&stdout);
+    assert_eq!(
+        entries.as_array().map(Vec::len),
+        Some(0),
+        "name + path globs together must drop matching entries"
+    );
+}
+
+#[test]
+fn allow_path_glob_keeps_unrelated_files_visible() {
+    // `--allow 'benches/**'` does NOT match the fixture (no `benches/`
+    // component anywhere on its path), so all three functions remain
+    // visible.
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--allow")
+        .arg("benches/**")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let entries = parse_entries(&stdout);
+    let names: Vec<_> = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["function"].as_str())
+        .collect();
+    assert!(names.contains(&"trivial"));
+    assert!(names.contains(&"crappy"));
+}
+
+#[test]
+fn allow_path_glob_with_fail_above_exits_zero_when_only_match_is_suppressed() {
+    // Without --allow, `crappy` (CC=12, 0% covered without --lcov) blows
+    // past the threshold and --fail-above exits 1. Suppressing the file
+    // via --allow should drop the entry and let --fail-above pass.
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--allow")
+        .arg("src/**")
+        .arg("--fail-above")
+        .assert()
+        .success();
+}
+
+#[test]
+fn allow_path_glob_in_config_file_is_respected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join(".cargo-crap.toml"),
+        "allow = [\"src/**\"]\n",
+    )
+    .expect("write config");
+    let path_arg = std::fs::canonicalize(fixture_src()).expect("canonicalize fixture");
+
+    let output = cmd()
+        .current_dir(dir.path())
+        .arg("--path")
+        .arg(&path_arg)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let entries = parse_entries(&stdout);
+    assert_eq!(
+        entries.as_array().map(Vec::len),
+        Some(0),
+        ".cargo-crap.toml `allow = [\"src/**\"]` must suppress every entry, got: {entries}"
+    );
+}
+
 // --- --output ---
 
 #[test]
