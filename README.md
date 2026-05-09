@@ -102,7 +102,7 @@ Example output:
 | `--missing {pessimistic,optimistic,skip}`          | `pessimistic` | How to score a function with no coverage data.                                                                                                                                                                                                                                                                                           |
 | `--exclude <GLOB>`                                 | —             | Skip files matching this pattern (repeatable). `**` crosses directories.                                                                                                                                                                                                                                                                 |
 | `--allow <GLOB>`                                   | —             | Suppress functions whose names match this pattern (repeatable). `*` matches `::`.                                                                                                                                                                                                                                                        |
-| `--format {human,json,github,markdown,pr-comment}` | `human`       | Output format. `json` emits a versioned envelope (see [JSON output schema](#json-output-schema) below). `github` emits `::warning` annotations. `markdown` emits a GFM table (exhaustive). `pr-comment` is the opinionated PR-bot variant: hides unchanged rows, caps each section, collapses non-critical info into `<details>` blocks. |
+| `--format {human,json,github,markdown,pr-comment,sarif}` | `human`       | Output format. `json` emits a versioned envelope (see [JSON output schema](#json-output-schema) below). `github` emits `::warning` annotations. `markdown` emits a GFM table (exhaustive). `pr-comment` is the opinionated PR-bot variant: hides unchanged rows, caps each section, collapses non-critical info into `<details>` blocks. `sarif` emits SARIF 2.1.0 JSON for upload to GitHub Code Scanning, VS Code, and other static-analysis tooling (see [SARIF output](#sarif-output) below). |
 | `--summary`                                        | off           | Print only aggregate stats (total, crappy count, worst offender) — no per-function table. In `--workspace` mode this becomes the per-crate summary plus the aggregate line.                                                                                                                                                              |
 | `--workspace`                                      | off           | Analyze all Cargo workspace members (discovered via `cargo metadata`). Ignores `--path`. Adds a *Per-crate summary* table to human and markdown output, and a `crate` field to JSON entries.                                                                                                                                             |
 | `--fail-above`                                     | off           | Exit 1 if any function exceeds `--threshold`.                                                                                                                                                                                                                                                                                            |
@@ -152,6 +152,21 @@ generate types directly from the schema.
 
 `--baseline` only reads files in this envelope shape; bare-array baselines
 from older runs must be regenerated.
+
+### SARIF output
+
+`--format sarif` emits a [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+JSON document — the format consumed by GitHub Code Scanning, VS Code,
+rust-analyzer, and most static-analysis tooling.
+
+- Each crappy function (entry above `--threshold`) becomes one
+  `result` with `level: "warning"` and a physical location pointing at
+  the function's start line.
+- Functions below the threshold are not included.
+- An empty result set still produces a valid SARIF document with the
+  full `runs[0].tool.driver` envelope.
+- `--baseline` is rejected with `--format sarif`; SARIF describes
+  findings, not deltas. Use `--format json` for delta output.
 
 ## Configuration file
 
@@ -272,6 +287,25 @@ they are introduced, not weeks later.
     path: baseline
 - run: cargo llvm-cov --lcov --output-path lcov.info
 - run: cargo crap --lcov lcov.info --baseline baseline/baseline.json --fail-regression
+```
+
+### GitHub Code Scanning (SARIF)
+
+Upload `--format sarif` output to surface crappy functions in the
+repository's **Security → Code scanning** tab. The job needs
+`security-events: write`.
+
+```yaml
+self_score:
+  permissions:
+    security-events: write
+  steps:
+    - run: cargo llvm-cov --lcov --output-path lcov.info
+    - run: cargo crap --lcov lcov.info --format sarif --output crap.sarif
+    - uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: crap.sarif
+        category: cargo-crap
 ```
 
 ### PR comment bot
