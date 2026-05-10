@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.2.0] - 2026-05-10
+
+### Added
+
+- **SARIF 2.1.0 output** (`--format sarif`, spec 07). Each function
+  exceeding the threshold becomes a SARIF `result` with file location,
+  warning level, and a message carrying the CRAP score. The output is
+  uploadable to GitHub code scanning via
+  `gh code-scanning upload-results`, so crappy functions surface in the
+  repository's Security → Code scanning tab. `--fail-above` still gates
+  the exit code; the SARIF document is written regardless.
+- **File-pattern suppressions in `--allow`** (spec 06). `--allow` now
+  accepts globs (`src/generated/**`, `tests/**`) in addition to
+  function-name patterns. Matching files are still walked and analyzed
+  but their functions are hidden from the report and excluded from the
+  `--fail-above` count. Distinct from `--exclude`, which skips files at
+  walk time. Patterns also work in `.cargo-crap.toml`'s `allow` list.
+
+### Changed
+
+- `dev-mutants-diff` (Justfile) now includes `src/` subdirectories in
+  its diff pathspec so renamed/moved files in nested modules are picked
+  up by mutation testing.
+
+
+## [0.1.1] - 2026-05-08
+
+### Changed
+
+- Enabled `clippy::pedantic` at warn level with a curated set of
+  globally-allowed lints (each documented inline in `Cargo.toml`).
+  Per-site exceptions use `#[expect(...)]` with `reason = "..."` so the
+  rationale lives next to the attribute. No behavior changes.
+- Tuned crates.io keywords (`code-quality` swapped in for `crap`) for
+  better discoverability.
+- Author metadata corrected in `Cargo.toml`.
+
+
 ## [0.1.0] - 2026-05-07
 
 First release with stable PR-comment workflow, versioned JSON output, and
