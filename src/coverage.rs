@@ -19,6 +19,8 @@
 //! records with spans we already have from the AST.
 
 use anyhow::{Context, Result};
+use lcov::reader::Error as LcovReadError;
+use lcov::record::ParseRecordError;
 use lcov::{Reader, Record};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -76,7 +78,18 @@ pub fn parse_lcov(path: &Path) -> Result<HashMap<PathBuf, FileCoverage>> {
     let mut current_path: Option<PathBuf> = None;
 
     for record in reader {
-        let record = record.with_context(|| format!("parsing record in {}", path.display()))?;
+        let record = match record {
+            Ok(r) => r,
+            // cargo-llvm-cov (and future LCOV versions) may emit record types
+            // the lcov crate doesn't know about. Skip them — we only care about
+            // SF, DA, and end_of_record anyway.
+            Err(LcovReadError::ParseRecord(_, ParseRecordError::UnknownRecord)) => continue,
+            Err(e) => {
+                return Err(
+                    anyhow::Error::new(e).context(format!("parsing record in {}", path.display()))
+                );
+            },
+        };
         match record {
             Record::SourceFile { path: sf_path } => {
                 current_path = Some(sf_path.clone());
@@ -110,6 +123,18 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::path::Path;
+
+    #[test]
+    fn unknown_lcov_records_are_skipped_not_fatal() {
+        let f = write_lcov(
+            "VER:2\nTN:\nSF:src/foo.rs\nDA:10,3\nUNKNOWN_RECORD:whatever\nend_of_record\n",
+        );
+        let result = parse_lcov(f.path()).expect("unknown records must not be fatal");
+        let cov = result
+            .get(Path::new("src/foo.rs"))
+            .expect("src/foo.rs in result");
+        assert_eq!(cov.lines[&10], 3);
+    }
 
     fn write_lcov(content: &str) -> tempfile::NamedTempFile {
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
