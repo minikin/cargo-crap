@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
 
 env:
@@ -10,13 +10,41 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # Detect whether any code-relevant files changed.
+  # All other jobs are gated on this output so that markdown-only PRs
+  # skip CI entirely — but the workflow still runs and GitHub sees the
+  # jobs as "skipped" (which satisfies required status checks).
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            code:
+              - '**/*.rs'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - '.github/workflows/**'
+              - 'tests/fixtures/**'
+              - 'justfile'
+              - 'rust-toolchain.toml'
+              - 'deny.toml'
+
   test:
     name: Test (${{ matrix.os }})
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -29,6 +57,8 @@ jobs:
 
   lints:
     name: Lints
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -43,6 +73,8 @@ jobs:
 
   msrv:
     name: MSRV (Rust 1.88)
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -56,6 +88,8 @@ jobs:
 
   audit:
     name: Security audit
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -67,6 +101,8 @@ jobs:
 
   mutants:
     name: Mutation tests
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -102,9 +138,10 @@ jobs:
   # On PRs: download the main baseline and fail if any score regressed.
   self_score:
     name: Self-score
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write
       # Needed to list previous main runs and download their artifacts via
       # `gh run list` and `actions/download-artifact@v4 run-id:`.
       actions: read
@@ -232,33 +269,20 @@ jobs:
             printf '\n_No baseline available — showing absolute scores only._\n' >> crap-comment.md
           fi
 
-      - name: Post or update PR comment
+      # Upload the comment + PR number as artifacts so the pr-comment workflow
+      # (triggered via workflow_run) can post them with write permissions even
+      # on fork PRs, where GITHUB_TOKEN here has no write access.
+      - name: Upload PR comment artifact
         if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: echo "$PR_NUMBER" > pr-number.txt
+      - name: Upload PR comment artifact files
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
         with:
-          script: |
-            const fs = require('fs');
-            if (!fs.existsSync('crap-comment.md')) return;
-            const body = fs.readFileSync('crap-comment.md', 'utf8');
-            const marker = '<!-- cargo-crap-report -->';
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const existing = comments.find(c => c.body.startsWith(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
+          name: crap-pr-comment
+          path: |
+            crap-comment.md
+            pr-number.txt
+          if-no-files-found: ignore
