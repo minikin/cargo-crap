@@ -47,6 +47,12 @@ cargo binstall cargo-crap
 cargo install cargo-crap
 ```
 
+**From the AUR**:
+
+```bash
+paru -S cargo-crap
+```
+
 **Pre-built binary** (manual download):
 
 ```bash
