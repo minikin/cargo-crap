@@ -4,6 +4,10 @@
 [![crates.io](https://img.shields.io/badge/crates.io-E57300?style=for-the-badge&logo=rust&logoColor=white)](https://crates.io/crates/cargo-crap)
 [![docs.rs](https://img.shields.io/badge/docs.rs-000000?style=for-the-badge&logo=docsdotrs&logoColor=white)](https://docs.rs/cargo-crap/0.2.1/cargo_crap/)
 
+> [!TIP]
+> For more context on the motivation behind this crate, read:
+> [cargo-crap: Finding Untested Complexity in AI-Generated Rust Code](https://minikin.me/blog/cargo-crap)
+
 Compute the **CRAP** (Change Risk Anti-Patterns) metric for Rust projects.
 
 CRAP combines cyclomatic complexity and test coverage into a single number
@@ -41,6 +45,12 @@ cargo binstall cargo-crap
 
 ```bash
 cargo install cargo-crap
+```
+
+**From the AUR**:
+
+```bash
+paru -S cargo-crap
 ```
 
 **Pre-built binary** (manual download):
