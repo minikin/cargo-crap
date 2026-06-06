@@ -54,6 +54,15 @@ cargo install cargo-crap
 paru -S cargo-crap
 ```
 
+**With Nix** (flakes):
+
+```bash
+# Run without installing
+nix run github:minikin/cargo-crap -- crap --lcov lcov.info
+
+# Or add to a dev shell / package set via the flake's `packages.default`
+```
+
 **Pre-built binary** (manual download):
 
 ```bash

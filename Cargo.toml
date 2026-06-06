@@ -16,6 +16,9 @@ exclude = [
     "clippy.toml",
     "rustfmt.toml",
     "rust-toolchain.toml",
+    "flake.nix",
+    "flake.lock",
+    ".envrc",
     "**/.DS_Store",
 ]
 keywords = ["cargo", "code-quality", "coverage", "complexity", "metrics"]
