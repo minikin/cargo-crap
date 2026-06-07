@@ -106,6 +106,23 @@ fn path_key(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
+#[derive(Hash, Eq, PartialEq)]
+struct EntryKey {
+    file: String,
+    function: String,
+    line: usize,
+}
+
+impl EntryKey {
+    fn new(e: &CrapEntry) -> Self {
+        Self {
+            file: path_key(&e.file),
+            function: e.function.clone(),
+            line: e.line,
+        }
+    }
+}
+
 /// Classify a numeric delta against the epsilon tolerance.
 fn classify_score(
     delta: f64,
@@ -144,23 +161,21 @@ fn build_pass_one_entry(
     }
 }
 
-/// Pass 1 — exact `(file_path, function_name)` match. Returns the entry
+/// Pass 1 — exact `(file_path, function_name, start_line)` match. Returns the entry
 /// list (some still `New`, awaiting pass 2) and the set of baseline keys
 /// that were matched (so pass 2 / removed-collection can skip them).
 fn pass_one_exact(
     current: &[CrapEntry],
     baseline: &[CrapEntry],
     epsilon: f64,
-) -> (Vec<DeltaEntry>, HashSet<(String, String)>) {
-    let baseline_index: HashMap<(String, String), &CrapEntry> = baseline
-        .iter()
-        .map(|e| ((path_key(&e.file), e.function.clone()), e))
-        .collect();
-    let mut matched: HashSet<(String, String)> = HashSet::new();
+) -> (Vec<DeltaEntry>, HashSet<EntryKey>) {
+    let baseline_index: HashMap<EntryKey, &CrapEntry> =
+        baseline.iter().map(|e| (EntryKey::new(e), e)).collect();
+    let mut matched: HashSet<EntryKey> = HashSet::new();
     let entries = current
         .iter()
         .map(|e| {
-            let key = (path_key(&e.file), e.function.clone());
+            let key = EntryKey::new(e);
             let baseline_entry = baseline_index.get(&key).copied();
             if baseline_entry.is_some() {
                 matched.insert(key);
@@ -195,7 +210,7 @@ fn apply_move_pairing(
 fn pass_two_name_fallback(
     entries: &mut [DeltaEntry],
     baseline: &[CrapEntry],
-    matched: &mut HashSet<(String, String)>,
+    matched: &mut HashSet<EntryKey>,
     epsilon: f64,
 ) {
     let mut new_idx_by_name: HashMap<String, Vec<usize>> = HashMap::new();
@@ -209,8 +224,7 @@ fn pass_two_name_fallback(
     }
     let mut baseline_unmatched_by_name: HashMap<String, Vec<&CrapEntry>> = HashMap::new();
     for e in baseline {
-        let key = (path_key(&e.file), e.function.clone());
-        if !matched.contains(&key) {
+        if !matched.contains(&EntryKey::new(e)) {
             baseline_unmatched_by_name
                 .entry(e.function.clone())
                 .or_default()
@@ -229,21 +243,18 @@ fn pass_two_name_fallback(
         }
         let baseline_entry = baseline_group[0];
         apply_move_pairing(&mut entries[new_idxs[0]], baseline_entry, epsilon);
-        matched.insert((
-            path_key(&baseline_entry.file),
-            baseline_entry.function.clone(),
-        ));
+        matched.insert(EntryKey::new(baseline_entry));
     }
 }
 
 /// Collect baseline entries with no surviving pair into [`RemovedEntry`]s.
 fn collect_removed(
     baseline: &[CrapEntry],
-    matched: &HashSet<(String, String)>,
+    matched: &HashSet<EntryKey>,
 ) -> Vec<RemovedEntry> {
     baseline
         .iter()
-        .filter(|e| !matched.contains(&(path_key(&e.file), e.function.clone())))
+        .filter(|e| !matched.contains(&EntryKey::new(e)))
         .map(|e| RemovedEntry {
             function: e.function.clone(),
             file: e.file.clone(),
@@ -704,5 +715,49 @@ mod tests {
         // a genuine deletion.
         assert_eq!(report.removed.len(), 1);
         assert_eq!(report.removed[0].file, PathBuf::from("src/b.rs"));
+    }
+
+    #[test]
+    fn cfg_gated_same_name_same_file_no_spurious_regression() {
+        // Two cfg-gated definitions of `platform_handler` in the same file
+        // at different start lines. On an identical back-to-back run the
+        // pass-1 key must distinguish them by line number so neither is
+        // mis-paired and the result is Unchanged for both.
+        let baseline = vec![
+            CrapEntry {
+                file: PathBuf::from("src/lib.rs"),
+                function: "platform_handler".into(),
+                line: 2, // #[cfg(unix)] arm — CC 5, 0 % coverage
+                cyclomatic: 5.0,
+                coverage: Some(0.0),
+                crap: 30.0,
+                crate_name: None,
+            },
+            CrapEntry {
+                file: PathBuf::from("src/lib.rs"),
+                function: "platform_handler".into(),
+                line: 17, // #[cfg(not(unix))] arm — CC 1, 100 % coverage
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 1.0,
+                crate_name: None,
+            },
+        ];
+        let current = baseline.clone();
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(
+            report.regression_count(),
+            0,
+            "identical run must not regress"
+        );
+        for de in &report.entries {
+            assert_eq!(
+                de.status,
+                DeltaStatus::Unchanged,
+                "function at line {} must be Unchanged",
+                de.current.line
+            );
+        }
+        assert!(report.removed.is_empty());
     }
 }

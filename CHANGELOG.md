@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.2.2] - 2026-05-25
+
+### Fixed
+
+- **Delta baseline no longer produces phantom regressions** (PR #31).
+  `EntryKey` now includes `start_line` in addition to `(file, function)`.
+  Previously, two overloads or identically-named functions in the same
+  file could be matched to the wrong baseline entry, causing spurious
+  `Regressed` / `Improved` status changes across runs where nothing
+  actually changed.
+
 ## [0.2.1] - 2026-05-21
 
 ### Fixed
