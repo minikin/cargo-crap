@@ -12,7 +12,10 @@ All feature specs live in `specs/`. They are written in Gherkin style (Given/Whe
 
 ## Before committing
 
-Always run `just dev` before any commit. It runs fmt, clippy, and tests.
+1. Run `just dev` — fmt, clippy, tests, and the dogfood run (score the tool against its own source).
+2. If it passes, run `just dev-mutants-diff` — mutation tests on the `src/**/*.rs` files changed vs HEAD (it re-runs `just dev` first). Skip this step only when the diff touches nothing but `.md` files.
+
+Both must be clean before any commit. Never commit with a failing dogfood run or surviving mutants.
 
 ## Commands
 
@@ -40,7 +43,7 @@ cargo clippy --all-targets -- -D warnings
 
 # Run the tool against this repo (dogfood)
 cargo llvm-cov --lcov --output-path lcov.info --workspace
-cargo run --release -- --lcov lcov.info --workspace --exclude 'tests/fixtures/**' --threshold 15 --fail-above
+cargo run --release -- --lcov lcov.info --workspace --threshold 15 --fail-above
 ```
 
 ## Architecture
@@ -100,6 +103,8 @@ syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
 - Coverage is computed by intersecting AST-derived line spans (from complexity pass) with `DA` records in the LCOV file. Function-level LCOV records (`FN`/`FNDA`) are intentionally ignored because they only give the start line, not the end.
 - `--missing pessimistic` (default) treats functions with no coverage data as 0% covered. This is the right default for CI gates — unmatched files are a red flag, not a silent pass.
 - Files that fail to parse during `analyze_tree` emit a warning to stderr and are skipped, to avoid aborting a CI run over a single corrupt file.
+- `tests/**`, `benches/**`, and `examples/**` are excluded by default (spec 14). The defaults are ordinary exclude globs prepended during effective-exclude assembly in `main.rs` — `analyze_tree` knows nothing about them. `--no-default-excludes` empties the list; the `default-excludes` config key replaces it wholesale; `exclude`/`--exclude` always append.
+- Baseline entries are filtered through the current run's exclude/allow filters before `compute_delta` (spec 18, `BaselineFilter` in `main.rs`) so changing the exclusion set between runs doesn't flood `removed` or produce phantom pass-2 moves.
 
 ## Tests
 

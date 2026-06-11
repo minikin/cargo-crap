@@ -10,7 +10,10 @@
 //! threshold = 30.0
 //! fail-above = true
 //! missing = "pessimistic"
-//! exclude = ["tests/**", "benches/**"]
+//! # Appends to the default exclusions (tests/**, benches/**, examples/**).
+//! exclude = ["src/generated/**"]
+//! # Replaces the default-exclude list. `[]` disables it entirely.
+//! default-excludes = ["benches/**", "examples/**"]
 //! # `allow` accepts both function-name globs and path globs (any entry
 //! # containing `/` or `**` is treated as a path glob).
 //! allow = ["generated::*", "src/generated/**"]
@@ -42,6 +45,14 @@ pub struct Config {
     /// Glob patterns for source files to skip (relative to `--path`).
     #[serde(default)]
     pub exclude: Vec<String>,
+
+    /// Replaces the built-in default-exclude list (`tests/**`, `benches/**`,
+    /// `examples/**`) wholesale. `[]` disables default exclusions; a subset
+    /// re-includes some directories; a superset extends the defaults.
+    /// Accepted as `default-excludes` (house style) or `default_excludes`.
+    /// Unlike `exclude`, which appends, this key replaces.
+    #[serde(alias = "default_excludes")]
+    pub default_excludes: Option<Vec<String>>,
 
     /// Only show the top N crappiest functions.
     pub top: Option<usize>,
@@ -139,6 +150,51 @@ allow = ["Foo::*"]
         assert_eq!(cfg.missing, Some(MissingCoveragePolicy::Optimistic));
         assert_eq!(cfg.exclude, ["tests/**"]);
         assert_eq!(cfg.allow, ["Foo::*"]);
+    }
+
+    #[test]
+    fn default_excludes_absent_means_none() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "threshold = 20.0\n");
+        let cfg = load(dir.path()).unwrap();
+        assert!(cfg.default_excludes.is_none());
+    }
+
+    #[test]
+    fn default_excludes_kebab_case_is_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(
+            dir.path(),
+            "default-excludes = [\"benches/**\", \"examples/**\"]\n",
+        );
+        let cfg = load(dir.path()).unwrap();
+        assert_eq!(
+            cfg.default_excludes.as_deref(),
+            Some(&["benches/**".to_string(), "examples/**".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn default_excludes_snake_case_alias_is_parsed() {
+        // Spec 14 scenarios write the key as `default_excludes`; both
+        // spellings must work despite `deny_unknown_fields`.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "default_excludes = [\"tests/**\"]\n");
+        let cfg = load(dir.path()).unwrap();
+        assert_eq!(
+            cfg.default_excludes.as_deref(),
+            Some(&["tests/**".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn default_excludes_empty_list_is_some_empty() {
+        // `[]` must be distinguishable from "key absent": it disables the
+        // built-in defaults rather than falling back to them.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "default-excludes = []\n");
+        let cfg = load(dir.path()).unwrap();
+        assert_eq!(cfg.default_excludes.as_deref(), Some(&[][..]));
     }
 
     #[test]
