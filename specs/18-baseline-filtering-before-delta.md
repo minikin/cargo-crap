@@ -1,4 +1,4 @@
-# Spec 16 — Baseline entries are filtered through current-run exclusions before delta
+# Spec 18 — Baseline entries are filtered through current-run exclusions before delta
 
 **Status:** Proposed
 **Effort:** Small
