@@ -609,6 +609,30 @@ struct RenderOpts<'a> {
     links: Option<&'a SourceLinks>,
 }
 
+/// Load the `--baseline` file (if any) and filter it through the current
+/// run's identity-based filters (spec 18) before delta computation. The
+/// analyzed roots are the workspace member dirs, or the single `--path`
+/// root outside `--workspace` mode.
+fn load_filtered_baseline(
+    baseline: Option<&PathBuf>,
+    excludes: &[String],
+    allow_patterns: &[String],
+    path: &Path,
+    members: &[WorkspaceMember],
+) -> Result<Option<Vec<cargo_crap::merge::CrapEntry>>> {
+    let Some(baseline_path) = baseline else {
+        return Ok(None);
+    };
+    let mut data = load_baseline(baseline_path)?;
+    let roots = if members.is_empty() {
+        vec![path.to_path_buf()]
+    } else {
+        members.iter().map(|m| m.dir.clone()).collect()
+    };
+    BaselineFilter::new(excludes, allow_patterns, roots)?.retain(&mut data);
+    Ok(Some(data))
+}
+
 /// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
 ///
 /// `baseline` arrives pre-loaded and pre-filtered (see [`BaselineFilter`]) so
@@ -660,13 +684,18 @@ fn resolve_source_links(
     Some(SourceLinks::new(repo_url, commit_ref))
 }
 
-fn main() -> Result<()> {
+/// Parse argv, validate flag combinations, and load the optional
+/// `.cargo-crap.toml` (defaults when absent — the tool works without one).
+fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config)> {
     let cli = Cli::parse_from(strip_cargo_subcommand(std::env::args().collect()));
     validate_args(&cli)?;
-
-    // --- Load config (optional; defaults if .cargo-crap.toml not found) ---
     let cwd = std::env::current_dir().unwrap_or_else(|_| cli.path.clone());
     let config = cargo_crap::config::load(&cwd)?;
+    Ok((cli, config))
+}
+
+fn main() -> Result<()> {
+    let (cli, config) = parse_and_load_config()?;
 
     // Merge: CLI values take precedence; config fills in what's missing.
     let threshold = cli
@@ -723,20 +752,13 @@ fn main() -> Result<()> {
     )?;
 
     // --- Baseline (loaded here, filtered per spec 18) ---
-    let baseline_data = cli
-        .baseline
-        .as_ref()
-        .map(|path| -> Result<Vec<cargo_crap::merge::CrapEntry>> {
-            let mut data = load_baseline(path)?;
-            let roots = if members.is_empty() {
-                vec![cli.path.clone()]
-            } else {
-                members.iter().map(|m| m.dir.clone()).collect()
-            };
-            BaselineFilter::new(&effective_exclude, &effective_allow, roots)?.retain(&mut data);
-            Ok(data)
-        })
-        .transpose()?;
+    let baseline_data = load_filtered_baseline(
+        cli.baseline.as_ref(),
+        &effective_exclude,
+        &effective_allow,
+        &cli.path,
+        &members,
+    )?;
 
     // --- Render ---
     let mut out_box = open_output(cli.output.as_ref())?;
