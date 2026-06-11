@@ -1,6 +1,6 @@
 # Spec 18 — Baseline entries are filtered through current-run exclusions before delta
 
-**Status:** Proposed
+**Status:** Implemented
 **Effort:** Small
 **Module:** `src/main.rs` (`do_render`), `src/delta.rs` (filter helper)
 
