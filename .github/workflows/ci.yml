@@ -183,24 +183,36 @@ jobs:
       # main run. `actions/download-artifact@v4` only sees the *current*
       # workflow run by default, so we resolve main's latest successful
       # run-id with the gh CLI and pass it explicitly.
+      # Scan recent successful main runs for the newest one that actually
+      # carries a non-expired crap-baseline artifact. Taking the latest
+      # successful run blindly breaks after docs-only merges: their runs
+      # succeed but skip self_score (changes gate), so they upload nothing.
       - name: Resolve baseline run-id (PRs only)
         if: github.event_name == 'pull_request'
         id: baseline_run
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RUN_ID=$(gh run list \
+          RUN_ID=""
+          for id in $(gh run list \
             --repo "${{ github.repository }}" \
             --workflow ci.yml \
             --branch main \
             --status success \
-            --limit 1 \
+            --limit 20 \
             --json databaseId \
-            --jq '.[0].databaseId // empty')
+            --jq '.[].databaseId'); do
+            count=$(gh api "repos/${{ github.repository }}/actions/runs/$id/artifacts" \
+              --jq '[.artifacts[] | select(.name == "crap-baseline" and .expired == false)] | length')
+            if [ "$count" -gt 0 ]; then
+              RUN_ID="$id"
+              break
+            fi
+          done
           if [ -z "$RUN_ID" ]; then
-            echo "No successful main run yet — baseline will be skipped."
+            echo "No main run with a usable crap-baseline artifact — baseline will be skipped."
           else
-            echo "Found main run: $RUN_ID"
+            echo "Found main run with baseline: $RUN_ID"
           fi
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
 
@@ -252,6 +264,7 @@ jobs:
               --lcov lcov.info \
               --workspace \
               --exclude 'tests/fixtures/**' \
+              --threshold 15 \
               --baseline baseline/crap-current.json \
               --format pr-comment \
               --repo-url "$REPO_URL" \
@@ -262,6 +275,7 @@ jobs:
               --lcov lcov.info \
               --workspace \
               --exclude 'tests/fixtures/**' \
+              --threshold 15 \
               --format pr-comment \
               --repo-url "$REPO_URL" \
               --commit-ref "$COMMIT_REF" \

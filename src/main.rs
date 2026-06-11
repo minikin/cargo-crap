@@ -36,7 +36,7 @@ use std::time::Duration;
 )]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "the bools come from clap-derived `--flag` switches (--workspace, --summary, --fail-above, --fail-regression); not a struct-design smell"
+    reason = "the bools come from clap-derived `--flag` switches (--workspace, --summary, --fail-above, --fail-regression, --no-default-excludes); not a struct-design smell"
 )]
 struct Cli {
     /// Path to an LCOV coverage file (e.g. from `cargo llvm-cov --lcov --output-path lcov.info`).
@@ -59,10 +59,17 @@ struct Cli {
 
     /// Glob patterns for files to skip (relative to `--path`).
     /// Use `**` to cross directory boundaries. May be repeated.
+    /// Appends to the default exclusions — see `--no-default-excludes`.
     ///
-    /// Examples: `--exclude 'tests/**'`  `--exclude 'src/generated/**'`
+    /// Examples: `--exclude 'src/generated/**'`  `--exclude '**/build.rs'`
     #[arg(long, value_name = "GLOB")]
     exclude: Vec<String>,
+
+    /// Disable the built-in default exclusions (`tests/**`, `benches/**`,
+    /// `examples/**`), analyzing those directories like any other source.
+    /// Overrides the `default-excludes` config key.
+    #[arg(long)]
+    no_default_excludes: bool,
 
     /// CRAP score above which a function is considered "crappy".
     /// Falls back to `.cargo-crap.toml` → built-in default (30).
@@ -201,6 +208,35 @@ impl From<FormatArg> for Format {
     }
 }
 
+/// Built-in default exclude globs (spec 14): the standard Cargo target
+/// directories that rarely benefit from CRAP analysis. Globs are matched
+/// relative to each analyzed root (each member root in `--workspace` mode),
+/// so only the top-level directories match — `src/tests/` is unaffected.
+/// Replaced wholesale by the `default-excludes` config key; emptied by
+/// `--no-default-excludes`.
+const DEFAULT_EXCLUDES: &[&str] = &["tests/**", "benches/**", "examples/**"];
+
+/// Assemble the effective exclude list (spec 14 precedence): the default
+/// list (built-in, or replaced by `default-excludes`, or emptied by
+/// `--no-default-excludes`), followed by config and CLI `exclude` globs,
+/// which always append and never replace.
+fn effective_excludes(
+    no_default_excludes: bool,
+    config_default_excludes: Option<Vec<String>>,
+    config_exclude: Vec<String>,
+    cli_exclude: Vec<String>,
+) -> Vec<String> {
+    let mut out = if no_default_excludes {
+        Vec::new()
+    } else {
+        config_default_excludes
+            .unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(ToString::to_string).collect())
+    };
+    out.extend(config_exclude);
+    out.extend(cli_exclude);
+    out
+}
+
 /// Strip the leading `crap` token inserted by cargo when invoked as a subcommand.
 ///
 /// `cargo crap [args]` → cargo calls `cargo-crap crap [args]`. We strip that
@@ -235,20 +271,26 @@ fn build_allow_set(patterns: &[&str]) -> Result<GlobSet> {
     builder.build().context("building allow glob set")
 }
 
-/// Build a `GlobSet` for matching file paths from allow-list patterns.
+/// Build a `GlobSet` for matching file paths. `what` names the option in
+/// error messages (`"allow"` / `"exclude"`).
 ///
-/// Mirrors `--exclude`'s build (`literal_separator(true)` so `*` stays within
-/// one path component and `**` is required to cross directories).
-fn build_path_allow_set(patterns: &[&str]) -> Result<GlobSet> {
+/// Mirrors `analyze_tree`'s exclude build (`literal_separator(true)` so `*`
+/// stays within one path component and `**` is required to cross directories).
+fn build_path_set(
+    patterns: &[&str],
+    what: &str,
+) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for pat in patterns {
         let glob = GlobBuilder::new(pat)
             .literal_separator(true)
             .build()
-            .with_context(|| format!("invalid allow pattern: {pat:?}"))?;
+            .with_context(|| format!("invalid {what} pattern: {pat:?}"))?;
         builder.add(glob);
     }
-    builder.build().context("building allow path glob set")
+    builder
+        .build()
+        .with_context(|| format!("building {what} path glob set"))
 }
 
 /// True if any path-glob in `set` matches a component-suffix of `path`.
@@ -357,7 +399,7 @@ fn apply_filters(
             .map(String::as_str)
             .partition(|p| is_path_allow_pattern(p));
         let name_set = build_allow_set(&name_pats)?;
-        let path_set = build_path_allow_set(&path_pats)?;
+        let path_set = build_path_set(&path_pats, "allow")?;
         entries.retain(|e| {
             !name_set.is_match(&e.function) && !path_set_matches_suffix(&path_set, &e.file)
         });
@@ -369,6 +411,79 @@ fn apply_filters(
         entries.truncate(top);
     }
     Ok(())
+}
+
+/// Drops baseline entries that the current run's identity-based filters
+/// would have dropped (spec 18): exclude globs (default + user, matched
+/// relative to the analyzed roots, exactly as the walk applies them) and
+/// `--allow` patterns (same path/name split as [`apply_filters`]).
+///
+/// Without this, changing the exclusion set between the baseline run and the
+/// current run floods `removed` with functions that were not deleted — and
+/// leaves those stale entries eligible for the delta's pass-2 name matcher,
+/// which can pair them with unrelated new functions as phantom moves.
+struct BaselineFilter {
+    exclude_set: GlobSet,
+    name_allow: GlobSet,
+    path_allow: GlobSet,
+    /// Analyzed roots (workspace member dirs, or the single `--path` root),
+    /// sorted longest-first so the deepest root claims the prefix — the same
+    /// longest-match rule as [`assign_crate_names`].
+    roots: Vec<PathBuf>,
+}
+
+impl BaselineFilter {
+    fn new(
+        excludes: &[String],
+        allow_patterns: &[String],
+        mut roots: Vec<PathBuf>,
+    ) -> Result<Self> {
+        let exclude_pats: Vec<&str> = excludes.iter().map(String::as_str).collect();
+        let (path_pats, name_pats): (Vec<&str>, Vec<&str>) = allow_patterns
+            .iter()
+            .map(String::as_str)
+            .partition(|p| is_path_allow_pattern(p));
+        roots.sort_by_key(|r| std::cmp::Reverse(r.as_os_str().len()));
+        Ok(Self {
+            exclude_set: build_path_set(&exclude_pats, "exclude")?,
+            name_allow: build_allow_set(&name_pats)?,
+            path_allow: build_path_set(&path_pats, "allow")?,
+            roots,
+        })
+    }
+
+    /// True when the exclude globs match `file` once it is normalized to
+    /// forward slashes (cross-platform baselines) and stripped of the
+    /// deepest analyzed-root prefix (excludes are root-relative).
+    fn is_excluded(
+        &self,
+        file: &Path,
+    ) -> bool {
+        if self.exclude_set.is_empty() {
+            return false;
+        }
+        let normalized = PathBuf::from(file.to_string_lossy().replace('\\', "/"));
+        let rel = self
+            .roots
+            .iter()
+            .find_map(|root| normalized.strip_prefix(root).ok())
+            .unwrap_or(&normalized);
+        self.exclude_set.is_match(rel)
+    }
+
+    /// Drop every entry the current run would not have produced. Filtered
+    /// entries vanish for delta purposes: they appear in no bucket
+    /// (`removed` included) and cannot pair in the name-fallback pass.
+    fn retain(
+        &self,
+        entries: &mut Vec<cargo_crap::merge::CrapEntry>,
+    ) {
+        entries.retain(|e| {
+            !self.is_excluded(&e.file)
+                && !self.name_allow.is_match(&e.function)
+                && !path_set_matches_suffix(&self.path_allow, &e.file)
+        });
+    }
 }
 
 /// Parse the LCOV file if one was provided, returning an empty map otherwise.
@@ -494,16 +609,42 @@ struct RenderOpts<'a> {
     links: Option<&'a SourceLinks>,
 }
 
+/// Load the `--baseline` file (if any) and filter it through the current
+/// run's identity-based filters (spec 18) before delta computation. The
+/// analyzed roots are the workspace member dirs, or the single `--path`
+/// root outside `--workspace` mode.
+fn load_filtered_baseline(
+    baseline: Option<&PathBuf>,
+    excludes: &[String],
+    allow_patterns: &[String],
+    path: &Path,
+    members: &[WorkspaceMember],
+) -> Result<Option<Vec<cargo_crap::merge::CrapEntry>>> {
+    let Some(baseline_path) = baseline else {
+        return Ok(None);
+    };
+    let mut data = load_baseline(baseline_path)?;
+    let roots = if members.is_empty() {
+        vec![path.to_path_buf()]
+    } else {
+        members.iter().map(|m| m.dir.clone()).collect()
+    };
+    BaselineFilter::new(excludes, allow_patterns, roots)?.retain(&mut data);
+    Ok(Some(data))
+}
+
 /// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
+///
+/// `baseline` arrives pre-loaded and pre-filtered (see [`BaselineFilter`]) so
+/// this stays a pure render dispatcher.
 fn do_render(
     entries: &[cargo_crap::merge::CrapEntry],
-    baseline: Option<&PathBuf>,
+    baseline: Option<&[cargo_crap::merge::CrapEntry]>,
     opts: &RenderOpts,
     out: &mut dyn Write,
 ) -> Result<(bool, bool)> {
-    if let Some(baseline_path) = baseline {
-        let baseline_data = load_baseline(baseline_path)?;
-        let report = compute_delta(entries, &baseline_data, opts.epsilon);
+    if let Some(baseline_data) = baseline {
+        let report = compute_delta(entries, baseline_data, opts.epsilon);
         let has_crappy = crappy_count(entries, opts.threshold) > 0;
         let has_regression = report.regression_count() > 0;
         if opts.summary {
@@ -543,13 +684,18 @@ fn resolve_source_links(
     Some(SourceLinks::new(repo_url, commit_ref))
 }
 
-fn main() -> Result<()> {
+/// Parse argv, validate flag combinations, and load the optional
+/// `.cargo-crap.toml` (defaults when absent — the tool works without one).
+fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config)> {
     let cli = Cli::parse_from(strip_cargo_subcommand(std::env::args().collect()));
     validate_args(&cli)?;
-
-    // --- Load config (optional; defaults if .cargo-crap.toml not found) ---
     let cwd = std::env::current_dir().unwrap_or_else(|_| cli.path.clone());
     let config = cargo_crap::config::load(&cwd)?;
+    Ok((cli, config))
+}
+
+fn main() -> Result<()> {
+    let (cli, config) = parse_and_load_config()?;
 
     // Merge: CLI values take precedence; config fills in what's missing.
     let threshold = cli
@@ -571,8 +717,12 @@ fn main() -> Result<()> {
         .or(config.epsilon)
         .unwrap_or(cargo_crap::delta::DEFAULT_EPSILON);
 
-    let mut effective_exclude = config.exclude;
-    effective_exclude.extend(cli.exclude);
+    let effective_exclude = effective_excludes(
+        cli.no_default_excludes,
+        config.default_excludes,
+        config.exclude,
+        cli.exclude,
+    );
     let mut effective_allow = config.allow;
     effective_allow.extend(cli.allow);
 
@@ -601,6 +751,15 @@ fn main() -> Result<()> {
         cli.top.or(config.top),
     )?;
 
+    // --- Baseline (loaded here, filtered per spec 18) ---
+    let baseline_data = load_filtered_baseline(
+        cli.baseline.as_ref(),
+        &effective_exclude,
+        &effective_allow,
+        &cli.path,
+        &members,
+    )?;
+
     // --- Render ---
     let mut out_box = open_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref);
@@ -612,7 +771,7 @@ fn main() -> Result<()> {
         links: links.as_ref(),
     };
     let (has_crappy, has_regression) =
-        do_render(&entries, cli.baseline.as_ref(), &opts, out_box.as_mut())?;
+        do_render(&entries, baseline_data.as_deref(), &opts, out_box.as_mut())?;
 
     if (fail_above && has_crappy) || (fail_regression && has_regression) {
         std::process::exit(1);
@@ -642,21 +801,21 @@ mod tests {
 
     #[test]
     fn path_set_matches_relative_pattern_against_absolute_file() {
-        let set = build_path_allow_set(&["src/generated/**"]).unwrap();
+        let set = build_path_set(&["src/generated/**"], "allow").unwrap();
         let abs = Path::new("/home/u/project/src/generated/foo.rs");
         assert!(path_set_matches_suffix(&set, abs));
     }
 
     #[test]
     fn path_set_does_not_match_unrelated_file() {
-        let set = build_path_allow_set(&["src/generated/**"]).unwrap();
+        let set = build_path_set(&["src/generated/**"], "allow").unwrap();
         let other = Path::new("/home/u/project/src/main.rs");
         assert!(!path_set_matches_suffix(&set, other));
     }
 
     #[test]
     fn empty_path_set_is_no_op() {
-        let set = build_path_allow_set(&[]).unwrap();
+        let set = build_path_set(&[], "allow").unwrap();
         assert!(!path_set_matches_suffix(&set, Path::new("any/path.rs")));
     }
 
@@ -665,10 +824,184 @@ mod tests {
         // `src/*` matches direct children of `src/`, but `*` must not cross a
         // separator — so `src/generated/foo.rs` (a grandchild) does not match.
         // Crossing directories requires `**`.
-        let set = build_path_allow_set(&["src/*"]).unwrap();
+        let set = build_path_set(&["src/*"], "allow").unwrap();
         assert!(!path_set_matches_suffix(
             &set,
             Path::new("/abs/proj/src/generated/foo.rs"),
         ));
+    }
+
+    // --- effective_excludes (spec 14 precedence) ---------------------------
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn effective_excludes_defaults_to_builtin_list() {
+        let out = effective_excludes(false, None, vec![], vec![]);
+        assert_eq!(out, strs(&["tests/**", "benches/**", "examples/**"]));
+    }
+
+    #[test]
+    fn effective_excludes_config_replaces_builtin_list() {
+        let out = effective_excludes(
+            false,
+            Some(strs(&["benches/**", "examples/**"])),
+            vec![],
+            vec![],
+        );
+        assert_eq!(out, strs(&["benches/**", "examples/**"]));
+    }
+
+    #[test]
+    fn effective_excludes_empty_config_list_disables_defaults() {
+        let out = effective_excludes(false, Some(vec![]), vec![], vec![]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn effective_excludes_flag_overrides_config_replacement() {
+        let out = effective_excludes(true, Some(strs(&["tests/**"])), vec![], vec![]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn effective_excludes_user_globs_append_never_replace() {
+        let out = effective_excludes(
+            false,
+            None,
+            strs(&["src/legacy/**"]),
+            strs(&["src/generated/**"]),
+        );
+        assert_eq!(
+            out,
+            strs(&[
+                "tests/**",
+                "benches/**",
+                "examples/**",
+                "src/legacy/**",
+                "src/generated/**",
+            ])
+        );
+    }
+
+    // --- BaselineFilter (spec 18) -------------------------------------------
+
+    fn baseline_entry(
+        file: &str,
+        function: &str,
+    ) -> cargo_crap::merge::CrapEntry {
+        cargo_crap::merge::CrapEntry {
+            file: PathBuf::from(file),
+            function: function.to_string(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap: 1.0,
+            crate_name: None,
+        }
+    }
+
+    fn names(entries: &[cargo_crap::merge::CrapEntry]) -> Vec<&str> {
+        entries.iter().map(|e| e.function.as_str()).collect()
+    }
+
+    #[test]
+    fn baseline_filter_drops_root_level_target_dirs() {
+        let filter = BaselineFilter::new(
+            &strs(&["tests/**", "benches/**", "examples/**"]),
+            &[],
+            vec![PathBuf::from(".")],
+        )
+        .unwrap();
+        let mut entries = vec![
+            baseline_entry("./src/lib.rs", "kept"),
+            baseline_entry("./tests/integration.rs", "test_helper"),
+            baseline_entry("benches/bench.rs", "bench_helper"),
+            baseline_entry("examples/demo.rs", "example_helper"),
+        ];
+        filter.retain(&mut entries);
+        assert_eq!(names(&entries), ["kept"]);
+    }
+
+    #[test]
+    fn baseline_filter_keeps_nested_tests_dir_inside_src() {
+        // Excludes are root-relative: `tests/**` must not match a module
+        // directory that happens to be named tests/ deeper in the tree.
+        let filter =
+            BaselineFilter::new(&strs(&["tests/**"]), &[], vec![PathBuf::from(".")]).unwrap();
+        let mut entries = vec![baseline_entry("./src/tests/helpers.rs", "nested_helper")];
+        filter.retain(&mut entries);
+        assert_eq!(names(&entries), ["nested_helper"]);
+    }
+
+    #[test]
+    fn baseline_filter_normalizes_backslash_paths() {
+        // Baseline written on Windows: separators must be normalized before
+        // glob matching, as in delta's path_key.
+        let filter =
+            BaselineFilter::new(&strs(&["tests/**"]), &[], vec![PathBuf::from(".")]).unwrap();
+        let mut entries = vec![baseline_entry("tests\\integration.rs", "test_helper")];
+        filter.retain(&mut entries);
+        assert!(entries.is_empty(), "backslash path must match tests/**");
+    }
+
+    #[test]
+    fn baseline_filter_strips_longest_member_root_first() {
+        // Workspace mode: globs apply relative to each member root, so
+        // crates/foo/tests/it.rs is tested as tests/it.rs. A nested member
+        // (crates/foo/sub) must claim its files before the shallower root.
+        let filter = BaselineFilter::new(
+            &strs(&["tests/**"]),
+            &[],
+            vec![PathBuf::from("crates/foo"), PathBuf::from("crates/foo/sub")],
+        )
+        .unwrap();
+        let mut entries = vec![
+            baseline_entry("crates/foo/tests/it.rs", "member_test"),
+            baseline_entry("crates/foo/sub/tests/it.rs", "nested_member_test"),
+            baseline_entry("crates/foo/src/lib.rs", "kept"),
+        ];
+        filter.retain(&mut entries);
+        assert_eq!(names(&entries), ["kept"]);
+    }
+
+    #[test]
+    fn baseline_filter_applies_name_allow_patterns() {
+        let filter =
+            BaselineFilter::new(&[], &strs(&["generated_*"]), vec![PathBuf::from(".")]).unwrap();
+        let mut entries = vec![
+            baseline_entry("src/codegen.rs", "generated_parse_v1"),
+            baseline_entry("src/lib.rs", "kept"),
+        ];
+        filter.retain(&mut entries);
+        assert_eq!(names(&entries), ["kept"]);
+    }
+
+    #[test]
+    fn baseline_filter_applies_path_allow_patterns() {
+        // Path-shaped allow patterns use the same suffix matching as
+        // apply_filters, so they work against absolute baseline paths too.
+        let filter =
+            BaselineFilter::new(&[], &strs(&["src/generated/**"]), vec![PathBuf::from(".")])
+                .unwrap();
+        let mut entries = vec![
+            baseline_entry("/abs/proj/src/generated/api.rs", "dropped"),
+            baseline_entry("/abs/proj/src/lib.rs", "kept"),
+        ];
+        filter.retain(&mut entries);
+        assert_eq!(names(&entries), ["kept"]);
+    }
+
+    #[test]
+    fn baseline_filter_with_no_patterns_is_a_no_op() {
+        let filter = BaselineFilter::new(&[], &[], vec![PathBuf::from(".")]).unwrap();
+        let mut entries = vec![
+            baseline_entry("tests/integration.rs", "test_helper"),
+            baseline_entry("src/lib.rs", "lib_fn"),
+        ];
+        filter.retain(&mut entries);
+        assert_eq!(names(&entries), ["test_helper", "lib_fn"]);
     }
 }

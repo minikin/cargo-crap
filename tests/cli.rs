@@ -2365,3 +2365,434 @@ fn synthetic_baseline(
     std::fs::write(&path, baseline.to_string()).expect("write baseline");
     path
 }
+
+// --- default target exclusions (spec 14) -----------------------------------
+
+fn write_file(
+    path: &std::path::Path,
+    content: &str,
+) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("mkdir");
+    }
+    std::fs::write(path, content).expect("write file");
+}
+
+/// Scaffold a project with one function in src/ and one in each standard
+/// Cargo target directory.
+fn scaffold_target_dirs_project(root: &std::path::Path) {
+    write_file(
+        &root.join("src/lib.rs"),
+        "pub fn lib_fn(x: u32) -> u32 { x + 1 }\n",
+    );
+    write_file(
+        &root.join("tests/integration.rs"),
+        "pub fn test_helper(x: u32) -> u32 { x + 2 }\n",
+    );
+    write_file(
+        &root.join("benches/bench.rs"),
+        "pub fn bench_helper(x: u32) -> u32 { x + 3 }\n",
+    );
+    write_file(
+        &root.join("examples/demo.rs"),
+        "pub fn example_helper(x: u32) -> u32 { x + 4 }\n",
+    );
+}
+
+/// `cargo-crap --path <root> --format json`, ready for extra args.
+fn project_json_cmd(root: &std::path::Path) -> Command {
+    let mut c = cmd();
+    c.arg("--path").arg(root).arg("--format").arg("json");
+    c
+}
+
+/// Run the prepared command and return the function names of all entries.
+fn run_function_names(c: &mut Command) -> Vec<String> {
+    let output = c.output().expect("run");
+    assert!(
+        output.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    parse_entries(&stdout)
+        .as_array()
+        .expect("entries array")
+        .iter()
+        .filter_map(|e| e["function"].as_str().map(String::from))
+        .collect()
+}
+
+fn assert_contains(
+    names: &[String],
+    expected: &str,
+) {
+    assert!(
+        names.iter().any(|n| n == expected),
+        "expected {expected:?} in entries, got: {names:?}"
+    );
+}
+
+fn assert_not_contains(
+    names: &[String],
+    unexpected: &str,
+) {
+    assert!(
+        !names.iter().any(|n| n == unexpected),
+        "expected {unexpected:?} to be excluded, got: {names:?}"
+    );
+}
+
+#[test]
+fn default_exclusions_skip_tests_benches_examples() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    let names = run_function_names(&mut project_json_cmd(dir.path()));
+    assert_contains(&names, "lib_fn");
+    assert_not_contains(&names, "test_helper");
+    assert_not_contains(&names, "bench_helper");
+    assert_not_contains(&names, "example_helper");
+}
+
+#[test]
+fn nested_tests_dir_inside_src_is_not_excluded() {
+    // Default excludes are root-relative: a module directory named tests/
+    // inside src/ is ordinary source code.
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    write_file(
+        &dir.path().join("src/tests/helpers.rs"),
+        "pub fn nested_helper(x: u32) -> u32 { x + 9 }\n",
+    );
+    let names = run_function_names(&mut project_json_cmd(dir.path()));
+    assert_contains(&names, "nested_helper");
+}
+
+#[test]
+fn no_default_excludes_flag_restores_target_dirs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    let mut c = project_json_cmd(dir.path());
+    c.arg("--no-default-excludes");
+    let names = run_function_names(&mut c);
+    assert_contains(&names, "lib_fn");
+    assert_contains(&names, "test_helper");
+    assert_contains(&names, "bench_helper");
+    assert_contains(&names, "example_helper");
+}
+
+#[test]
+fn config_default_excludes_empty_list_disables_defaults() {
+    // Spec 14 writes the key as `default_excludes`; the snake_case alias
+    // must work end-to-end, not just in the parser.
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    write_file(
+        &dir.path().join(".cargo-crap.toml"),
+        "default_excludes = []\n",
+    );
+    let mut c = project_json_cmd(dir.path());
+    c.current_dir(dir.path());
+    let names = run_function_names(&mut c);
+    assert_contains(&names, "test_helper");
+    assert_contains(&names, "bench_helper");
+    assert_contains(&names, "example_helper");
+}
+
+#[test]
+fn config_default_excludes_subset_reincludes_tests_only() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    write_file(
+        &dir.path().join(".cargo-crap.toml"),
+        "default-excludes = [\"benches/**\", \"examples/**\"]\n",
+    );
+    let mut c = project_json_cmd(dir.path());
+    c.current_dir(dir.path());
+    let names = run_function_names(&mut c);
+    assert_contains(&names, "test_helper");
+    assert_not_contains(&names, "bench_helper");
+    assert_not_contains(&names, "example_helper");
+}
+
+#[test]
+fn config_default_excludes_superset_extends_defaults() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    write_file(
+        &dir.path().join("fuzz/fuzz_targets/run.rs"),
+        "pub fn fuzz_helper(x: u32) -> u32 { x + 5 }\n",
+    );
+    write_file(
+        &dir.path().join(".cargo-crap.toml"),
+        "default-excludes = [\"tests/**\", \"benches/**\", \"examples/**\", \"fuzz/**\"]\n",
+    );
+    let mut c = project_json_cmd(dir.path());
+    c.current_dir(dir.path());
+    let names = run_function_names(&mut c);
+    assert_contains(&names, "lib_fn");
+    assert_not_contains(&names, "fuzz_helper");
+}
+
+#[test]
+fn no_default_excludes_flag_overrides_config_replacement() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    write_file(
+        &dir.path().join(".cargo-crap.toml"),
+        "default-excludes = [\"tests/**\"]\n",
+    );
+    let mut c = project_json_cmd(dir.path());
+    c.current_dir(dir.path()).arg("--no-default-excludes");
+    let names = run_function_names(&mut c);
+    assert_contains(&names, "test_helper");
+    assert_contains(&names, "bench_helper");
+    assert_contains(&names, "example_helper");
+}
+
+#[test]
+fn exclude_flag_appends_to_default_exclusions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    write_file(
+        &dir.path().join("src/generated/api.rs"),
+        "pub fn generated_api(x: u32) -> u32 { x + 6 }\n",
+    );
+    let mut c = project_json_cmd(dir.path());
+    c.arg("--exclude").arg("src/generated/**");
+    let names = run_function_names(&mut c);
+    assert_not_contains(&names, "generated_api");
+    assert_not_contains(&names, "test_helper");
+    assert_contains(&names, "lib_fn");
+}
+
+#[test]
+fn explicit_path_inside_tests_dir_is_analyzed() {
+    // The escape hatch: pointing --path at a target directory analyzes it,
+    // because the default globs are relative to the analyzed root.
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    let names = run_function_names(&mut project_json_cmd(&dir.path().join("tests")));
+    assert_contains(&names, "test_helper");
+}
+
+#[test]
+fn workspace_default_exclusions_apply_per_member_root() {
+    let mut c = cmd();
+    c.current_dir(workspace_fixture())
+        .arg("--workspace")
+        .arg("--format")
+        .arg("json");
+    let names = run_function_names(&mut c);
+    assert_contains(&names, "alpha_clean");
+    assert_not_contains(&names, "alpha_integration_helper");
+}
+
+#[test]
+fn workspace_no_default_excludes_restores_member_tests() {
+    let mut c = cmd();
+    c.current_dir(workspace_fixture())
+        .arg("--workspace")
+        .arg("--no-default-excludes")
+        .arg("--format")
+        .arg("json");
+    let names = run_function_names(&mut c);
+    assert_contains(&names, "alpha_integration_helper");
+}
+
+// --- baseline filtering before delta (spec 18) ------------------------------
+
+/// Save a real `--format json` run as a baseline file inside `root`.
+fn save_baseline(
+    root: &std::path::Path,
+    extra: &[&str],
+) -> std::path::PathBuf {
+    let path = root.join("baseline.json");
+    let mut c = project_json_cmd(root);
+    c.arg("--output").arg(&path);
+    for a in extra {
+        c.arg(a);
+    }
+    c.assert().success();
+    path
+}
+
+/// Run a delta against `baseline` and return the full JSON envelope.
+fn delta_envelope(
+    root: &std::path::Path,
+    baseline: &std::path::Path,
+    extra: &[&str],
+) -> serde_json::Value {
+    let mut c = project_json_cmd(root);
+    c.arg("--baseline").arg(baseline);
+    for a in extra {
+        c.arg(a);
+    }
+    let output = c.output().expect("run");
+    assert!(
+        output.status.success(),
+        "delta run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    serde_json::from_str(&stdout).expect("stdout must be valid JSON")
+}
+
+fn removed_functions(envelope: &serde_json::Value) -> Vec<String> {
+    envelope["removed"]
+        .as_array()
+        .expect("removed array")
+        .iter()
+        .filter_map(|e| e["function"].as_str().map(String::from))
+        .collect()
+}
+
+fn entry_by_function<'a>(
+    envelope: &'a serde_json::Value,
+    function: &str,
+) -> &'a serde_json::Value {
+    envelope["entries"]
+        .as_array()
+        .expect("entries array")
+        .iter()
+        .find(|e| e["function"] == function)
+        .unwrap_or_else(|| panic!("entry {function:?} not found in {envelope}"))
+}
+
+#[test]
+fn pre_default_exclusion_baseline_does_not_flood_removed() {
+    // A baseline written without default exclusions (e.g. by an older
+    // version) contains tests/benches/examples functions. They must be
+    // filtered out, not reported as removed.
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    let baseline = save_baseline(dir.path(), &["--no-default-excludes"]);
+    let envelope = delta_envelope(dir.path(), &baseline, &[]);
+    assert_eq!(
+        removed_functions(&envelope),
+        Vec::<String>::new(),
+        "default-excluded baseline entries must not appear as removed"
+    );
+}
+
+#[test]
+fn genuinely_deleted_function_is_still_reported_removed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    write_file(
+        &dir.path().join("src/extra.rs"),
+        "pub fn old_helper(x: u32) -> u32 { x + 7 }\n",
+    );
+    let baseline = save_baseline(dir.path(), &[]);
+    std::fs::remove_file(dir.path().join("src/extra.rs")).expect("delete source file");
+    let envelope = delta_envelope(dir.path(), &baseline, &[]);
+    assert_eq!(removed_functions(&envelope), ["old_helper"]);
+}
+
+#[test]
+fn filtered_baseline_entry_cannot_pair_as_phantom_move() {
+    // Baseline knows tests/common.rs:setup_fixture; the current run excludes
+    // tests/ by default and gains an unrelated src/ function with the same
+    // name. Without baseline filtering, the pass-2 name matcher would pair
+    // them as a move from tests/common.rs.
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    write_file(
+        &dir.path().join("tests/common.rs"),
+        "pub fn setup_fixture(x: u32) -> u32 { x + 8 }\n",
+    );
+    let baseline = save_baseline(dir.path(), &["--no-default-excludes"]);
+    write_file(
+        &dir.path().join("src/new_code.rs"),
+        "pub fn setup_fixture(x: u32) -> u32 { x + 8 }\n",
+    );
+    let envelope = delta_envelope(dir.path(), &baseline, &[]);
+    let entry = entry_by_function(&envelope, "setup_fixture");
+    assert_eq!(entry["status"], "new", "must be New, not a phantom move");
+    assert!(
+        entry.get("previous_file").is_none(),
+        "no previous_file: the baseline entry was filtered, not moved: {entry}"
+    );
+    assert_eq!(removed_functions(&envelope), Vec::<String>::new());
+}
+
+#[test]
+fn no_default_excludes_baseline_run_compares_tests_normally() {
+    // When the current run disables default exclusions, the baseline filter
+    // uses the (empty) effective set — tests entries compare normally.
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    let baseline = save_baseline(dir.path(), &["--no-default-excludes"]);
+    let envelope = delta_envelope(dir.path(), &baseline, &["--no-default-excludes"]);
+    assert_eq!(removed_functions(&envelope), Vec::<String>::new());
+    let entry = entry_by_function(&envelope, "test_helper");
+    assert_eq!(entry["status"], "unchanged");
+}
+
+#[test]
+fn name_allow_pattern_filters_baseline_entries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    write_file(
+        &dir.path().join("src/codegen.rs"),
+        "pub fn generated_parse_v1(x: u32) -> u32 { x + 9 }\n",
+    );
+    let baseline = save_baseline(dir.path(), &[]);
+    let envelope = delta_envelope(dir.path(), &baseline, &["--allow", "generated_*"]);
+    assert_eq!(
+        removed_functions(&envelope),
+        Vec::<String>::new(),
+        "allowed baseline functions must not appear as removed"
+    );
+}
+
+#[test]
+fn path_allow_pattern_filters_baseline_entries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    scaffold_target_dirs_project(dir.path());
+    write_file(
+        &dir.path().join("src/generated/api.rs"),
+        "pub fn generated_api(x: u32) -> u32 { x + 10 }\n",
+    );
+    let baseline = save_baseline(dir.path(), &[]);
+    let envelope = delta_envelope(dir.path(), &baseline, &["--allow", "src/generated/**"]);
+    assert_eq!(removed_functions(&envelope), Vec::<String>::new());
+}
+
+#[test]
+fn workspace_baseline_entries_filtered_per_member_root() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let baseline = tmp.path().join("baseline.json");
+    cmd()
+        .current_dir(workspace_fixture())
+        .arg("--workspace")
+        .arg("--no-default-excludes")
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline)
+        .assert()
+        .success();
+
+    let output = cmd()
+        .current_dir(workspace_fixture())
+        .arg("--workspace")
+        .arg("--format")
+        .arg("json")
+        .arg("--baseline")
+        .arg(&baseline)
+        .output()
+        .expect("run");
+    assert!(
+        output.status.success(),
+        "delta run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        removed_functions(&envelope),
+        Vec::<String>::new(),
+        "member tests/ baseline entries must be filtered, not removed"
+    );
+}
