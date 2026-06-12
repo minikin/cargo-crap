@@ -13,7 +13,7 @@ All feature specs live in `specs/`. They are written in Gherkin style (Given/Whe
 ## Before committing
 
 1. Run `just dev` — fmt, clippy, tests, and the dogfood run (score the tool against its own source).
-2. If it passes, run `just dev-mutants-diff` — mutation tests on the `src/**/*.rs` files changed vs HEAD (it re-runs `just dev` first). Skip this step only when the diff touches nothing but `.md` files.
+2. If it passes, run `just dev-mutants-diff` — mutation tests on the `src/**/*.rs` files changed vs HEAD (it re-runs `just dev` first). Skip this step only when the diff touches nothing but `.md` and/or `.yml` files.
 
 Both must be clean before any commit. Never commit with a failing dogfood run or surviving mutants.
 
