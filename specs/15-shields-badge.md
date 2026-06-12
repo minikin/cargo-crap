@@ -31,11 +31,18 @@ The output is a single JSON object following the
 ```json
 {
   "schemaVersion": 1,
-  "label": "CRAP",
+  "label": "CRAP > <threshold>",
   "message": "<message>",
   "color": "<color>"
 }
 ```
+
+### Label rule
+
+The label embeds the effective threshold so the badge reads as a complete
+statement ("no function has CRAP above 15"): `CRAP > <threshold>`, where
+`<threshold>` is formatted without trailing zeros (`15`, not `15.0`;
+fractional thresholds like `12.5` keep their fraction).
 
 ### Message and color rules
 
@@ -45,7 +52,8 @@ The output is a single JSON object following the
 | 1 – 5                     | `N crappy`     | `yellow`      |
 | 6+                        | `N crappy`     | `red`         |
 
-`N` is the count of functions whose CRAP score exceeds `--threshold`.
+`N` is the count of functions whose CRAP score exceeds `--threshold`
+(strictly greater — a function exactly at the threshold passes).
 
 ---
 
@@ -58,7 +66,7 @@ Given a project where no function exceeds the threshold
 When  I run `cargo crap --format shields --output crap-badge.json`
 Then  crap-badge.json contains valid JSON
 And   "schemaVersion" is 1
-And   "label" is "CRAP"
+And   "label" is "CRAP > 30"   (the default threshold)
 And   "message" is "passing"
 And   "color" is "brightgreen"
 ```
@@ -87,6 +95,7 @@ And   "color" is "red"
 Given a project with functions at various CRAP scores
 When  I run `cargo crap --format shields --threshold 50`
 Then  only functions with CRAP > 50 are counted toward the badge message
+And   "label" is "CRAP > 50"
 ```
 
 ### Scenario: Output written to --output file

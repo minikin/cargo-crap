@@ -15,16 +15,25 @@ use std::io::Write;
 
 /// Shields.io endpoint schema version — always 1 per the published schema.
 const SCHEMA_VERSION: u32 = 1;
-const LABEL: &str = "CRAP";
 
 /// The [Shields.io endpoint schema v1](https://shields.io/endpoint) object.
 #[derive(Serialize)]
 struct Badge {
     #[serde(rename = "schemaVersion")]
     schema_version: u32,
-    label: &'static str,
+    label: String,
     message: String,
     color: &'static str,
+}
+
+/// Format the threshold for the badge label without trailing zeros:
+/// `15`, not `15.0` — but `12.5` keeps its fraction.
+fn format_threshold(threshold: f64) -> String {
+    if threshold.fract() == 0.0 {
+        format!("{threshold:.0}")
+    } else {
+        format!("{threshold}")
+    }
 }
 
 pub(crate) fn render_shields(
@@ -32,7 +41,7 @@ pub(crate) fn render_shields(
     threshold: f64,
     out: &mut dyn Write,
 ) -> Result<()> {
-    write_badge(super::crappy_count(entries, threshold), out)
+    write_badge(super::crappy_count(entries, threshold), threshold, out)
 }
 
 /// Delta-mode dispatch target. The badge ignores the baseline entirely and
@@ -48,11 +57,12 @@ pub(crate) fn render_delta_shields(
         .iter()
         .filter(|e| Severity::classify(e.current.crap, threshold) == Severity::Crappy)
         .count();
-    write_badge(count, out)
+    write_badge(count, threshold, out)
 }
 
 fn write_badge(
     count: usize,
+    threshold: f64,
     out: &mut dyn Write,
 ) -> Result<()> {
     let (message, color) = match count {
@@ -62,7 +72,7 @@ fn write_badge(
     };
     let badge = Badge {
         schema_version: SCHEMA_VERSION,
-        label: LABEL,
+        label: format!("CRAP > {}", format_threshold(threshold)),
         message,
         color,
     };
@@ -79,7 +89,7 @@ mod tests {
 
     fn badge_value(count: usize) -> serde_json::Value {
         let mut buf = Vec::new();
-        super::write_badge(count, &mut buf).unwrap();
+        super::write_badge(count, 30.0, &mut buf).unwrap();
         serde_json::from_slice(&buf).expect("output must be valid JSON")
     }
 
@@ -87,9 +97,20 @@ mod tests {
     fn zero_crappy_is_a_passing_brightgreen_badge() {
         let v = badge_value(0);
         assert_eq!(v["schemaVersion"].as_u64(), Some(1));
-        assert_eq!(v["label"].as_str(), Some("CRAP"));
+        assert_eq!(v["label"].as_str(), Some("CRAP > 30"));
         assert_eq!(v["message"].as_str(), Some("passing"));
         assert_eq!(v["color"].as_str(), Some("brightgreen"));
+    }
+
+    #[test]
+    fn label_formats_integral_threshold_without_trailing_zeros() {
+        assert_eq!(super::format_threshold(15.0), "15");
+        assert_eq!(super::format_threshold(30.0), "30");
+    }
+
+    #[test]
+    fn label_keeps_fractional_threshold() {
+        assert_eq!(super::format_threshold(12.5), "12.5");
     }
 
     #[test]

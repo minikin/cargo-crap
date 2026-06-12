@@ -158,6 +158,28 @@ jobs:
       - name: Generate coverage
         run: cargo llvm-cov --lcov --output-path lcov.info --workspace
 
+      # --- On main: generate the README badge JSON (spec 15). Runs *before*
+      # the threshold gate so a failing gate still publishes a yellow/red
+      # badge instead of leaving a stale green one. The `badge` job
+      # downloads the artifact and pushes it to the `badges` branch — this
+      # job deliberately has no `contents: write`.
+      - name: Generate badge JSON (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cargo run --release -- \
+            --lcov lcov.info \
+            --workspace \
+            --exclude 'tests/fixtures/**' \
+            --threshold 15 \
+            --format shields \
+            --output crap-badge.json
+      - name: Upload badge artifact (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crap-badge
+          path: crap-badge.json
+
       # --- Absolute threshold gate (always) ---
       - name: Score (threshold 15, exclude fixtures)
         run: |
@@ -178,27 +200,6 @@ jobs:
           name: crap-baseline
           path: crap-current.json
           retention-days: 90
-
-      # --- On main: generate the README badge JSON (spec 15). The lcov file
-      # already exists from the gate above, so this is just one extra render.
-      # The `badge` job downloads the artifact and publishes it to the
-      # `badges` branch — this job deliberately has no `contents: write`.
-      - name: Generate badge JSON (main only)
-        if: github.ref == 'refs/heads/main'
-        run: |
-          cargo run --release -- \
-            --lcov lcov.info \
-            --workspace \
-            --exclude 'tests/fixtures/**' \
-            --threshold 15 \
-            --format shields \
-            --output crap-badge.json
-      - name: Upload badge artifact (main only)
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: crap-badge
-          path: crap-badge.json
 
       # --- On PRs: download the baseline uploaded by the latest successful
       # main run. `actions/download-artifact@v4` only sees the *current*
@@ -329,22 +330,35 @@ jobs:
   badge:
     name: Publish CRAP badge
     needs: [self_score]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # `always()` + result filter: publish on self_score success *and*
+    # failure (a failing threshold gate is exactly when the badge must turn
+    # yellow/red), but not when self_score was skipped by the changes gate.
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && contains(fromJSON('["success", "failure"]'), needs.self_score.result)
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
+      # The artifact is missing when self_score failed before the badge was
+      # generated (e.g. a broken coverage build) — skip publishing then.
       - name: Download badge artifact
+        id: download
         uses: actions/download-artifact@v4
         with:
           name: crap-badge
           path: .
+        continue-on-error: true
       # Build a single-file orphan commit with git plumbing and force-push it
       # to `badges` — no checkout dance, and the branch never accumulates
       # history.
       - name: Push badge to the badges branch
         run: |
+          if [ ! -f crap-badge.json ]; then
+            echo "No badge artifact — self_score failed before generating it; skipping."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           blob=$(git hash-object -w crap-badge.json)

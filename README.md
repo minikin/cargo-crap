@@ -196,10 +196,11 @@ normal badge image:
 ![CRAP](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/owner/repo/main/crap-badge.json)
 ```
 
-The badge message is `passing` (brightgreen) when no function exceeds
-`--threshold`, `N crappy` in yellow for 1–5 offenders, and red for 6 or
-more. `--baseline` is silently ignored — the badge always reflects
-absolute current scores. See [Badge generation](#badge-generation) for a
+The label embeds the effective threshold (`CRAP > 15`) so the badge reads
+as a complete statement. The message is `passing` (brightgreen) when no
+function exceeds `--threshold`, `N crappy` in yellow for 1–5 offenders,
+and red for 6 or more. `--baseline` is silently ignored — the badge
+always reflects absolute current scores. See [Badge generation](#badge-generation) for a
 CI recipe.
 
 ## Configuration file

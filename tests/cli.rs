@@ -866,7 +866,7 @@ fn shields_output_is_a_valid_endpoint_badge() {
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
     assert_eq!(v["schemaVersion"].as_u64(), Some(1));
-    assert_eq!(v["label"].as_str(), Some("CRAP"));
+    assert_eq!(v["label"].as_str(), Some("CRAP > 30"));
     assert_eq!(v["message"].as_str(), Some("1 crappy"));
     assert_eq!(v["color"].as_str(), Some("yellow"));
 }
@@ -884,6 +884,7 @@ fn shields_with_high_threshold_is_passing_brightgreen() {
         .expect("run");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(v["label"].as_str(), Some("CRAP > 10000"));
     assert_eq!(v["message"].as_str(), Some("passing"));
     assert_eq!(v["color"].as_str(), Some("brightgreen"));
 }
@@ -913,7 +914,7 @@ fn shields_output_flag_writes_badge_file_and_keeps_stdout_empty() {
     let content = std::fs::read_to_string(&badge_path).expect("badge file must exist");
     let v: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
     assert_eq!(v["schemaVersion"].as_u64(), Some(1));
-    assert_eq!(v["label"].as_str(), Some("CRAP"));
+    assert_eq!(v["label"].as_str(), Some("CRAP > 30"));
 }
 
 #[test]
