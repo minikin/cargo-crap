@@ -193,6 +193,10 @@ enum FormatArg {
     /// other static-analysis tools. Each crappy function becomes one
     /// warning-level result. Incompatible with `--baseline`.
     Sarif,
+    /// Shields.io endpoint-badge JSON — counts functions above `--threshold`.
+    /// Serve the file at a stable URL and embed it in a README via
+    /// `https://img.shields.io/endpoint?url=…`. `--baseline` is ignored.
+    Shields,
 }
 
 impl From<FormatArg> for Format {
@@ -204,6 +208,7 @@ impl From<FormatArg> for Format {
             FormatArg::Markdown => Self::Markdown,
             FormatArg::PrComment => Self::PrComment,
             FormatArg::Sarif => Self::Sarif,
+            FormatArg::Shields => Self::Shields,
         }
     }
 }

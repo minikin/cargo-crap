@@ -849,6 +849,120 @@ fn sarif_with_baseline_is_rejected() {
         .stderr(predicate::str::contains("--baseline"));
 }
 
+// --- --format shields (spec 15) ---
+
+#[test]
+fn shields_output_is_a_valid_endpoint_badge() {
+    // The fixture has exactly one function above the default threshold.
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("shields")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(v["schemaVersion"].as_u64(), Some(1));
+    assert_eq!(v["label"].as_str(), Some("CRAP"));
+    assert_eq!(v["message"].as_str(), Some("1 crappy"));
+    assert_eq!(v["color"].as_str(), Some("yellow"));
+}
+
+#[test]
+fn shields_with_high_threshold_is_passing_brightgreen() {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--threshold")
+        .arg("10000")
+        .arg("--format")
+        .arg("shields")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(v["message"].as_str(), Some("passing"));
+    assert_eq!(v["color"].as_str(), Some("brightgreen"));
+}
+
+#[test]
+fn shields_output_flag_writes_badge_file_and_keeps_stdout_empty() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let badge_path = dir.path().join("crap-badge.json");
+
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("shields")
+        .arg("--output")
+        .arg(&badge_path)
+        .output()
+        .expect("run");
+    assert!(output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "stdout must be empty when --output is used"
+    );
+
+    let content = std::fs::read_to_string(&badge_path).expect("badge file must exist");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+    assert_eq!(v["schemaVersion"].as_u64(), Some(1));
+    assert_eq!(v["label"].as_str(), Some("CRAP"));
+}
+
+#[test]
+fn shields_silently_ignores_baseline() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline = dir.path().join("baseline.json");
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline)
+        .assert()
+        .success();
+
+    let with_baseline = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("shields")
+        .arg("--baseline")
+        .arg(&baseline)
+        .output()
+        .expect("run");
+    assert!(with_baseline.status.success());
+
+    let without_baseline = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("shields")
+        .output()
+        .expect("run");
+
+    assert_eq!(
+        String::from_utf8(with_baseline.stdout).expect("utf8"),
+        String::from_utf8(without_baseline.stdout).expect("utf8"),
+        "--baseline must not change shields output"
+    );
+}
+
 // --- --output ---
 
 #[test]
