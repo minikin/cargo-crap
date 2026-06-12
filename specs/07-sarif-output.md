@@ -1,6 +1,6 @@
 # Spec 07 — SARIF output format
 
-**Status:** Pending  
+**Status:** Implemented  
 **Effort:** Medium  
 **Module:** `src/report.rs`
 

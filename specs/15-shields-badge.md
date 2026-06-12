@@ -1,6 +1,6 @@
 # Spec 15 — Shields.io endpoint badge
 
-**Status:** Proposed
+**Status:** Implemented
 **Effort:** Small
 **Module:** `src/report.rs`, `src/report/shields.rs`, `src/main.rs`
 
