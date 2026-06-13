@@ -1,6 +1,6 @@
 # Spec 14 — Default exclusion of tests, benches, and examples
 
-**Status:** Proposed
+**Status:** Implemented
 **Effort:** Small
 **Module:** `src/main.rs` (effective-exclude assembly), `src/config.rs`
 

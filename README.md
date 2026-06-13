@@ -3,6 +3,7 @@
 [![v0.2.2](https://img.shields.io/badge/v0.2.2-2563eb?style=for-the-badge)](https://github.com/minikin/cargo-crap/releases/tag/v0.2.2)
 [![crates.io](https://img.shields.io/badge/crates.io-E57300?style=for-the-badge&logo=rust&logoColor=white)](https://crates.io/crates/cargo-crap)
 [![docs.rs](https://img.shields.io/badge/docs.rs-000000?style=for-the-badge&logo=docsdotrs&logoColor=white)](https://docs.rs/cargo-crap/0.2.2/cargo_crap/)
+[![CRAP](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fminikin%2Fcargo-crap%2Fbadges%2Fcrap-badge.json&style=for-the-badge)](https://github.com/minikin/cargo-crap/actions/workflows/ci.yml)
 
 > [!TIP]
 > For more context on the motivation behind this crate, read:
@@ -118,7 +119,7 @@ Example output:
 | `--exclude <GLOB>`                                       | —             | Skip files matching this pattern (repeatable). `**` crosses directories. Appends to the default exclusions.                                                                                                                                                                                                                                                                                                                                                                                       |
 | `--no-default-excludes`                                  | off           | Disable the built-in default exclusions (`tests/**`, `benches/**`, `examples/**`, matched relative to each analyzed root). By default these standard Cargo target directories are skipped — integration tests exist to cover production code, and benches/examples are not executed during a coverage run, so they only add 0%-coverage noise.                                                                                                                                                    |
 | `--allow <GLOB>`                                         | —             | Suppress matching functions (repeatable). An entry containing `/` or `**` is a path glob and matches the file the function is in (e.g. `src/generated/**`); otherwise it matches the function name and `*` crosses `::` (e.g. `Foo::*`). Path globs analyze the file but hide its functions — distinct from `--exclude`, which skips files at walk time.                                                                                                                                          |
-| `--format {human,json,github,markdown,pr-comment,sarif}` | `human`       | Output format. `json` emits a versioned envelope (see [JSON output schema](#json-output-schema) below). `github` emits `::warning` annotations. `markdown` emits a GFM table (exhaustive). `pr-comment` is the opinionated PR-bot variant: hides unchanged rows, caps each section, collapses non-critical info into `<details>` blocks. `sarif` emits SARIF 2.1.0 JSON for upload to GitHub Code Scanning, VS Code, and other static-analysis tooling (see [SARIF output](#sarif-output) below). |
+| `--format {human,json,github,markdown,pr-comment,sarif,shields}` | `human`       | Output format. `json` emits a versioned envelope (see [JSON output schema](#json-output-schema) below). `github` emits `::warning` annotations. `markdown` emits a GFM table (exhaustive). `pr-comment` is the opinionated PR-bot variant: hides unchanged rows, caps each section, collapses non-critical info into `<details>` blocks. `sarif` emits SARIF 2.1.0 JSON for upload to GitHub Code Scanning, VS Code, and other static-analysis tooling (see [SARIF output](#sarif-output) below). `shields` emits Shields.io endpoint-badge JSON for a README badge (see [Shields.io badge](#shieldsio-badge) below). |
 | `--summary`                                              | off           | Print only aggregate stats (total, crappy count, worst offender) — no per-function table. In `--workspace` mode this becomes the per-crate summary plus the aggregate line.                                                                                                                                                                                                                                                                                                                       |
 | `--workspace`                                            | off           | Analyze all Cargo workspace members (discovered via `cargo metadata`). Ignores `--path`. Adds a *Per-crate summary* table to human and markdown output, and a `crate` field to JSON entries.                                                                                                                                                                                                                                                                                                      |
 | `--fail-above`                                           | off           | Exit 1 if any function exceeds `--threshold`.                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -183,6 +184,24 @@ rust-analyzer, and most static-analysis tooling.
   full `runs[0].tool.driver` envelope.
 - `--baseline` is rejected with `--format sarif`; SARIF describes
   findings, not deltas. Use `--format json` for delta output.
+
+### Shields.io badge
+
+`--format shields` emits a single JSON object following the
+[Shields.io endpoint schema](https://shields.io/badges/endpoint-badge).
+Serve the file at a stable URL (GitHub Pages, raw blob) and embed it as a
+normal badge image:
+
+```markdown
+![CRAP](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/owner/repo/main/crap-badge.json)
+```
+
+The label embeds the effective threshold (`CRAP > 15`) so the badge reads
+as a complete statement. The message is `passing` (brightgreen) when no
+function exceeds `--threshold`, `N crappy` in yellow for 1–5 offenders,
+and red for 6 or more. `--baseline` is silently ignored — the badge
+always reflects absolute current scores. See [Badge generation](#badge-generation) for a
+CI recipe.
 
 ## Configuration file
 
@@ -329,6 +348,30 @@ self_score:
       with:
         sarif_file: crap.sarif
         category: cargo-crap
+```
+
+### Badge generation
+
+Regenerate the badge JSON on every push to the default branch and commit
+it back so the README embed stays current:
+
+```yaml
+- name: Generate CRAP badge
+  run: |
+    cargo crap \
+      --lcov lcov.info \
+      --workspace \
+      --threshold 30 \
+      --format shields \
+      --output crap-badge.json
+
+- name: Commit badge
+  run: |
+    git config user.name "github-actions[bot]"
+    git config user.email "github-actions[bot]@users.noreply.github.com"
+    git add crap-badge.json
+    git diff --cached --quiet || git commit -m "chore: update CRAP badge"
+    git push
 ```
 
 ### PR comment bot

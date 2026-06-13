@@ -1,4 +1,4 @@
-//! Render [`CrapEntry`] lists in any of five output formats.
+//! Render [`CrapEntry`] lists in any of the supported output formats.
 //!
 //! This module is the dispatch layer. The actual rendering for each format
 //! lives in a dedicated submodule:
@@ -10,6 +10,8 @@
 //! | [`github`]     | `github`     | GitHub Actions (`::warning` annotations) |
 //! | [`markdown`]   | `markdown`   | exhaustive GFM table for artifacts |
 //! | [`pr_comment`] | `pr-comment` | opinionated PR comment (capped, collapsed) |
+//! | [`sarif`]      | `sarif`      | GitHub Code Scanning, VS Code (SARIF 2.1.0) |
+//! | [`shields`]    | `shields`    | README badges (Shields.io endpoint JSON) |
 //! | [`summary`]    | `--summary`  | aggregate-only output for any format |
 //!
 //! Shared building blocks (severity grade, coverage bar, Δ formatting, source
@@ -29,6 +31,7 @@ mod markdown;
 mod per_crate;
 mod pr_comment;
 mod sarif;
+mod shields;
 mod summary;
 mod types;
 
@@ -66,6 +69,12 @@ pub enum Format {
     /// crappy function becomes one `result` with `level: "warning"`,
     /// pointing at the function's start line.
     Sarif,
+    /// Shields.io endpoint-badge JSON (spec 15) — a single
+    /// `{schemaVersion, label, message, color}` object reporting how many
+    /// functions exceed the threshold. Serve the file at a stable URL and
+    /// embed it via `https://img.shields.io/endpoint?url=…`. `--baseline`
+    /// is silently ignored: the badge always shows absolute current scores.
+    Shields,
 }
 
 /// Render `entries` in the requested format to `out`.
@@ -87,6 +96,7 @@ pub fn render(
         Format::Markdown => markdown::render_markdown(entries, threshold, links, out),
         Format::PrComment => pr_comment::render_pr_comment(entries, threshold, links, out),
         Format::Sarif => sarif::render_sarif(entries, threshold, out),
+        Format::Shields => shields::render_shields(entries, threshold, out),
     }
 }
 
@@ -115,6 +125,9 @@ pub fn render_delta(
         Format::Sarif => bail!(
             "--format sarif is incompatible with --baseline; use --format json for delta output"
         ),
+        // The badge has no delta variant (spec 15): the baseline is silently
+        // ignored and the output reflects absolute current scores only.
+        Format::Shields => shields::render_delta_shields(report, threshold, out),
     }
 }
 

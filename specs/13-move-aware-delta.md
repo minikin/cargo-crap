@@ -1,6 +1,6 @@
 # Spec 13 — Move-aware delta detection
 
-**Status:** Proposed
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/delta.rs`, `src/report/*` (renderer changes), `schemas/delta-v*.json`
 

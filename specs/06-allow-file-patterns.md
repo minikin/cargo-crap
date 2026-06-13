@@ -1,6 +1,6 @@
 # Spec 06 — File-pattern suppressions in --allow
 
-**Status:** Pending  
+**Status:** Implemented  
 **Effort:** Medium  
 **Module:** `src/main.rs` (`apply_filters`)
 
