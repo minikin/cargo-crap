@@ -623,17 +623,27 @@ fn resolve_bool(
     cli_flag || config_value.unwrap_or(false)
 }
 
+/// Bail when `flag` is set but `--baseline` is absent. Keeps the per-flag
+/// `&& baseline.is_none()` checks out of [`validate_args`].
+fn require_baseline(
+    flag_set: bool,
+    baseline_present: bool,
+    flag: &str,
+) -> Result<()> {
+    if flag_set && !baseline_present {
+        bail!("{flag} requires --baseline");
+    }
+    Ok(())
+}
+
 /// Validate argument combinations that clap cannot express as declarative rules.
 fn validate_args(cli: &Cli) -> Result<()> {
     if !cli.workspace && !cli.path.exists() {
         bail!("path does not exist: {}", cli.path.display());
     }
-    if cli.fail_regression && cli.baseline.is_none() {
-        bail!("--fail-regression requires --baseline");
-    }
-    if cli.show_unchanged && cli.baseline.is_none() {
-        bail!("--show-unchanged requires --baseline");
-    }
+    let has_baseline = cli.baseline.is_some();
+    require_baseline(cli.fail_regression, has_baseline, "--fail-regression")?;
+    require_baseline(cli.show_unchanged, has_baseline, "--show-unchanged")?;
     if matches!(cli.jobs, Some(0)) {
         bail!("invalid --jobs value: must be a positive integer");
     }
@@ -849,6 +859,20 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn require_baseline_only_errs_when_flag_set_without_baseline() {
+        // Flag set + no baseline → error mentioning the flag.
+        let err = require_baseline(true, false, "--show-unchanged").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--show-unchanged requires --baseline")
+        );
+        // Every other combination is fine.
+        assert!(require_baseline(true, true, "--show-unchanged").is_ok());
+        assert!(require_baseline(false, false, "--show-unchanged").is_ok());
+        assert!(require_baseline(false, true, "--show-unchanged").is_ok());
+    }
 
     #[test]
     fn sort_arg_maps_to_matching_sort_order() {

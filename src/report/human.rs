@@ -119,30 +119,47 @@ pub(crate) fn render_delta_human(
     // Unchanged rows are hidden by default (spec 16); the summary line below
     // still counts every entry.
     let visible = visible_delta_entries(&report.entries, show_unchanged);
-
-    if visible.is_empty() && report.removed.is_empty() {
-        writeln!(out, "No changes since baseline.")?;
-    } else {
-        if !visible.is_empty() {
-            let table = build_delta_table(&visible, threshold);
-            writeln!(out, "{table}")?;
-        }
-        // Removed functions section.
-        if !report.removed.is_empty() {
-            writeln!(out, "Removed since baseline:")?;
-            for r in &report.removed {
-                writeln!(
-                    out,
-                    "  {}  {} (was {:.1})",
-                    "—".dimmed(),
-                    r.function,
-                    r.baseline_crap
-                )?;
-            }
-        }
-    }
-
+    write_delta_body(report, &visible, threshold, out)?;
     write_delta_summary(out, report)
+}
+
+/// Write the table + removed section, or the quiet confirmation when nothing
+/// changed (spec 16). Splitting this out keeps `render_delta_human` lean.
+fn write_delta_body(
+    report: &DeltaReport,
+    visible: &[&DeltaEntry],
+    threshold: f64,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if visible.is_empty() && report.removed.is_empty() {
+        return writeln!(out, "No changes since baseline.").map_err(Into::into);
+    }
+    if !visible.is_empty() {
+        let table = build_delta_table(visible, threshold);
+        writeln!(out, "{table}")?;
+    }
+    if !report.removed.is_empty() {
+        write_removed_section(report, out)?;
+    }
+    Ok(())
+}
+
+/// Write the "Removed since baseline" list.
+fn write_removed_section(
+    report: &DeltaReport,
+    out: &mut dyn Write,
+) -> Result<()> {
+    writeln!(out, "Removed since baseline:")?;
+    for r in &report.removed {
+        writeln!(
+            out,
+            "  {}  {} (was {:.1})",
+            "—".dimmed(),
+            r.function,
+            r.baseline_crap
+        )?;
+    }
+    Ok(())
 }
 
 fn build_delta_table(

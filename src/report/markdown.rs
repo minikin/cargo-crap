@@ -220,17 +220,29 @@ pub(crate) fn render_delta_markdown(
     // Unchanged rows are hidden by default (spec 16); the stats line below
     // still counts every entry.
     let visible = visible_delta_entries(&report.entries, show_unchanged);
-    if visible.is_empty() && report.removed.is_empty() {
-        writeln!(out, "_No changes since baseline._")?;
-    } else {
-        if !visible.is_empty() {
-            write_delta_entries_table(&visible, threshold, links, out)?;
-        }
-        if !report.removed.is_empty() {
-            write_markdown_removed(&report.removed, out)?;
-        }
-    }
+    write_markdown_delta_body(report, &visible, threshold, links, out)?;
     write_markdown_delta_stats(report, out)
+}
+
+/// Write the table + removed section, or the quiet confirmation when nothing
+/// changed (spec 16). Splitting this out keeps `render_delta_markdown` lean.
+fn write_markdown_delta_body(
+    report: &DeltaReport,
+    visible: &[&DeltaEntry],
+    threshold: f64,
+    links: Option<&SourceLinks>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if visible.is_empty() && report.removed.is_empty() {
+        return writeln!(out, "_No changes since baseline._").map_err(Into::into);
+    }
+    if !visible.is_empty() {
+        write_delta_entries_table(visible, threshold, links, out)?;
+    }
+    if !report.removed.is_empty() {
+        write_markdown_removed(&report.removed, out)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
