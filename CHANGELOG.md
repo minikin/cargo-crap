@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.3.0] - 2026-06-15
+
+This release bundles specs 14–18. It contains **breaking changes** — see
+the Changed section before upgrading.
+
+### Added
+
+- **Shields.io endpoint badge** (`--format shields`, spec 15). Emits a single
+  `{schemaVersion, label, message, color}` JSON object counting functions
+  above `--threshold`, with the threshold embedded in the label. Serve it at a
+  stable URL and embed via `https://img.shields.io/endpoint?url=…`. `--baseline`
+  is ignored — the badge always reflects absolute current scores. CI now
+  publishes cargo-crap's own badge.
+- **`--sort {crap,file}`** (spec 17) and the `sort` config key. `crap` (default)
+  keeps the score-descending order; `file` sorts by `(file, function, line)`
+  ascending, so a committed JSON baseline produces minimal diffs across runs.
+  `--top` still selects the N highest-CRAP functions first; `--sort` only
+  reorders the survivors. Applies to every format.
+- **`--show-unchanged`** (spec 16) and the `show_unchanged` config key. Restores
+  the exhaustive delta table in `--baseline` mode (see Changed below).
+- **Default-exclusion controls** (spec 14): `--no-default-excludes` to disable
+  the built-in exclusions, and the `default-excludes` config key to replace the
+  list wholesale. `exclude` / `--exclude` continue to append.
+
+### Changed
+
+- **BREAKING: `tests/**`, `benches/**`, and `examples/**` are now excluded by
+  default** (spec 14), matched relative to each analyzed root. Integration tests
+  exist to cover production code, and benches/examples are not exercised during
+  a coverage run, so they only added 0%-coverage noise. Pass
+  `--no-default-excludes` (or set `default-excludes = []`) to restore the
+  previous behavior. This changes the set of functions reported and any derived
+  counts/scores for projects with those directories.
+- **BREAKING: delta output is changed-only by default** (spec 16). In
+  `--baseline` mode the `human` and `markdown` tables now list only changed
+  functions (`Regressed` / `Improved` / `New` / `Moved`); when nothing changed
+  they print `No changes since baseline.`. The summary line still counts every
+  entry. Pass `--show-unchanged` for the old exhaustive table. `json` stays
+  exhaustive and `pr-comment` keeps its own row policy — both are unaffected.
+- **BREAKING (library API):** `report::render_delta` gained a `show_unchanged`
+  parameter, and the public `report::Format` enum gained a `Shields` variant.
+  Downstream code using the library must update call sites / `match` arms.
+
+### Fixed
+
+- **Baseline entries are filtered through the current run's exclusions before
+  delta computation** (spec 18). Changing the `--exclude` / `--allow` /
+  default-exclusion set between the baseline run and the current run no longer
+  floods `removed` with phantom deletions or produces spurious name-matched
+  "moves".
+
 ## [0.2.2] - 2026-05-25
 
 ### Fixed
