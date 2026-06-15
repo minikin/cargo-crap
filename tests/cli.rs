@@ -1079,6 +1079,139 @@ fn baseline_json_output_has_entries_and_removed() {
 }
 
 #[test]
+fn baseline_human_default_hides_unchanged_quiet_confirmation() {
+    // Spec 16: an identical re-run produces only Unchanged entries; the human
+    // delta table is suppressed and a quiet confirmation is printed instead.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = dir.path().join("baseline.json");
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline_path)
+        .assert()
+        .success();
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No changes since baseline."))
+        // Summary counts are still printed.
+        .stdout(predicate::str::contains("unchanged"));
+}
+
+#[test]
+fn show_unchanged_requires_baseline() {
+    // Spec 16: --show-unchanged is meaningless without --baseline.
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--show-unchanged")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--show-unchanged requires --baseline",
+        ));
+}
+
+#[test]
+fn json_delta_output_unaffected_by_show_unchanged() {
+    // Spec 16: JSON stays exhaustive — byte-identical with and without the flag.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = dir.path().join("baseline.json");
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline_path)
+        .assert()
+        .success();
+
+    let run = |show: bool| {
+        let mut c = cmd();
+        c.arg("--path")
+            .arg(fixture_src())
+            .arg("--lcov")
+            .arg(fixture_lcov())
+            .arg("--baseline")
+            .arg(&baseline_path)
+            .arg("--format")
+            .arg("json");
+        if show {
+            c.arg("--show-unchanged");
+        }
+        String::from_utf8(c.output().expect("run").stdout).expect("utf8")
+    };
+    assert_eq!(
+        run(false),
+        run(true),
+        "JSON delta output must be identical with and without --show-unchanged"
+    );
+}
+
+#[test]
+fn invalid_sort_value_is_rejected() {
+    // Spec 17: clap rejects unknown --sort values and lists the valid ones.
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--sort")
+        .arg("coverage")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("crap"))
+        .stderr(predicate::str::contains("file"));
+}
+
+#[test]
+fn sort_file_orders_json_entries_by_file_function_line() {
+    // Spec 17: --sort file orders entries by (file, function, line) ascending.
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .arg("--sort")
+        .arg("file")
+        .output()
+        .expect("run");
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let entries = parsed["entries"].as_array().expect("entries array");
+    let keys: Vec<(String, String, u64)> = entries
+        .iter()
+        .map(|e| {
+            (
+                e["file"].as_str().unwrap().replace('\\', "/"),
+                e["function"].as_str().unwrap().to_string(),
+                e["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(
+        keys, sorted,
+        "entries must be in (file, function, line) order"
+    );
+}
+
+#[test]
 fn fail_regression_requires_baseline() {
     cmd()
         .arg("--path")
@@ -1190,6 +1323,9 @@ fn markdown_format_with_baseline_shows_delta_table() {
         .arg(&baseline_path)
         .arg("--format")
         .arg("markdown")
+        // Identical re-run → all Unchanged; --show-unchanged keeps the table
+        // visible so this still exercises render_delta_markdown's table path.
+        .arg("--show-unchanged")
         .assert()
         .success()
         .stdout(predicate::str::contains("|---"))

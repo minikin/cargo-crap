@@ -187,7 +187,7 @@ mod tests {
         let report = compute_delta(&entries, &baseline, 0.01);
 
         let mut delta_buf = Vec::new();
-        render_delta(&report, 30.0, Format::Shields, None, &mut delta_buf).unwrap();
+        render_delta(&report, 30.0, Format::Shields, None, false, &mut delta_buf).unwrap();
         let mut plain_buf = Vec::new();
         render(&entries, 30.0, Format::Shields, None, &mut plain_buf).unwrap();
 

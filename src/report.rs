@@ -105,18 +105,25 @@ pub fn render(
 /// Human format: table with a Δ column + summary line.
 /// JSON format: `{"entries": [...], "removed": [...]}` object.
 /// GitHub format: `::warning` for regressed and new-crappy functions only.
+/// `show_unchanged` controls whether `Unchanged` rows appear in the human and
+/// markdown tables (spec 16); it has no effect on the other formats, which
+/// keep their own row policies (json stays exhaustive, pr-comment hides
+/// unchanged by design, github/shields/sarif don't list unchanged functions).
 pub fn render_delta(
     report: &DeltaReport,
     threshold: f64,
     format: Format,
     links: Option<&SourceLinks>,
+    show_unchanged: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     match format {
         Format::Json => json::render_delta_json(report, out),
-        Format::Human => human::render_delta_human(report, threshold, out),
+        Format::Human => human::render_delta_human(report, threshold, show_unchanged, out),
         Format::GitHub => github::render_delta_github(report, threshold, out),
-        Format::Markdown => markdown::render_delta_markdown(report, threshold, links, out),
+        Format::Markdown => {
+            markdown::render_delta_markdown(report, threshold, links, show_unchanged, out)
+        },
         Format::PrComment => pr_comment::render_delta_pr_comment(report, threshold, links, out),
         // SARIF describes the *current* set of findings, not deltas. The
         // upstream consumers (GitHub Code Scanning, VS Code) don't model

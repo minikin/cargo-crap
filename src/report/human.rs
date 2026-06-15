@@ -2,7 +2,7 @@
 //! Used both for the absolute report and the delta report (with a Δ column).
 
 use super::per_crate::write_per_crate_human;
-use super::types::{Grade, coverage_bar, delta_display};
+use super::types::{Grade, coverage_bar, delta_display, visible_delta_entries};
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::merge::CrapEntry;
 use anyhow::Result;
@@ -108,6 +108,7 @@ fn write_summary(
 pub(crate) fn render_delta_human(
     report: &DeltaReport,
     threshold: f64,
+    show_unchanged: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     if report.entries.is_empty() && report.removed.is_empty() {
@@ -115,22 +116,29 @@ pub(crate) fn render_delta_human(
         return Ok(());
     }
 
-    if !report.entries.is_empty() {
-        let table = build_delta_table(&report.entries, threshold);
-        writeln!(out, "{table}")?;
-    }
+    // Unchanged rows are hidden by default (spec 16); the summary line below
+    // still counts every entry.
+    let visible = visible_delta_entries(&report.entries, show_unchanged);
 
-    // Removed functions section.
-    if !report.removed.is_empty() {
-        writeln!(out, "Removed since baseline:")?;
-        for r in &report.removed {
-            writeln!(
-                out,
-                "  {}  {} (was {:.1})",
-                "—".dimmed(),
-                r.function,
-                r.baseline_crap
-            )?;
+    if visible.is_empty() && report.removed.is_empty() {
+        writeln!(out, "No changes since baseline.")?;
+    } else {
+        if !visible.is_empty() {
+            let table = build_delta_table(&visible, threshold);
+            writeln!(out, "{table}")?;
+        }
+        // Removed functions section.
+        if !report.removed.is_empty() {
+            writeln!(out, "Removed since baseline:")?;
+            for r in &report.removed {
+                writeln!(
+                    out,
+                    "  {}  {} (was {:.1})",
+                    "—".dimmed(),
+                    r.function,
+                    r.baseline_crap
+                )?;
+            }
         }
     }
 
@@ -138,7 +146,7 @@ pub(crate) fn render_delta_human(
 }
 
 fn build_delta_table(
-    entries: &[DeltaEntry],
+    entries: &[&DeltaEntry],
     threshold: f64,
 ) -> Table {
     let mut table = Table::new();
@@ -164,7 +172,7 @@ fn build_delta_table(
         .column_mut(3)
         .unwrap()
         .set_cell_alignment(CellAlignment::Right);
-    for de in entries {
+    for de in entries.iter().copied() {
         table.add_row(build_delta_row(de, threshold));
     }
     table
@@ -472,7 +480,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, &mut buf).unwrap();
+        render_delta_human(&report, 30.0, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("↔ 1 moved"),
@@ -481,6 +489,116 @@ mod tests {
         assert!(
             !s.contains("↔ 3 moved"),
             "human delta summary must NOT count non-moved as moved:\n{s}"
+        );
+    }
+
+    // --- changed-only output (spec 16) -------------------------------------
+
+    fn delta_entry(
+        function: &str,
+        status: DeltaStatus,
+    ) -> DeltaEntry {
+        DeltaEntry {
+            current: CrapEntry {
+                file: PathBuf::from("src/a.rs"),
+                function: function.into(),
+                line: 1,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 50.0,
+                crate_name: None,
+            },
+            baseline_crap: Some(40.0),
+            delta: Some(10.0),
+            status,
+            previous_file: None,
+        }
+    }
+
+    fn mixed_report() -> DeltaReport {
+        DeltaReport {
+            entries: vec![
+                delta_entry("reg", DeltaStatus::Regressed),
+                delta_entry("imp", DeltaStatus::Improved),
+                delta_entry("u1", DeltaStatus::Unchanged),
+                delta_entry("u2", DeltaStatus::Unchanged),
+                delta_entry("u3", DeltaStatus::Unchanged),
+            ],
+            removed: vec![],
+        }
+    }
+
+    #[test]
+    fn delta_human_hides_unchanged_rows_by_default() {
+        let mut buf = Vec::new();
+        render_delta_human(&mixed_report(), 30.0, false, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("reg"), "regressed row must appear:\n{s}");
+        assert!(s.contains("imp"), "improved row must appear:\n{s}");
+        assert!(!s.contains("u1"), "unchanged rows must be hidden:\n{s}");
+        assert!(!s.contains("u2"), "unchanged rows must be hidden:\n{s}");
+        // Summary still counts all three unchanged entries.
+        assert!(
+            s.contains("· 3 unchanged"),
+            "summary must still count unchanged:\n{s}"
+        );
+    }
+
+    #[test]
+    fn delta_human_show_unchanged_restores_full_table() {
+        let mut buf = Vec::new();
+        render_delta_human(&mixed_report(), 30.0, true, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        for f in ["reg", "imp", "u1", "u2", "u3"] {
+            assert!(s.contains(f), "{f} must appear with --show-unchanged:\n{s}");
+        }
+    }
+
+    #[test]
+    fn delta_human_all_unchanged_prints_quiet_confirmation() {
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry("u1", DeltaStatus::Unchanged),
+                delta_entry("u2", DeltaStatus::Unchanged),
+            ],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_human(&report, 30.0, false, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("No changes since baseline."),
+            "all-unchanged run must print the quiet confirmation:\n{s}"
+        );
+        assert!(!s.contains("u1"), "no table rows when all unchanged:\n{s}");
+        assert!(
+            s.contains("· 2 unchanged"),
+            "summary line still printed with full counts:\n{s}"
+        );
+    }
+
+    #[test]
+    fn delta_human_shows_removed_even_when_no_visible_entries() {
+        // All entries Unchanged (hidden) but a removed function means there ARE
+        // changes — the removed section appears, not the quiet confirmation.
+        let report = DeltaReport {
+            entries: vec![delta_entry("u1", DeltaStatus::Unchanged)],
+            removed: vec![crate::delta::RemovedEntry {
+                function: "gone".into(),
+                file: PathBuf::from("src/a.rs"),
+                baseline_crap: 7.0,
+            }],
+        };
+        let mut buf = Vec::new();
+        render_delta_human(&report, 30.0, false, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("Removed since baseline:") && s.contains("gone"),
+            "removed section must appear:\n{s}"
+        );
+        assert!(
+            !s.contains("No changes since baseline."),
+            "a removal is a change — must not print the quiet confirmation:\n{s}"
         );
     }
 }

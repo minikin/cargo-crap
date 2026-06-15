@@ -11,7 +11,7 @@ use cargo_crap::{
     complexity,
     coverage::{self, FileCoverage},
     delta::{compute_delta, load_baseline},
-    merge::{MissingCoveragePolicy, merge},
+    merge::{MissingCoveragePolicy, SortOrder, merge, sort_entries},
     report::{
         Format, SourceLinks, crappy_count, render, render_delta, render_delta_summary,
         render_summary,
@@ -36,7 +36,7 @@ use std::time::Duration;
 )]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "the bools come from clap-derived `--flag` switches (--workspace, --summary, --fail-above, --fail-regression, --no-default-excludes); not a struct-design smell"
+    reason = "the bools come from clap-derived `--flag` switches (--workspace, --summary, --fail-above, --fail-regression, --no-default-excludes, --show-unchanged); not a struct-design smell"
 )]
 struct Cli {
     /// Path to an LCOV coverage file (e.g. from `cargo llvm-cov --lcov --output-path lcov.info`).
@@ -127,6 +127,20 @@ struct Cli {
     #[arg(long)]
     fail_regression: bool,
 
+    /// Show `Unchanged` rows in `--baseline` mode (human / markdown formats).
+    /// By default only changed functions are listed. Requires `--baseline`.
+    /// Falls back to `.cargo-crap.toml` → off.
+    #[arg(long)]
+    show_unchanged: bool,
+
+    /// Final ordering of report entries. `crap` (default) sorts by CRAP score
+    /// descending; `file` sorts by `(file, function, line)` ascending — stable
+    /// across score changes, ideal for committed JSON baselines. `--top` always
+    /// selects the N highest-CRAP functions first, then `--sort` reorders them.
+    /// Falls back to `.cargo-crap.toml` → `crap`.
+    #[arg(long, value_enum)]
+    sort: Option<SortArg>,
+
     /// Write output to FILE instead of stdout. Useful for saving a JSON
     /// baseline: `--format json --output baseline.json`.
     #[arg(long, value_name = "FILE")]
@@ -172,6 +186,21 @@ impl From<MissingPolicy> for MissingCoveragePolicy {
             MissingPolicy::Pessimistic => Self::Pessimistic,
             MissingPolicy::Optimistic => Self::Optimistic,
             MissingPolicy::Skip => Self::Skip,
+        }
+    }
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum SortArg {
+    Crap,
+    File,
+}
+
+impl From<SortArg> for SortOrder {
+    fn from(s: SortArg) -> Self {
+        match s {
+            SortArg::Crap => Self::Crap,
+            SortArg::File => Self::File,
         }
     }
 }
@@ -584,6 +613,16 @@ fn warn_unmapped(files: &[std::path::PathBuf]) {
     }
 }
 
+/// Resolve a boolean flag against config: the CLI switch wins when set,
+/// otherwise the config value, defaulting to false. Keeps the `||` decision
+/// points out of `main` so it stays under the CC budget.
+fn resolve_bool(
+    cli_flag: bool,
+    config_value: Option<bool>,
+) -> bool {
+    cli_flag || config_value.unwrap_or(false)
+}
+
 /// Validate argument combinations that clap cannot express as declarative rules.
 fn validate_args(cli: &Cli) -> Result<()> {
     if !cli.workspace && !cli.path.exists() {
@@ -591,6 +630,9 @@ fn validate_args(cli: &Cli) -> Result<()> {
     }
     if cli.fail_regression && cli.baseline.is_none() {
         bail!("--fail-regression requires --baseline");
+    }
+    if cli.show_unchanged && cli.baseline.is_none() {
+        bail!("--show-unchanged requires --baseline");
     }
     if matches!(cli.jobs, Some(0)) {
         bail!("invalid --jobs value: must be a positive integer");
@@ -612,6 +654,12 @@ struct RenderOpts<'a> {
     format: Format,
     summary: bool,
     links: Option<&'a SourceLinks>,
+    /// Show `Unchanged` rows in delta mode (spec 16). Only the human and
+    /// markdown renderers consult it.
+    show_unchanged: bool,
+    /// Final entry ordering (spec 17). Applied to the `DeltaReport` so
+    /// `removed` ordering is deterministic too.
+    sort: SortOrder,
 }
 
 /// Load the `--baseline` file (if any) and filter it through the current
@@ -649,13 +697,21 @@ fn do_render(
     out: &mut dyn Write,
 ) -> Result<(bool, bool)> {
     if let Some(baseline_data) = baseline {
-        let report = compute_delta(entries, baseline_data, opts.epsilon);
+        let mut report = compute_delta(entries, baseline_data, opts.epsilon);
+        report.sort(opts.sort);
         let has_crappy = crappy_count(entries, opts.threshold) > 0;
         let has_regression = report.regression_count() > 0;
         if opts.summary {
             render_delta_summary(&report, out)?;
         } else {
-            render_delta(&report, opts.threshold, opts.format, opts.links, out)?;
+            render_delta(
+                &report,
+                opts.threshold,
+                opts.format,
+                opts.links,
+                opts.show_unchanged,
+                out,
+            )?;
         }
         Ok((has_crappy, has_regression))
     } else {
@@ -714,8 +770,10 @@ fn main() -> Result<()> {
         .or(config.missing)
         .unwrap_or(MissingCoveragePolicy::Pessimistic);
 
-    let fail_above = cli.fail_above || config.fail_above.unwrap_or(false);
-    let fail_regression = cli.fail_regression || config.fail_regression.unwrap_or(false);
+    let fail_above = resolve_bool(cli.fail_above, config.fail_above);
+    let fail_regression = resolve_bool(cli.fail_regression, config.fail_regression);
+    let show_unchanged = resolve_bool(cli.show_unchanged, config.show_unchanged);
+    let sort_order = cli.sort.map(Into::into).or(config.sort).unwrap_or_default();
 
     let epsilon = cli
         .epsilon
@@ -755,6 +813,8 @@ fn main() -> Result<()> {
         cli.min.or(config.min),
         cli.top.or(config.top),
     )?;
+    // Apply the user-requested ordering after --top has selected by CRAP (spec 17).
+    sort_entries(&mut entries, sort_order);
 
     // --- Baseline (loaded here, filtered per spec 18) ---
     let baseline_data = load_filtered_baseline(
@@ -774,6 +834,8 @@ fn main() -> Result<()> {
         format: cli.format.into(),
         summary: cli.summary,
         links: links.as_ref(),
+        show_unchanged,
+        sort: sort_order,
     };
     let (has_crappy, has_regression) =
         do_render(&entries, baseline_data.as_deref(), &opts, out_box.as_mut())?;
@@ -787,6 +849,25 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sort_arg_maps_to_matching_sort_order() {
+        // Kills: From<SortArg> collapsing to Default::default() (always Crap).
+        assert_eq!(SortOrder::from(SortArg::Crap), SortOrder::Crap);
+        assert_eq!(SortOrder::from(SortArg::File), SortOrder::File);
+    }
+
+    #[test]
+    fn resolve_bool_cli_wins_then_config_then_false() {
+        // CLI flag set → true regardless of config.
+        assert!(resolve_bool(true, Some(false)));
+        assert!(resolve_bool(true, None));
+        // CLI flag unset → fall back to config value.
+        assert!(resolve_bool(false, Some(true)));
+        assert!(!resolve_bool(false, Some(false)));
+        // Neither set → default false.
+        assert!(!resolve_bool(false, None));
+    }
 
     #[test]
     fn name_glob_classifier_keeps_function_patterns() {

@@ -133,7 +133,7 @@
 //!
 //! // Exit non-zero if any function regressed.
 //! if report.regression_count() > 0 {
-//!     render_delta(&report, 30.0, Format::Human, None, &mut io::stdout())?;
+//!     render_delta(&report, 30.0, Format::Human, None, false, &mut io::stdout())?;
 //!     std::process::exit(1);
 //! }
 //! # Ok::<(), anyhow::Error>(())

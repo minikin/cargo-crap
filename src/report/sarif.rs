@@ -306,7 +306,7 @@ mod tests {
             removed: Vec::new(),
         };
         let mut buf = Vec::new();
-        let err = render_delta(&report, 30.0, Format::Sarif, None, &mut buf)
+        let err = render_delta(&report, 30.0, Format::Sarif, None, false, &mut buf)
             .expect_err("delta + sarif must fail");
         let msg = err.to_string();
         assert!(

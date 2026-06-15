@@ -17,9 +17,13 @@
 //! # `allow` accepts both function-name globs and path globs (any entry
 //! # containing `/` or `**` is treated as a path glob).
 //! allow = ["generated::*", "src/generated/**"]
+//! # Final entry ordering: "crap" (default) or "file" (stable for baselines).
+//! sort = "file"
+//! # Show Unchanged rows in --baseline mode (human / markdown).
+//! show_unchanged = true
 //! ```
 
-use crate::merge::MissingCoveragePolicy;
+use crate::merge::{MissingCoveragePolicy, SortOrder};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
@@ -78,6 +82,16 @@ pub struct Config {
     /// value at or below this are reported as `Unchanged`. Must be
     /// non-negative when set.
     pub epsilon: Option<f64>,
+
+    /// Final ordering of report entries. One of `"crap"` (default, CRAP score
+    /// descending) or `"file"` (`(file, function, line)` ascending).
+    pub sort: Option<SortOrder>,
+
+    /// In `--baseline` mode, show `Unchanged` rows in the human and markdown
+    /// tables. Defaults to false: only changed functions are listed.
+    /// Accepted as `show-unchanged` (house style) or `show_unchanged`.
+    #[serde(alias = "show_unchanged")]
+    pub show_unchanged: Option<bool>,
 }
 
 /// Walk up from `start` until `.cargo-crap.toml` is found.
@@ -206,6 +220,24 @@ allow = ["Foo::*"]
         // Start from a subdirectory — should walk up and find the config.
         let cfg = load(&subdir).unwrap();
         assert_eq!(cfg.threshold, Some(15.0));
+    }
+
+    #[test]
+    fn sort_and_show_unchanged_are_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "sort = \"file\"\nshow_unchanged = true\n");
+        let cfg = load(dir.path()).unwrap();
+        assert_eq!(cfg.sort, Some(SortOrder::File));
+        assert_eq!(cfg.show_unchanged, Some(true));
+    }
+
+    #[test]
+    fn sort_and_show_unchanged_absent_means_none() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "threshold = 20.0\n");
+        let cfg = load(dir.path()).unwrap();
+        assert!(cfg.sort.is_none());
+        assert!(cfg.show_unchanged.is_none());
     }
 
     #[test]

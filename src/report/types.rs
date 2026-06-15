@@ -67,6 +67,22 @@ pub(crate) fn coverage_bar(pct: Option<f64>) -> String {
     }
 }
 
+/// Select the delta entries that should appear as table rows (spec 16).
+///
+/// `Unchanged` rows are hidden by default in the human and markdown tables —
+/// they bury the handful of rows that actually changed. `--show-unchanged`
+/// (`show_unchanged = true`) restores the exhaustive list. Every other status
+/// (`Regressed` / `Improved` / `New` / `Moved`) is always shown.
+pub(crate) fn visible_delta_entries(
+    entries: &[DeltaEntry],
+    show_unchanged: bool,
+) -> Vec<&DeltaEntry> {
+    entries
+        .iter()
+        .filter(|e| show_unchanged || e.status != DeltaStatus::Unchanged)
+        .collect()
+}
+
 /// Format the Δ column value for a single delta entry.
 ///
 /// Shared by the human delta table and the markdown / pr-comment renderers.

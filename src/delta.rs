@@ -13,7 +13,7 @@
 //! cargo crap --lcov lcov.info --baseline baseline.json --fail-regression
 //! ```
 
-use crate::merge::CrapEntry;
+use crate::merge::{CrapEntry, SortOrder};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -79,6 +79,31 @@ pub struct DeltaReport {
 }
 
 impl DeltaReport {
+    /// Apply the user-requested [`SortOrder`] (spec 17). `entries` are ordered
+    /// by the *current* entry's key; `removed` is ordered by `(file, function)`
+    /// for `File`, making removed ordering deterministic regardless of the
+    /// match-pass internals. `Crap` orders `entries` by score descending and
+    /// leaves `removed` in baseline order.
+    pub fn sort(
+        &mut self,
+        order: SortOrder,
+    ) {
+        match order {
+            SortOrder::Crap => self.entries.sort_by(|a, b| {
+                b.current
+                    .crap
+                    .partial_cmp(&a.current.crap)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+            SortOrder::File => {
+                self.entries
+                    .sort_by(|a, b| current_key(&a.current).cmp(&current_key(&b.current)));
+                self.removed
+                    .sort_by(|a, b| removed_key(a).cmp(&removed_key(b)));
+            },
+        }
+    }
+
     /// Number of functions whose CRAP score increased since the baseline.
     #[must_use]
     pub fn regression_count(&self) -> usize {
@@ -104,6 +129,17 @@ pub fn load_baseline(path: &Path) -> Result<Vec<CrapEntry>> {
 
 fn path_key(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
+}
+
+/// File-order key for a current entry: `(file, function, line)` ascending,
+/// normalized to forward slashes so the ordering is platform-stable (spec 17).
+fn current_key(e: &CrapEntry) -> (String, &str, usize) {
+    (path_key(&e.file), e.function.as_str(), e.line)
+}
+
+/// File-order key for a removed entry: `(file, function)` ascending.
+fn removed_key(r: &RemovedEntry) -> (String, &str) {
+    (path_key(&r.file), r.function.as_str())
 }
 
 #[derive(Hash, Eq, PartialEq)]
@@ -715,6 +751,63 @@ mod tests {
         // a genuine deletion.
         assert_eq!(report.removed.len(), 1);
         assert_eq!(report.removed[0].file, PathBuf::from("src/b.rs"));
+    }
+
+    // --- DeltaReport::sort (spec 17) ---------------------------------------
+
+    #[test]
+    fn sort_file_orders_entries_by_current_key_and_removed_by_file_function() {
+        let mut report = DeltaReport {
+            entries: vec![
+                build_pass_one_entry(&entry_in("src/b.rs", "zeta", 99.0), None, DEFAULT_EPSILON),
+                build_pass_one_entry(&entry_in("src/a.rs", "beta", 1.0), None, DEFAULT_EPSILON),
+                build_pass_one_entry(&entry_in("src/a.rs", "alpha", 1.0), None, DEFAULT_EPSILON),
+            ],
+            removed: vec![
+                RemovedEntry {
+                    function: "y".into(),
+                    file: PathBuf::from("src/z.rs"),
+                    baseline_crap: 1.0,
+                },
+                RemovedEntry {
+                    function: "x".into(),
+                    file: PathBuf::from("src/a.rs"),
+                    baseline_crap: 1.0,
+                },
+            ],
+        };
+        report.sort(SortOrder::File);
+        let entry_order: Vec<&str> = report
+            .entries
+            .iter()
+            .map(|e| e.current.function.as_str())
+            .collect();
+        assert_eq!(entry_order, ["alpha", "beta", "zeta"]);
+        let removed_order: Vec<&str> = report.removed.iter().map(|r| r.function.as_str()).collect();
+        assert_eq!(
+            removed_order,
+            ["x", "y"],
+            "removed sorts by (file, function)"
+        );
+    }
+
+    #[test]
+    fn sort_crap_orders_entries_by_score_descending() {
+        // Kills: ascending comparator in the Crap arm of DeltaReport::sort.
+        let mut report = DeltaReport {
+            entries: vec![
+                build_pass_one_entry(&entry_in("src/a.rs", "low", 1.0), None, DEFAULT_EPSILON),
+                build_pass_one_entry(&entry_in("src/a.rs", "high", 90.0), None, DEFAULT_EPSILON),
+            ],
+            removed: vec![],
+        };
+        report.sort(SortOrder::Crap);
+        let entry_order: Vec<&str> = report
+            .entries
+            .iter()
+            .map(|e| e.current.function.as_str())
+            .collect();
+        assert_eq!(entry_order, ["high", "low"]);
     }
 
     #[test]

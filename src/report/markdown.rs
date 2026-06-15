@@ -5,7 +5,7 @@
 
 use super::links::{SourceLinks, linkify};
 use super::per_crate::write_per_crate_markdown;
-use super::types::{Grade, delta_display, format_location_with_prev};
+use super::types::{Grade, delta_display, format_location_with_prev, visible_delta_entries};
 use super::write_pr_comment_marker;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::merge::CrapEntry;
@@ -137,14 +137,14 @@ fn write_markdown_delta_heading(
 }
 
 fn write_delta_entries_table(
-    entries: &[DeltaEntry],
+    entries: &[&DeltaEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
     out: &mut dyn Write,
 ) -> Result<()> {
     writeln!(out, "| | CRAP | Δ | CC | Cov % | Function | Location |")?;
     writeln!(out, "|---|---:|---:|---:|---:|---|---|")?;
-    for de in entries {
+    for de in entries.iter().copied() {
         let e = &de.current;
         let grade = Grade::of(e.crap, threshold);
         let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
@@ -208,6 +208,7 @@ pub(crate) fn render_delta_markdown(
     report: &DeltaReport,
     threshold: f64,
     links: Option<&SourceLinks>,
+    show_unchanged: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     write_pr_comment_marker(out)?;
@@ -216,9 +217,18 @@ pub(crate) fn render_delta_markdown(
         return Ok(());
     }
     write_markdown_delta_heading(report.regression_count(), out)?;
-    write_delta_entries_table(&report.entries, threshold, links, out)?;
-    if !report.removed.is_empty() {
-        write_markdown_removed(&report.removed, out)?;
+    // Unchanged rows are hidden by default (spec 16); the stats line below
+    // still counts every entry.
+    let visible = visible_delta_entries(&report.entries, show_unchanged);
+    if visible.is_empty() && report.removed.is_empty() {
+        writeln!(out, "_No changes since baseline._")?;
+    } else {
+        if !visible.is_empty() {
+            write_delta_entries_table(&visible, threshold, links, out)?;
+        }
+        if !report.removed.is_empty() {
+            write_markdown_removed(&report.removed, out)?;
+        }
     }
     write_markdown_delta_stats(report, out)
 }
@@ -286,7 +296,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, &mut buf).unwrap();
+        render_delta_markdown(&report, 30.0, None, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("↔ 1 moved"),
@@ -341,7 +351,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, &mut buf).unwrap();
+        render_delta_markdown(&report, 30.0, None, true, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("`src/a.rs:7`"),
@@ -350,6 +360,91 @@ mod tests {
         assert!(
             s.contains("`src/new.rs:42` ← `src/old.rs`"),
             "moved row must show `<new>:<line> ← <prev>` location, got:\n{s}"
+        );
+    }
+
+    // --- changed-only output (spec 16) -------------------------------------
+
+    fn delta_entry(
+        function: &str,
+        status: crate::delta::DeltaStatus,
+    ) -> DeltaEntry {
+        DeltaEntry {
+            current: CrapEntry {
+                file: PathBuf::from("src/a.rs"),
+                function: function.into(),
+                line: 1,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: 50.0,
+                crate_name: None,
+            },
+            baseline_crap: Some(40.0),
+            delta: Some(10.0),
+            status,
+            previous_file: None,
+        }
+    }
+
+    #[test]
+    fn delta_markdown_hides_unchanged_rows_by_default() {
+        use crate::delta::DeltaStatus;
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry("reg", DeltaStatus::Regressed),
+                delta_entry("u1", DeltaStatus::Unchanged),
+                delta_entry("u2", DeltaStatus::Unchanged),
+                delta_entry("u3", DeltaStatus::Unchanged),
+            ],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_markdown(&report, 30.0, None, false, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("reg"), "regressed row must appear:\n{s}");
+        assert!(!s.contains("u1"), "unchanged rows must be hidden:\n{s}");
+        assert!(
+            s.contains("· 3 unchanged"),
+            "stats line must still count unchanged:\n{s}"
+        );
+    }
+
+    #[test]
+    fn delta_markdown_show_unchanged_restores_full_table() {
+        use crate::delta::DeltaStatus;
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry("reg", DeltaStatus::Regressed),
+                delta_entry("u1", DeltaStatus::Unchanged),
+            ],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_markdown(&report, 30.0, None, true, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("reg") && s.contains("u1"),
+            "all rows shown:\n{s}"
+        );
+    }
+
+    #[test]
+    fn delta_markdown_all_unchanged_prints_quiet_confirmation() {
+        use crate::delta::DeltaStatus;
+        let report = DeltaReport {
+            entries: vec![delta_entry("u1", DeltaStatus::Unchanged)],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_markdown(&report, 30.0, None, false, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("_No changes since baseline._"),
+            "all-unchanged run must print the quiet confirmation:\n{s}"
+        );
+        assert!(
+            s.contains("· 1 unchanged"),
+            "stats line still printed with full counts:\n{s}"
         );
     }
 }

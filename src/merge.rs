@@ -50,6 +50,51 @@ pub struct CrapEntry {
     pub crate_name: Option<String>,
 }
 
+/// Final ordering applied to the report entries (spec 17).
+///
+/// [`merge`] always sorts by CRAP descending first — that ordering is the
+/// selection invariant `--top` relies on. The user-requested sort is applied
+/// as a separate, final step via [`sort_entries`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrder {
+    /// CRAP score descending — the right order for humans reading top-down.
+    #[default]
+    Crap,
+    /// `(file, function, line)` ascending — stable across score changes, so a
+    /// committed JSON baseline produces minimal diffs.
+    File,
+}
+
+/// Stable `(file, function, line)` sort key. The file path is normalized to
+/// forward slashes so baselines written on different platforms sort the same.
+fn file_order_key(e: &CrapEntry) -> (String, &str, usize) {
+    (
+        e.file.to_string_lossy().replace('\\', "/"),
+        e.function.as_str(),
+        e.line,
+    )
+}
+
+/// Apply the user-requested [`SortOrder`] to an entry slice in place.
+///
+/// Call this *after* `--allow` / `--min` / `--top` have run: `--top` selects
+/// the N highest-CRAP functions against [`merge`]'s descending order, and this
+/// only reorders the survivors for display (spec 17).
+pub fn sort_entries(
+    entries: &mut [CrapEntry],
+    order: SortOrder,
+) {
+    match order {
+        SortOrder::Crap => entries.sort_by(|a, b| {
+            b.crap
+                .partial_cmp(&a.crap)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        SortOrder::File => entries.sort_by(|a, b| file_order_key(a).cmp(&file_order_key(b))),
+    }
+}
+
 /// How to treat functions we have complexity data for but no coverage data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -387,6 +432,88 @@ mod tests {
             result.unmapped_files,
             vec![PathBuf::from("/project/src/bar.rs")]
         );
+    }
+
+    // --- SortOrder / sort_entries (spec 17) --------------------------------
+
+    fn crap_entry(
+        file: &str,
+        function: &str,
+        line: usize,
+        crap: f64,
+    ) -> CrapEntry {
+        CrapEntry {
+            file: PathBuf::from(file),
+            function: function.into(),
+            line,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap,
+            crate_name: None,
+        }
+    }
+
+    fn order(entries: &[CrapEntry]) -> Vec<(&str, usize)> {
+        entries
+            .iter()
+            .map(|e| (e.function.as_str(), e.line))
+            .collect()
+    }
+
+    #[test]
+    fn sort_order_default_is_crap() {
+        assert_eq!(SortOrder::default(), SortOrder::Crap);
+    }
+
+    #[test]
+    fn sort_entries_crap_orders_by_score_descending() {
+        // Kills: swapping the comparator operands (ascending) in the Crap arm.
+        let mut entries = vec![
+            crap_entry("src/a.rs", "low", 1, 1.0),
+            crap_entry("src/a.rs", "high", 2, 90.0),
+            crap_entry("src/a.rs", "mid", 3, 30.0),
+        ];
+        sort_entries(&mut entries, SortOrder::Crap);
+        assert_eq!(order(&entries), [("high", 2), ("mid", 3), ("low", 1)]);
+    }
+
+    #[test]
+    fn sort_entries_file_orders_by_file_then_function_then_line() {
+        // zeta has the highest CRAP but must land last under file order.
+        let mut entries = vec![
+            crap_entry("src/b.rs", "zeta", 1, 99.0),
+            crap_entry("src/a.rs", "beta", 1, 5.0),
+            crap_entry("src/a.rs", "alpha", 1, 5.0),
+        ];
+        sort_entries(&mut entries, SortOrder::File);
+        assert_eq!(
+            order(&entries),
+            [("alpha", 1), ("beta", 1), ("zeta", 1)],
+            "file order is (file, function, line) ascending, ignoring CRAP"
+        );
+    }
+
+    #[test]
+    fn sort_entries_file_tie_breaks_on_line() {
+        // Two `new` in the same file at different lines: line 10 before line 50.
+        let mut entries = vec![
+            crap_entry("src/a.rs", "new", 50, 5.0),
+            crap_entry("src/a.rs", "new", 10, 5.0),
+        ];
+        sort_entries(&mut entries, SortOrder::File);
+        assert_eq!(order(&entries), [("new", 10), ("new", 50)]);
+    }
+
+    #[test]
+    fn sort_entries_file_normalizes_separators() {
+        // Backslash and forward-slash paths sort by the same normalized key,
+        // so a Windows-written baseline orders identically to a Linux one.
+        let mut entries = vec![
+            crap_entry("src\\b.rs", "b", 1, 5.0),
+            crap_entry("src/a.rs", "a", 1, 5.0),
+        ];
+        sort_entries(&mut entries, SortOrder::File);
+        assert_eq!(order(&entries), [("a", 1), ("b", 1)]);
     }
 
     #[test]
