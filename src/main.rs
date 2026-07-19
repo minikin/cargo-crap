@@ -849,6 +849,9 @@ fn main() -> Result<()> {
     };
     let (has_crappy, has_regression) =
         do_render(&entries, baseline_data.as_deref(), &opts, out_box.as_mut())?;
+    // `std::process::exit` below skips destructors, so the BufWriter around
+    // `--output` must be flushed here or the report file is left empty (#47).
+    out_box.flush().context("flushing output")?;
 
     if (fail_above && has_crappy) || (fail_regression && has_regression) {
         std::process::exit(1);

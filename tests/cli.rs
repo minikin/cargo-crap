@@ -1755,6 +1755,62 @@ fn fail_regression_exits_one_when_regression_exists() {
         .failure(); // crappy went from 1.0 → 156.0 → regression
 }
 
+#[test]
+fn fail_regression_still_writes_output_file_before_exiting() {
+    // Regression test for #47: `std::process::exit(1)` skips destructors, so
+    // the BufWriter around `--output` was never flushed and the report file
+    // was left truncated at 0 bytes. The gate must still write the report.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = regression_baseline(&dir);
+    let report_path = dir.path().join("report.json");
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--fail-regression")
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&report_path)
+        .assert()
+        .failure();
+
+    let report = std::fs::read_to_string(&report_path).expect("report file must exist");
+    let json: serde_json::Value =
+        serde_json::from_str(&report).expect("report must be complete valid JSON");
+    assert!(
+        json["entries"]
+            .as_array()
+            .is_some_and(|e| e.iter().any(|x| x["status"] == "regressed")),
+        "flushed report should contain the regressed entry, got: {report}"
+    );
+
+    // Same gate with --summary: the (text) summary must also survive the exit.
+    let summary_path = dir.path().join("summary.txt");
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--fail-regression")
+        .arg("--summary")
+        .arg("--output")
+        .arg(&summary_path)
+        .assert()
+        .failure();
+    let summary = std::fs::read_to_string(&summary_path).expect("summary file must exist");
+    assert!(
+        summary.contains("↑ 1 regressed"),
+        "flushed summary should count exactly one regression, got: {summary}"
+    );
+}
+
 // --- --fail-above combined with --baseline (baseline path in do_render) ---
 
 #[test]
