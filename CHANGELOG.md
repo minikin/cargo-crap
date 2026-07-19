@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.3.1] - 2026-07-19
+
+A bug-fix release: three defects around `--output` files and `--baseline`
+matching, all reported against 0.3.0 (issues #46, #47). No breaking changes.
+
+### Fixed
+
+- **`--format json --output` no longer writes a 0-byte report when a fail
+  gate trips** (#47). `std::process::exit(1)` skips destructors, so the
+  buffered `--output` writer was never flushed when `--fail-above` /
+  `--fail-regression` fired — CI gates saw exit code 1 plus an empty (or,
+  for reports over 8 KB, truncated) file. The writer is now flushed before
+  the exit-code decision, and flush errors (e.g. `ENOSPC`) surface as real
+  errors instead of being silently swallowed, so a truncated report can no
+  longer masquerade as a successful run.
+- **ANSI escape codes are no longer written into `--output` files or
+  pipes.** The `human` and `--summary` renderers coloured text
+  unconditionally, and the table styling keyed off stdout's TTY-ness even
+  when `--output` pointed at a file. Colour is now decided per sink: on
+  only when writing to stdout and stdout is a terminal. The standard
+  `NO_COLOR` (force off, wins over everything) and `FORCE_COLOR` (force
+  on, e.g. for `| less -R`) environment variables are respected. Library
+  consumers can drive this via the new `report::set_color_enabled`
+  (default: off).
+- **Cross-root baselines match deterministically** (#46, spec 21). A
+  baseline recorded under a different checkout root (CI at `/app/…`,
+  laptop elsewhere) or with absolute paths against a relative `--path` run
+  matched nothing exactly, collapsing onto the name-only move fallback:
+  duplicate function names were misreported as `New` + `removed`
+  (spuriously failing `--fail-regression`), unique names as `Moved`, and
+  same-name functions in different files could cross-pair and hide a real
+  regression. A new matching pass pairs same-name entries by the longest
+  common path suffix of their files (unambiguous pairings only) and treats
+  them as the same logical file. Note the one visible trade-off: a file
+  move that keeps the filename (`old_dir/render.rs` → `new_dir/render.rs`)
+  is now reported as a plain match rather than `Moved`;
+  filename-changing moves keep full spec-13 `Moved` reporting.
+
 ## [0.3.0] - 2026-06-15
 
 This release bundles specs 14–18. It contains **breaking changes** — see
