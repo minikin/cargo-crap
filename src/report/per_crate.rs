@@ -2,6 +2,7 @@
 //! renderers when `--workspace` has tagged each entry with a crate name.
 //! No-op when no entry carries a crate name (single-crate runs).
 
+use super::types::apply_table_styling;
 use crate::merge::CrapEntry;
 use anyhow::Result;
 use comfy_table::{Attribute, Cell, CellAlignment, Table, presets::UTF8_FULL};
@@ -60,6 +61,7 @@ pub(crate) fn write_per_crate_human(
     writeln!(out, "Per-crate summary:")?;
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
+    apply_table_styling(&mut table);
     table.set_header(vec![
         Cell::new("Crate").add_attribute(Attribute::Bold),
         Cell::new("Functions").add_attribute(Attribute::Bold),

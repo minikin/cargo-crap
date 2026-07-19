@@ -3103,3 +3103,116 @@ fn workspace_baseline_entries_filtered_per_member_root() {
         "member tests/ baseline entries must be filtered, not removed"
     );
 }
+
+// --- colour handling: no ANSI escapes outside a real terminal (PR #48 review) ---
+
+/// `cmd()` with the colour env vars cleared so the ambient environment
+/// (developer shell, CI) cannot flip the auto-detection under test.
+fn color_cmd() -> Command {
+    let mut c = cmd();
+    c.env_remove("NO_COLOR").env_remove("FORCE_COLOR");
+    c
+}
+
+#[test]
+fn output_file_contains_no_ansi_escapes_for_summary() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_path = dir.path().join("summary.txt");
+    color_cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--summary")
+        .arg("--output")
+        .arg(&out_path)
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(&out_path).expect("output file");
+    assert!(
+        !text.contains('\u{1b}'),
+        "--output file must not contain ANSI escapes, got: {text:?}"
+    );
+}
+
+#[test]
+fn output_file_contains_no_ansi_escapes_for_human_table() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_path = dir.path().join("report.txt");
+    color_cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--output")
+        .arg(&out_path)
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(&out_path).expect("output file");
+    assert!(
+        !text.contains('\u{1b}'),
+        "--output file must not contain ANSI escapes (comfy-table styling), got: {text:?}"
+    );
+}
+
+#[test]
+fn piped_stdout_contains_no_ansi_escapes() {
+    // assert_cmd pipes stdout (not a TTY), so auto-detection must disable colour.
+    let assert = color_cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "piped stdout must not contain ANSI escapes, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn force_color_enables_ansi_on_piped_stdout() {
+    // Kills mutants that hard-disable colour (e.g. resolve_color -> false):
+    // FORCE_COLOR is the only way to get the colour-on path under CI, where
+    // nothing is a TTY.
+    let assert = color_cmd()
+        .env("FORCE_COLOR", "1")
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    assert!(
+        stdout.contains('\u{1b}'),
+        "FORCE_COLOR=1 must emit ANSI escapes even when piped, got: {stdout:?}"
+    );
+    // Bold (\x1b[1m) comes only from the comfy-table header, so this pins
+    // apply_table_styling's enforce_styling branch — the summary line alone
+    // (red/green) would let a no-op apply_table_styling slip through.
+    assert!(
+        stdout.contains("\u{1b}[1m"),
+        "FORCE_COLOR=1 must style the table (bold header), got: {stdout:?}"
+    );
+}
+
+#[test]
+fn no_color_wins_over_force_color() {
+    let assert = color_cmd()
+        .env("NO_COLOR", "1")
+        .env("FORCE_COLOR", "1")
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "NO_COLOR must beat FORCE_COLOR, got: {stdout:?}"
+    );
+}

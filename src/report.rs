@@ -42,6 +42,7 @@ mod test_support;
 pub use json::{DELTA_SCHEMA_URL, Envelope, REPORT_SCHEMA_URL, SCHEMA_VERSION};
 pub use links::SourceLinks;
 pub use summary::{render_delta_summary, render_summary};
+pub use types::set_color_enabled;
 
 /// Output format for the report.
 #[derive(Debug, Clone, Copy)]

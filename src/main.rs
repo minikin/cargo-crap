@@ -14,7 +14,7 @@ use cargo_crap::{
     merge::{MissingCoveragePolicy, SortOrder, merge, sort_entries},
     report::{
         Format, SourceLinks, crappy_count, render, render_delta, render_delta_summary,
-        render_summary,
+        render_summary, set_color_enabled,
     },
     score::DEFAULT_THRESHOLD,
 };
@@ -23,7 +23,7 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -529,6 +529,33 @@ fn load_coverage(lcov: Option<&PathBuf>) -> Result<HashMap<PathBuf, FileCoverage
     }
 }
 
+/// Decide whether the human/summary renderers may emit ANSI colour.
+///
+/// Precedence: `NO_COLOR` (non-empty) always disables; `FORCE_COLOR`
+/// (non-empty) then forces colour even into files and pipes; otherwise
+/// colour is on only when writing to stdout and stdout is a terminal —
+/// never into an `--output` file. Pure so the whole truth table is
+/// unit-testable (a real TTY is unavailable under CI).
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the bools are independent environment facts (env vars, --output, TTY); \
+              bundling them into a struct would only rename the same four flags"
+)]
+fn resolve_color(
+    no_color: bool,
+    force_color: bool,
+    output_is_file: bool,
+    stdout_is_tty: bool,
+) -> bool {
+    if no_color {
+        false
+    } else if force_color {
+        true
+    } else {
+        !output_is_file && stdout_is_tty
+    }
+}
+
 /// Open the output destination: a file when `--output` is given, stdout otherwise.
 fn open_output(path: Option<&PathBuf>) -> Result<Box<dyn Write>> {
     Ok(match path {
@@ -836,6 +863,13 @@ fn main() -> Result<()> {
     )?;
 
     // --- Render ---
+    let env_set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    set_color_enabled(resolve_color(
+        env_set("NO_COLOR"),
+        env_set("FORCE_COLOR"),
+        cli.output.is_some(),
+        io::stdout().is_terminal(),
+    ));
     let mut out_box = open_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref);
     let opts = RenderOpts {
@@ -862,6 +896,30 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_color_truth_table() {
+        // (no_color, force_color, output_is_file, stdout_is_tty) → expected.
+        // The TTY-on rows are unreachable from CLI tests (no TTY in CI), so
+        // this table is what kills mutants inside resolve_color.
+        let cases = [
+            ((false, false, false, true), true),   // plain terminal → on
+            ((false, false, false, false), false), // piped stdout → off
+            ((false, false, true, true), false),   // --output file wins over TTY
+            ((false, false, true, false), false),
+            ((false, true, true, false), true), // FORCE_COLOR beats file+pipe
+            ((false, true, false, false), true),
+            ((true, true, false, true), false), // NO_COLOR beats FORCE_COLOR
+            ((true, false, false, true), false),
+        ];
+        for ((no_color, force, file, tty), expected) in cases {
+            assert_eq!(
+                resolve_color(no_color, force, file, tty),
+                expected,
+                "resolve_color({no_color}, {force}, {file}, {tty})"
+            );
+        }
+    }
 
     #[test]
     fn require_baseline_only_errs_when_flag_set_without_baseline() {

@@ -2,12 +2,14 @@
 //! Used both for the absolute report and the delta report (with a Δ column).
 
 use super::per_crate::write_per_crate_human;
-use super::types::{Grade, coverage_bar, delta_display, visible_delta_entries};
+use super::types::{
+    Grade, apply_table_styling, coverage_bar, delta_display, styled, visible_delta_entries,
+};
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::merge::CrapEntry;
 use anyhow::Result;
 use comfy_table::{Attribute, Cell, CellAlignment, Color, Table, presets::UTF8_FULL};
-use owo_colors::OwoColorize;
+use owo_colors::Style;
 use std::io::Write;
 
 pub(crate) fn render_human(
@@ -37,6 +39,7 @@ fn build_table(
 ) -> Table {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
+    apply_table_styling(&mut table);
     table.set_header(vec![
         Cell::new("").add_attribute(Attribute::Bold),
         Cell::new("CRAP").add_attribute(Attribute::Bold),
@@ -88,7 +91,7 @@ fn write_summary(
         writeln!(
             out,
             "{} {} function(s) analyzed; none exceed CRAP threshold {}.",
-            "✓".green(),
+            styled("✓", Style::new().green()),
             total,
             threshold
         )?;
@@ -96,7 +99,7 @@ fn write_summary(
         writeln!(
             out,
             "{} {}/{} function(s) exceed CRAP threshold {}.",
-            "✗".red(),
+            styled("✗", Style::new().red()),
             crappy,
             total,
             threshold
@@ -154,7 +157,7 @@ fn write_removed_section(
         writeln!(
             out,
             "  {}  {} (was {:.1})",
-            "—".dimmed(),
+            styled("—", Style::new().dimmed()),
             r.function,
             r.baseline_crap
         )?;
@@ -168,6 +171,7 @@ fn build_delta_table(
 ) -> Table {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
+    apply_table_styling(&mut table);
     table.set_header(vec![
         Cell::new("").add_attribute(Attribute::Bold),
         Cell::new("CRAP").add_attribute(Attribute::Bold),
@@ -265,12 +269,12 @@ fn write_delta_summary(
     writeln!(
         out,
         "{}  {}  {}  {}  {}  {}",
-        format!("↑ {regressed} regressed").red(),
-        format!("↓ {improved} improved").green(),
-        format!("★ {new} new").yellow(),
-        format!("↔ {moved} moved").cyan(),
-        format!("· {unchanged} unchanged").dimmed(),
-        format!("— {removed} removed").dimmed(),
+        styled(&format!("↑ {regressed} regressed"), Style::new().red()),
+        styled(&format!("↓ {improved} improved"), Style::new().green()),
+        styled(&format!("★ {new} new"), Style::new().yellow()),
+        styled(&format!("↔ {moved} moved"), Style::new().cyan()),
+        styled(&format!("· {unchanged} unchanged"), Style::new().dimmed()),
+        styled(&format!("— {removed} removed"), Style::new().dimmed()),
     )?;
     Ok(())
 }

@@ -6,6 +6,46 @@
 
 use crate::delta::{DeltaEntry, DeltaStatus};
 use comfy_table::Color;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Process-wide colour switch, set once by `main` after inspecting the sink
+/// (`--output`, stdout TTY-ness, `NO_COLOR` / `FORCE_COLOR`). Defaults to
+/// off so library callers and unit tests get plain, deterministic text.
+static COLOR_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable ANSI colour in the human/summary renderers.
+pub fn set_color_enabled(enabled: bool) {
+    COLOR_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub(crate) fn color_enabled() -> bool {
+    COLOR_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Apply `style` to `text` only when colour is enabled, so escape codes
+/// never reach non-terminal sinks (`--output` files, pipes).
+pub(crate) fn styled(
+    text: &str,
+    style: owo_colors::Style,
+) -> String {
+    use owo_colors::OwoColorize;
+    if color_enabled() {
+        text.style(style).to_string()
+    } else {
+        text.to_string()
+    }
+}
+
+/// Gate comfy-table styling on the process-wide colour switch instead of
+/// comfy-table's own stdout-TTY detection, which looks at the wrong sink
+/// when `--output` redirects the report to a file.
+pub(crate) fn apply_table_styling(table: &mut comfy_table::Table) {
+    if color_enabled() {
+        table.enforce_styling();
+    } else {
+        table.force_no_tty();
+    }
+}
 
 /// Three-tier severity used for row icons and colour.
 ///

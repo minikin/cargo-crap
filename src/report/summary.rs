@@ -4,10 +4,11 @@
 //! lead with the per-crate rollup so the user sees which crate to drill into.
 
 use super::per_crate::{has_crate_data, write_per_crate_human};
+use super::types::styled;
 use crate::delta::{DeltaReport, DeltaStatus};
 use crate::merge::CrapEntry;
 use anyhow::Result;
-use owo_colors::OwoColorize;
+use owo_colors::Style;
 use std::io::Write;
 
 /// Print only aggregate statistics — no per-function table.
@@ -35,7 +36,7 @@ pub fn render_summary(
         writeln!(
             out,
             "{} Analyzed: {} · Crappy: 0 (threshold {})",
-            "✓".green(),
+            styled("✓", Style::new().green()),
             total,
             threshold,
         )?;
@@ -46,7 +47,7 @@ pub fn render_summary(
         writeln!(
             out,
             "{} Analyzed: {} · Crappy: {} (threshold {}){worst_str}",
-            "✗".red(),
+            styled("✗", Style::new().red()),
             total,
             crappy,
             threshold,
@@ -88,12 +89,15 @@ pub fn render_delta_summary(
     writeln!(
         out,
         "{}  {}  {}  {}  {}  {}",
-        format!("↑ {regressed} regressed").red(),
-        format!("↓ {improved} improved").green(),
-        format!("★ {new} new").yellow(),
-        format!("↔ {moved} moved").cyan(),
-        format!("· {unchanged} unchanged").dimmed(),
-        format!("— {} removed", report.removed.len()).dimmed(),
+        styled(&format!("↑ {regressed} regressed"), Style::new().red()),
+        styled(&format!("↓ {improved} improved"), Style::new().green()),
+        styled(&format!("★ {new} new"), Style::new().yellow()),
+        styled(&format!("↔ {moved} moved"), Style::new().cyan()),
+        styled(&format!("· {unchanged} unchanged"), Style::new().dimmed()),
+        styled(
+            &format!("— {} removed", report.removed.len()),
+            Style::new().dimmed(),
+        ),
     )?;
     Ok(())
 }
@@ -138,6 +142,34 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(!s.contains("Per-crate summary"));
         assert!(s.contains("Analyzed: 1"));
+    }
+
+    #[test]
+    fn styled_emits_ansi_only_when_color_enabled() {
+        // Global toggle: keep the on- and off-assertions in ONE test so the
+        // brief enabled window cannot race parallel tests. Colour defaults to
+        // off; this is the only test that flips it, and it restores off.
+        use super::super::types::set_color_enabled;
+        let entries = vec![entry(None, "a1", 1.0)];
+        let render = |entries: &[CrapEntry]| {
+            let mut buf = Vec::new();
+            render_summary(entries, 30.0, &mut buf).unwrap();
+            String::from_utf8(buf).unwrap()
+        };
+
+        set_color_enabled(true);
+        let colored = render(&entries);
+        set_color_enabled(false);
+        let plain = render(&entries);
+
+        assert!(
+            colored.contains('\u{1b}'),
+            "enabled colour must emit ANSI escapes:\n{colored:?}"
+        );
+        assert!(
+            !plain.contains('\u{1b}'),
+            "disabled colour must emit no ANSI escapes:\n{plain:?}"
+        );
     }
 
     #[test]
