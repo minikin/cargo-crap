@@ -241,6 +241,127 @@ fn apply_move_pairing(
     };
 }
 
+/// Apply a suffix pairing in place: same logical file under a different
+/// root, so the entry is filled exactly like a pass-1 match — score-based
+/// status, no `previous_file` (spec 21: a root remap is not a move).
+fn apply_suffix_pairing(
+    entry: &mut DeltaEntry,
+    baseline_entry: &CrapEntry,
+    epsilon: f64,
+) {
+    let d = entry.current.crap - baseline_entry.crap;
+    entry.baseline_crap = Some(baseline_entry.crap);
+    entry.delta = Some(d);
+    entry.status = classify_score(d, epsilon);
+}
+
+/// Number of trailing path components two files share, after forward-slash
+/// normalization. `0` means not even the filename matches.
+fn common_suffix_len(
+    a: &Path,
+    b: &Path,
+) -> usize {
+    let a = path_key(a);
+    let b = path_key(b);
+    a.split('/')
+        .rev()
+        .zip(b.split('/').rev())
+        .take_while(|(x, y)| x == y)
+        .count()
+}
+
+/// For `from`, find the index in `candidates` whose file shares the longest
+/// common path suffix with it. Returns `None` when no candidate shares at
+/// least the filename, or when the best score is tied (ambiguous).
+fn unique_best_by_suffix<T>(
+    from: &Path,
+    candidates: &[T],
+    file_of: impl Fn(&T) -> &Path,
+) -> Option<usize> {
+    let mut best: Option<(usize, usize)> = None; // (candidate idx, score)
+    let mut tied = false;
+    for (i, c) in candidates.iter().enumerate() {
+        let score = common_suffix_len(from, file_of(c));
+        if score == 0 {
+            continue;
+        }
+        match best {
+            None => best = Some((i, score)),
+            Some((_, s)) => match score.cmp(&s) {
+                std::cmp::Ordering::Equal => tied = true,
+                std::cmp::Ordering::Greater => {
+                    best = Some((i, score));
+                    tied = false;
+                },
+                std::cmp::Ordering::Less => {},
+            },
+        }
+    }
+    match (best, tied) {
+        (Some((i, _)), false) => Some(i),
+        _ => None,
+    }
+}
+
+/// Pass 1.5 — suffix-aware file match (spec 21). Among entries pass 1 left
+/// `New` and the unmatched baseline entries, pair same-name entries whose
+/// files share their longest common component-suffix (at minimum the
+/// filename), when each is the other's unique best. This keeps function
+/// identity deterministic when the baseline was recorded under a different
+/// checkout root, instead of collapsing onto the name-only fallback.
+///
+/// Scoring runs against a snapshot taken at pass start (one round, no
+/// fixpoint): the mutual-unique-best requirement already guarantees no
+/// baseline entry is assigned twice, and snapshot semantics keep the
+/// result independent of iteration order.
+fn pass_suffix_match(
+    entries: &mut [DeltaEntry],
+    baseline: &[CrapEntry],
+    matched: &mut HashSet<EntryKey>,
+    epsilon: f64,
+) {
+    let mut new_by_name: HashMap<String, Vec<(usize, PathBuf)>> = HashMap::new();
+    for (i, de) in entries.iter().enumerate() {
+        if de.status == DeltaStatus::New {
+            new_by_name
+                .entry(de.current.function.clone())
+                .or_default()
+                .push((i, de.current.file.clone()));
+        }
+    }
+    let mut baseline_by_name: HashMap<&str, Vec<&CrapEntry>> = HashMap::new();
+    for b in baseline {
+        if !matched.contains(&EntryKey::new(b)) {
+            baseline_by_name
+                .entry(b.function.as_str())
+                .or_default()
+                .push(b);
+        }
+    }
+    for (name, cur_group) in &new_by_name {
+        let Some(bas_group) = baseline_by_name.get(name.as_str()) else {
+            continue;
+        };
+        for (entry_idx, cur_file) in cur_group {
+            let Some(bi) = unique_best_by_suffix(cur_file, bas_group, |b| b.file.as_path()) else {
+                continue;
+            };
+            // Mutual unique best: the chosen baseline entry must pick this
+            // current entry back, or the pairing is ambiguous.
+            let Some(ci) =
+                unique_best_by_suffix(&bas_group[bi].file, cur_group, |(_, f)| f.as_path())
+            else {
+                continue;
+            };
+            if cur_group[ci].0 != *entry_idx {
+                continue;
+            }
+            apply_suffix_pairing(&mut entries[*entry_idx], bas_group[bi], epsilon);
+            matched.insert(EntryKey::new(bas_group[bi]));
+        }
+    }
+}
+
 /// Pass 2 — name-only fallback over the unmatched. Pairings happen only
 /// when a name appears exactly once on each side (the unambiguous case).
 fn pass_two_name_fallback(
@@ -301,15 +422,21 @@ fn collect_removed(
 
 /// Join current results against a baseline and compute per-function deltas.
 ///
-/// **Two-pass match** (spec 13):
+/// **Three-pass match** (specs 13 and 21):
 ///
-/// 1. Exact `(file_path, function_name)` pair — the original behaviour.
-/// 2. Among entries Pass 1 left as `New` (current side) and the unmatched
-///    baseline entries (Removed side), pair any function name that appears
-///    **exactly once** on each side. Score-unchanged pairings become
-///    [`DeltaStatus::Moved`]; score-changed pairings keep their
-///    `Regressed` / `Improved` status. Either way, the entry's
-///    `previous_file` records the baseline location.
+/// 1. Exact `(file_path, function_name, start_line)` pair — the original
+///    behaviour.
+/// 2. Suffix-aware file match (spec 21) — same-name entries whose files
+///    share their longest common component-suffix pair as the *same
+///    logical file* (root remap, absolute-vs-relative paths). Statuses
+///    follow the epsilon rule; `previous_file` stays `None`.
+/// 3. Name-only fallback (spec 13) — among entries still `New` (current
+///    side) and the unmatched baseline entries (Removed side), pair any
+///    function name that appears **exactly once** on each side.
+///    Score-unchanged pairings become [`DeltaStatus::Moved`];
+///    score-changed pairings keep their `Regressed` / `Improved` status.
+///    Either way, the entry's `previous_file` records the baseline
+///    location.
 ///
 /// Ambiguous names (multiple unmatched entries with the same name) are
 /// left unpaired — there's no way to tell which moved where. They keep
@@ -324,6 +451,7 @@ pub fn compute_delta(
     epsilon: f64,
 ) -> DeltaReport {
     let (mut entries, mut matched) = pass_one_exact(current, baseline, epsilon);
+    pass_suffix_match(&mut entries, baseline, &mut matched, epsilon);
     pass_two_name_fallback(&mut entries, baseline, &mut matched, epsilon);
     let removed = collect_removed(baseline, &matched);
     DeltaReport { entries, removed }
@@ -851,6 +979,253 @@ mod tests {
                 de.current.line
             );
         }
+        assert!(report.removed.is_empty());
+    }
+
+    fn entry_at(
+        file: &str,
+        function: &str,
+        crap: f64,
+    ) -> CrapEntry {
+        CrapEntry {
+            file: PathBuf::from(file),
+            function: function.to_string(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap,
+            crate_name: None,
+        }
+    }
+
+    #[test]
+    fn cross_root_baseline_matches_without_move_status() {
+        // Kills: pass_suffix_match removed / apply_suffix_pairing setting
+        // previous_file. A root remap must match as the same logical file.
+        let baseline = vec![entry_at("/app/src/backup.rs", "run_backup", 5.0)];
+        let current = vec![entry_at(
+            "/home/user/project/src/backup.rs",
+            "run_backup",
+            5.0,
+        )];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+        assert!(
+            report.entries[0].previous_file.is_none(),
+            "a root remap is not a move"
+        );
+        assert!(report.removed.is_empty());
+    }
+
+    #[test]
+    fn duplicate_names_disambiguate_by_directory_suffix() {
+        // The issue-#46 core case: `run` exists in two files; the name-only
+        // fallback cannot pair them, but directory suffixes can.
+        let baseline = vec![
+            entry_at("/app/src/backup.rs", "run", 5.0),
+            entry_at("/app/src/restore.rs", "run", 7.0),
+        ];
+        let current = vec![
+            entry_at("/work/co/src/backup.rs", "run", 5.0),
+            entry_at("/work/co/src/restore.rs", "run", 7.0),
+        ];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        for de in &report.entries {
+            assert_eq!(
+                de.status,
+                DeltaStatus::Unchanged,
+                "{} must pair with its own file's baseline entry",
+                de.current.file.display()
+            );
+        }
+        assert!(report.removed.is_empty());
+    }
+
+    #[test]
+    fn cross_root_regression_pairs_with_the_right_file() {
+        // backup.rs regressed, restore.rs did not — the pairing must not
+        // cross the two files (which would hide the regression).
+        let baseline = vec![
+            entry_at("/app/src/backup.rs", "run", 5.0),
+            entry_at("/app/src/restore.rs", "run", 7.0),
+        ];
+        let current = vec![
+            entry_at("/work/co/src/backup.rs", "run", 12.0),
+            entry_at("/work/co/src/restore.rs", "run", 7.0),
+        ];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.regression_count(), 1);
+        let regressed = report
+            .entries
+            .iter()
+            .find(|e| e.status == DeltaStatus::Regressed)
+            .expect("one regression");
+        assert!(regressed.current.file.ends_with("backup.rs"));
+        assert_eq!(regressed.baseline_crap, Some(5.0));
+        assert!((regressed.delta.unwrap() - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn relative_current_matches_absolute_baseline() {
+        let baseline = vec![entry_at("/home/user/project/src/lib.rs", "parse", 3.0)];
+        let current = vec![entry_at("src/lib.rs", "parse", 3.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+        assert!(report.removed.is_empty());
+    }
+
+    #[test]
+    fn equal_suffix_ties_stay_unpaired() {
+        // One baseline `util.rs:helper`, two current candidates tie at the
+        // filename — ambiguous, so nothing pairs (and the name fallback
+        // declines too: two current-side entries).
+        let baseline = vec![entry_at("/app/x/util.rs", "helper", 2.0)];
+        let current = vec![
+            entry_at("a/util.rs", "helper", 2.0),
+            entry_at("b/util.rs", "helper", 2.0),
+        ];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        for de in &report.entries {
+            assert_eq!(de.status, DeltaStatus::New);
+        }
+        assert_eq!(report.removed.len(), 1);
+    }
+
+    #[test]
+    fn line_shift_does_not_break_suffix_matching() {
+        // Kills: adding a line-equality requirement to the suffix pass.
+        let mut b = entry_at("/app/src/lib.rs", "parse", 3.0);
+        b.line = 10;
+        let mut c = entry_at("/work/co/src/lib.rs", "parse", 3.0);
+        c.line = 42;
+        let report = compute_delta(&[c], &[b], DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+        assert!(report.removed.is_empty());
+    }
+
+    #[test]
+    fn filename_change_still_reported_as_move() {
+        // Spec-13 behaviour preserved: no shared suffix → the suffix pass
+        // declines and the name fallback pairs it as Moved.
+        let baseline = vec![entry_at("src/old.rs", "render", 4.0)];
+        let current = vec![entry_at("src/new.rs", "render", 4.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Moved);
+        assert_eq!(
+            report.entries[0].previous_file,
+            Some(PathBuf::from("src/old.rs"))
+        );
+    }
+
+    #[test]
+    fn exact_match_takes_precedence_over_suffix() {
+        // `src/a.rs:helper` matches exactly on pass 1; the leftover baseline
+        // `src/b.rs:helper` must not steal it via the suffix pass (b.rs and
+        // a.rs share no suffix with each other's remaining candidates). The
+        // leftovers — one `helper` on each side — then pair through the
+        // spec-13 name fallback as a move, exactly as before spec 21.
+        let baseline = vec![
+            entry_at("src/a.rs", "helper", 2.0),
+            entry_at("src/b.rs", "helper", 9.0),
+        ];
+        let current = vec![
+            entry_at("src/a.rs", "helper", 2.0),
+            entry_at("src/c.rs", "helper", 2.0),
+        ];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        let a = report
+            .entries
+            .iter()
+            .find(|e| e.current.file.ends_with("a.rs"))
+            .expect("a.rs present");
+        assert_eq!(a.status, DeltaStatus::Unchanged);
+        assert_eq!(a.baseline_crap, Some(2.0), "a.rs must pair with a.rs");
+        assert!(
+            a.previous_file.is_none(),
+            "exact match must not be relabeled by later passes"
+        );
+        let c = report
+            .entries
+            .iter()
+            .find(|e| e.current.file.ends_with("c.rs"))
+            .expect("c.rs present");
+        assert_eq!(
+            c.status,
+            DeltaStatus::Improved,
+            "leftover unique name pairs via the spec-13 fallback"
+        );
+        assert_eq!(c.previous_file, Some(PathBuf::from("src/b.rs")));
+        assert!(report.removed.is_empty());
+    }
+
+    #[test]
+    fn deeper_suffix_wins_when_better_candidate_comes_first() {
+        // Kills: mutants in unique_best_by_suffix's replace logic that pick
+        // the later/worse candidate or flag spurious ties. The two baseline
+        // entries carry different scores so a wrong pick changes the delta.
+        let baseline = vec![
+            entry_at("/app/src/backup.rs", "run", 5.0), // suffix depth 2
+            entry_at("/app/legacy/backup.rs", "run", 9.0), // suffix depth 1
+        ];
+        let current = vec![entry_at("/co/src/backup.rs", "run", 5.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+        assert_eq!(
+            report.entries[0].baseline_crap,
+            Some(5.0),
+            "must pair with the deeper suffix (src/backup.rs), not legacy/"
+        );
+        assert_eq!(report.removed.len(), 1);
+        assert!(report.removed[0].file.ends_with("legacy/backup.rs"));
+    }
+
+    #[test]
+    fn deeper_suffix_wins_when_better_candidate_comes_second() {
+        // Same as above with the baseline order reversed: kills mutants
+        // that never replace the incumbent best candidate.
+        let baseline = vec![
+            entry_at("/app/legacy/backup.rs", "run", 9.0), // suffix depth 1
+            entry_at("/app/src/backup.rs", "run", 5.0),    // suffix depth 2
+        ];
+        let current = vec![entry_at("/co/src/backup.rs", "run", 5.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+        assert_eq!(
+            report.entries[0].baseline_crap,
+            Some(5.0),
+            "the later, deeper-suffix candidate must replace the incumbent"
+        );
+    }
+
+    #[test]
+    fn tie_is_cleared_when_a_deeper_suffix_follows() {
+        // Two candidates tie at the filename, then a strictly deeper match
+        // arrives: the tie must be cleared and the pairing made. Kills
+        // mutants that drop the `tied = false` reset.
+        let baseline = vec![
+            entry_at("/r1/util.rs", "helper", 7.0),
+            entry_at("/r2/util.rs", "helper", 8.0),
+            entry_at("/app/src/util.rs", "helper", 3.0), // suffix depth 2
+        ];
+        let current = vec![entry_at("/co/src/util.rs", "helper", 3.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+        assert_eq!(
+            report.entries[0].baseline_crap,
+            Some(3.0),
+            "the unique deepest suffix must pair despite the earlier tie"
+        );
+        assert_eq!(report.removed.len(), 2);
+    }
+
+    #[test]
+    fn windows_baseline_matches_posix_paths() {
+        // path_key normalizes back-slashes, so a baseline written on
+        // Windows pairs with POSIX analysis paths.
+        let baseline = vec![entry_at(r"C:\ci\app\src\lib.rs", "parse", 3.0)];
+        let current = vec![entry_at("/work/co/src/lib.rs", "parse", 3.0)];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
         assert!(report.removed.is_empty());
     }
 }

@@ -3104,8 +3104,6 @@ fn workspace_baseline_entries_filtered_per_member_root() {
     );
 }
 
-// --- colour handling: no ANSI escapes outside a real terminal (PR #48 review) ---
-
 /// `cmd()` with the colour env vars cleared so the ambient environment
 /// (developer shell, CI) cannot flip the auto-detection under test.
 fn color_cmd() -> Command {
@@ -3214,5 +3212,67 @@ fn no_color_wins_over_force_color() {
     assert!(
         !stdout.contains('\u{1b}'),
         "NO_COLOR must beat FORCE_COLOR, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn cross_root_baseline_matches_all_functions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = dir.path().join("baseline.json");
+
+    // Record a baseline of the fixture, then rewrite every file path under
+    // a foreign checkout root, as if it had been generated in CI.
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline_path)
+        .assert()
+        .success();
+    let baseline = std::fs::read_to_string(&baseline_path).expect("baseline");
+    let remapped = baseline.replace(
+        "tests/fixtures/sample_project/src",
+        "/ci/build/repo/tests/fixtures/sample_project/src",
+    );
+    assert_ne!(baseline, remapped, "remap must rewrite at least one path");
+    std::fs::write(&baseline_path, remapped).expect("write remapped baseline");
+
+    // The same analysis against the remapped baseline must pair every
+    // function as its own file's entry: nothing new, moved, or removed,
+    // and the regression gate stays green.
+    let assert = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--fail-regression")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let entries = envelope["entries"].as_array().expect("entries array");
+    assert!(!entries.is_empty());
+    for e in entries {
+        assert_eq!(
+            e["status"], "unchanged",
+            "cross-root entry must match its own file, got: {e}"
+        );
+        assert!(
+            e.get("previous_file").is_none(),
+            "a root remap must not be reported as a move: {e}"
+        );
+    }
+    assert_eq!(
+        envelope["removed"].as_array().map(Vec::len),
+        Some(0),
+        "no baseline entry may be orphaned by the root remap"
     );
 }
