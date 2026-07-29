@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
@@ -792,7 +793,21 @@ fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config)> {
     Ok((cli, config))
 }
 
-fn main() -> Result<()> {
+/// Exit-code contract (spec 23): 0 = analysis completed and no requested
+/// gate tripped; 1 = analysis completed, report written, a gate tripped;
+/// 2 = the run did not complete (usage, input, analysis, or output error —
+/// clap's own usage exit is also 2).
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            ExitCode::from(2)
+        },
+    }
+}
+
+fn run() -> Result<ExitCode> {
     let (cli, config) = parse_and_load_config()?;
 
     // Merge: CLI values take precedence; config fills in what's missing.
@@ -883,14 +898,15 @@ fn main() -> Result<()> {
     };
     let (has_crappy, has_regression) =
         do_render(&entries, baseline_data.as_deref(), &opts, out_box.as_mut())?;
-    // `std::process::exit` below skips destructors, so the BufWriter around
-    // `--output` must be flushed here or the report file is left empty (#47).
+    // The flush must precede the gate decision: a write failure (e.g.
+    // ENOSPC) is a tool error (exit 2), never a gate verdict over a
+    // truncated report (#47, spec 23).
     out_box.flush().context("flushing output")?;
 
     if (fail_above && has_crappy) || (fail_regression && has_regression) {
-        std::process::exit(1);
+        return Ok(ExitCode::from(1));
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]

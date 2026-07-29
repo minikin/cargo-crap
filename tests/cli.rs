@@ -3276,3 +3276,126 @@ fn cross_root_baseline_matches_all_functions() {
         "no baseline entry may be orphaned by the root remap"
     );
 }
+
+// --- Exit-code contract (spec 23) ---
+
+#[test]
+fn gate_trip_exits_with_code_1_and_complete_report() {
+    // Policy failure is exit 1 exactly — not just "nonzero" — and the
+    // report file is complete before the verdict.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = regression_baseline(&dir);
+    let report_path = dir.path().join("report.json");
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--fail-regression")
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&report_path)
+        .assert()
+        .code(1);
+
+    let report = std::fs::read_to_string(&report_path).expect("report file must exist");
+    let json: serde_json::Value =
+        serde_json::from_str(&report).expect("report must be complete valid JSON");
+    assert!(
+        json["entries"]
+            .as_array()
+            .is_some_and(|e| e.iter().any(|x| x["status"] == "regressed")),
+        "report written before the exit-1 verdict must contain the regression"
+    );
+}
+
+#[test]
+fn fail_above_trip_exits_with_code_1() {
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--fail-above")
+        .arg("--threshold")
+        .arg("5")
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn clean_gated_run_exits_with_code_0() {
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--fail-above")
+        .arg("--threshold")
+        .arg("99999")
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn malformed_lcov_exits_with_code_2() {
+    // A malformed record (unparseable DA line) is an input error, not a
+    // gate verdict. Unknown record *types* are still skipped (issue #21) —
+    // this is a syntactically broken line, which must fail loudly.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let lcov_path = dir.path().join("garbage.info");
+    std::fs::write(&lcov_path, "this is not lcov data\nDA:abc\n").expect("write garbage");
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(&lcov_path)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("parsing LCOV file"));
+}
+
+#[test]
+fn unwritable_output_exits_with_code_2_not_1() {
+    // Even with a tripping --fail-regression, a report that cannot be
+    // produced is a tool error (2), never a gate verdict (1).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = regression_baseline(&dir);
+    let unwritable = dir.path().join("no-such-dir").join("report.json");
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--fail-regression")
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&unwritable)
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn nonexistent_path_exits_with_code_2() {
+    cmd()
+        .arg("--path")
+        .arg("does/not/exist")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("path does not exist"));
+}
+
+#[test]
+fn unknown_flag_exits_with_code_2() {
+    // clap's usage exit is part of the documented contract.
+    cmd().arg("--frobnicate").assert().code(2);
+}
