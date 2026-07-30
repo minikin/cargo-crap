@@ -6,6 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.4.0] - 2026-07-30
+
+This release implements specs 23–25 — the three feature requests filed
+against 0.3.1 (issues #53, #54, #55). It contains **breaking changes**
+for library consumers and a behavioural change for CI wrappers that
+matched on specific non-zero exit codes; see Changed.
+
+### Added
+
+- **Exit-code contract** (spec 23, #54). The exit code now distinguishes
+  a finished CRAP verdict from a broken run: `0` — analysis completed
+  and no requested gate tripped; `1` — analysis completed, the report
+  fully written, and `--fail-above` / `--fail-regression` tripped;
+  `2` — the run did not complete (usage, input, analysis, or output
+  error; clap's usage exit was already 2 and is now part of the
+  documented contract). The report flush still precedes the verdict, so
+  an unwritable `--output` or `ENOSPC` is exit 2 — never a gate verdict
+  over a truncated report.
+- **Source/LCOV scope-mismatch diagnostics** (spec 24, #53). When the
+  analyzed tree and the LCOV file describe different scopes — the
+  classic cause of a delta full of unrelated 0%-coverage entries — a
+  tiered stderr warning now precedes the report: analyzed/LCOV/matched
+  file counts plus stray files in *both* directions (analyzed-only and
+  LCOV-only), with examples capped at 10 and an explicit
+  different-scopes verdict below 50% overlap. Both JSON envelopes carry
+  the same numbers in an optional additive `diagnostics` object, so CI
+  wrappers can apply their own policy; the published schemas were
+  extended in place (optional field — existing documents stay valid, no
+  version bump). Absolute `SF` paths that alias the same real file
+  (symlinked checkout roots, `/tmp` vs `/private/tmp`, `lcov -a`-merged
+  runs) are recognized and not reported as strays.
+- **Repeatable `-p` / `--package`** (spec 25, #55). Changed-file CI that
+  already knows which packages a PR touches can analyze exactly those
+  workspace members in one invocation — one LCOV parse, one combined
+  report, one gate decision: `cargo crap -p core -p api --lcov
+  lcov.info`. Unknown names fail before analysis (exit 2) listing the
+  available members; duplicates are deduplicated; `--path` is ignored;
+  conflicts with `--workspace`. A member's walk never descends into
+  another member's nested root, and baseline entries owned by
+  unselected members are dropped before the delta (attributed by
+  deepest directory prefix, with a component-suffix fallback for
+  cross-root baselines per spec 21), so a subset run does not flood
+  `removed`.
+
+### Changed
+
+- **BREAKING: runtime errors exit 2 instead of 1** (spec 23). Callers
+  that only test zero vs non-zero are unaffected; wrappers that treated
+  exit 1 as "any failure" now see gate trips only.
+- **BREAKING (library API):** `MergeResult.unmapped_files` is replaced
+  by `MergeResult.diagnostics: Option<ScopeDiagnostics>`, and
+  `report::render` / `report::render_delta` gained a
+  `diagnostics: Option<&ScopeDiagnostics>` parameter. The JSON
+  `Envelope` struct gained an optional `diagnostics` field (additive —
+  baselines from older releases still load).
+- The unmatched-files stderr warning is bounded: 10 example paths per
+  side plus a `... and N more` tail, replacing the previous unbounded
+  one-directional file list.
+
+### Fixed
+
+- **`--workspace` no longer double-analyzes nested members.** In a
+  layout where one member's directory contains another member's root
+  (e.g. a root crate with child members, or nested member dirs), the
+  parent's walk also collected the nested member's files, scoring every
+  nested function twice. Each file is now analyzed exactly once and
+  attributed to the deepest member that owns it.
+
 ## [0.3.1] - 2026-07-19
 
 A bug-fix release: three defects around `--output` files and `--baseline`
