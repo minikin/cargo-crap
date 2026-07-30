@@ -3974,3 +3974,58 @@ fn package_outside_a_cargo_project_exits_2() {
         .code(2)
         .stderr(predicate::str::contains("cargo metadata"));
 }
+
+// --- Config-sourced value validation (whole-source review finding) ---
+
+#[test]
+fn config_negative_epsilon_is_rejected() {
+    // A negative epsilon via .cargo-crap.toml previously bypassed the
+    // CLI-only check and made classify_score mark every unchanged (and
+    // even improved) function as regressed. Must be a tool error (exit 2).
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(".cargo-crap.toml"), "epsilon = -0.5\n").expect("write config");
+    let abs_src = std::fs::canonicalize(fixture_src()).expect("canonicalize fixture");
+
+    cmd()
+        .current_dir(dir.path())
+        .arg("--path")
+        .arg(&abs_src)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("must be non-negative"));
+}
+
+#[test]
+fn config_zero_jobs_is_rejected() {
+    // Same bypass for jobs = 0: the config docs promise "non-zero when
+    // set", and --jobs 0 already errors — the config path must match.
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(".cargo-crap.toml"), "jobs = 0\n").expect("write config");
+    let abs_src = std::fs::canonicalize(fixture_src()).expect("canonicalize fixture");
+
+    cmd()
+        .current_dir(dir.path())
+        .arg("--path")
+        .arg(&abs_src)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("must be a positive integer"));
+}
+
+#[test]
+fn cli_epsilon_overriding_bad_config_epsilon_is_accepted() {
+    // The merged value is what matters: a valid --epsilon must win over an
+    // invalid config value, exactly as CLI-over-config precedence promises.
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(".cargo-crap.toml"), "epsilon = -0.5\n").expect("write config");
+    let abs_src = std::fs::canonicalize(fixture_src()).expect("canonicalize fixture");
+
+    cmd()
+        .current_dir(dir.path())
+        .arg("--path")
+        .arg(&abs_src)
+        .arg("--epsilon")
+        .arg("0.1")
+        .assert()
+        .success();
+}

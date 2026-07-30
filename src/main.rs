@@ -959,6 +959,26 @@ fn path_is_ignored(cli: &Cli) -> bool {
     cli.workspace || !cli.package.is_empty()
 }
 
+/// Validate knobs that can arrive from either the CLI or the config file.
+///
+/// [`validate_args`] only sees raw CLI values, so a config-sourced value
+/// must be re-checked after the merge — otherwise `.cargo-crap.toml`
+/// smuggles in values the equivalent flag would reject (a negative epsilon
+/// silently classifies every unchanged function as `Regressed`; the config
+/// docs promise both bounds).
+fn validate_merged_values(
+    epsilon: f64,
+    jobs: Option<usize>,
+) -> Result<()> {
+    if epsilon < 0.0 {
+        bail!("invalid epsilon value (--epsilon or config): must be non-negative");
+    }
+    if matches!(jobs, Some(0)) {
+        bail!("invalid jobs value (--jobs or config): must be a positive integer");
+    }
+    Ok(())
+}
+
 /// Validate argument combinations that clap cannot express as declarative rules.
 fn validate_args(cli: &Cli) -> Result<()> {
     if !path_is_ignored(cli) && !cli.path.exists() {
@@ -1129,6 +1149,8 @@ fn run() -> Result<ExitCode> {
         .epsilon
         .or(config.epsilon)
         .unwrap_or(cargo_crap::delta::DEFAULT_EPSILON);
+    let jobs = cli.jobs.or(config.jobs);
+    validate_merged_values(epsilon, jobs)?;
 
     let effective_exclude = effective_excludes(
         cli.no_default_excludes,
@@ -1150,7 +1172,7 @@ fn run() -> Result<ExitCode> {
         &cli.package,
         &cli.path,
         &effective_exclude,
-        cli.jobs.or(config.jobs),
+        jobs,
     )?;
 
     pb.set_message("Parsing coverage report…");
@@ -1505,6 +1527,27 @@ mod tests {
             nested_member_excludes(Path::new("/ws/parent/nested"), &discovered).is_empty(),
             "a member never excludes itself"
         );
+    }
+
+    #[test]
+    fn validate_merged_values_truth_table() {
+        // (epsilon, jobs) → ok? Negative epsilon and zero jobs are the two
+        // values the config file could previously smuggle past the
+        // CLI-only checks.
+        assert!(
+            validate_merged_values(0.0, None).is_ok(),
+            "zero epsilon is valid"
+        );
+        assert!(validate_merged_values(0.01, Some(4)).is_ok());
+        assert!(
+            validate_merged_values(-0.001, None).is_err(),
+            "negative epsilon"
+        );
+        assert!(validate_merged_values(0.01, Some(0)).is_err(), "zero jobs");
+        let err = validate_merged_values(-1.0, Some(0))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("epsilon"), "epsilon is checked first: {err}");
     }
 
     #[test]
