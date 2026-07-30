@@ -387,9 +387,9 @@ struct AnalyzedSources {
     /// The analyzed workspace members: all of them under `--workspace`, the
     /// selected subset under `-p/--package`, empty for single-root runs.
     members: Vec<WorkspaceMember>,
-    /// Extra baseline-only exclude globs for discovered-but-unselected
-    /// members (spec 25). Empty unless `-p` narrowed the scope.
-    baseline_scope_excludes: Vec<String>,
+    /// Baseline scope attribution for `-p` runs (spec 25). `None` unless
+    /// `-p` narrowed the analysis to a subset of the discovered members.
+    member_scope: Option<MemberScope>,
 }
 
 fn analyze_sources(
@@ -411,7 +411,7 @@ fn analyze_sources(
         return Ok(AnalyzedSources {
             fns,
             members: Vec::new(),
-            baseline_scope_excludes: Vec::new(),
+            member_scope: None,
         });
     }
 
@@ -432,40 +432,126 @@ fn analyze_sources(
             .with_context(|| format!("analyzing {}", m.dir.display()))?;
         fns.extend(member_fns);
     }
-    let baseline_scope_excludes =
-        unselected_member_scope_globs(&workspace_root, &discovered, &members);
+    let member_scope =
+        (!packages.is_empty()).then(|| MemberScope::new(&workspace_root, &discovered, &members));
     Ok(AnalyzedSources {
         fns,
         members,
-        baseline_scope_excludes,
+        member_scope,
     })
 }
 
-/// Baseline-only exclude globs for discovered-but-unselected members
-/// (spec 25): a `-p` run never walks them, so their baseline entries must
-/// vanish before the delta instead of flooding `removed`. Matching uses
-/// `**/{rel}/**` so cross-root baselines (spec 21, e.g. recorded under
-/// `/ci/build/repo/…`) are caught by their workspace-relative dir too.
+/// One discovered member as seen by [`MemberScope`]: its directory
+/// (forward-slash normalized, for prefix tests against same-root baseline
+/// paths), its workspace-relative components (for suffix-window tests
+/// against cross-root baseline paths, spec 21), and whether it was selected.
+struct ScopedMember {
+    dir: PathBuf,
+    rel: Vec<String>,
+    selected: bool,
+}
+
+/// Baseline scope for `-p/--package` runs (spec 25): attributes each
+/// baseline entry to the discovered member that owns it, so entries owned
+/// by unselected members vanish before the delta instead of flooding
+/// `removed` (or feeding the pass-2 name matcher phantom moves).
 ///
-/// A member sitting at the workspace root itself yields no glob — `**` of
-/// the root would drop every entry, including the selected members'.
-fn unselected_member_scope_globs(
-    workspace_root: &std::path::Path,
-    discovered: &[WorkspaceMember],
-    selected: &[WorkspaceMember],
-) -> Vec<String> {
-    if selected.len() == discovered.len() {
-        return Vec::new();
+/// Attribution is two-tier:
+/// 1. **Prefix** (same-root baselines, the common case): the deepest member
+///    dir that is a component-prefix of the entry path wins — exact, so a
+///    root-package member correctly claims files outside every child
+///    member dir.
+/// 2. **Component window** (cross-root baselines): the member whose
+///    workspace-relative dir appears as the longest contiguous component
+///    run in the path wins. Ties that include a selected member keep the
+///    entry, and the root package (empty rel) never claims cross-root
+///    paths — when in doubt, keep the entry (today's behaviour: it shows
+///    in `removed`, which is noisy but never hides a pairing).
+struct MemberScope {
+    members: Vec<ScopedMember>,
+}
+
+impl MemberScope {
+    fn new(
+        workspace_root: &Path,
+        discovered: &[WorkspaceMember],
+        selected: &[WorkspaceMember],
+    ) -> Self {
+        let selected_names: std::collections::HashSet<&str> =
+            selected.iter().map(|m| m.name.as_str()).collect();
+        let members = discovered
+            .iter()
+            .map(|m| ScopedMember {
+                dir: PathBuf::from(m.dir.to_string_lossy().replace('\\', "/")),
+                rel: m
+                    .dir
+                    .strip_prefix(workspace_root)
+                    .map(|rel| {
+                        rel.to_string_lossy()
+                            .replace('\\', "/")
+                            .split('/')
+                            .filter(|c| !c.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                selected: selected_names.contains(m.name.as_str()),
+            })
+            .collect();
+        Self { members }
     }
-    let selected_names: std::collections::HashSet<&str> =
-        selected.iter().map(|m| m.name.as_str()).collect();
-    discovered
-        .iter()
-        .filter(|m| !selected_names.contains(m.name.as_str()))
-        .filter_map(|m| m.dir.strip_prefix(workspace_root).ok())
-        .filter(|rel| !rel.as_os_str().is_empty())
-        .map(|rel| format!("**/{}/**", rel.to_string_lossy().replace('\\', "/")))
-        .collect()
+
+    /// True when `file` is owned by an unselected member — the entry must
+    /// be dropped before the delta.
+    fn is_out_of_scope(
+        &self,
+        file: &Path,
+    ) -> bool {
+        let normalized = PathBuf::from(file.to_string_lossy().replace('\\', "/"));
+
+        // Tier 1: deepest member dir that prefixes the path (exact).
+        if let Some(owner) = self
+            .members
+            .iter()
+            .filter(|m| normalized.starts_with(&m.dir))
+            .max_by_key(|m| m.dir.components().count())
+        {
+            return !owner.selected;
+        }
+
+        // Tier 2: longest workspace-relative component window (cross-root).
+        let components: Vec<&str> = normalized
+            .to_str()
+            .map(|s| s.split('/').filter(|c| !c.is_empty()).collect())
+            .unwrap_or_default();
+        let best_len = self
+            .members
+            .iter()
+            .filter(|m| components_contain(&components, &m.rel))
+            .map(|m| m.rel.len())
+            .max();
+        let Some(best_len) = best_len else {
+            return false;
+        };
+        !self
+            .members
+            .iter()
+            .filter(|m| m.rel.len() == best_len && components_contain(&components, &m.rel))
+            .any(|m| m.selected)
+    }
+}
+
+/// True when `window` appears as a contiguous run inside `haystack`.
+/// An empty window never matches — the root package's empty rel must not
+/// claim cross-root paths (see [`MemberScope`]).
+fn components_contain(
+    haystack: &[&str],
+    window: &[String],
+) -> bool {
+    !window.is_empty()
+        && haystack
+            .windows(window.len())
+            .any(|w| w.iter().zip(window).all(|(a, b)| *a == b.as_str()))
 }
 
 /// Resolve `-p/--package` selections against the discovered members.
@@ -900,6 +986,7 @@ fn load_filtered_baseline(
     allow_patterns: &[String],
     path: &Path,
     members: &[WorkspaceMember],
+    member_scope: Option<&MemberScope>,
 ) -> Result<Option<Vec<cargo_crap::merge::CrapEntry>>> {
     let Some(baseline_path) = baseline else {
         return Ok(None);
@@ -911,6 +998,11 @@ fn load_filtered_baseline(
         members.iter().map(|m| m.dir.clone()).collect()
     };
     BaselineFilter::new(excludes, allow_patterns, roots)?.retain(&mut data);
+    // A `-p` run never walked the unselected members, so their baseline
+    // entries must vanish rather than flood `removed` (spec 25).
+    if let Some(scope) = member_scope {
+        data.retain(|e| !scope.is_out_of_scope(&e.file));
+    }
     Ok(Some(data))
 }
 
@@ -1044,7 +1136,7 @@ fn run() -> Result<ExitCode> {
     let AnalyzedSources {
         fns,
         members,
-        baseline_scope_excludes,
+        member_scope,
     } = analyze_sources(
         cli.workspace,
         &cli.package,
@@ -1072,18 +1164,14 @@ fn run() -> Result<ExitCode> {
     // Apply the user-requested ordering after --top has selected by CRAP (spec 17).
     sort_entries(&mut entries, sort_order);
 
-    // --- Baseline (loaded here, filtered per spec 18) ---
-    // Baseline filtering sees the walk excludes plus the `-p` scope globs:
-    // unselected members were never walked, so their baseline entries must
-    // vanish rather than flood `removed` (specs 18 + 25).
-    let mut baseline_excludes = effective_exclude.clone();
-    baseline_excludes.extend(baseline_scope_excludes);
+    // --- Baseline (loaded here, filtered per specs 18 + 25) ---
     let baseline_data = load_filtered_baseline(
         cli.baseline.as_ref(),
-        &baseline_excludes,
+        &effective_exclude,
         &effective_allow,
         &cli.path,
         &members,
+        member_scope.as_ref(),
     )?;
 
     // --- Render ---
@@ -1267,30 +1355,91 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unselected_scope_globs_cover_only_the_unselected() {
+    /// Scope with a root package plus two `crates/*` members, `alpha`
+    /// selected — the layout of the reviewer-flagged root-leak scenario.
+    fn root_layout_scope() -> MemberScope {
         let discovered = vec![
+            member("rooty", "/ws"),
             member("alpha", "/ws/crates/alpha"),
             member("beta", "/ws/crates/beta"),
-            member("rooty", "/ws"),
         ];
         let selected = vec![member("alpha", "/ws/crates/alpha")];
-        let globs = unselected_member_scope_globs(Path::new("/ws"), &discovered, &selected);
-        assert_eq!(
-            globs,
-            ["**/crates/beta/**"],
-            "selected members excluded from the globs; the root-dir member \
-             yields none (its glob would drop everything)"
-        );
+        MemberScope::new(Path::new("/ws"), &discovered, &selected)
     }
 
     #[test]
-    fn no_scope_globs_when_everything_is_selected() {
-        let discovered = vec![member("alpha", "/ws/a"), member("beta", "/ws/b")];
+    fn scope_prefix_tier_deepest_member_owns_the_file() {
+        let scope = root_layout_scope();
+        // Root-package file: under /ws but under no child member → rooty
+        // owns it, rooty is unselected → dropped. This is the baseline
+        // leak the glob approach could not express.
+        assert!(scope.is_out_of_scope(Path::new("/ws/src/lib.rs")));
+        // Selected member's file: alpha out-prefixes rooty (deeper).
+        assert!(!scope.is_out_of_scope(Path::new("/ws/crates/alpha/src/lib.rs")));
+        // Unselected sibling member.
+        assert!(scope.is_out_of_scope(Path::new("/ws/crates/beta/src/lib.rs")));
+    }
+
+    #[test]
+    fn scope_window_tier_matches_cross_root_baselines() {
+        let scope = root_layout_scope();
+        // Same workspace recorded under a different checkout root (spec 21).
+        assert!(scope.is_out_of_scope(Path::new("/ci/build/repo/crates/beta/src/lib.rs")));
+        assert!(!scope.is_out_of_scope(Path::new("/ci/build/repo/crates/alpha/src/lib.rs")));
+        // Cross-root root-package file: the empty rel never claims it —
+        // conservative keep (it may show in `removed`, never mis-drops).
+        assert!(!scope.is_out_of_scope(Path::new("/ci/build/repo/src/lib.rs")));
+    }
+
+    #[test]
+    fn scope_window_tie_with_a_selected_member_keeps_the_entry() {
+        // `beta` is both an unselected member dir and an ordinary module
+        // dir inside the selected `frontend` — the collision that broke
+        // the unanchored-glob approach. Single-component windows tie;
+        // the selected match must win.
+        let discovered = vec![
+            member("frontend", "/ws/frontend"),
+            member("beta", "/ws/beta"),
+        ];
+        let selected = vec![member("frontend", "/ws/frontend")];
+        let scope = MemberScope::new(Path::new("/ws"), &discovered, &selected);
+        assert!(!scope.is_out_of_scope(Path::new("/ci/x/frontend/src/beta/mod.rs")));
+        // A genuine beta file still drops.
+        assert!(scope.is_out_of_scope(Path::new("/ci/x/beta/src/lib.rs")));
+    }
+
+    #[test]
+    fn scope_window_deeper_rel_wins_over_its_parent() {
+        let discovered = vec![
+            member("parent", "/ws/parent"),
+            member("nested", "/ws/parent/nested"),
+        ];
+        let selected = vec![member("nested", "/ws/parent/nested")];
+        let scope = MemberScope::new(Path::new("/ws"), &discovered, &selected);
+        assert!(!scope.is_out_of_scope(Path::new("/ci/r/parent/nested/src/lib.rs")));
+        assert!(scope.is_out_of_scope(Path::new("/ci/r/parent/src/lib.rs")));
+    }
+
+    #[test]
+    fn scope_normalizes_windows_separators() {
+        let scope = root_layout_scope();
+        assert!(scope.is_out_of_scope(Path::new(r"C:\ci\repo\crates\beta\src\lib.rs")));
+        assert!(!scope.is_out_of_scope(Path::new(r"C:\ci\repo\crates\alpha\src\lib.rs")));
+    }
+
+    #[test]
+    fn components_contain_requires_contiguous_full_window() {
+        let hay = ["ws", "crates", "beta", "src"];
+        assert!(components_contain(&hay, &["crates".into(), "beta".into()]));
+        assert!(!components_contain(
+            &hay,
+            &["crates".into(), "alpha".into()]
+        ));
         assert!(
-            unselected_member_scope_globs(Path::new("/ws"), &discovered, &discovered).is_empty(),
-            "--workspace and full selection must not alter baseline filtering"
+            !components_contain(&hay, &["ws".into(), "beta".into()]),
+            "non-contiguous components must not match"
         );
+        assert!(!components_contain(&hay, &[]), "empty window never matches");
     }
 
     #[test]

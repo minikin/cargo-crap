@@ -3882,3 +3882,95 @@ fn package_subset_baseline_does_not_flood_removed() {
         "selected member unchanged vs its own baseline entries"
     );
 }
+
+#[test]
+fn package_subset_baseline_drops_root_package_entries() {
+    // The reviewer-flagged leak: a workspace whose root Cargo.toml is
+    // itself a package (rooty). Baseline over the whole workspace, then a
+    // -p parent run — rooty's and nested's baseline entries must be
+    // attributed to their (unselected) members and dropped, not flood
+    // `removed` or feed phantom pass-2 moves.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = dir.path().join("baseline.json");
+    cmd()
+        .current_dir(nested_workspace_fixture())
+        .arg("--workspace")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline_path)
+        .assert()
+        .success();
+    let baseline: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&baseline_path).expect("baseline written"))
+            .expect("baseline JSON");
+    assert!(
+        baseline["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .any(|e| e["function"] == "root_fn"),
+        "precondition: the baseline must contain the root package's function"
+    );
+
+    let output = cmd()
+        .current_dir(nested_workspace_fixture())
+        .arg("-p")
+        .arg("parent")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--format")
+        .arg("json")
+        .arg("--fail-regression")
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert_eq!(
+        envelope["removed"].as_array().map(Vec::len),
+        Some(0),
+        "root-package and nested-member baseline entries must be dropped"
+    );
+    assert!(
+        envelope["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .all(|e| e["status"] == "unchanged" && e["function"] == "parent_fn"),
+        "only parent's unchanged entries may remain: {envelope}"
+    );
+}
+
+#[test]
+fn package_ignores_path_like_workspace_does() {
+    // --path is documented as ignored under -p; a nonexistent --path must
+    // neither error nor change the result.
+    cmd()
+        .current_dir(workspace_fixture())
+        .arg("-p")
+        .arg("alpha")
+        .arg("--path")
+        .arg("does/not/exist")
+        .arg("--missing")
+        .arg("optimistic")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alpha_branchy"));
+}
+
+#[test]
+fn package_outside_a_cargo_project_exits_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    cmd()
+        .current_dir(dir.path())
+        .arg("-p")
+        .arg("anything")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cargo metadata"));
+}
