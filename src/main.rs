@@ -991,6 +991,14 @@ struct RenderOpts<'a> {
     sort: SortOrder,
 }
 
+/// Whether `--summary` may replace the selected report format.
+///
+/// JSON and GitHub workflow commands are machine-readable formats, so their
+/// full output remains available even when `--summary` is present.
+fn summary_is_compatible(format: Format) -> bool {
+    !matches!(format, Format::Json | Format::GitHub)
+}
+
 /// Load the `--baseline` file (if any) and filter it through the current
 /// run's identity-based filters (spec 18) before delta computation. The
 /// analyzed roots are the workspace member dirs, or the single `--path`
@@ -1039,12 +1047,13 @@ fn do_render(
     opts: &RenderOpts,
     out: &mut dyn Write,
 ) -> Result<(bool, bool)> {
+    let summary = opts.summary && summary_is_compatible(opts.render.format);
     if let Some(baseline_data) = baseline {
         let mut report = compute_delta(entries, baseline_data, opts.epsilon);
         report.sort(opts.sort);
         let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
         let has_regression = report.regression_count() > 0;
-        if opts.summary {
+        if summary {
             render_delta_summary(&report, out)?;
         } else {
             render_delta(&report, &opts.render, out)?;
@@ -1052,7 +1061,7 @@ fn do_render(
         Ok((has_crappy, has_regression))
     } else {
         let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
-        if opts.summary {
+        if summary {
             render_summary(entries, opts.render.threshold, out)?;
         } else {
             render(entries, &opts.render, out)?;

@@ -1702,6 +1702,80 @@ fn summary_exits_zero_when_all_clean() {
         .stdout(predicate::str::contains("Crappy: 0"));
 }
 
+#[test]
+fn summary_leaves_json_output_machine_readable() {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .arg("--summary")
+        .output()
+        .expect("run");
+
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let entries = parse_entries(&stdout);
+    assert_eq!(entries.as_array().map(Vec::len), Some(3));
+}
+
+#[test]
+fn summary_leaves_github_annotations_enabled() {
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--format")
+        .arg("github")
+        .arg("--summary")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("::warning"));
+}
+
+#[test]
+fn summary_leaves_delta_json_output_machine_readable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = regression_baseline(&dir);
+
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--format")
+        .arg("json")
+        .arg("--summary")
+        .output()
+        .expect("run");
+
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let entries = parse_entries(&stdout);
+    assert_eq!(entries.as_array().map(Vec::len), Some(3));
+}
+
+#[test]
+fn summary_leaves_delta_github_annotations_enabled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = regression_baseline(&dir);
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--format")
+        .arg("github")
+        .arg("--summary")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("::warning"));
+}
+
 // --- --workspace ---
 
 #[test]
