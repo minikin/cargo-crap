@@ -3563,3 +3563,322 @@ fn delta_json_carries_diagnostics_and_validates_against_schema() {
     let validator = compile_schema("schemas/delta-v2.json");
     assert_valid(&validator, &envelope);
 }
+
+// --- Repeatable --package selector (spec 25) ---
+
+fn nested_workspace_fixture() -> &'static str {
+    "tests/fixtures/nested_workspace"
+}
+
+#[test]
+fn package_selects_only_the_named_member() {
+    let output = cmd()
+        .current_dir(workspace_fixture())
+        .arg("-p")
+        .arg("alpha")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let entries = parse_entries(&String::from_utf8(output.stdout).expect("utf8"));
+    let crates: std::collections::HashSet<&str> = entries
+        .as_array()
+        .expect("entries array")
+        .iter()
+        .map(|e| e["crate"].as_str().expect("crate attribution"))
+        .collect();
+    assert_eq!(
+        crates,
+        std::collections::HashSet::from(["alpha"]),
+        "only the selected member's functions may appear"
+    );
+}
+
+#[test]
+fn package_two_selections_produce_one_combined_report() {
+    let output = cmd()
+        .current_dir(workspace_fixture())
+        .arg("-p")
+        .arg("alpha")
+        .arg("-p")
+        .arg("beta")
+        .arg("--missing")
+        .arg("optimistic")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert!(stdout.contains("Per-crate summary:"));
+    assert!(stdout.contains("alpha"), "alpha in rollup:\n{stdout}");
+    assert!(stdout.contains("beta"), "beta in rollup:\n{stdout}");
+}
+
+#[test]
+fn package_single_selection_matches_path_equivalent() {
+    // Spec: `-p alpha` equals `--path crates/alpha` modulo crate attribution
+    // (and absolute-vs-relative path spelling).
+    let by_package = cmd()
+        .current_dir(workspace_fixture())
+        .arg("-p")
+        .arg("alpha")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let by_path = cmd()
+        .current_dir(workspace_fixture())
+        .arg("--path")
+        .arg("crates/alpha")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let key_set = |raw: &[u8]| -> std::collections::BTreeSet<(String, u64, String)> {
+        let entries = parse_entries(std::str::from_utf8(raw).expect("utf8"));
+        entries
+            .as_array()
+            .expect("entries")
+            .iter()
+            .map(|e| {
+                (
+                    e["function"].as_str().expect("function").to_string(),
+                    e["line"].as_u64().expect("line"),
+                    e["crap"].to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        key_set(&by_package.stdout),
+        key_set(&by_path.stdout),
+        "-p alpha and --path crates/alpha must score the same functions"
+    );
+}
+
+#[test]
+fn package_unknown_name_fails_before_analysis_with_exit_2() {
+    cmd()
+        .current_dir(workspace_fixture())
+        .arg("-p")
+        .arg("alpha")
+        .arg("-p")
+        .arg("zeta")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unknown package(s): zeta"))
+        .stderr(predicate::str::contains(
+            "available workspace members: alpha, beta",
+        ))
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn package_duplicate_selection_analyzes_once() {
+    let output = cmd()
+        .current_dir(workspace_fixture())
+        .arg("-p")
+        .arg("alpha")
+        .arg("-p")
+        .arg("alpha")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let entries = parse_entries(&String::from_utf8(output.stdout).expect("utf8"));
+    let branchy_count = entries
+        .as_array()
+        .expect("entries")
+        .iter()
+        .filter(|e| e["function"] == "alpha_branchy")
+        .count();
+    assert_eq!(branchy_count, 1, "duplicate -p must not duplicate entries");
+}
+
+#[test]
+fn package_parent_does_not_recurse_into_nested_member() {
+    let output = cmd()
+        .current_dir(nested_workspace_fixture())
+        .arg("-p")
+        .arg("parent")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let entries = parse_entries(&String::from_utf8(output.stdout).expect("utf8"));
+    let fns: Vec<&str> = entries
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| e["function"].as_str().expect("function"))
+        .collect();
+    assert_eq!(
+        fns,
+        ["parent_fn"],
+        "nested member's functions must not leak"
+    );
+}
+
+#[test]
+fn package_both_nested_members_each_analyzed_once_with_deepest_attribution() {
+    let output = cmd()
+        .current_dir(nested_workspace_fixture())
+        .arg("-p")
+        .arg("parent")
+        .arg("-p")
+        .arg("nested")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let entries = parse_entries(&String::from_utf8(output.stdout).expect("utf8"));
+    let mut seen: Vec<(String, String)> = entries
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| {
+            (
+                e["function"].as_str().expect("function").to_string(),
+                e["crate"].as_str().expect("crate").to_string(),
+            )
+        })
+        .collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            ("nested_fn".to_string(), "nested".to_string()),
+            ("parent_fn".to_string(), "parent".to_string()),
+        ],
+        "each file analyzed once, attributed to the deepest member"
+    );
+}
+
+#[test]
+fn workspace_mode_no_longer_double_analyzes_nested_members() {
+    // The nested-member exclusion applies to --workspace too: before spec 25
+    // a parent member's walk also descended into the nested member's root,
+    // producing duplicate entries for every nested function.
+    let output = cmd()
+        .current_dir(nested_workspace_fixture())
+        .arg("--workspace")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let entries = parse_entries(&String::from_utf8(output.stdout).expect("utf8"));
+    let nested_count = entries
+        .as_array()
+        .expect("entries")
+        .iter()
+        .filter(|e| e["function"] == "nested_fn")
+        .count();
+    assert_eq!(nested_count, 1, "nested_fn must be analyzed exactly once");
+}
+
+#[test]
+fn package_conflicts_with_workspace() {
+    cmd()
+        .current_dir(workspace_fixture())
+        .arg("--workspace")
+        .arg("-p")
+        .arg("alpha")
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn package_gate_spans_all_selected_members() {
+    // No LCOV → pessimistic 0% → alpha_branchy scores well above 1, so the
+    // single gate over the combined report must trip (exit 1, spec 23).
+    cmd()
+        .current_dir(workspace_fixture())
+        .arg("-p")
+        .arg("alpha")
+        .arg("-p")
+        .arg("beta")
+        .arg("--fail-above")
+        .arg("--threshold")
+        .arg("1")
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn package_subset_baseline_does_not_flood_removed() {
+    // Baseline recorded over the whole workspace; current run selects only
+    // alpha. Spec-18 filtering keys on the analyzed roots (now the selected
+    // members' dirs), so beta's functions must not appear as removed.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = dir.path().join("baseline.json");
+    cmd()
+        .current_dir(workspace_fixture())
+        .arg("--workspace")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline_path)
+        .assert()
+        .success();
+
+    let output = cmd()
+        .current_dir(workspace_fixture())
+        .arg("-p")
+        .arg("alpha")
+        .arg("--missing")
+        .arg("optimistic")
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--format")
+        .arg("json")
+        .arg("--fail-regression")
+        .assert()
+        .code(0)
+        .get_output()
+        .clone();
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert_eq!(
+        envelope["removed"].as_array().map(Vec::len),
+        Some(0),
+        "unselected members must be filtered from the baseline, not 'removed'"
+    );
+    assert!(
+        envelope["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .all(|e| e["status"] == "unchanged"),
+        "selected member unchanged vs its own baseline entries"
+    );
+}

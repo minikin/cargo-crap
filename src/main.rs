@@ -58,6 +58,21 @@ struct Cli {
     #[arg(long)]
     workspace: bool,
 
+    /// Analyze only the named workspace member(s), discovered via
+    /// `cargo metadata`. Repeatable, cargo-style: `-p core -p api`.
+    ///
+    /// One invocation, one LCOV parse, one report, one gate decision over
+    /// exactly the selected members (spec 25). Unknown names fail before
+    /// analysis; duplicates are deduplicated; `--path` is ignored.
+    /// Conflicts with `--workspace`, which already means "all members".
+    #[arg(
+        short = 'p',
+        long = "package",
+        value_name = "NAME",
+        conflicts_with = "workspace"
+    )]
+    package: Vec<String>,
+
     /// Glob patterns for files to skip (relative to `--path`).
     /// Use `**` to cross directory boundaries. May be repeated.
     /// Appends to the default exclusions — see `--no-default-excludes`.
@@ -361,34 +376,145 @@ struct WorkspaceMember {
 /// Walk source trees and discover Cargo workspace members in one pass.
 ///
 /// Caps rayon's global thread pool to `jobs` first, so the parallel
-/// `analyze_tree` walk respects user-set bounds. In `--workspace` mode also
-/// discovers all members via `cargo metadata` and walks each member's root.
+/// `analyze_tree` walk respects user-set bounds. In `--workspace` mode all
+/// members discovered via `cargo metadata` are walked; with `-p/--package`
+/// only the selected members are (spec 25). Either way, a member walk never
+/// descends into another member's nested root — each file is analyzed once,
+/// by the member that owns it.
+/// What [`analyze_sources`] hands back to `main`.
+struct AnalyzedSources {
+    fns: Vec<complexity::FunctionComplexity>,
+    /// The analyzed workspace members: all of them under `--workspace`, the
+    /// selected subset under `-p/--package`, empty for single-root runs.
+    members: Vec<WorkspaceMember>,
+    /// Extra baseline-only exclude globs for discovered-but-unselected
+    /// members (spec 25). Empty unless `-p` narrowed the scope.
+    baseline_scope_excludes: Vec<String>,
+}
+
 fn analyze_sources(
     workspace: bool,
+    packages: &[String],
     path: &std::path::Path,
     excludes: &[String],
     jobs: Option<usize>,
-) -> Result<(Vec<complexity::FunctionComplexity>, Vec<WorkspaceMember>)> {
+) -> Result<AnalyzedSources> {
     if let Some(n) = jobs {
         rayon::ThreadPoolBuilder::new()
             .num_threads(n)
             .build_global()
             .with_context(|| format!("configuring rayon thread pool to {n} threads"))?;
     }
-    if workspace {
-        let members = workspace_members()?;
-        let mut all = Vec::new();
-        for m in &members {
-            let fns = complexity::analyze_tree(&m.dir, excludes)
-                .with_context(|| format!("analyzing {}", m.dir.display()))?;
-            all.extend(fns);
-        }
-        Ok((all, members))
-    } else {
+    if !workspace && packages.is_empty() {
         let fns = complexity::analyze_tree(path, excludes)
             .with_context(|| format!("analyzing {}", path.display()))?;
-        Ok((fns, Vec::new()))
+        return Ok(AnalyzedSources {
+            fns,
+            members: Vec::new(),
+            baseline_scope_excludes: Vec::new(),
+        });
     }
+
+    let (workspace_root, discovered) = workspace_members()?;
+    let members = if packages.is_empty() {
+        discovered.clone()
+    } else {
+        select_members(&discovered, packages)?
+    };
+    let mut fns = Vec::new();
+    for m in &members {
+        // Nested exclusion is computed against every discovered member, not
+        // just the selected ones: an unselected nested member's files must
+        // not leak into its parent's walk either.
+        let mut walk_excludes = excludes.to_vec();
+        walk_excludes.extend(nested_member_excludes(&m.dir, &discovered));
+        let member_fns = complexity::analyze_tree(&m.dir, &walk_excludes)
+            .with_context(|| format!("analyzing {}", m.dir.display()))?;
+        fns.extend(member_fns);
+    }
+    let baseline_scope_excludes =
+        unselected_member_scope_globs(&workspace_root, &discovered, &members);
+    Ok(AnalyzedSources {
+        fns,
+        members,
+        baseline_scope_excludes,
+    })
+}
+
+/// Baseline-only exclude globs for discovered-but-unselected members
+/// (spec 25): a `-p` run never walks them, so their baseline entries must
+/// vanish before the delta instead of flooding `removed`. Matching uses
+/// `**/{rel}/**` so cross-root baselines (spec 21, e.g. recorded under
+/// `/ci/build/repo/…`) are caught by their workspace-relative dir too.
+///
+/// A member sitting at the workspace root itself yields no glob — `**` of
+/// the root would drop every entry, including the selected members'.
+fn unselected_member_scope_globs(
+    workspace_root: &std::path::Path,
+    discovered: &[WorkspaceMember],
+    selected: &[WorkspaceMember],
+) -> Vec<String> {
+    if selected.len() == discovered.len() {
+        return Vec::new();
+    }
+    let selected_names: std::collections::HashSet<&str> =
+        selected.iter().map(|m| m.name.as_str()).collect();
+    discovered
+        .iter()
+        .filter(|m| !selected_names.contains(m.name.as_str()))
+        .filter_map(|m| m.dir.strip_prefix(workspace_root).ok())
+        .filter(|rel| !rel.as_os_str().is_empty())
+        .map(|rel| format!("**/{}/**", rel.to_string_lossy().replace('\\', "/")))
+        .collect()
+}
+
+/// Resolve `-p/--package` selections against the discovered members.
+/// Unknown names abort before any analysis; duplicate selections collapse
+/// (the filter over `discovered` yields each member at most once); the
+/// discovery order is preserved.
+fn select_members(
+    discovered: &[WorkspaceMember],
+    requested: &[String],
+) -> Result<Vec<WorkspaceMember>> {
+    let available: std::collections::HashSet<&str> =
+        discovered.iter().map(|m| m.name.as_str()).collect();
+    let mut unknown: Vec<&str> = requested
+        .iter()
+        .map(String::as_str)
+        .filter(|n| !available.contains(n))
+        .collect();
+    if !unknown.is_empty() {
+        unknown.sort_unstable();
+        unknown.dedup();
+        let mut names: Vec<&str> = discovered.iter().map(|m| m.name.as_str()).collect();
+        names.sort_unstable();
+        bail!(
+            "unknown package(s): {}; available workspace members: {}",
+            unknown.join(", "),
+            names.join(", "),
+        );
+    }
+    let wanted: std::collections::HashSet<&str> = requested.iter().map(String::as_str).collect();
+    Ok(discovered
+        .iter()
+        .filter(|m| wanted.contains(m.name.as_str()))
+        .cloned()
+        .collect())
+}
+
+/// Exclude globs for other members' roots nested beneath `root`, so a member
+/// walk never descends into a nested member's files (spec 25). The nested
+/// member owns them and is walked separately when itself selected.
+fn nested_member_excludes(
+    root: &std::path::Path,
+    discovered: &[WorkspaceMember],
+) -> Vec<String> {
+    discovered
+        .iter()
+        .filter(|m| m.dir != root)
+        .filter_map(|m| m.dir.strip_prefix(root).ok())
+        .map(|rel| format!("{}/**", rel.to_string_lossy().replace('\\', "/")))
+        .collect()
 }
 
 /// Assign a Cargo workspace member name to each entry by matching the entry's
@@ -588,7 +714,7 @@ fn spinner(msg: &'static str) -> ProgressBar {
 /// Returns one [`WorkspaceMember`] per member crate (name + the directory
 /// containing its `Cargo.toml`). Used both to walk source trees and to
 /// assign a `crate` field to each `CrapEntry` for per-crate rollup.
-fn workspace_members() -> Result<Vec<WorkspaceMember>> {
+fn workspace_members() -> Result<(PathBuf, Vec<WorkspaceMember>)> {
     let output = std::process::Command::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .output()
@@ -601,6 +727,11 @@ fn workspace_members() -> Result<Vec<WorkspaceMember>> {
 
     let meta: serde_json::Value =
         serde_json::from_slice(&output.stdout).context("parsing `cargo metadata` output")?;
+
+    let workspace_root = meta["workspace_root"]
+        .as_str()
+        .map(PathBuf::from)
+        .context("`cargo metadata` output missing `workspace_root`")?;
 
     let members: Vec<WorkspaceMember> = meta["packages"]
         .as_array()
@@ -618,7 +749,7 @@ fn workspace_members() -> Result<Vec<WorkspaceMember>> {
     if members.is_empty() {
         bail!("`cargo metadata` returned no packages");
     }
-    Ok(members)
+    Ok((workspace_root, members))
 }
 
 /// Lead line of the scope-mismatch warning, picked by overlap severity
@@ -721,7 +852,9 @@ fn require_baseline(
 
 /// Validate argument combinations that clap cannot express as declarative rules.
 fn validate_args(cli: &Cli) -> Result<()> {
-    if !cli.workspace && !cli.path.exists() {
+    // `--workspace` and `-p/--package` both ignore `--path`, so its
+    // existence only matters for plain single-root runs.
+    if !cli.workspace && cli.package.is_empty() && !cli.path.exists() {
         bail!("path does not exist: {}", cli.path.display());
     }
     let has_baseline = cli.baseline.is_some();
@@ -908,8 +1041,13 @@ fn run() -> Result<ExitCode> {
 
     // --- Analysis ---
     let pb = spinner("Analyzing source files…");
-    let (fns, members) = analyze_sources(
+    let AnalyzedSources {
+        fns,
+        members,
+        baseline_scope_excludes,
+    } = analyze_sources(
         cli.workspace,
+        &cli.package,
         &cli.path,
         &effective_exclude,
         cli.jobs.or(config.jobs),
@@ -935,9 +1073,14 @@ fn run() -> Result<ExitCode> {
     sort_entries(&mut entries, sort_order);
 
     // --- Baseline (loaded here, filtered per spec 18) ---
+    // Baseline filtering sees the walk excludes plus the `-p` scope globs:
+    // unselected members were never walked, so their baseline entries must
+    // vanish rather than flood `removed` (specs 18 + 25).
+    let mut baseline_excludes = effective_exclude.clone();
+    baseline_excludes.extend(baseline_scope_excludes);
     let baseline_data = load_filtered_baseline(
         cli.baseline.as_ref(),
-        &effective_exclude,
+        &baseline_excludes,
         &effective_allow,
         &cli.path,
         &members,
@@ -1076,6 +1219,103 @@ mod tests {
         let lines = stray_lines("stray", &s);
         assert_eq!(lines.len(), 12, "header + 10 examples + tail");
         assert_eq!(lines.last().unwrap(), "    ... and 3 more");
+    }
+
+    fn member(
+        name: &str,
+        dir: &str,
+    ) -> WorkspaceMember {
+        WorkspaceMember {
+            name: name.into(),
+            dir: PathBuf::from(dir),
+        }
+    }
+
+    #[test]
+    fn select_members_filters_and_preserves_discovery_order() {
+        let discovered = vec![
+            member("alpha", "/ws/crates/alpha"),
+            member("beta", "/ws/crates/beta"),
+            member("gamma", "/ws/crates/gamma"),
+        ];
+        let selected = select_members(&discovered, &["gamma".into(), "alpha".into()]).unwrap();
+        let names: Vec<&str> = selected.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["alpha", "gamma"],
+            "discovery order, not request order"
+        );
+    }
+
+    #[test]
+    fn select_members_deduplicates_repeated_selections() {
+        let discovered = vec![member("alpha", "/ws/a"), member("beta", "/ws/b")];
+        let selected = select_members(&discovered, &["alpha".into(), "alpha".into()]).unwrap();
+        assert_eq!(selected.len(), 1);
+    }
+
+    #[test]
+    fn select_members_rejects_unknown_names_listing_available() {
+        let discovered = vec![member("alpha", "/ws/a"), member("beta", "/ws/b")];
+        let err = select_members(&discovered, &["alpha".into(), "zeta".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown package(s): zeta"), "got: {err}");
+        assert!(
+            err.contains("available workspace members: alpha, beta"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn unselected_scope_globs_cover_only_the_unselected() {
+        let discovered = vec![
+            member("alpha", "/ws/crates/alpha"),
+            member("beta", "/ws/crates/beta"),
+            member("rooty", "/ws"),
+        ];
+        let selected = vec![member("alpha", "/ws/crates/alpha")];
+        let globs = unselected_member_scope_globs(Path::new("/ws"), &discovered, &selected);
+        assert_eq!(
+            globs,
+            ["**/crates/beta/**"],
+            "selected members excluded from the globs; the root-dir member \
+             yields none (its glob would drop everything)"
+        );
+    }
+
+    #[test]
+    fn no_scope_globs_when_everything_is_selected() {
+        let discovered = vec![member("alpha", "/ws/a"), member("beta", "/ws/b")];
+        assert!(
+            unselected_member_scope_globs(Path::new("/ws"), &discovered, &discovered).is_empty(),
+            "--workspace and full selection must not alter baseline filtering"
+        );
+    }
+
+    #[test]
+    fn nested_member_excludes_covers_only_roots_beneath_this_one() {
+        let discovered = vec![
+            member("parent", "/ws/parent"),
+            member("nested", "/ws/parent/nested"),
+            member("deep", "/ws/parent/sub/deep"),
+            member("sibling", "/ws/sibling"),
+        ];
+        let mut globs = nested_member_excludes(Path::new("/ws/parent"), &discovered);
+        globs.sort();
+        assert_eq!(
+            globs,
+            ["nested/**", "sub/deep/**"],
+            "nested roots excluded relative to the walk root; siblings untouched"
+        );
+        assert!(
+            nested_member_excludes(Path::new("/ws/sibling"), &discovered).is_empty(),
+            "a leaf member excludes nothing"
+        );
+        assert!(
+            nested_member_excludes(Path::new("/ws/parent/nested"), &discovered).is_empty(),
+            "a member never excludes itself"
+        );
     }
 
     #[test]
