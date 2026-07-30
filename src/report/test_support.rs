@@ -4,8 +4,23 @@
 //! respective tests; only fixtures used by *more than one* submodule end up
 //! here.
 
+use super::{Format, RenderOptions};
 use crate::merge::CrapEntry;
 use std::path::PathBuf;
+
+/// Shorthand for the common test shape: a threshold and a format, every
+/// other knob at its default. Sites needing links / diagnostics /
+/// `show_unchanged` spell out the struct literal instead.
+pub(crate) fn opts(
+    threshold: f64,
+    format: Format,
+) -> RenderOptions<'static> {
+    RenderOptions {
+        threshold,
+        format,
+        ..Default::default()
+    }
+}
 
 /// Two-entry fixture: one trivially clean function and one egregiously
 /// crappy function. Used by the json / human / github / dispatcher tests

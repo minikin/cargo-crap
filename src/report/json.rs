@@ -100,15 +100,15 @@ pub(crate) fn render_delta_json(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::sample;
-    use super::super::{Format, render};
+    use super::super::test_support::{opts, sample};
+    use super::super::{Format, RenderOptions, render};
     use super::*;
     use std::path::PathBuf;
 
     #[test]
     fn json_output_is_envelope_with_version_and_entries() {
         let mut buf = Vec::new();
-        render(&sample(), 30.0, Format::Json, None, None, &mut buf).unwrap();
+        render(&sample(), &opts(30.0, Format::Json), &mut buf).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(parsed.is_object(), "JSON output must be an envelope object");
         assert_eq!(
@@ -144,7 +144,17 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render(&sample(), 30.0, Format::Json, None, Some(&diag), &mut buf).unwrap();
+        render(
+            &sample(),
+            &RenderOptions {
+                threshold: 30.0,
+                format: Format::Json,
+                diagnostics: Some(&diag),
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert_eq!(parsed["diagnostics"]["analyzed_files"], 4);
         assert_eq!(parsed["diagnostics"]["lcov_files"], 3);
@@ -157,7 +167,7 @@ mod tests {
         assert_eq!(parsed["diagnostics"]["lcov_only"]["count"], 1);
 
         let mut buf = Vec::new();
-        render(&sample(), 30.0, Format::Json, None, None, &mut buf).unwrap();
+        render(&sample(), &opts(30.0, Format::Json), &mut buf).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(
             parsed.get("diagnostics").is_none(),
@@ -179,7 +189,17 @@ mod tests {
         }];
         let links = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::Json, Some(&links), None, &mut buf).unwrap();
+        render(
+            &entries,
+            &RenderOptions {
+                threshold: 30.0,
+                format: Format::Json,
+                links: Some(&links),
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             !s.contains("](https://"),

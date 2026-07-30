@@ -194,13 +194,18 @@ fn normalize_path(p: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::sample;
-    use super::super::{Format, render};
+    use super::super::test_support::{opts, sample};
+    use super::super::{Format, RenderOptions, render};
     use super::*;
 
     fn render_to_value(threshold: f64) -> serde_json::Value {
         let mut buf = Vec::new();
-        render(&sample(), threshold, Format::Sarif, None, None, &mut buf).unwrap();
+        let opts = RenderOptions {
+            threshold,
+            format: Format::Sarif,
+            ..Default::default()
+        };
+        render(&sample(), &opts, &mut buf).unwrap();
         serde_json::from_slice(&buf).expect("output must be valid JSON")
     }
 
@@ -270,7 +275,7 @@ mod tests {
     #[test]
     fn empty_entries_produce_valid_sarif_with_empty_results() {
         let mut buf = Vec::new();
-        render(&[], 30.0, Format::Sarif, None, None, &mut buf).unwrap();
+        render(&[], &opts(30.0, Format::Sarif), &mut buf).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&buf).expect("valid JSON");
         assert_eq!(v["version"].as_str(), Some(SARIF_VERSION));
         let results = v["runs"][0]["results"]
@@ -306,7 +311,7 @@ mod tests {
             removed: Vec::new(),
         };
         let mut buf = Vec::new();
-        let err = render_delta(&report, 30.0, Format::Sarif, None, false, None, &mut buf)
+        let err = render_delta(&report, &opts(30.0, Format::Sarif), &mut buf)
             .expect_err("delta + sarif must fail");
         let msg = err.to_string();
         assert!(

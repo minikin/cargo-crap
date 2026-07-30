@@ -78,59 +78,98 @@ pub enum Format {
     Shields,
 }
 
-/// Render `entries` in the requested format to `out`.
+/// Options shared by [`render`] and [`render_delta`], so their signatures
+/// survive new knobs without breaking every call site again.
+///
+/// Construct with struct-update syntax over [`Default`]:
+///
+/// ```
+/// use cargo_crap::report::{Format, RenderOptions};
+/// let opts = RenderOptions {
+///     format: Format::Json,
+///     ..Default::default()
+/// };
+/// # let _ = opts;
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct RenderOptions<'a> {
+    /// CRAP score above which a function is flagged.
+    pub threshold: f64,
+    /// Output format to dispatch to.
+    pub format: Format,
+    /// GitHub source links for `markdown` / `pr-comment` cells (spec 12).
+    pub links: Option<&'a SourceLinks>,
+    /// Source/LCOV scope diagnostics (spec 24); embedded in the JSON
+    /// envelope only — other formats report mismatches via the CLI's
+    /// stderr warning.
+    pub diagnostics: Option<&'a ScopeDiagnostics>,
+    /// Show `Unchanged` rows in delta mode (spec 16). Only the human and
+    /// markdown renderers consult it; ignored by [`render`].
+    pub show_unchanged: bool,
+}
+
+impl Default for RenderOptions<'_> {
+    /// CLI defaults: threshold 30, human format, no links, no
+    /// diagnostics, changed-only delta rows.
+    fn default() -> Self {
+        Self {
+            threshold: crate::score::DEFAULT_THRESHOLD,
+            format: Format::Human,
+            links: None,
+            diagnostics: None,
+            show_unchanged: false,
+        }
+    }
+}
+
+/// Render `entries` in the format requested by `opts` to `out`.
 ///
 /// For `Format::Human` we emit a table and a summary line. The summary uses
 /// stderr-style coloring if the output is a TTY; `owo-colors` no-ops when
 /// it's not.
-///
-/// `diagnostics` (spec 24) is embedded in the JSON envelope only; every
-/// other format reports scope mismatches via the CLI's stderr warning.
 pub fn render(
     entries: &[CrapEntry],
-    threshold: f64,
-    format: Format,
-    links: Option<&SourceLinks>,
-    diagnostics: Option<&ScopeDiagnostics>,
+    opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    match format {
-        Format::Json => json::render_json(entries, diagnostics, out),
+    let threshold = opts.threshold;
+    match opts.format {
+        Format::Json => json::render_json(entries, opts.diagnostics, out),
         Format::Human => human::render_human(entries, threshold, out),
         Format::GitHub => github::render_github(entries, threshold, out),
-        Format::Markdown => markdown::render_markdown(entries, threshold, links, out),
-        Format::PrComment => pr_comment::render_pr_comment(entries, threshold, links, out),
+        Format::Markdown => markdown::render_markdown(entries, threshold, opts.links, out),
+        Format::PrComment => pr_comment::render_pr_comment(entries, threshold, opts.links, out),
         Format::Sarif => sarif::render_sarif(entries, threshold, out),
         Format::Shields => shields::render_shields(entries, threshold, out),
     }
 }
 
-/// Render a [`DeltaReport`] in the requested format.
+/// Render a [`DeltaReport`] in the format requested by `opts`.
 ///
 /// Human format: table with a Δ column + summary line.
 /// JSON format: `{"entries": [...], "removed": [...]}` object.
 /// GitHub format: `::warning` for regressed and new-crappy functions only.
-/// `show_unchanged` controls whether `Unchanged` rows appear in the human and
-/// markdown tables (spec 16); it has no effect on the other formats, which
-/// keep their own row policies (json stays exhaustive, pr-comment hides
-/// unchanged by design, github/shields/sarif don't list unchanged functions).
+/// `opts.show_unchanged` controls whether `Unchanged` rows appear in the
+/// human and markdown tables (spec 16); it has no effect on the other
+/// formats, which keep their own row policies (json stays exhaustive,
+/// pr-comment hides unchanged by design, github/shields/sarif don't list
+/// unchanged functions).
 pub fn render_delta(
     report: &DeltaReport,
-    threshold: f64,
-    format: Format,
-    links: Option<&SourceLinks>,
-    show_unchanged: bool,
-    diagnostics: Option<&ScopeDiagnostics>,
+    opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    match format {
-        Format::Json => json::render_delta_json(report, diagnostics, out),
-        Format::Human => human::render_delta_human(report, threshold, show_unchanged, out),
+    let threshold = opts.threshold;
+    match opts.format {
+        Format::Json => json::render_delta_json(report, opts.diagnostics, out),
+        Format::Human => human::render_delta_human(report, threshold, opts.show_unchanged, out),
         Format::GitHub => github::render_delta_github(report, threshold, out),
         Format::Markdown => {
-            markdown::render_delta_markdown(report, threshold, links, show_unchanged, out)
+            markdown::render_delta_markdown(report, threshold, opts.links, opts.show_unchanged, out)
         },
-        Format::PrComment => pr_comment::render_delta_pr_comment(report, threshold, links, out),
+        Format::PrComment => {
+            pr_comment::render_delta_pr_comment(report, threshold, opts.links, out)
+        },
         // SARIF describes the *current* set of findings, not deltas. The
         // upstream consumers (GitHub Code Scanning, VS Code) don't model
         // baseline diffs, so combining `--baseline` with `--format sarif`

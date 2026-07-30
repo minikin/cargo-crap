@@ -83,7 +83,7 @@ fn write_badge(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::sample;
+    use super::super::test_support::{opts, sample};
     use super::super::{Format, render, render_delta};
     use crate::delta::compute_delta;
 
@@ -145,7 +145,7 @@ mod tests {
     fn render_counts_entries_above_threshold() {
         // sample() has one entry above 30 (CRAP 110) and one below (CRAP 1).
         let mut buf = Vec::new();
-        render(&sample(), 30.0, Format::Shields, None, None, &mut buf).unwrap();
+        render(&sample(), &opts(30.0, Format::Shields), &mut buf).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&buf).expect("valid JSON");
         assert_eq!(v["message"].as_str(), Some("1 crappy"));
         assert_eq!(v["color"].as_str(), Some("yellow"));
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn render_with_high_threshold_is_passing() {
         let mut buf = Vec::new();
-        render(&sample(), 200.0, Format::Shields, None, None, &mut buf).unwrap();
+        render(&sample(), &opts(200.0, Format::Shields), &mut buf).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&buf).expect("valid JSON");
         assert_eq!(v["message"].as_str(), Some("passing"));
         assert_eq!(v["color"].as_str(), Some("brightgreen"));
@@ -164,7 +164,7 @@ mod tests {
     fn threshold_boundary_is_strictly_greater_than() {
         // An entry exactly at the threshold is not crappy (spec: CRAP > threshold).
         let mut buf = Vec::new();
-        render(&sample(), 110.0, Format::Shields, None, None, &mut buf).unwrap();
+        render(&sample(), &opts(110.0, Format::Shields), &mut buf).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&buf).expect("valid JSON");
         assert_eq!(v["message"].as_str(), Some("passing"));
     }
@@ -187,18 +187,9 @@ mod tests {
         let report = compute_delta(&entries, &baseline, 0.01);
 
         let mut delta_buf = Vec::new();
-        render_delta(
-            &report,
-            30.0,
-            Format::Shields,
-            None,
-            false,
-            None,
-            &mut delta_buf,
-        )
-        .unwrap();
+        render_delta(&report, &opts(30.0, Format::Shields), &mut delta_buf).unwrap();
         let mut plain_buf = Vec::new();
-        render(&entries, 30.0, Format::Shields, None, None, &mut plain_buf).unwrap();
+        render(&entries, &opts(30.0, Format::Shields), &mut plain_buf).unwrap();
 
         assert_eq!(
             String::from_utf8(delta_buf).unwrap(),

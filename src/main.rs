@@ -13,8 +13,8 @@ use cargo_crap::{
     delta::{compute_delta, load_baseline},
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
     report::{
-        Format, SourceLinks, crappy_count, render, render_delta, render_delta_summary,
-        render_summary, set_color_enabled,
+        Format, RenderOptions, SourceLinks, crappy_count, render, render_delta,
+        render_delta_summary, render_summary, set_color_enabled,
     },
     score::DEFAULT_THRESHOLD,
 };
@@ -982,19 +982,13 @@ fn validate_args(cli: &Cli) -> Result<()> {
 /// keeps the helper's signature under clippy's argument-count limit and makes
 /// call sites readable as "what to render" + "where to render it".
 struct RenderOpts<'a> {
-    threshold: f64,
+    /// Everything the report renderers consume, passed through verbatim.
+    render: RenderOptions<'a>,
     epsilon: f64,
-    format: Format,
     summary: bool,
-    links: Option<&'a SourceLinks>,
-    /// Show `Unchanged` rows in delta mode (spec 16). Only the human and
-    /// markdown renderers consult it.
-    show_unchanged: bool,
     /// Final entry ordering (spec 17). Applied to the `DeltaReport` so
     /// `removed` ordering is deterministic too.
     sort: SortOrder,
-    /// Source/LCOV scope diagnostics (spec 24); embedded in JSON envelopes.
-    diagnostics: Option<&'a ScopeDiagnostics>,
 }
 
 /// Load the `--baseline` file (if any) and filter it through the current
@@ -1048,35 +1042,20 @@ fn do_render(
     if let Some(baseline_data) = baseline {
         let mut report = compute_delta(entries, baseline_data, opts.epsilon);
         report.sort(opts.sort);
-        let has_crappy = crappy_count(entries, opts.threshold) > 0;
+        let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
         let has_regression = report.regression_count() > 0;
         if opts.summary {
             render_delta_summary(&report, out)?;
         } else {
-            render_delta(
-                &report,
-                opts.threshold,
-                opts.format,
-                opts.links,
-                opts.show_unchanged,
-                opts.diagnostics,
-                out,
-            )?;
+            render_delta(&report, &opts.render, out)?;
         }
         Ok((has_crappy, has_regression))
     } else {
-        let has_crappy = crappy_count(entries, opts.threshold) > 0;
+        let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
         if opts.summary {
-            render_summary(entries, opts.threshold, out)?;
+            render_summary(entries, opts.render.threshold, out)?;
         } else {
-            render(
-                entries,
-                opts.threshold,
-                opts.format,
-                opts.links,
-                opts.diagnostics,
-                out,
-            )?;
+            render(entries, &opts.render, out)?;
         }
         Ok((has_crappy, false))
     }
@@ -1214,14 +1193,16 @@ fn run() -> Result<ExitCode> {
     let mut out_box = open_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref);
     let opts = RenderOpts {
-        threshold,
+        render: RenderOptions {
+            threshold,
+            format: cli.format.into(),
+            links: links.as_ref(),
+            diagnostics: diagnostics.as_ref(),
+            show_unchanged,
+        },
         epsilon,
-        format: cli.format.into(),
         summary: cli.summary,
-        links: links.as_ref(),
-        show_unchanged,
         sort: sort_order,
-        diagnostics: diagnostics.as_ref(),
     };
     let (has_crappy, has_regression) =
         do_render(&entries, baseline_data.as_deref(), &opts, out_box.as_mut())?;

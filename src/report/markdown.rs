@@ -247,7 +247,7 @@ fn write_markdown_delta_body(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Format, render};
+    use super::super::{Format, RenderOptions, render};
     use super::*;
     use std::path::PathBuf;
 
@@ -264,15 +264,12 @@ mod tests {
         }];
         let links = SourceLinks::new("https://github.com/o/r".into(), "main".into());
         let mut buf = Vec::new();
-        render(
-            &entries,
-            30.0,
-            Format::Markdown,
-            Some(&links),
-            None,
-            &mut buf,
-        )
-        .unwrap();
+        let opts = RenderOptions {
+            format: Format::Markdown,
+            links: Some(&links),
+            ..Default::default()
+        };
+        render(&entries, &opts, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("[`foo`](https://github.com/o/r/blob/main/src/a.rs#L7)"),

@@ -49,8 +49,7 @@
 //! use cargo_crap::{
 //!     complexity, coverage,
 //!     merge::{MissingCoveragePolicy, merge},
-//!     report::{Format, render},
-//!     score::DEFAULT_THRESHOLD,
+//!     report::{RenderOptions, render},
 //! };
 //! use std::io;
 //!
@@ -68,8 +67,9 @@
 //! //    treated as 0% covered (the pessimistic default, safest for CI gates).
 //! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic).entries;
 //!
-//! // 4. Render the human-readable table to stdout.
-//! render(&entries, DEFAULT_THRESHOLD, Format::Human, None, None, &mut io::stdout())?;
+//! // 4. Render the human-readable table to stdout. `RenderOptions`
+//! //    defaults to the CLI defaults: threshold 30, human format.
+//! render(&entries, &RenderOptions::default(), &mut io::stdout())?;
 //!
 //! # Ok::<(), anyhow::Error>(())
 //! ```
@@ -116,7 +116,7 @@
 //!     complexity, coverage,
 //!     delta::{DEFAULT_EPSILON, compute_delta, load_baseline},
 //!     merge::{MissingCoveragePolicy, merge},
-//!     report::{Format, render_delta},
+//!     report::{RenderOptions, render_delta},
 //! };
 //! use std::io;
 //!
@@ -133,7 +133,7 @@
 //!
 //! // Exit non-zero if any function regressed.
 //! if report.regression_count() > 0 {
-//!     render_delta(&report, 30.0, Format::Human, None, false, None, &mut io::stdout())?;
+//!     render_delta(&report, &RenderOptions::default(), &mut io::stdout())?;
 //!     std::process::exit(1);
 //! }
 //! # Ok::<(), anyhow::Error>(())

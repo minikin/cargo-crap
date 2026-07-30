@@ -120,7 +120,7 @@ pub(crate) fn gha_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::sample;
+    use super::super::test_support::{opts, sample};
     use super::super::{Format, render};
     use super::*;
     use std::path::PathBuf;
@@ -129,7 +129,7 @@ mod tests {
     fn github_format_emits_warning_for_crappy_function() {
         // Kills: missing the crappy-only guard (`entry.crap > threshold`).
         let mut buf = Vec::new();
-        render(&sample(), 30.0, Format::GitHub, None, None, &mut buf).unwrap();
+        render(&sample(), &opts(30.0, Format::GitHub), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("::warning"),
@@ -146,7 +146,7 @@ mod tests {
     fn github_format_clean_function_produces_no_annotation() {
         // Kills: emitting annotations for all functions regardless of threshold.
         let mut buf = Vec::new();
-        render(&sample(), 30.0, Format::GitHub, None, None, &mut buf).unwrap();
+        render(&sample(), &opts(30.0, Format::GitHub), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         // "clean" (crap=1.0) is well below threshold=30 and must be silent.
         assert!(
@@ -169,7 +169,7 @@ mod tests {
             crate_name: None,
         }];
         let mut buf = Vec::new();
-        render(&all_clean, 30.0, Format::GitHub, None, None, &mut buf).unwrap();
+        render(&all_clean, &opts(30.0, Format::GitHub), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.is_empty(),
@@ -190,7 +190,7 @@ mod tests {
             crate_name: None,
         }];
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::GitHub, None, None, &mut buf).unwrap();
+        render(&entries, &opts(30.0, Format::GitHub), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("line=42"),
