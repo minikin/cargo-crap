@@ -83,7 +83,7 @@ syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
 
 **`src/score.rs`** — Pure formula: `CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)`. No I/O, no dependencies on other modules.
 
-**`src/complexity.rs`** — Uses `syn` to walk the Rust AST and extract `FunctionComplexity` tuples. Handles `ItemFn` (free functions) and `ImplItemFn` (methods) via the `Visit` trait. Closures are not recursed into — their decision points belong to their own scope. Uses the `ignore` crate to respect `.gitignore` during `analyze_tree`. The `proc-macro2` dependency must have the `span-locations` feature enabled to call `Span::start()`/`Span::end()` at runtime.
+**`src/complexity.rs`** — Uses `syn` to walk the Rust AST and extract `FunctionComplexity` tuples. Handles `ItemFn` (free functions) and `ImplItemFn` (methods) via the `Visit` trait. Closures and items nested inside function bodies (local `fn` / `impl` / `mod` / …) are not recursed into — their decision points belong to their own scope. Uses the `ignore` crate to respect `.gitignore` during `analyze_tree`. The `proc-macro2` dependency must have the `span-locations` feature enabled to call `Span::start()`/`Span::end()` at runtime.
 
 **`src/coverage.rs`** — Parses LCOV files using the `lcov` crate. Only consumes `SF` (source file), `DA` (line data), and `end_of_record` records. Path normalization is deliberately absent here — that responsibility belongs to `merge`.
 
