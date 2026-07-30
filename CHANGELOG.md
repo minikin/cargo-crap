@@ -57,10 +57,13 @@ matched on specific non-zero exit codes; see Changed.
   exit 1 as "any failure" now see gate trips only.
 - **BREAKING (library API):** `MergeResult.unmapped_files` is replaced
   by `MergeResult.diagnostics: Option<ScopeDiagnostics>`, and
-  `report::render` / `report::render_delta` gained a
-  `diagnostics: Option<&ScopeDiagnostics>` parameter. The JSON
-  `Envelope` struct gained an optional `diagnostics` field (additive —
-  baselines from older releases still load).
+  `report::render` / `report::render_delta` now take a single
+  `&RenderOptions` (new public struct bundling `threshold`, `format`,
+  `links`, `diagnostics`, `show_unchanged`, with a `Default` matching
+  the CLI defaults) instead of positional parameters — future knobs
+  stop being signature breaks. The JSON `Envelope` struct gained an
+  optional `diagnostics` field (additive — baselines from older
+  releases still load).
 - The unmatched-files stderr warning is bounded: 10 example paths per
   side plus a `... and N more` tail, replacing the previous unbounded
   one-directional file list.
@@ -95,14 +98,22 @@ render_delta(&report, threshold, format, links, show_unchanged, &mut out)?;
 
 // 0.4.0
 let result = merge(fns, cov, policy);
-let diag = result.diagnostics.as_ref(); // Option<&ScopeDiagnostics>
-if let Some(d) = diag {
+if let Some(d) = &result.diagnostics {
     // d.source_only supersedes unmapped_files: an exact `count` plus
     // up to 10 sorted `examples`; d.lcov_only is the new mirror side,
     // and analyzed/lcov/matched file counts come along.
 }
-render(&entries, threshold, format, links, diag, &mut out)?; // None = no block in JSON
-render_delta(&report, threshold, format, links, show_unchanged, diag, &mut out)?;
+let opts = RenderOptions {
+    threshold,
+    format,
+    links,
+    diagnostics: result.diagnostics.as_ref(), // None = no block in JSON
+    show_unchanged,
+};
+// Or start from the CLI defaults (threshold 30, human format):
+// RenderOptions { format: Format::Json, ..Default::default() }
+render(&entries, &opts, &mut out)?;
+render_delta(&report, &opts, &mut out)?;
 ```
 
 **JSON consumers.** Both envelopes may now carry an optional top-level
