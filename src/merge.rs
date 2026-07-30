@@ -229,9 +229,19 @@ pub fn merge(
             .filter(|f| !mapped_files.contains(*f))
             .cloned()
             .collect();
+        // Canonical forms of the consumed absolute keys. An unconsumed key
+        // aliasing a consumed one (symlinked checkout root, /tmp vs
+        // /private/tmp, `lcov -a`-merged runs) describes the same real file
+        // and must not be reported as a stray: only one alias survives
+        // `PathIndex::build`'s canonical-keyed map, but all of them matched.
+        let used_canonical: HashSet<PathBuf> = used_lcov_keys
+            .iter()
+            .filter(|k| k.is_absolute())
+            .filter_map(|k| k.canonicalize().ok())
+            .collect();
         let lcov_only: Vec<PathBuf> = coverage
             .keys()
-            .filter(|k| !used_lcov_keys.contains(*k))
+            .filter(|k| !used_lcov_keys.contains(*k) && !aliases_used(k, &used_canonical))
             .cloned()
             .collect();
         ScopeDiagnostics {
@@ -247,6 +257,21 @@ pub fn merge(
         entries,
         diagnostics,
     }
+}
+
+/// True when `key` is an absolute path whose canonical form matches a
+/// consumed key's canonical form — the same real file reached through a
+/// different spelling. Relative keys never alias: canonicalizing them would
+/// resolve against the CWD, which the path-matching invariant forbids.
+fn aliases_used(
+    key: &Path,
+    used_canonical: &HashSet<PathBuf>,
+) -> bool {
+    if !key.is_absolute() {
+        return false;
+    }
+    key.canonicalize()
+        .is_ok_and(|c| used_canonical.contains(&c))
 }
 
 /// A path lookup index that handles absolute-vs-relative mismatches between
@@ -532,6 +557,76 @@ mod tests {
             ],
             "lcov_only examples must be sorted"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_alias_of_a_consumed_key_is_not_lcov_only() {
+        // Two absolute SF records spelling the same real file (one through a
+        // symlink) collide on PathIndex's canonical key; only one raw key can
+        // be consumed. The unconsumed alias still described a matched file
+        // and must not be reported as a stray (no spurious scope warning on
+        // a perfectly matched scope).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("a.rs");
+        std::fs::write(&real, "pub fn f() {}\n").expect("write");
+        let link = dir.path().join("link.rs");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let mut cov_map = HashMap::new();
+        cov_map.insert(real.clone(), cov_with(&[(1, 1)]));
+        cov_map.insert(link, cov_with(&[(1, 1)]));
+
+        let complexity = vec![FunctionComplexity {
+            file: real,
+            name: "f".into(),
+            start_line: 1,
+            end_line: 1,
+            cyclomatic: 1.0,
+        }];
+
+        let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        let diag = result.diagnostics.expect("diagnostics present");
+        assert_eq!(diag.matched_files, 1);
+        assert_eq!(
+            diag.lcov_only.count, 0,
+            "an alias of a consumed key is not a stray"
+        );
+        assert_eq!(diag.source_only.count, 0);
+    }
+
+    #[test]
+    fn relative_key_is_never_treated_as_an_alias() {
+        // src/merge.rs exists relative to the crate root (the unit-test CWD).
+        // The absolute spelling is consumed via the fast path; the relative
+        // spelling must still be reported as lcov_only — resolving it against
+        // the CWD to discover the aliasing would violate the invariant that
+        // relative LCOV paths are never canonicalized (kills dropping the
+        // is_absolute guard in aliases_used).
+        let abs = PathBuf::from("src/merge.rs")
+            .canonicalize()
+            .expect("crate-root CWD");
+
+        let mut cov_map = HashMap::new();
+        cov_map.insert(abs.clone(), cov_with(&[(1, 1)]));
+        cov_map.insert(PathBuf::from("src/merge.rs"), cov_with(&[(1, 1)]));
+
+        let complexity = vec![FunctionComplexity {
+            file: abs,
+            name: "f".into(),
+            start_line: 1,
+            end_line: 1,
+            cyclomatic: 1.0,
+        }];
+
+        let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        let diag = result.diagnostics.expect("diagnostics present");
+        assert_eq!(diag.matched_files, 1);
+        assert_eq!(
+            diag.lcov_only.count, 1,
+            "the relative spelling stays a stray — CWD resolution is forbidden"
+        );
+        assert_eq!(diag.lcov_only.examples, vec![PathBuf::from("src/merge.rs")]);
     }
 
     #[test]
