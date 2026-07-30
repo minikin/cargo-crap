@@ -414,7 +414,16 @@ fn analyze_sources(
             member_scope: None,
         });
     }
+    analyze_workspace_members(packages, excludes)
+}
 
+/// The workspace side of [`analyze_sources`]: discover members, narrow to
+/// the `-p` selection (all members when empty, i.e. `--workspace`), and
+/// walk each selected member's root.
+fn analyze_workspace_members(
+    packages: &[String],
+    excludes: &[String],
+) -> Result<AnalyzedSources> {
     let (workspace_root, discovered) = workspace_members()?;
     let members = if packages.is_empty() {
         discovered.clone()
@@ -810,9 +819,16 @@ fn workspace_members() -> Result<(PathBuf, Vec<WorkspaceMember>)> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("`cargo metadata` failed: {stderr}");
     }
+    parse_workspace_metadata(&output.stdout)
+}
 
+/// Parse `cargo metadata` JSON into the workspace root (spec 25 — it
+/// anchors the members' workspace-relative dirs for [`MemberScope`]) and
+/// the member list. Split from [`workspace_members`] so the parsing is
+/// testable without spawning cargo.
+fn parse_workspace_metadata(stdout: &[u8]) -> Result<(PathBuf, Vec<WorkspaceMember>)> {
     let meta: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("parsing `cargo metadata` output")?;
+        serde_json::from_slice(stdout).context("parsing `cargo metadata` output")?;
 
     let workspace_root = meta["workspace_root"]
         .as_str()
@@ -936,11 +952,16 @@ fn require_baseline(
     Ok(())
 }
 
+/// True when the run never reads `--path`: `--workspace` and `-p/--package`
+/// both derive their roots from `cargo metadata` instead, so a stale or
+/// missing `--path` must not fail validation.
+fn path_is_ignored(cli: &Cli) -> bool {
+    cli.workspace || !cli.package.is_empty()
+}
+
 /// Validate argument combinations that clap cannot express as declarative rules.
 fn validate_args(cli: &Cli) -> Result<()> {
-    // `--workspace` and `-p/--package` both ignore `--path`, so its
-    // existence only matters for plain single-root runs.
-    if !cli.workspace && cli.package.is_empty() && !cli.path.exists() {
+    if !path_is_ignored(cli) && !cli.path.exists() {
         bail!("path does not exist: {}", cli.path.display());
     }
     let has_baseline = cli.baseline.is_some();
@@ -998,12 +1019,20 @@ fn load_filtered_baseline(
         members.iter().map(|m| m.dir.clone()).collect()
     };
     BaselineFilter::new(excludes, allow_patterns, roots)?.retain(&mut data);
-    // A `-p` run never walked the unselected members, so their baseline
-    // entries must vanish rather than flood `removed` (spec 25).
+    apply_member_scope(&mut data, member_scope);
+    Ok(Some(data))
+}
+
+/// Drop baseline entries owned by unselected members (spec 25): a `-p` run
+/// never walked them, so they must vanish rather than flood `removed`.
+/// No-op without a scope (single-root and `--workspace` runs).
+fn apply_member_scope(
+    data: &mut Vec<cargo_crap::merge::CrapEntry>,
+    member_scope: Option<&MemberScope>,
+) {
     if let Some(scope) = member_scope {
         data.retain(|e| !scope.is_out_of_scope(&e.file));
     }
-    Ok(Some(data))
 }
 
 /// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
@@ -1353,6 +1382,36 @@ mod tests {
             err.contains("available workspace members: alpha, beta"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn parse_workspace_metadata_extracts_root_and_members() {
+        let json = serde_json::json!({
+            "workspace_root": "/ws",
+            "packages": [
+                {"name": "alpha", "manifest_path": "/ws/crates/alpha/Cargo.toml"},
+            ]
+        });
+        let (root, members) = parse_workspace_metadata(json.to_string().as_bytes()).unwrap();
+        assert_eq!(root, PathBuf::from("/ws"));
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, "alpha");
+        assert_eq!(members[0].dir, PathBuf::from("/ws/crates/alpha"));
+    }
+
+    #[test]
+    fn parse_workspace_metadata_rejects_missing_root_and_empty_packages() {
+        let no_root = serde_json::json!({"packages": []});
+        let err = parse_workspace_metadata(no_root.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("workspace_root"), "got: {err}");
+
+        let empty = serde_json::json!({"workspace_root": "/ws", "packages": []});
+        let err = parse_workspace_metadata(empty.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no packages"), "got: {err}");
     }
 
     /// Scope with a root package plus two `crates/*` members, `alpha`

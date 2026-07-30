@@ -1,0 +1,10 @@
+# Floor for cargo-mutants' auto-set per-mutant test timeout (seconds).
+#
+# The auto-set floor (max(5x baseline, 20s)) is too tight for mutants that
+# invert a cheap guard into an expensive path — e.g. `delete !` on
+# analyze_sources' single-root guard routes every `--path` CLI test through
+# `cargo metadata` plus a full-repo walk, and on CI hardware the suite blows
+# 20s before the failing assertions land, turning a caught mutant into a
+# TIMEOUT (exit 3). 120s keeps such mutants cheap to kill while still
+# bounding genuine hangs.
+minimum_test_timeout = 120
