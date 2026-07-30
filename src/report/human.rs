@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn human_output_mentions_every_function() {
         let mut buf = Vec::new();
-        render(&sample(), 30.0, Format::Human, None, &mut buf).unwrap();
+        render(&sample(), 30.0, Format::Human, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("clean"));
         assert!(s.contains("crappy"));
@@ -324,7 +324,7 @@ mod tests {
             crate_name: None,
         }];
         let mut buf = Vec::new();
-        render(&all_clean, 30.0, Format::Human, None, &mut buf).unwrap();
+        render(&all_clean, 30.0, Format::Human, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains('✓'),
@@ -344,7 +344,7 @@ mod tests {
         // Note: ✓ appears in the row icon for the clean function, so we check
         // the summary count rather than the absence of ✓ in the full output.
         let mut buf = Vec::new();
-        render(&sample(), 30.0, Format::Human, None, &mut buf).unwrap();
+        render(&sample(), 30.0, Format::Human, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains('✗'), "output must show ✗ for crappy functions");
         assert!(s.contains("1/2"), "summary must report 1 out of 2 crappy");
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn empty_entries_prints_no_functions_found() {
         let mut buf = Vec::new();
-        render(&[], 30.0, Format::Human, None, &mut buf).unwrap();
+        render(&[], 30.0, Format::Human, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("No functions found."));
     }
@@ -371,7 +371,7 @@ mod tests {
             crate_name: None,
         }];
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::Human, None, &mut buf).unwrap();
+        render(&entries, 30.0, Format::Human, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains('—'), "None coverage must render as —");
     }
@@ -389,7 +389,7 @@ mod tests {
             crate_name: None,
         }];
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::Human, None, &mut buf).unwrap();
+        render(&entries, 30.0, Format::Human, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("44.4"), "Some(44.4) must render as 44.4");
     }
@@ -418,7 +418,7 @@ mod tests {
             },
         ];
         let mut buf = Vec::new();
-        render(&both_crappy, 30.0, Format::Human, None, &mut buf).unwrap();
+        render(&both_crappy, 30.0, Format::Human, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("2/2"), "both functions crappy, must report 2/2");
     }
@@ -438,7 +438,7 @@ mod tests {
             crate_name: None,
         }];
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::Human, None, &mut buf).unwrap();
+        render(&entries, 30.0, Format::Human, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains('▲'), "moderate score must show ▲");
         assert!(!s.contains('✗'), "moderate score must not show ✗");
@@ -448,7 +448,7 @@ mod tests {
     fn render_human_includes_per_crate_section_when_workspace() {
         let entries = vec![entry(Some("alpha"), "a1", 1.0)];
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::Human, None, &mut buf).unwrap();
+        render(&entries, 30.0, Format::Human, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("Per-crate summary:"),
@@ -461,7 +461,7 @@ mod tests {
     fn render_human_omits_per_crate_section_when_no_workspace_data() {
         let entries = vec![entry(None, "a1", 1.0)];
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::Human, None, &mut buf).unwrap();
+        render(&entries, 30.0, Format::Human, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             !s.contains("Per-crate summary"),

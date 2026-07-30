@@ -5,7 +5,7 @@
 //! input as well — `delta::load_baseline` deserializes the same struct.
 
 use crate::delta::{DeltaEntry, DeltaReport};
-use crate::merge::CrapEntry;
+use crate::merge::{CrapEntry, ScopeDiagnostics};
 use anyhow::Result;
 use std::io::Write;
 
@@ -46,16 +46,23 @@ pub struct Envelope {
     pub schema: Option<String>,
     pub version: String,
     pub entries: Vec<CrapEntry>,
+    /// Source/LCOV scope diagnostics (spec 24). Present only when the run
+    /// had an `--lcov` input; ignored when the envelope is read back as a
+    /// `--baseline` (the mismatch is a property of the producing run).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<ScopeDiagnostics>,
 }
 
 pub(crate) fn render_json(
     entries: &[CrapEntry],
+    diagnostics: Option<&ScopeDiagnostics>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let envelope = Envelope {
         schema: Some(REPORT_SCHEMA_URL.to_string()),
         version: SCHEMA_VERSION.to_string(),
         entries: entries.to_vec(),
+        diagnostics: diagnostics.cloned(),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
     out.write_all(b"\n")?;
@@ -64,6 +71,7 @@ pub(crate) fn render_json(
 
 pub(crate) fn render_delta_json(
     report: &DeltaReport,
+    diagnostics: Option<&ScopeDiagnostics>,
     out: &mut dyn Write,
 ) -> Result<()> {
     #[derive(serde::Serialize)]
@@ -73,6 +81,8 @@ pub(crate) fn render_delta_json(
         version: &'static str,
         entries: &'a [DeltaEntry],
         removed: &'a [crate::delta::RemovedEntry],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        diagnostics: Option<&'a ScopeDiagnostics>,
     }
     serde_json::to_writer_pretty(
         &mut *out,
@@ -81,6 +91,7 @@ pub(crate) fn render_delta_json(
             version: SCHEMA_VERSION,
             entries: &report.entries,
             removed: &report.removed,
+            diagnostics,
         },
     )?;
     out.write_all(b"\n")?;
@@ -97,7 +108,7 @@ mod tests {
     #[test]
     fn json_output_is_envelope_with_version_and_entries() {
         let mut buf = Vec::new();
-        render(&sample(), 30.0, Format::Json, None, &mut buf).unwrap();
+        render(&sample(), 30.0, Format::Json, None, None, &mut buf).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(parsed.is_object(), "JSON output must be an envelope object");
         assert_eq!(
@@ -116,6 +127,45 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_embedded_when_present_and_absent_otherwise() {
+        use crate::merge::StrayFiles;
+        let diag = ScopeDiagnostics {
+            analyzed_files: 4,
+            lcov_files: 3,
+            matched_files: 2,
+            source_only: StrayFiles {
+                count: 2,
+                examples: vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+            },
+            lcov_only: StrayFiles {
+                count: 1,
+                examples: vec![PathBuf::from("src/gone.rs")],
+            },
+        };
+
+        let mut buf = Vec::new();
+        render(&sample(), 30.0, Format::Json, None, Some(&diag), &mut buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(parsed["diagnostics"]["analyzed_files"], 4);
+        assert_eq!(parsed["diagnostics"]["lcov_files"], 3);
+        assert_eq!(parsed["diagnostics"]["matched_files"], 2);
+        assert_eq!(parsed["diagnostics"]["source_only"]["count"], 2);
+        assert_eq!(
+            parsed["diagnostics"]["source_only"]["examples"][0],
+            "src/a.rs"
+        );
+        assert_eq!(parsed["diagnostics"]["lcov_only"]["count"], 1);
+
+        let mut buf = Vec::new();
+        render(&sample(), 30.0, Format::Json, None, None, &mut buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert!(
+            parsed.get("diagnostics").is_none(),
+            "no diagnostics → no key in the envelope"
+        );
+    }
+
+    #[test]
     fn json_format_unaffected_by_links() {
         use super::super::SourceLinks;
         let entries = vec![CrapEntry {
@@ -129,7 +179,7 @@ mod tests {
         }];
         let links = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::Json, Some(&links), &mut buf).unwrap();
+        render(&entries, 30.0, Format::Json, Some(&links), None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             !s.contains("](https://"),

@@ -174,6 +174,13 @@ generate types directly from the schema.
 `--baseline` only reads files in this envelope shape; bare-array baselines
 from older runs must be regenerated.
 
+Both envelopes also carry an optional `diagnostics` object whenever `--lcov`
+was supplied: analyzed/LCOV/matched file counts plus bounded example lists
+of files present only on one side. When the analyzed tree and the coverage
+run describe different scopes (the classic cause of a delta full of
+unrelated 0%-coverage entries), a warning with the same numbers is printed
+to stderr before the report, and CI wrappers can gate on the JSON counts.
+
 ### SARIF output
 
 `--format sarif` emits a [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)

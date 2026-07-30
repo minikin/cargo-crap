@@ -3399,3 +3399,167 @@ fn unknown_flag_exits_with_code_2() {
     // clap's usage exit is part of the documented contract.
     cmd().arg("--frobnicate").assert().code(2);
 }
+
+// --- Scope-mismatch diagnostics (spec 24) ---
+
+#[test]
+fn matching_scopes_emit_no_warning_and_zero_stray_counts() {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(fixture_lcov())
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("warning:").not())
+        .get_output()
+        .clone();
+
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let diag = &envelope["diagnostics"];
+    assert_eq!(diag["source_only"]["count"], 0);
+    assert_eq!(diag["lcov_only"]["count"], 0);
+    assert_eq!(diag["analyzed_files"], diag["matched_files"]);
+}
+
+#[test]
+fn no_lcov_means_no_diagnostics_key() {
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert!(
+        envelope.get("diagnostics").is_none(),
+        "complexity-only run must not carry diagnostics"
+    );
+}
+
+#[test]
+fn lcov_only_files_warn_with_bounded_examples() {
+    // 13 phantom SF records + the real fixture coverage: stderr must show
+    // the lcov_only count, at most 10 examples, and a "... and 3 more"
+    // tail; the JSON examples array is capped at 10 with the exact count.
+    use std::fmt::Write as _;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut lcov = std::fs::read_to_string(fixture_lcov()).expect("read fixture lcov");
+    for i in 0..13 {
+        writeln!(
+            lcov,
+            "SF:/phantom/src/gone_{i:02}.rs\nDA:1,1\nend_of_record"
+        )
+        .expect("string write is infallible");
+    }
+    let lcov_path = dir.path().join("padded.lcov");
+    std::fs::write(&lcov_path, lcov).expect("write lcov");
+
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(&lcov_path)
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "13 LCOV file(s) matched no analyzed source file",
+        ))
+        .stderr(predicate::str::contains("... and 3 more"))
+        .get_output()
+        .clone();
+
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    let lcov_only = &envelope["diagnostics"]["lcov_only"];
+    assert_eq!(lcov_only["count"], 13);
+    assert_eq!(
+        lcov_only["examples"].as_array().map(Vec::len),
+        Some(10),
+        "JSON examples must be capped at 10"
+    );
+}
+
+#[test]
+fn zero_overlap_gets_the_no_overlap_wording() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let lcov_path = dir.path().join("elsewhere.lcov");
+    std::fs::write(
+        &lcov_path,
+        "SF:/nonexistent/path/src/lib.rs\nDA:1,1\nend_of_record\n",
+    )
+    .expect("write lcov");
+
+    cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(&lcov_path)
+        .assert()
+        .stderr(predicate::str::contains(
+            "no overlap between the analyzed sources",
+        ))
+        .stderr(predicate::str::contains("describe different scopes"));
+}
+
+#[test]
+fn below_half_overlap_escalates_the_warning() {
+    // 3 analyzed files, LCOV covers 1 → "only 1 of 3" wording.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).expect("mkdir src");
+    for name in ["a", "b", "c"] {
+        std::fs::write(
+            src.join(format!("{name}.rs")),
+            format!("pub fn {name}() {{}}\n"),
+        )
+        .expect("write source");
+    }
+    let lcov_path = dir.path().join("partial.lcov");
+    std::fs::write(&lcov_path, "SF:src/a.rs\nDA:1,1\nend_of_record\n").expect("write lcov");
+
+    cmd()
+        .arg("--path")
+        .arg(&src)
+        .arg("--lcov")
+        .arg(&lcov_path)
+        .assert()
+        .stderr(predicate::str::contains("only 1 of 3 analyzed files"))
+        .stderr(predicate::str::contains("likely describe different scopes"));
+}
+
+#[test]
+fn delta_json_carries_diagnostics_and_validates_against_schema() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = regression_baseline(&dir);
+    let mut lcov = std::fs::read_to_string(fixture_lcov()).expect("read fixture lcov");
+    lcov.push_str("SF:/phantom/src/gone.rs\nDA:1,1\nend_of_record\n");
+    let lcov_path = dir.path().join("padded.lcov");
+    std::fs::write(&lcov_path, lcov).expect("write lcov");
+
+    let output = cmd()
+        .arg("--path")
+        .arg(fixture_src())
+        .arg("--lcov")
+        .arg(&lcov_path)
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .get_output()
+        .clone();
+
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert_eq!(envelope["diagnostics"]["lcov_only"]["count"], 1);
+
+    let validator = compile_schema("schemas/delta-v2.json");
+    assert_valid(&validator, &envelope);
+}

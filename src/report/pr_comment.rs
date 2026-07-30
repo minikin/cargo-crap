@@ -1066,7 +1066,7 @@ mod tests {
             crate_name: None,
         }];
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::PrComment, None, &mut buf).unwrap();
+        render(&entries, 30.0, Format::PrComment, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.starts_with("<!-- cargo-crap-report -->"));
     }
@@ -1083,7 +1083,7 @@ mod tests {
             crate_name: None,
         }];
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::PrComment, None, &mut buf).unwrap();
+        render(&entries, 30.0, Format::PrComment, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("## ✅ No CRAP threshold violations"));
     }
@@ -1145,7 +1145,7 @@ mod tests {
             },
         ];
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::PrComment, None, &mut buf).unwrap();
+        render(&entries, 30.0, Format::PrComment, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
 
         // Only `above` must appear in the table; the headline still shows it.
@@ -1175,7 +1175,7 @@ mod tests {
             crate_name: None,
         }];
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::PrComment, None, &mut buf).unwrap();
+        render(&entries, 30.0, Format::PrComment, None, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("`very_crappy`"),
@@ -1478,7 +1478,15 @@ mod tests {
         }];
         let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into());
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::PrComment, Some(&links), &mut buf).unwrap();
+        render(
+            &entries,
+            30.0,
+            Format::PrComment,
+            Some(&links),
+            None,
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("[`very_crappy`](https://github.com/o/r/blob/abc/src/a.rs#L42)"),

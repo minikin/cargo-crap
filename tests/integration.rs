@@ -108,6 +108,7 @@ fn json_output_round_trips() {
         30.0,
         cargo_crap::report::Format::Json,
         None,
+        None,
         &mut buf,
     )
     .expect("render");

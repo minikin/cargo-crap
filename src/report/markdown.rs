@@ -264,7 +264,15 @@ mod tests {
         }];
         let links = SourceLinks::new("https://github.com/o/r".into(), "main".into());
         let mut buf = Vec::new();
-        render(&entries, 30.0, Format::Markdown, Some(&links), &mut buf).unwrap();
+        render(
+            &entries,
+            30.0,
+            Format::Markdown,
+            Some(&links),
+            None,
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("[`foo`](https://github.com/o/r/blob/main/src/a.rs#L7)"),

@@ -69,7 +69,7 @@
 //! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic).entries;
 //!
 //! // 4. Render the human-readable table to stdout.
-//! render(&entries, DEFAULT_THRESHOLD, Format::Human, None, &mut io::stdout())?;
+//! render(&entries, DEFAULT_THRESHOLD, Format::Human, None, None, &mut io::stdout())?;
 //!
 //! # Ok::<(), anyhow::Error>(())
 //! ```
@@ -133,7 +133,7 @@
 //!
 //! // Exit non-zero if any function regressed.
 //! if report.regression_count() > 0 {
-//!     render_delta(&report, 30.0, Format::Human, None, false, &mut io::stdout())?;
+//!     render_delta(&report, 30.0, Format::Human, None, false, None, &mut io::stdout())?;
 //!     std::process::exit(1);
 //! }
 //! # Ok::<(), anyhow::Error>(())

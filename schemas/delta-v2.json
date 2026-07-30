@@ -24,6 +24,10 @@
       "type": "array",
       "description": "Functions present in the baseline but absent from the current run.",
       "items": { "$ref": "#/definitions/RemovedEntry" }
+    },
+    "diagnostics": {
+      "$ref": "#/definitions/ScopeDiagnostics",
+      "description": "Optional source/LCOV scope diagnostics for the current run (spec 24); absent for complexity-only runs."
     }
   },
   "definitions": {
@@ -84,6 +88,56 @@
           "type": "number",
           "minimum": 1,
           "description": "CRAP score the function had in the baseline."
+        }
+      }
+    },
+    "ScopeDiagnostics": {
+      "type": "object",
+      "description": "Source/LCOV scope overlap (spec 24). Large stray sets mean the analyzed tree and the coverage run describe different scopes.",
+      "required": ["analyzed_files", "lcov_files", "matched_files", "source_only", "lcov_only"],
+      "additionalProperties": false,
+      "properties": {
+        "analyzed_files": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Distinct source files that produced at least one analyzed function."
+        },
+        "lcov_files": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Distinct SF records in the LCOV report."
+        },
+        "matched_files": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Files present on both sides after path matching."
+        },
+        "source_only": {
+          "$ref": "#/definitions/StrayFiles",
+          "description": "Analyzed files with no LCOV match."
+        },
+        "lcov_only": {
+          "$ref": "#/definitions/StrayFiles",
+          "description": "LCOV SF files matched by no analyzed file."
+        }
+      }
+    },
+    "StrayFiles": {
+      "type": "object",
+      "description": "One side's stray files: the true count plus at most 10 sorted example paths.",
+      "required": ["count", "examples"],
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "True number of stray files on this side (not capped)."
+        },
+        "examples": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "type": "string" },
+          "description": "Sorted example paths, capped at 10."
         }
       }
     }

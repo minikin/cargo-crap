@@ -11,7 +11,7 @@ use cargo_crap::{
     complexity,
     coverage::{self, FileCoverage},
     delta::{compute_delta, load_baseline},
-    merge::{MissingCoveragePolicy, SortOrder, merge, sort_entries},
+    merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
     report::{
         Format, SourceLinks, crappy_count, render, render_delta, render_delta_summary,
         render_summary, set_color_enabled,
@@ -621,23 +621,78 @@ fn workspace_members() -> Result<Vec<WorkspaceMember>> {
     Ok(members)
 }
 
-/// Emit a stderr warning listing source files with no LCOV match.
+/// Lead line of the scope-mismatch warning, picked by overlap severity
+/// (spec 24): zero matches and sub-50% overlap get an explicit
+/// different-scopes verdict; smaller mismatches keep the neutral wording.
+fn scope_warning_lead(diag: &ScopeDiagnostics) -> String {
+    if diag.matched_files == 0 {
+        format!(
+            "warning: no overlap between the analyzed sources and the LCOV report \
+             ({} analyzed, {} in LCOV, 0 matched) — the analyzed tree and the \
+             coverage run describe different scopes",
+            diag.analyzed_files, diag.lcov_files,
+        )
+    } else if diag.matched_files * 2 < diag.analyzed_files {
+        format!(
+            "warning: only {} of {} analyzed files match the LCOV report — the \
+             analyzed tree and the coverage run likely describe different scopes",
+            diag.matched_files, diag.analyzed_files,
+        )
+    } else {
+        format!(
+            "warning: source/LCOV scope mismatch ({} analyzed, {} in LCOV, {} matched) \
+             — verify your --lcov path or coverage tool configuration",
+            diag.analyzed_files, diag.lcov_files, diag.matched_files,
+        )
+    }
+}
+
+/// Detail lines for one stray side: `count` + `label` header, then the
+/// bounded examples, then a `... and N more` tail when the cap truncated.
+fn stray_lines(
+    label: &str,
+    strays: &cargo_crap::merge::StrayFiles,
+) -> Vec<String> {
+    if strays.count == 0 {
+        return Vec::new();
+    }
+    let mut lines = vec![format!("  {} {label}:", strays.count)];
+    lines.extend(
+        strays
+            .examples
+            .iter()
+            .map(|f| format!("    {}", f.display())),
+    );
+    if strays.count > strays.examples.len() {
+        lines.push(format!(
+            "    ... and {} more",
+            strays.count - strays.examples.len()
+        ));
+    }
+    lines
+}
+
+/// Emit the scope-mismatch warning (spec 24) to stderr, ahead of the report.
 ///
-/// `unmapped_files` is empty when no `--lcov` was given (merge guarantees this),
-/// so the call is always safe and the guard lives here rather than at the call site.
-fn warn_unmapped(files: &[std::path::PathBuf]) {
-    if files.is_empty() {
+/// Silent when there are no diagnostics (no `--lcov`) or when both stray
+/// sides are empty (scopes match exactly).
+fn warn_scope_mismatch(diag: Option<&ScopeDiagnostics>) {
+    let Some(d) = diag else { return };
+    if d.source_only.count == 0 && d.lcov_only.count == 0 {
         return;
     }
-    let n = files.len();
-    eprintln!(
-        "warning: {} source file{} had no matching entry in the LCOV report \
-         — verify your --lcov path or coverage tool configuration:",
-        n,
-        if n == 1 { "" } else { "s" },
-    );
-    for f in files {
-        eprintln!("  {}", f.display());
+    eprintln!("{}", scope_warning_lead(d));
+    let details = stray_lines(
+        "analyzed source file(s) had no matching entry in the LCOV report",
+        &d.source_only,
+    )
+    .into_iter()
+    .chain(stray_lines(
+        "LCOV file(s) matched no analyzed source file",
+        &d.lcov_only,
+    ));
+    for line in details {
+        eprintln!("{line}");
     }
 }
 
@@ -698,6 +753,8 @@ struct RenderOpts<'a> {
     /// Final entry ordering (spec 17). Applied to the `DeltaReport` so
     /// `removed` ordering is deterministic too.
     sort: SortOrder,
+    /// Source/LCOV scope diagnostics (spec 24); embedded in JSON envelopes.
+    diagnostics: Option<&'a ScopeDiagnostics>,
 }
 
 /// Load the `--baseline` file (if any) and filter it through the current
@@ -748,6 +805,7 @@ fn do_render(
                 opts.format,
                 opts.links,
                 opts.show_unchanged,
+                opts.diagnostics,
                 out,
             )?;
         }
@@ -757,7 +815,14 @@ fn do_render(
         if opts.summary {
             render_summary(entries, opts.threshold, out)?;
         } else {
-            render(entries, opts.threshold, opts.format, opts.links, out)?;
+            render(
+                entries,
+                opts.threshold,
+                opts.format,
+                opts.links,
+                opts.diagnostics,
+                out,
+            )?;
         }
         Ok((has_crappy, false))
     }
@@ -856,7 +921,8 @@ fn run() -> Result<ExitCode> {
 
     // --- Merge + filters ---
     let merge_result = merge(fns, coverage, missing_policy);
-    warn_unmapped(&merge_result.unmapped_files);
+    let diagnostics = merge_result.diagnostics;
+    warn_scope_mismatch(diagnostics.as_ref());
     let mut entries = merge_result.entries;
     assign_crate_names(&mut entries, &members);
     apply_filters(
@@ -895,6 +961,7 @@ fn run() -> Result<ExitCode> {
         links: links.as_ref(),
         show_unchanged,
         sort: sort_order,
+        diagnostics: diagnostics.as_ref(),
     };
     let (has_crappy, has_regression) =
         do_render(&entries, baseline_data.as_deref(), &opts, out_box.as_mut())?;
@@ -912,6 +979,104 @@ fn run() -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cargo_crap::merge::StrayFiles;
+
+    fn diag(
+        analyzed: usize,
+        lcov: usize,
+        matched: usize,
+    ) -> ScopeDiagnostics {
+        ScopeDiagnostics {
+            analyzed_files: analyzed,
+            lcov_files: lcov,
+            matched_files: matched,
+            source_only: StrayFiles {
+                count: analyzed - matched,
+                examples: Vec::new(),
+            },
+            lcov_only: StrayFiles {
+                count: lcov - matched,
+                examples: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn scope_warning_lead_zero_overlap_gets_strongest_wording() {
+        let lead = scope_warning_lead(&diag(3, 5, 0));
+        assert!(lead.contains("no overlap"), "got: {lead}");
+        assert!(lead.contains("3 analyzed"), "got: {lead}");
+        assert!(lead.contains("5 in LCOV"), "got: {lead}");
+    }
+
+    #[test]
+    fn scope_warning_lead_below_half_escalates() {
+        let lead = scope_warning_lead(&diag(40, 20, 15));
+        assert!(lead.contains("only 15 of 40"), "got: {lead}");
+        assert!(
+            lead.contains("likely describe different scopes"),
+            "got: {lead}"
+        );
+    }
+
+    #[test]
+    fn scope_warning_lead_exactly_half_stays_neutral() {
+        // 2*matched == analyzed is NOT "fewer than half" — the escalation
+        // must not fire (kills < → <= on the *2 comparison).
+        let lead = scope_warning_lead(&diag(4, 4, 2));
+        assert!(!lead.contains("only"), "got: {lead}");
+        assert!(
+            lead.contains("4 analyzed, 4 in LCOV, 2 matched"),
+            "got: {lead}"
+        );
+    }
+
+    #[test]
+    fn scope_warning_lead_majority_overlap_stays_neutral() {
+        let lead = scope_warning_lead(&diag(10, 12, 9));
+        assert!(
+            lead.contains("10 analyzed, 12 in LCOV, 9 matched"),
+            "got: {lead}"
+        );
+        assert!(lead.contains("verify your --lcov path"), "got: {lead}");
+    }
+
+    #[test]
+    fn stray_lines_empty_side_produces_nothing() {
+        let s = StrayFiles {
+            count: 0,
+            examples: Vec::new(),
+        };
+        assert!(stray_lines("label", &s).is_empty());
+    }
+
+    #[test]
+    fn stray_lines_no_tail_when_examples_cover_the_count() {
+        let s = StrayFiles {
+            count: 2,
+            examples: vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+        };
+        let lines = stray_lines("file(s) missing", &s);
+        assert_eq!(
+            lines,
+            vec![
+                "  2 file(s) missing:".to_string(),
+                "    src/a.rs".to_string(),
+                "    src/b.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn stray_lines_tail_counts_the_truncated_remainder() {
+        let s = StrayFiles {
+            count: 13,
+            examples: (0..10).map(|i| PathBuf::from(format!("f{i}.rs"))).collect(),
+        };
+        let lines = stray_lines("stray", &s);
+        assert_eq!(lines.len(), 12, "header + 10 examples + tail");
+        assert_eq!(lines.last().unwrap(), "    ... and 3 more");
+    }
 
     #[test]
     fn resolve_color_truth_table() {

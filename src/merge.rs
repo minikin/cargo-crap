@@ -109,15 +109,56 @@ pub enum MissingCoveragePolicy {
     Skip,
 }
 
-/// Output of [`merge`]: the scored entries plus any source files that had no
-/// matching entry in the LCOV report.
+/// Cap on example paths carried per stray side of [`ScopeDiagnostics`].
+/// `count` always holds the true total; only the examples are bounded, so
+/// a 1000-file mismatch stays readable on stderr and in JSON (spec 24).
+pub const SCOPE_EXAMPLE_CAP: usize = 10;
+
+/// One side's stray files: the true count plus at most
+/// [`SCOPE_EXAMPLE_CAP`] example paths, sorted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrayFiles {
+    pub count: usize,
+    pub examples: Vec<PathBuf>,
+}
+
+impl StrayFiles {
+    fn new(mut files: Vec<PathBuf>) -> Self {
+        files.sort();
+        let count = files.len();
+        files.truncate(SCOPE_EXAMPLE_CAP);
+        Self {
+            count,
+            examples: files,
+        }
+    }
+}
+
+/// Source/LCOV scope diagnostics (spec 24): how well the analyzed source
+/// tree and the LCOV report overlap. A large stray set on either side means
+/// the two inputs describe different scopes — the classic cause of a delta
+/// full of unrelated 0%-coverage entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScopeDiagnostics {
+    /// Distinct source files that produced at least one analyzed function.
+    pub analyzed_files: usize,
+    /// Distinct `SF` records in the LCOV report.
+    pub lcov_files: usize,
+    /// Files present on both sides after path matching.
+    pub matched_files: usize,
+    /// Analyzed files with no LCOV match.
+    pub source_only: StrayFiles,
+    /// LCOV `SF` files matched by no analyzed file.
+    pub lcov_only: StrayFiles,
+}
+
+/// Output of [`merge`]: the scored entries plus scope diagnostics.
 pub struct MergeResult {
     /// CRAP entries sorted by score descending.
     pub entries: Vec<CrapEntry>,
-    /// Source files for which no coverage data could be found in the LCOV
-    /// report. Only populated when a non-empty coverage map was provided.
-    /// Non-empty here is a strong signal of a path-matching problem.
-    pub unmapped_files: Vec<PathBuf>,
+    /// Source/LCOV overlap diagnostics. `Some` exactly when a non-empty
+    /// coverage map was provided; `None` for complexity-only runs.
+    pub diagnostics: Option<ScopeDiagnostics>,
 }
 
 /// Merge complexity and coverage data into a sorted [`MergeResult`]
@@ -137,17 +178,21 @@ pub fn merge(
 
     let mut mapped_files: HashSet<PathBuf> = HashSet::new();
     let mut seen_files: HashSet<PathBuf> = HashSet::new();
+    // Raw LCOV keys consumed by at least one lookup — the complement is the
+    // lcov_only side of the scope diagnostics.
+    let mut used_lcov_keys: HashSet<PathBuf> = HashSet::new();
 
     let mut entries: Vec<CrapEntry> = complexity
         .into_iter()
         .filter_map(|fc| {
-            let cov = index
-                .lookup(&fc.file)
-                .map(|cov_file| cov_file.coverage_in_span(fc.start_line, fc.end_line));
+            let hit = index.lookup(&fc.file);
+            let cov =
+                hit.map(|(_, cov_file)| cov_file.coverage_in_span(fc.start_line, fc.end_line));
 
             if has_coverage {
-                if cov.is_some() {
+                if let Some((raw_key, _)) = hit {
                     mapped_files.insert(fc.file.clone());
+                    used_lcov_keys.insert(raw_key.to_path_buf());
                 }
                 seen_files.insert(fc.file.clone());
             }
@@ -178,15 +223,29 @@ pub fn merge(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let mut unmapped_files: Vec<PathBuf> = seen_files
-        .into_iter()
-        .filter(|f| !mapped_files.contains(f))
-        .collect();
-    unmapped_files.sort();
+    let diagnostics = has_coverage.then(|| {
+        let source_only: Vec<PathBuf> = seen_files
+            .iter()
+            .filter(|f| !mapped_files.contains(*f))
+            .cloned()
+            .collect();
+        let lcov_only: Vec<PathBuf> = coverage
+            .keys()
+            .filter(|k| !used_lcov_keys.contains(*k))
+            .cloned()
+            .collect();
+        ScopeDiagnostics {
+            analyzed_files: seen_files.len(),
+            lcov_files: coverage.len(),
+            matched_files: mapped_files.len(),
+            source_only: StrayFiles::new(source_only),
+            lcov_only: StrayFiles::new(lcov_only),
+        }
+    });
 
     MergeResult {
         entries,
-        unmapped_files,
+        diagnostics,
     }
 }
 
@@ -194,8 +253,10 @@ pub fn merge(
 /// the complexity pass (which has whatever was on the command line) and the
 /// coverage file (which has whatever the coverage tool decided to write).
 struct PathIndex<'a> {
-    /// Canonicalized absolute paths → coverage data. Fast path.
-    by_absolute: HashMap<PathBuf, &'a FileCoverage>,
+    /// Canonicalized absolute paths → (raw LCOV key, coverage data). Fast
+    /// path. The raw key is carried so callers can track which LCOV records
+    /// were consumed (scope diagnostics, spec 24).
+    by_absolute: HashMap<PathBuf, (&'a Path, &'a FileCoverage)>,
     /// Original (possibly relative) paths kept for suffix matching. We keep
     /// them as `(full_path, coverage)` so we can suffix-compare cheaply.
     by_relative: Vec<(PathBuf, &'a FileCoverage)>,
@@ -220,7 +281,7 @@ impl<'a> PathIndex<'a> {
             if raw_path.is_absolute() {
                 match raw_path.canonicalize() {
                     Ok(abs) => {
-                        by_absolute.insert(abs, cov);
+                        by_absolute.insert(abs, (raw_path.as_path(), cov));
                     },
                     Err(_) => {
                         // Absolute but non-existent (e.g., coverage was
@@ -240,15 +301,17 @@ impl<'a> PathIndex<'a> {
         }
     }
 
+    /// Find coverage for `query`, returning the raw LCOV key it bound to
+    /// alongside the data (the key feeds scope diagnostics).
     fn lookup(
         &self,
         query: &Path,
-    ) -> Option<&'a FileCoverage> {
+    ) -> Option<(&Path, &'a FileCoverage)> {
         // Fast path: direct canonical match.
         if let Ok(abs) = query.canonicalize()
-            && let Some(cov) = self.by_absolute.get(&abs)
+            && let Some(&(raw, cov)) = self.by_absolute.get(&abs)
         {
-            return Some(*cov);
+            return Some((raw, cov));
         }
 
         // Slow path: suffix match. A coverage path `src/foo.rs` matches a
@@ -256,7 +319,7 @@ impl<'a> PathIndex<'a> {
         // component-wise suffix of the latter.
         for (rel, cov) in &self.by_relative {
             if path_has_suffix(query, rel) {
-                return Some(*cov);
+                return Some((rel.as_path(), cov));
             }
         }
 
@@ -428,10 +491,102 @@ mod tests {
         ];
 
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        let diag = result.diagnostics.expect("lcov provided → diagnostics");
+        assert_eq!(diag.analyzed_files, 2);
+        assert_eq!(diag.lcov_files, 1);
+        assert_eq!(diag.matched_files, 1);
+        assert_eq!(diag.source_only.count, 1);
         assert_eq!(
-            result.unmapped_files,
+            diag.source_only.examples,
             vec![PathBuf::from("/project/src/bar.rs")]
         );
+        assert_eq!(diag.lcov_only.count, 0, "the only LCOV entry was consumed");
+    }
+
+    #[test]
+    fn lcov_only_files_are_reported() {
+        // The mirror case: LCOV mentions files the analysis never saw.
+        let mut cov_map = HashMap::new();
+        cov_map.insert(PathBuf::from("src/foo.rs"), cov_with(&[(1, 1)]));
+        cov_map.insert(PathBuf::from("src/phantom_a.rs"), cov_with(&[(1, 1)]));
+        cov_map.insert(PathBuf::from("src/phantom_b.rs"), cov_with(&[(1, 1)]));
+
+        let complexity = vec![FunctionComplexity {
+            file: PathBuf::from("/project/src/foo.rs"),
+            name: "matched".into(),
+            start_line: 1,
+            end_line: 3,
+            cyclomatic: 1.0,
+        }];
+
+        let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        let diag = result.diagnostics.expect("diagnostics present");
+        assert_eq!(diag.lcov_files, 3);
+        assert_eq!(diag.matched_files, 1);
+        assert_eq!(diag.lcov_only.count, 2);
+        assert_eq!(
+            diag.lcov_only.examples,
+            vec![
+                PathBuf::from("src/phantom_a.rs"),
+                PathBuf::from("src/phantom_b.rs")
+            ],
+            "lcov_only examples must be sorted"
+        );
+    }
+
+    #[test]
+    fn shared_lcov_entry_consumed_by_multiple_files_is_not_lcov_only() {
+        // Two analyzed files suffix-matching the same relative LCOV key
+        // consume it once — it must not surface as lcov_only.
+        let mut cov_map = HashMap::new();
+        cov_map.insert(PathBuf::from("src/lib.rs"), cov_with(&[(1, 1)]));
+
+        let complexity = vec![
+            FunctionComplexity {
+                file: PathBuf::from("/a/src/lib.rs"),
+                name: "one".into(),
+                start_line: 1,
+                end_line: 3,
+                cyclomatic: 1.0,
+            },
+            FunctionComplexity {
+                file: PathBuf::from("/b/src/lib.rs"),
+                name: "two".into(),
+                start_line: 1,
+                end_line: 3,
+                cyclomatic: 1.0,
+            },
+        ];
+
+        let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        let diag = result.diagnostics.expect("diagnostics present");
+        assert_eq!(diag.matched_files, 2);
+        assert_eq!(diag.lcov_only.count, 0);
+    }
+
+    #[test]
+    fn stray_examples_are_capped_but_count_is_exact() {
+        let files: Vec<PathBuf> = (0..SCOPE_EXAMPLE_CAP + 3)
+            .map(|i| PathBuf::from(format!("src/f{i:02}.rs")))
+            .collect();
+        let strays = StrayFiles::new(files);
+        assert_eq!(strays.count, SCOPE_EXAMPLE_CAP + 3);
+        assert_eq!(strays.examples.len(), SCOPE_EXAMPLE_CAP);
+        assert_eq!(
+            strays.examples[0],
+            PathBuf::from("src/f00.rs"),
+            "examples are the sorted head, not an arbitrary subset"
+        );
+    }
+
+    #[test]
+    fn stray_examples_not_truncated_at_or_below_cap() {
+        let files: Vec<PathBuf> = (0..SCOPE_EXAMPLE_CAP)
+            .map(|i| PathBuf::from(format!("src/f{i:02}.rs")))
+            .collect();
+        let strays = StrayFiles::new(files);
+        assert_eq!(strays.count, SCOPE_EXAMPLE_CAP);
+        assert_eq!(strays.examples.len(), SCOPE_EXAMPLE_CAP);
     }
 
     // --- SortOrder / sort_entries (spec 17) --------------------------------
@@ -517,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn no_unmapped_files_when_no_lcov_provided() {
+    fn no_diagnostics_when_no_lcov_provided() {
         let complexity = vec![FunctionComplexity {
             file: PathBuf::from("src/foo.rs"),
             name: "foo".into(),
@@ -531,8 +686,8 @@ mod tests {
             MissingCoveragePolicy::Pessimistic,
         );
         assert!(
-            result.unmapped_files.is_empty(),
-            "no lcov → no unmapped warnings"
+            result.diagnostics.is_none(),
+            "no lcov → no scope diagnostics, no warnings"
         );
     }
 }

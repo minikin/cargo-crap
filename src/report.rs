@@ -18,7 +18,7 @@
 //! links, per-crate rollups) live in [`types`], [`links`], and [`per_crate`].
 
 use crate::delta::DeltaReport;
-use crate::merge::CrapEntry;
+use crate::merge::{CrapEntry, ScopeDiagnostics};
 use crate::score::Severity;
 use anyhow::{Result, bail};
 use std::io::Write;
@@ -83,15 +83,19 @@ pub enum Format {
 /// For `Format::Human` we emit a table and a summary line. The summary uses
 /// stderr-style coloring if the output is a TTY; `owo-colors` no-ops when
 /// it's not.
+///
+/// `diagnostics` (spec 24) is embedded in the JSON envelope only; every
+/// other format reports scope mismatches via the CLI's stderr warning.
 pub fn render(
     entries: &[CrapEntry],
     threshold: f64,
     format: Format,
     links: Option<&SourceLinks>,
+    diagnostics: Option<&ScopeDiagnostics>,
     out: &mut dyn Write,
 ) -> Result<()> {
     match format {
-        Format::Json => json::render_json(entries, out),
+        Format::Json => json::render_json(entries, diagnostics, out),
         Format::Human => human::render_human(entries, threshold, out),
         Format::GitHub => github::render_github(entries, threshold, out),
         Format::Markdown => markdown::render_markdown(entries, threshold, links, out),
@@ -116,10 +120,11 @@ pub fn render_delta(
     format: Format,
     links: Option<&SourceLinks>,
     show_unchanged: bool,
+    diagnostics: Option<&ScopeDiagnostics>,
     out: &mut dyn Write,
 ) -> Result<()> {
     match format {
-        Format::Json => json::render_delta_json(report, out),
+        Format::Json => json::render_delta_json(report, diagnostics, out),
         Format::Human => human::render_delta_human(report, threshold, show_unchanged, out),
         Format::GitHub => github::render_delta_github(report, threshold, out),
         Format::Markdown => {
