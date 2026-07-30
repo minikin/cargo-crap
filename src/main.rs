@@ -1125,8 +1125,42 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<ExitCode> {
+/// Everything [`run`] needs after parsing: the raw CLI/config plus the
+/// merged-and-validated values that [`validate_args`] (CLI-only) cannot
+/// check itself.
+struct LoadedArgs {
+    cli: Cli,
+    config: cargo_crap::config::Config,
+    epsilon: f64,
+    jobs: Option<usize>,
+}
+
+/// Parse argv, load config, and validate the merged epsilon/jobs values,
+/// returning exactly what was validated so [`run`] cannot consume a
+/// different (unchecked) merge of the same knobs.
+fn parse_and_validate() -> Result<LoadedArgs> {
     let (cli, config) = parse_and_load_config()?;
+    let epsilon = cli
+        .epsilon
+        .or(config.epsilon)
+        .unwrap_or(cargo_crap::delta::DEFAULT_EPSILON);
+    let jobs = cli.jobs.or(config.jobs);
+    validate_merged_values(epsilon, jobs)?;
+    Ok(LoadedArgs {
+        cli,
+        config,
+        epsilon,
+        jobs,
+    })
+}
+
+fn run() -> Result<ExitCode> {
+    let LoadedArgs {
+        cli,
+        config,
+        epsilon,
+        jobs,
+    } = parse_and_validate()?;
 
     // Merge: CLI values take precedence; config fills in what's missing.
     let threshold = cli
@@ -1144,13 +1178,6 @@ fn run() -> Result<ExitCode> {
     let fail_regression = resolve_bool(cli.fail_regression, config.fail_regression);
     let show_unchanged = resolve_bool(cli.show_unchanged, config.show_unchanged);
     let sort_order = cli.sort.map(Into::into).or(config.sort).unwrap_or_default();
-
-    let epsilon = cli
-        .epsilon
-        .or(config.epsilon)
-        .unwrap_or(cargo_crap::delta::DEFAULT_EPSILON);
-    let jobs = cli.jobs.or(config.jobs);
-    validate_merged_values(epsilon, jobs)?;
 
     let effective_exclude = effective_excludes(
         cli.no_default_excludes,
