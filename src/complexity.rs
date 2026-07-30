@@ -20,7 +20,10 @@ use syn::{
 /// coverage report later.
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionComplexity {
-    /// Absolute path to the source file.
+    /// Path to the source file, exactly as produced by the walk: absolute
+    /// when the analysis root was absolute, relative otherwise (e.g. under
+    /// the CLI default `--path .`). Never canonicalized here — path
+    /// resolution against coverage data is `merge`'s job.
     pub file: PathBuf,
     /// Function name. Closures are not extracted as separate entries.
     pub name: String,
@@ -243,6 +246,18 @@ impl<'ast> Visit<'ast> for CcCounter {
         // Do not recurse into closures: their decision points belong to their
         // own logical scope, not to the enclosing function's CC.
     }
+
+    fn visit_item(
+        &mut self,
+        _node: &'ast syn::Item,
+    ) {
+        // Do not recurse into items nested in the function body (a local
+        // `fn`, `impl`, `mod`, `trait`, `const`, …): like closures, they are
+        // their own logical scope. Without this stop, syn's default visitor
+        // walks `Stmt::Item` and a helper fn defined inside the body would
+        // silently inflate the enclosing function's CC while never being
+        // reported itself.
+    }
 }
 
 /// Build a `GlobSet` from a slice of glob pattern strings.
@@ -369,6 +384,82 @@ fn check(x: i32) -> &'static str {
             fns[0].cyclomatic >= 3.0,
             "expected CC ≥ 3 for two-branch if/else, got {}",
             fns[0].cyclomatic
+        );
+    }
+
+    #[test]
+    fn nested_fn_does_not_inflate_enclosing_cc() {
+        // A local helper fn is its own scope, exactly like a closure: its
+        // decision points must not leak into the outer function's count.
+        let f = write_temp(
+            r"
+fn outer() -> i32 {
+    fn inner(y: i32) -> i32 {
+        if y > 0 { y } else { -y }
+    }
+    inner(1)
+}
+",
+        );
+        let fns = analyze_file(f.path()).expect("analyze");
+        assert_eq!(fns.len(), 1, "nested fns are not extracted as entries");
+        assert_eq!(fns[0].name, "outer");
+        assert_eq!(
+            fns[0].cyclomatic, 1.0,
+            "inner's `if` must not count toward outer"
+        );
+    }
+
+    #[test]
+    fn nested_impl_and_mod_do_not_inflate_enclosing_cc() {
+        let f = write_temp(
+            r"
+fn outer() -> u32 {
+    struct S;
+    impl S {
+        fn branchy(x: u32) -> u32 {
+            match x {
+                0 => 1,
+                1 => 2,
+                _ => 3,
+            }
+        }
+    }
+    mod local {
+        pub fn helper(b: bool) -> bool {
+            b && !b || b
+        }
+    }
+    S::branchy(local::helper(true) as u32)
+}
+",
+        );
+        let fns = analyze_file(f.path()).expect("analyze");
+        assert_eq!(fns.len(), 1);
+        assert_eq!(
+            fns[0].cyclomatic, 1.0,
+            "match arms and boolean operators inside nested impl/mod items \
+             must not count toward outer"
+        );
+    }
+
+    #[test]
+    fn code_after_a_nested_item_still_counts() {
+        // The item stop must not swallow the rest of the enclosing body:
+        // decision points after the nested fn still belong to outer.
+        let f = write_temp(
+            r"
+fn outer(x: i32) -> i32 {
+    fn inner() -> i32 { 1 }
+    if x > 0 { inner() } else { 0 }
+}
+",
+        );
+        let fns = analyze_file(f.path()).expect("analyze");
+        assert_eq!(fns.len(), 1);
+        assert_eq!(
+            fns[0].cyclomatic, 2.0,
+            "outer's own `if` after the nested item must still count"
         );
     }
 
