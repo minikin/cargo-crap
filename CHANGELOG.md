@@ -95,10 +95,11 @@ render_delta(&report, threshold, format, links, show_unchanged, &mut out)?;
 
 // 0.4.0
 let result = merge(fns, cov, policy);
-if let Some(diag) = &result.diagnostics {
-    // diag.source_only supersedes unmapped_files: an exact `count`
-    // plus up to 10 sorted `examples`; diag.lcov_only is the new
-    // mirror side, and analyzed/lcov/matched file counts come along.
+let diag = result.diagnostics.as_ref(); // Option<&ScopeDiagnostics>
+if let Some(d) = diag {
+    // d.source_only supersedes unmapped_files: an exact `count` plus
+    // up to 10 sorted `examples`; d.lcov_only is the new mirror side,
+    // and analyzed/lcov/matched file counts come along.
 }
 render(&entries, threshold, format, links, diag, &mut out)?; // None = no block in JSON
 render_delta(&report, threshold, format, links, show_unchanged, diag, &mut out)?;
