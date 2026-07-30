@@ -74,6 +74,54 @@ matched on specific non-zero exit codes; see Changed.
   nested function twice. Each file is now analyzed exactly once and
   attributed to the deepest member that owns it.
 
+### Migrating from 0.3.x
+
+**CI scripts checking exit codes.** `if cargo crap ...` /
+`cargo crap ... || exit 1` need no change (zero vs non-zero is
+preserved). Wrappers that switch on the exact code should treat `1` as
+"gate verdict: the code got crappier" and `2` as "broken run — fix the
+invocation or environment"; before 0.4.0 both cases exited 1, so any
+`== 1` branch that assumed "could be either" can drop its file-size or
+log-parsing heuristics.
+
+**Library consumers.**
+
+```rust
+// 0.3.x
+let result = merge(fns, cov, policy);
+for file in &result.unmapped_files { /* ... */ }
+render(&entries, threshold, format, links, &mut out)?;
+render_delta(&report, threshold, format, links, show_unchanged, &mut out)?;
+
+// 0.4.0
+let result = merge(fns, cov, policy);
+if let Some(diag) = &result.diagnostics {
+    // diag.source_only supersedes unmapped_files: an exact `count`
+    // plus up to 10 sorted `examples`; diag.lcov_only is the new
+    // mirror side, and analyzed/lcov/matched file counts come along.
+}
+render(&entries, threshold, format, links, diag, &mut out)?; // None = no block in JSON
+render_delta(&report, threshold, format, links, show_unchanged, diag, &mut out)?;
+```
+
+**JSON consumers.** Both envelopes may now carry an optional top-level
+`diagnostics` object. Parsers that ignore unknown fields need nothing.
+Validators pinned to a *cached pre-0.4.0 copy* of the schemas will
+reject new documents (the schemas declare `additionalProperties:
+false`) — refresh `report-v1.json` / `delta-v2.json` from the repo; the
+published URLs are unchanged.
+
+**Nested-workspace baselines.** If your `--workspace` layout was
+affected by the double-analysis fix, a 0.3.x baseline contains
+duplicate entries that no longer exist; the first 0.4.0 run may report
+them as `removed` once. Regenerate the baseline with 0.4.0 and the
+noise disappears. `--fail-regression` is unaffected (removals never
+trip it).
+
+**stderr parsers.** The unmatched-files warning changed shape (counts,
+two directions, capped examples). Parse the JSON `diagnostics` object
+instead — stderr wording is not a stable interface.
+
 ## [0.3.1] - 2026-07-19
 
 A bug-fix release: three defects around `--output` files and `--baseline`
