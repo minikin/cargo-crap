@@ -1011,12 +1011,17 @@ struct RenderOpts<'a> {
     sort: SortOrder,
 }
 
-/// Whether `--summary` may replace the selected report format.
+/// Whether `--summary` replaces the selected report format's output.
 ///
 /// JSON and GitHub workflow commands are machine-readable formats, so their
-/// full output remains available even when `--summary` is present.
-fn summary_is_compatible(format: Format) -> bool {
-    !matches!(format, Format::Json | Format::GitHub)
+/// full output remains available even when `--summary` is present (the
+/// documented contract on the `--summary` flag). The `&&` lives here rather
+/// than at the call site so `do_render` keeps its baseline CC.
+fn effective_summary(
+    summary: bool,
+    format: Format,
+) -> bool {
+    summary && !matches!(format, Format::Json | Format::GitHub)
 }
 
 /// Load the `--baseline` file (if any) and filter it through the current
@@ -1067,7 +1072,7 @@ fn do_render(
     opts: &RenderOpts,
     out: &mut dyn Write,
 ) -> Result<(bool, bool)> {
-    let summary = opts.summary && summary_is_compatible(opts.render.format);
+    let summary = effective_summary(opts.summary, opts.render.format);
     if let Some(baseline_data) = baseline {
         let mut report = compute_delta(entries, baseline_data, opts.epsilon);
         report.sort(opts.sort);
