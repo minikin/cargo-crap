@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [0.4.0] - 2026-07-30
+## [0.4.0] - 2026-07-31
 
 This release implements specs 23–25 — the three feature requests filed
 against 0.3.1 (issues #53, #54, #55). It contains **breaking changes**
@@ -76,6 +76,26 @@ matched on specific non-zero exit codes; see Changed.
   parent's walk also collected the nested member's files, scoring every
   nested function twice. Each file is now analyzed exactly once and
   attributed to the deepest member that owns it.
+- **Items nested inside function bodies no longer inflate the enclosing
+  function's CC** (#63). A local `fn` / `impl` / `mod` defined inside a
+  function body is its own scope, exactly like a closure — but the CC
+  counter recursed into it, so a helper's branches silently counted
+  toward the enclosing function (which could push a simple function
+  over `--threshold`). Scores can *decrease* for functions using the
+  local-helper pattern; see the migration note below.
+- **Config-sourced values are validated like their CLI twins** (#64).
+  `.cargo-crap.toml` could smuggle in values the equivalent flag
+  rejects: a negative `epsilon` made the regression detector classify
+  every unchanged (and even improved) function as `Regressed` —
+  tripping `--fail-regression` on a no-op run — and `jobs = 0`
+  silently fell back to auto-sizing where `--jobs 0` errors. The
+  merged CLI-over-config values are now validated; invalid ones exit 2.
+- **`--summary` no longer replaces `json` and `github` output**
+  (#65, thanks @ShiroKSH). The `--summary` flag was documented as not
+  affecting the machine-readable formats, but it swapped both for the
+  plain-text summary — breaking JSON consumers and dropping GitHub
+  annotations. Both formats now emit their full output with
+  `--summary`, matching the long-documented contract.
 
 ### Migrating from 0.3.x
 
@@ -129,6 +149,18 @@ duplicate entries that no longer exist; the first 0.4.0 run may report
 them as `removed` once. Regenerate the baseline with 0.4.0 and the
 noise disappears. `--fail-regression` is unaffected (removals never
 trip it).
+
+**CC scores can drop for functions with local helpers.** The
+nested-item fix (#63) means a function containing a local `fn` /
+`impl` / `mod` no longer absorbs the helper's decision points. Against
+a 0.3.x baseline such functions show as one-time `Improved` entries —
+never regressions, so gates are unaffected. Regenerate committed
+baselines once to absorb the shift.
+
+**`--summary` + `json`/`github` scripts.** Anything that relied on the
+old (buggy) behavior of getting the *text summary* under
+`--format json --summary` now receives full JSON — drop `--format
+json` if the text summary is what you wanted.
 
 **stderr parsers.** The unmatched-files warning changed shape (counts,
 two directions, capped examples). Parse the JSON `diagnostics` object
