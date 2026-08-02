@@ -46,6 +46,22 @@ impl FileCoverage {
     /// composed entirely of declarative code (`fn sig() -> Type;`, unreachable
     /// macro expansions, etc.) genuinely has nothing to cover and should not
     /// be penalized.
+    /// Fold another file's line data into this one: union of lines,
+    /// per-line saturating sum of hit counts (spec 26).
+    ///
+    /// This is the aggregation `lcov -a` performs, so multi-leg reports
+    /// pre-merged by lcov and raw aliased reports converge to the same
+    /// data.
+    pub fn merge_from(
+        &mut self,
+        other: &FileCoverage,
+    ) {
+        for (&line, &hits) in &other.lines {
+            let slot = self.lines.entry(line).or_insert(0);
+            *slot = slot.saturating_add(hits);
+        }
+    }
+
     #[must_use]
     pub fn coverage_in_span(
         &self,
@@ -222,6 +238,26 @@ mod tests {
         FileCoverage {
             lines: lines.iter().copied().collect(),
         }
+    }
+
+    #[test]
+    fn merge_from_unions_lines_and_sums_hits() {
+        // Spec 26: same aggregation as `lcov -a` — union of line keys,
+        // per-line sum of hit counts (kills swapping + for * or dropping
+        // the overlapping-line case).
+        let mut a = fc_from(&[(1, 2), (3, 0)]);
+        let b = fc_from(&[(1, 3), (2, 1)]);
+        a.merge_from(&b);
+        assert_eq!(a.lines.get(&1), Some(&5), "overlapping line sums: 2 + 3");
+        assert_eq!(a.lines.get(&2), Some(&1), "other-side-only line is added");
+        assert_eq!(a.lines.get(&3), Some(&0), "self-only line is kept");
+    }
+
+    #[test]
+    fn merge_from_saturates_instead_of_overflowing() {
+        let mut a = fc_from(&[(1, u64::MAX)]);
+        a.merge_from(&fc_from(&[(1, 1)]));
+        assert_eq!(a.lines.get(&1), Some(&u64::MAX));
     }
 
     #[test]

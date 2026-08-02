@@ -4103,3 +4103,76 @@ fn cli_epsilon_overriding_bad_config_epsilon_is_accepted() {
         .assert()
         .success();
 }
+
+// --- Deterministic path resolution (spec 26) ---
+
+#[test]
+fn ambiguous_lcov_suffixes_bind_deterministically() {
+    // Spec 26: `src/lib.rs` and `vendor/dep/src/lib.rs` both suffix-match
+    // the vendored file; the longest suffix must win, and byte-identical
+    // inputs must produce byte-identical reports across runs.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root_src = dir.path().join("src");
+    let vendor_src = dir.path().join("vendor/dep/src");
+    std::fs::create_dir_all(&root_src).expect("mkdir src");
+    std::fs::create_dir_all(&vendor_src).expect("mkdir vendor");
+    std::fs::write(root_src.join("lib.rs"), "pub fn rooted() { let _ = 1; }\n")
+        .expect("write root lib");
+    std::fs::write(
+        vendor_src.join("lib.rs"),
+        "pub fn vendored() { let _ = 1; }\n",
+    )
+    .expect("write vendor lib");
+    let lcov = dir.path().join("cov.info");
+    std::fs::write(
+        &lcov,
+        "SF:src/lib.rs\nDA:1,5\nend_of_record\n\
+         SF:vendor/dep/src/lib.rs\nDA:1,0\nend_of_record\n",
+    )
+    .expect("write lcov");
+
+    let run = || {
+        cmd()
+            .arg("--path")
+            .arg(dir.path())
+            .arg("--lcov")
+            .arg(&lcov)
+            .arg("--format")
+            .arg("json")
+            .arg("--sort")
+            .arg("file")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+
+    let first = run();
+    let entries = parse_entries(std::str::from_utf8(&first).expect("utf8"));
+    let coverage_of = |name: &str| {
+        entries
+            .as_array()
+            .expect("entries array")
+            .iter()
+            .find(|e| e["function"] == name)
+            .unwrap_or_else(|| panic!("{name} present"))["coverage"]
+            .clone()
+    };
+    assert_eq!(
+        coverage_of("rooted"),
+        serde_json::json!(100.0),
+        "root file binds to the 2-component key (line 1: 5 hits)"
+    );
+    assert_eq!(
+        coverage_of("vendored"),
+        serde_json::json!(0.0),
+        "vendored file binds to the 4-component key (line 1: 0 hits), not whichever key hash order served first"
+    );
+
+    let second = run();
+    assert_eq!(
+        first, second,
+        "byte-identical inputs, byte-identical output"
+    );
+}

@@ -295,6 +295,13 @@ files when the two don't agree, and every function reports as 0% covered.
 - Relative coverage paths → suffix match on path components (not bytes —
   `/foo/bar.rs` must not match `oofoo/bar.rs`).
 
+Ambiguous inputs resolve deterministically (spec 26): when several
+relative keys suffix-match one file (`src/lib.rs` vs
+`vendor/dep/src/lib.rs`), the longest — most specific — suffix wins, and
+different spellings of the same file (symlinked roots, `lcov -a`-merged
+legs, `./`-prefixed variants) merge their line data instead of racing on
+map order.
+
 Relative paths are **never** canonicalized against the process's CWD, which
 would otherwise silently bind them to whatever file happened to exist
 under the tool's working directory. The regression test
