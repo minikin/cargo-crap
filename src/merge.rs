@@ -294,9 +294,19 @@ impl<'a> PathIndex<'a> {
         let mut by_suffix = HashMap::new();
 
         for (raw_path, cov) in coverage {
-            match fast_path_key(raw_path) {
-                Some(abs) => insert_or_merge(&mut by_absolute, abs, raw_path, cov),
-                None => insert_or_merge(&mut by_suffix, normalized(raw_path), raw_path, cov),
+            if let Some(abs) = fast_path_key(raw_path) {
+                insert_or_merge(&mut by_absolute, abs, raw_path, cov);
+            } else {
+                // A degenerate key with no meaningful components (`SF:.`,
+                // empty `SF:`) would become an empty needle, and an empty
+                // needle trivially suffix-matches every query. Keep it out
+                // of the index entirely so it surfaces as an lcov_only
+                // stray (spec 24) instead of silently binding unmatched
+                // files to garbage data.
+                let key = normalized(raw_path);
+                if !key.as_os_str().is_empty() {
+                    insert_or_merge(&mut by_suffix, key, raw_path, cov);
+                }
             }
         }
 
@@ -490,6 +500,32 @@ mod tests {
             100.0,
             "the shorter key still serves its own queries"
         );
+
+        // Through merge(): after both queries bind, neither ambiguous key
+        // is a stray (spec 26, "shorter key still serves its own queries").
+        let complexity = vec![
+            FunctionComplexity {
+                file: PathBuf::from("/repo/src/lib.rs"),
+                name: "rooted".into(),
+                start_line: 1,
+                end_line: 1,
+                cyclomatic: 1.0,
+            },
+            FunctionComplexity {
+                file: PathBuf::from("/repo/vendor/dep/src/lib.rs"),
+                name: "vendored".into(),
+                start_line: 1,
+                end_line: 1,
+                cyclomatic: 1.0,
+            },
+        ];
+        let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        let diag = result.diagnostics.expect("diagnostics present");
+        assert_eq!(diag.matched_files, 2);
+        assert_eq!(
+            diag.lcov_only.count, 0,
+            "both ambiguous keys were consumed by their own queries"
+        );
     }
 
     #[test]
@@ -527,6 +563,47 @@ mod tests {
         assert_eq!(
             diag.lcov_only.count, 0,
             "both spellings of a consumed entry are consumed"
+        );
+    }
+
+    #[test]
+    fn degenerate_lcov_keys_never_wildcard_match() {
+        // `SF:.` (and an empty SF) normalize to zero components; an empty
+        // needle would trivially suffix-match EVERY query, silently binding
+        // unmapped files to garbage data. Such keys must stay out of the
+        // index and surface as lcov_only strays instead (kills dropping the
+        // empty-key guard in PathIndex::build).
+        let mut cov_map = HashMap::new();
+        cov_map.insert(PathBuf::from("."), cov_with(&[(1, 1)]));
+        cov_map.insert(PathBuf::from(""), cov_with(&[(1, 1)]));
+        cov_map.insert(PathBuf::from("src/foo.rs"), cov_with(&[(1, 1)]));
+        let index = PathIndex::build(&cov_map);
+
+        assert!(
+            index.lookup(Path::new("/repo/src/bar.rs")).is_none(),
+            "a file with no real LCOV record must stay unmatched"
+        );
+        assert!(
+            index.lookup(Path::new("/repo/src/foo.rs")).is_some(),
+            "legitimate keys still match"
+        );
+
+        let complexity = vec![FunctionComplexity {
+            file: PathBuf::from("/repo/src/bar.rs"),
+            name: "unmapped".into(),
+            start_line: 1,
+            end_line: 1,
+            cyclomatic: 1.0,
+        }];
+        let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        let diag = result.diagnostics.expect("diagnostics present");
+        assert_eq!(
+            diag.source_only.count, 1,
+            "the unmapped file is reported, not silently bound"
+        );
+        assert_eq!(
+            diag.lcov_only.count, 3,
+            "degenerate keys and the unconsumed real key are strays"
         );
     }
 
@@ -723,9 +800,9 @@ mod tests {
     #[test]
     fn symlink_alias_of_a_consumed_key_is_not_lcov_only() {
         // Two absolute SF records spelling the same real file (one through a
-        // symlink) collide on PathIndex's canonical key; only one raw key can
-        // be consumed. The unconsumed alias still described a matched file
-        // and must not be reported as a stray (no spurious scope warning on
+        // symlink) merge into one fast-path entry at build time (spec 26);
+        // both raw spellings are recorded as consumed when a lookup binds.
+        // Neither may be reported as a stray (no spurious scope warning on
         // a perfectly matched scope).
         let dir = tempfile::tempdir().expect("tempdir");
         let real = dir.path().join("a.rs");

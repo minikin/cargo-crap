@@ -39,13 +39,6 @@ pub struct FileCoverage {
 }
 
 impl FileCoverage {
-    /// Percentage of executable lines in `[start..=end]` that were hit at
-    /// least once.
-    ///
-    /// Returns 100.0 if no executable lines fall inside the span. A function
-    /// composed entirely of declarative code (`fn sig() -> Type;`, unreachable
-    /// macro expansions, etc.) genuinely has nothing to cover and should not
-    /// be penalized.
     /// Fold another file's line data into this one: union of lines,
     /// per-line saturating sum of hit counts (spec 26).
     ///
@@ -62,6 +55,13 @@ impl FileCoverage {
         }
     }
 
+    /// Percentage of executable lines in `[start..=end]` that were hit at
+    /// least once.
+    ///
+    /// Returns 100.0 if no executable lines fall inside the span. A function
+    /// composed entirely of declarative code (`fn sig() -> Type;`, unreachable
+    /// macro expansions, etc.) genuinely has nothing to cover and should not
+    /// be penalized.
     #[must_use]
     pub fn coverage_in_span(
         &self,
