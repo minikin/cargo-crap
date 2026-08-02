@@ -1,8 +1,8 @@
 # cargo-crap
 
-[![v0.4.0](https://img.shields.io/badge/v0.4.0-2563eb?style=for-the-badge)](https://github.com/minikin/cargo-crap/releases/tag/v0.4.0)
+[![v0.4.1](https://img.shields.io/badge/v0.4.1-2563eb?style=for-the-badge)](https://github.com/minikin/cargo-crap/releases/tag/v0.4.1)
 [![crates.io](https://img.shields.io/badge/crates.io-E57300?style=for-the-badge&logo=rust&logoColor=white)](https://crates.io/crates/cargo-crap)
-[![docs.rs](https://img.shields.io/badge/docs.rs-000000?style=for-the-badge&logo=docsdotrs&logoColor=white)](https://docs.rs/cargo-crap/0.4.0/cargo_crap/)
+[![docs.rs](https://img.shields.io/badge/docs.rs-000000?style=for-the-badge&logo=docsdotrs&logoColor=white)](https://docs.rs/cargo-crap/0.4.1/cargo_crap/)
 [![CRAP](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fminikin%2Fcargo-crap%2Fbadges%2Fcrap-badge.json&style=for-the-badge)](https://github.com/minikin/cargo-crap/actions/workflows/ci.yml)
 
 > [!TIP]

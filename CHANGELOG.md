@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.4.1] - 2026-08-02
+
+### Added
+
+- `FileCoverage::merge_from` (library): fold another file's line data
+  into this one — union of lines, per-line saturating sum of hit
+  counts. This is the same aggregation `lcov -a` performs.
+
+### Fixed
+
+- **Deterministic path resolution for ambiguous LCOV inputs** (spec 26,
+  #62). The index joining complexity and coverage data resolved
+  ambiguity nondeterministically: when several relative LCOV keys
+  suffix-matched one file (`src/lib.rs` vs `vendor/dep/src/lib.rs`),
+  the winner was hash-order random per process, and two absolute keys
+  spelling the same real file (symlinked roots, `lcov -a`-merged legs)
+  collided last-write-wins — so byte-identical inputs could produce
+  different scores across runs. Now the longest (most specific) suffix
+  wins, and different spellings of one file merge their line data
+  instead of racing. Degenerate `SF` records (`SF:.`, empty `SF:`) no
+  longer risk wildcard-binding unmapped files; they surface as
+  `lcov_only` strays in the scope diagnostics.
+
+  Note: scores can change for genuinely ambiguous or aliased inputs —
+  those scores were coin-flips before, so any change there is the fix
+  landing. Standard single-run `cargo llvm-cov` output cannot trigger
+  either case and is unaffected.
+
 ## [0.4.0] - 2026-07-31
 
 This release implements specs 23–25 — the three feature requests filed
