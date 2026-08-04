@@ -6,7 +6,16 @@
 //! never have to branch on link presence beyond passing `Option<&SourceLinks>`
 //! through to [`linkify`].
 
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use std::path::{Path, PathBuf};
+
+/// RFC 3986 unreserved bytes plus `/`, which must remain a path separator.
+const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'/');
 
 /// Repo URL + commit ref used by `markdown` / `pr-comment` renderers to wrap
 /// Function and Location cells in clickable source links.
@@ -51,6 +60,7 @@ impl SourceLinks {
         line: usize,
     ) -> String {
         let path = file.to_string_lossy().replace('\\', "/");
+        let path = utf8_percent_encode(&path, PATH_ENCODE_SET);
         format!(
             "{}/blob/{}/{}#L{}",
             self.repo_url, self.commit_ref, path, line
@@ -132,5 +142,25 @@ mod tests {
             "URL must contain no backslashes, got: {url}"
         );
         assert_eq!(url, "https://github.com/o/r/blob/sha/src/foo.rs#L1");
+    }
+
+    #[test]
+    fn source_links_percent_encodes_reserved_path_bytes() {
+        let l = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
+        let url = l.url_for(Path::new("src/a file#50%?(draft).rs"), 7);
+        assert_eq!(
+            url,
+            "https://github.com/o/r/blob/sha/src/a%20file%2350%25%3F%28draft%29.rs#L7"
+        );
+    }
+
+    #[test]
+    fn source_links_percent_encodes_utf8_path_bytes() {
+        let l = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
+        let url = l.url_for(Path::new("src/数据.rs"), 9);
+        assert_eq!(
+            url,
+            "https://github.com/o/r/blob/sha/src/%E6%95%B0%E6%8D%AE.rs#L9"
+        );
     }
 }
