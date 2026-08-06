@@ -44,7 +44,7 @@ pub(crate) fn render_github(
         writeln!(
             out,
             "::warning file={file},line={line},title=CRAP ({crap:.1} > {threshold})::{msg}",
-            file = file.display(),
+            file = gha_escape_property(&file.display().to_string()),
             line = entry.line,
             crap = entry.crap,
             threshold = threshold,
@@ -101,7 +101,7 @@ pub(crate) fn render_delta_github(
         writeln!(
             out,
             "::warning file={file},line={line},title=CRAP ({crap:.1})::{msg}",
-            file = file.display(),
+            file = gha_escape_property(&file.display().to_string()),
             line = e.line,
             crap = e.crap,
             msg = gha_escape(&message),
@@ -116,6 +116,12 @@ pub(crate) fn gha_escape(s: &str) -> String {
     s.replace('%', "%25")
         .replace('\r', "%0D")
         .replace('\n', "%0A")
+}
+
+/// Percent-encode the additional delimiters that are special inside GitHub
+/// Actions workflow-command properties.
+fn gha_escape_property(s: &str) -> String {
+    gha_escape(s).replace(':', "%3A").replace(',', "%2C")
 }
 
 #[cfg(test)]
@@ -209,6 +215,34 @@ mod tests {
         assert_eq!(gha_escape("a\rb"), "a%0Db");
         assert_eq!(gha_escape("a\nb"), "a%0Ab");
         assert_eq!(gha_escape("plain"), "plain"); // no-op for clean strings
+    }
+
+    #[test]
+    fn gha_escape_property_encodes_property_delimiters() {
+        assert_eq!(gha_escape_property("a:b,c"), "a%3Ab%2Cc");
+        assert_eq!(gha_escape_property("plain/path.rs"), "plain/path.rs");
+    }
+
+    #[test]
+    fn github_format_escapes_file_command_properties() {
+        let entries = vec![CrapEntry {
+            file: PathBuf::from("src/a,b:c%\n::error::bad.rs"),
+            function: "bad".into(),
+            line: 42,
+            cyclomatic: 10.0,
+            coverage: Some(0.0),
+            crap: 110.0,
+            crate_name: None,
+        }];
+        let mut buf = Vec::new();
+        render(&entries, &opts(30.0, Format::GitHub), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+
+        assert_eq!(s.lines().count(), 1, "path must not inject another command");
+        assert!(
+            s.contains("file=src/a%2Cb%3Ac%25%0A%3A%3Aerror%3A%3Abad.rs,line=42"),
+            "file property must follow workflow-command escaping: {s:?}"
+        );
     }
 
     #[test]
