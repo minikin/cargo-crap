@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.4.3] - 2026-08-06
+
+### Fixed
+
+- **GitHub annotations escape file-path properties** (#73, thanks
+  @alectimison-maker). The `github` format escaped annotation messages
+  but interpolated file paths verbatim into the workflow-command
+  property list, so a path containing `%`, CR, LF, `:`, or `,` could
+  corrupt the `::warning` annotation — or, with an embedded newline,
+  inject an additional command-shaped line into the CI log. File
+  properties now follow GitHub's command-property encoding (the
+  `escapeProperty` rules from actions/toolkit); ordinary paths are
+  byte-for-byte unchanged.
+
+## [0.4.2] - 2026-08-04
+
+### Fixed
+
+- **Source links percent-encode repository paths** (#71, thanks
+  @alectimison-maker). `markdown` / `pr-comment` source links
+  interpolated the file path verbatim, so a path containing a space,
+  `#`, `?`, `%`, or parentheses truncated the GitHub URL or broke the
+  Markdown link destination. Paths are now percent-encoded byte-wise
+  after separator normalization; RFC 3986 unreserved characters and
+  `/` pass through untouched, so ordinary source links are
+  byte-identical to previous releases.
+
 ## [0.4.1] - 2026-08-02
 
 ### Added
