@@ -51,9 +51,7 @@ fn build_table(
         Cell::new("Function").add_attribute(Attribute::Bold),
         Cell::new("Location").add_attribute(Attribute::Bold),
     ];
-    if uncovered_hints {
-        header.push(Cell::new("Uncovered").add_attribute(Attribute::Bold));
-    }
+    header.extend(uncovered_hints.then(|| Cell::new("Uncovered").add_attribute(Attribute::Bold)));
     table.set_header(header);
     // Numeric columns read more naturally when right-aligned.
     table
@@ -86,9 +84,7 @@ fn build_row(
         Cell::new(&entry.function),
         Cell::new(format!("{}:{}", entry.file.display(), entry.line)),
     ];
-    if uncovered_hints {
-        row.push(Cell::new(uncovered_display(&entry.uncovered)));
-    }
+    row.extend(uncovered_hints.then(|| Cell::new(uncovered_display(&entry.uncovered))));
     row
 }
 
@@ -196,9 +192,7 @@ fn build_delta_table(
         Cell::new("Function").add_attribute(Attribute::Bold),
         Cell::new("Location").add_attribute(Attribute::Bold),
     ];
-    if uncovered_hints {
-        header.push(Cell::new("Uncovered").add_attribute(Attribute::Bold));
-    }
+    header.extend(uncovered_hints.then(|| Cell::new("Uncovered").add_attribute(Attribute::Bold)));
     table.set_header(header);
     table
         .column_mut(1)
@@ -253,9 +247,7 @@ fn build_delta_row(
         Cell::new(&e.function),
         Cell::new(location),
     ];
-    if uncovered_hints {
-        row.push(Cell::new(uncovered_display(&e.uncovered)));
-    }
+    row.extend(uncovered_hints.then(|| Cell::new(uncovered_display(&e.uncovered))));
     row
 }
 
