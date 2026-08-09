@@ -1,6 +1,6 @@
 # Spec 26 — Deterministic path resolution in the merge index
 
-**Status:** Proposed (issue #62)
+**Status:** Implemented (issue #62)
 **Effort:** Medium
 **Module:** `src/merge.rs` (plus a small merge helper on `FileCoverage` in `src/coverage.rs`)
 
