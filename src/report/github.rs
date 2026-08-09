@@ -173,6 +173,7 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
         render(&all_clean, &opts(30.0, Format::GitHub), &mut buf).unwrap();
@@ -194,6 +195,7 @@ mod tests {
             coverage: Some(0.0),
             crap: 110.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
         render(&entries, &opts(30.0, Format::GitHub), &mut buf).unwrap();
@@ -233,6 +235,7 @@ mod tests {
             coverage: Some(0.0),
             crap: 110.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
         render(&entries, &opts(30.0, Format::GitHub), &mut buf).unwrap();
@@ -263,6 +266,7 @@ mod tests {
                     coverage: Some(50.0),
                     crap: 35.0,
                     crate_name: None,
+                    uncovered: Vec::new(),
                 },
                 baseline_crap: Some(20.0),
                 delta: Some(15.0),
@@ -296,6 +300,7 @@ mod tests {
                     coverage: Some(80.0),
                     crap: 5.0,
                     crate_name: None,
+                    uncovered: Vec::new(),
                 },
                 baseline_crap: Some(5.0),
                 delta: Some(0.0),

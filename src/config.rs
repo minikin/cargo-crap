@@ -21,6 +21,9 @@
 //! sort = "file"
 //! # Show Unchanged rows in --baseline mode (human / markdown).
 //! show_unchanged = true
+//! # Append an Uncovered column (uncovered line ranges) to the human,
+//! # markdown, and pr-comment outputs.
+//! uncovered-hints = true
 //! ```
 
 use crate::merge::{MissingCoveragePolicy, SortOrder};
@@ -92,6 +95,13 @@ pub struct Config {
     /// Accepted as `show-unchanged` (house style) or `show_unchanged`.
     #[serde(alias = "show_unchanged")]
     pub show_unchanged: Option<bool>,
+
+    /// Append an `Uncovered` column (uncovered line ranges per function) to
+    /// the human, markdown, and pr-comment outputs. Defaults to false.
+    /// Config-only — there is deliberately no CLI flag. Accepted as
+    /// `uncovered-hints` (house style) or `uncovered_hints`.
+    #[serde(alias = "uncovered_hints")]
+    pub uncovered_hints: Option<bool>,
 }
 
 /// Walk up from `start` until `.cargo-crap.toml` is found.
@@ -238,6 +248,23 @@ allow = ["Foo::*"]
         let cfg = load(dir.path()).unwrap();
         assert!(cfg.sort.is_none());
         assert!(cfg.show_unchanged.is_none());
+        assert!(cfg.uncovered_hints.is_none());
+    }
+
+    #[test]
+    fn uncovered_hints_kebab_case_is_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "uncovered-hints = true\n");
+        let cfg = load(dir.path()).unwrap();
+        assert_eq!(cfg.uncovered_hints, Some(true));
+    }
+
+    #[test]
+    fn uncovered_hints_snake_case_alias_is_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "uncovered_hints = false\n");
+        let cfg = load(dir.path()).unwrap();
+        assert_eq!(cfg.uncovered_hints, Some(false));
     }
 
     #[test]

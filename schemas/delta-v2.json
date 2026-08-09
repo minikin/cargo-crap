@@ -58,6 +58,11 @@
         },
         "crap": { "type": "number", "minimum": 1 },
         "crate": { "type": "string" },
+        "uncovered": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/LineRange" },
+          "description": "Maximal runs of instrumented-but-never-hit lines inside the function's span, from the current run. Omitted when empty or when the file had no coverage data at all."
+        },
         "baseline_crap": {
           "type": ["number", "null"],
           "description": "CRAP score from the baseline run; null when this function is new."
@@ -74,6 +79,23 @@
         "previous_file": {
           "type": "string",
           "description": "Baseline location when this entry was paired across files. Omitted when the entry was matched on the exact (file, function) pair (the common case) or is genuinely new."
+        }
+      }
+    },
+    "LineRange": {
+      "type": "object",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed first uncovered line of the range (inclusive)."
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed last uncovered line of the range (inclusive)."
         }
       }
     },

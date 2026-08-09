@@ -5,6 +5,7 @@
 //! here.
 
 use super::{Format, RenderOptions};
+use crate::coverage::LineRange;
 use crate::merge::CrapEntry;
 use std::path::PathBuf;
 
@@ -35,6 +36,7 @@ pub(crate) fn sample() -> Vec<CrapEntry> {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            uncovered: Vec::new(),
         },
         CrapEntry {
             file: PathBuf::from("a.rs"),
@@ -44,6 +46,20 @@ pub(crate) fn sample() -> Vec<CrapEntry> {
             coverage: Some(0.0),
             crap: 110.0,
             crate_name: None,
+            uncovered: Vec::new(),
         },
     ]
+}
+
+/// [`sample`] with uncovered ranges on the crappy entry — for the
+/// uncovered-hints rendering tests in the human / markdown / `pr_comment`
+/// submodules. Kept separate so `sample()`-based byte-level expectations
+/// stay untouched.
+pub(crate) fn sample_with_uncovered() -> Vec<CrapEntry> {
+    let mut entries = sample();
+    entries[1].uncovered = vec![
+        LineRange { start: 12, end: 14 },
+        LineRange { start: 18, end: 18 },
+    ];
+    entries
 }

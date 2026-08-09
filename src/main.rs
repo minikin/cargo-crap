@@ -1191,6 +1191,9 @@ fn run() -> Result<ExitCode> {
     let fail_above = resolve_bool(cli.fail_above, config.fail_above);
     let fail_regression = resolve_bool(cli.fail_regression, config.fail_regression);
     let show_unchanged = resolve_bool(cli.show_unchanged, config.show_unchanged);
+    // Config-only knob: deliberately no CLI flag, so there is no CLI side
+    // to resolve against.
+    let uncovered_hints = config.uncovered_hints.unwrap_or(false);
     let sort_order = cli.sort.map(Into::into).or(config.sort).unwrap_or_default();
 
     let effective_exclude = effective_excludes(
@@ -1262,6 +1265,7 @@ fn run() -> Result<ExitCode> {
             links: links.as_ref(),
             diagnostics: diagnostics.as_ref(),
             show_unchanged,
+            uncovered_hints,
         },
         epsilon,
         summary: cli.summary,
@@ -1765,6 +1769,7 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }
     }
 

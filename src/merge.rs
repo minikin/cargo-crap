@@ -29,7 +29,7 @@
 //! instead of racing on map order.
 
 use crate::complexity::FunctionComplexity;
-use crate::coverage::FileCoverage;
+use crate::coverage::{FileCoverage, LineRange};
 use crate::score::crap;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -55,6 +55,13 @@ pub struct CrapEntry {
     /// pre-date this field.
     #[serde(rename = "crate", default, skip_serializing_if = "Option::is_none")]
     pub crate_name: Option<String>,
+    /// Maximal runs of instrumented-but-never-hit lines inside the
+    /// function's span. Empty when the file had no coverage data
+    /// at all — "unknown" must stay distinguishable from "known-uncovered"
+    /// — and for baselines that pre-date this field. Payload only: never
+    /// part of any delta pairing key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncovered: Vec<LineRange>,
 }
 
 /// Final ordering applied to the report entries (spec 17).
@@ -194,6 +201,13 @@ pub fn merge(
         .filter_map(|fc| {
             let hit = index.lookup(&fc.file);
             let cov = hit.map(|found| found.cov.coverage_in_span(fc.start_line, fc.end_line));
+            let uncovered = hit
+                .map(|found| {
+                    found
+                        .cov
+                        .uncovered_ranges_in_span(fc.start_line, fc.end_line)
+                })
+                .unwrap_or_default();
 
             if has_coverage {
                 if let Some(found) = hit {
@@ -219,6 +233,7 @@ pub fn merge(
                 coverage: cov,
                 crap: crap_score,
                 crate_name: None,
+                uncovered,
             })
         })
         .collect();
@@ -938,6 +953,7 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: None,
+            uncovered: Vec::new(),
         }
     }
 
@@ -1022,5 +1038,86 @@ mod tests {
             result.diagnostics.is_none(),
             "no lcov → no scope diagnostics, no warnings"
         );
+    }
+
+    #[test]
+    fn merge_populates_uncovered_ranges_from_matched_coverage() {
+        // Kills: dropping the `uncovered_ranges_in_span` call in merge()
+        // (field left Vec::new() for matched files).
+        let complexity = vec![FunctionComplexity {
+            file: PathBuf::from("/repo/src/foo.rs"),
+            name: "foo".into(),
+            start_line: 10,
+            end_line: 20,
+            cyclomatic: 3.0,
+        }];
+        let mut cov_map = HashMap::new();
+        cov_map.insert(
+            PathBuf::from("src/foo.rs"),
+            cov_with(&[(10, 3), (12, 0), (13, 0), (16, 2), (18, 0)]),
+        );
+        let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        assert_eq!(
+            result.entries[0].uncovered,
+            vec![
+                LineRange { start: 12, end: 13 },
+                LineRange { start: 18, end: 18 },
+            ],
+        );
+    }
+
+    #[test]
+    fn unmatched_file_has_no_uncovered_ranges_even_when_pessimistic() {
+        // "The report never mentioned this file" must stay distinguishable
+        // from "these exact lines were never hit": pessimistic scores the
+        // function 0% but must not fabricate uncovered ranges.
+        let complexity = vec![FunctionComplexity {
+            file: PathBuf::from("/repo/src/foo.rs"),
+            name: "foo".into(),
+            start_line: 10,
+            end_line: 20,
+            cyclomatic: 3.0,
+        }];
+        let mut cov_map = HashMap::new();
+        cov_map.insert(PathBuf::from("src/other.rs"), cov_with(&[(10, 0)]));
+        let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        assert_eq!(result.entries[0].coverage, None);
+        assert!(result.entries[0].uncovered.is_empty());
+    }
+
+    #[test]
+    fn uncovered_field_is_optional_on_deserialize_and_skipped_when_empty() {
+        // Baselines written before the field existed must load unchanged,
+        // and entries without ranges must serialize byte-identically to the
+        // pre-field output (kills dropping serde(default) / skip_serializing_if).
+        let old_json = r#"{"file":"a.rs","function":"f","line":1,"cyclomatic":1.0,"coverage":null,"crap":1.0}"#;
+        let e: CrapEntry = serde_json::from_str(old_json).expect("pre-field baseline loads");
+        assert!(e.uncovered.is_empty());
+        let ser = serde_json::to_string(&e).expect("serialize");
+        assert!(
+            !ser.contains("uncovered"),
+            "empty ranges must be omitted, got: {ser}"
+        );
+    }
+
+    #[test]
+    fn uncovered_field_round_trips_through_json() {
+        let e = CrapEntry {
+            file: PathBuf::from("a.rs"),
+            function: "f".into(),
+            line: 1,
+            cyclomatic: 2.0,
+            coverage: Some(50.0),
+            crap: 4.5,
+            crate_name: None,
+            uncovered: vec![LineRange { start: 3, end: 5 }],
+        };
+        let ser = serde_json::to_string(&e).expect("serialize");
+        assert!(
+            ser.contains(r#""uncovered":[{"start":3,"end":5}]"#),
+            "ranges serialize as start/end objects, got: {ser}"
+        );
+        let back: CrapEntry = serde_json::from_str(&ser).expect("deserialize");
+        assert_eq!(back.uncovered, e.uncovered);
     }
 }

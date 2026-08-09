@@ -65,6 +65,28 @@
         "crate": {
           "type": "string",
           "description": "Cargo workspace member name. Present only on `--workspace` runs."
+        },
+        "uncovered": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/LineRange" },
+          "description": "Maximal runs of instrumented-but-never-hit lines inside the function's span. Omitted when empty or when the file had no coverage data at all."
+        }
+      }
+    },
+    "LineRange": {
+      "type": "object",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed first uncovered line of the range (inclusive)."
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed last uncovered line of the range (inclusive)."
         }
       }
     },

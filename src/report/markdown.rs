@@ -5,7 +5,10 @@
 
 use super::links::{SourceLinks, linkify};
 use super::per_crate::write_per_crate_markdown;
-use super::types::{Grade, delta_display, format_location_with_prev, visible_delta_entries};
+use super::types::{
+    Grade, delta_display, format_location_with_prev, uncovered_cell_suffix, visible_delta_entries,
+    write_abs_gfm_header, write_delta_gfm_header,
+};
 use super::write_pr_comment_marker;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::merge::CrapEntry;
@@ -54,10 +57,10 @@ fn write_markdown_entries_table(
     entries: &[CrapEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
-    writeln!(out, "| | CRAP | CC | Cov % | Function | Location |")?;
-    writeln!(out, "|---|---:|---:|---:|---|---|")?;
+    write_abs_gfm_header(out, uncovered_hints)?;
     for entry in entries {
         let grade = Grade::of(entry.crap, threshold);
         let cov = match entry.coverage {
@@ -78,13 +81,14 @@ fn write_markdown_entries_table(
         );
         writeln!(
             out,
-            "| {} | {:.1} | {} | {} | {} | {} |",
+            "| {} | {:.1} | {} | {} | {} | {} |{}",
             grade.icon(),
             entry.crap,
             entry.cyclomatic as usize,
             cov,
             func,
             loc,
+            uncovered_cell_suffix(uncovered_hints, &entry.uncovered),
         )?;
     }
     Ok(())
@@ -96,6 +100,7 @@ pub(crate) fn render_markdown(
     entries: &[CrapEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     write_pr_comment_marker(out)?;
@@ -106,7 +111,7 @@ pub(crate) fn render_markdown(
     let crappy = super::crappy_count(entries, threshold);
     write_markdown_absolute_heading(crappy, threshold, out)?;
     write_per_crate_markdown(entries, threshold, out)?;
-    write_markdown_entries_table(entries, threshold, links, out)?;
+    write_markdown_entries_table(entries, threshold, links, uncovered_hints, out)?;
     write_markdown_absolute_summary(crappy, entries.len(), threshold, out)
 }
 
@@ -140,10 +145,10 @@ fn write_delta_entries_table(
     entries: &[&DeltaEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
-    writeln!(out, "| | CRAP | Δ | CC | Cov % | Function | Location |")?;
-    writeln!(out, "|---|---:|---:|---:|---:|---|---|")?;
+    write_delta_gfm_header(out, uncovered_hints)?;
     for de in entries.iter().copied() {
         let e = &de.current;
         let grade = Grade::of(e.crap, threshold);
@@ -153,7 +158,7 @@ fn write_delta_entries_table(
         let loc = linkify(loc_text, links, &e.file, e.line);
         writeln!(
             out,
-            "| {} | {:.1} | {} | {} | {} | {} | {} |",
+            "| {} | {:.1} | {} | {} | {} | {} | {} |{}",
             grade.icon(),
             e.crap,
             delta_display(de),
@@ -161,6 +166,7 @@ fn write_delta_entries_table(
             cov,
             func,
             loc,
+            uncovered_cell_suffix(uncovered_hints, &e.uncovered),
         )?;
     }
     Ok(())
@@ -209,6 +215,7 @@ pub(crate) fn render_delta_markdown(
     threshold: f64,
     links: Option<&SourceLinks>,
     show_unchanged: bool,
+    uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     write_pr_comment_marker(out)?;
@@ -220,7 +227,7 @@ pub(crate) fn render_delta_markdown(
     // Unchanged rows are hidden by default (spec 16); the stats line below
     // still counts every entry.
     let visible = visible_delta_entries(&report.entries, show_unchanged);
-    write_markdown_delta_body(report, &visible, threshold, links, out)?;
+    write_markdown_delta_body(report, &visible, threshold, links, uncovered_hints, out)?;
     write_markdown_delta_stats(report, out)
 }
 
@@ -231,13 +238,14 @@ fn write_markdown_delta_body(
     visible: &[&DeltaEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     if visible.is_empty() && report.removed.is_empty() {
         return writeln!(out, "_No changes since baseline._").map_err(Into::into);
     }
     if !visible.is_empty() {
-        write_delta_entries_table(visible, threshold, links, out)?;
+        write_delta_entries_table(visible, threshold, links, uncovered_hints, out)?;
     }
     if !report.removed.is_empty() {
         write_markdown_removed(&report.removed, out)?;
@@ -261,6 +269,7 @@ mod tests {
             coverage: Some(50.0),
             crap: 5.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let links = SourceLinks::new("https://github.com/o/r".into(), "main".into());
         let mut buf = Vec::new();
@@ -297,6 +306,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             baseline_crap: Some(1.0),
             delta: Some(0.0),
@@ -313,7 +323,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, false, &mut buf).unwrap();
+        render_delta_markdown(&report, 30.0, None, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("↔ 1 moved"),
@@ -342,6 +352,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             baseline_crap: Some(1.0),
             delta: Some(0.0),
@@ -357,6 +368,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             baseline_crap: Some(1.0),
             delta: Some(0.0),
@@ -368,7 +380,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, true, &mut buf).unwrap();
+        render_delta_markdown(&report, 30.0, None, true, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("`src/a.rs:7`"),
@@ -395,6 +407,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 50.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             baseline_crap: Some(40.0),
             delta: Some(10.0),
@@ -416,7 +429,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, false, &mut buf).unwrap();
+        render_delta_markdown(&report, 30.0, None, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("reg"), "regressed row must appear:\n{s}");
         assert!(!s.contains("u1"), "unchanged rows must be hidden:\n{s}");
@@ -437,7 +450,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, true, &mut buf).unwrap();
+        render_delta_markdown(&report, 30.0, None, true, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("reg") && s.contains("u1"),
@@ -453,7 +466,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, false, &mut buf).unwrap();
+        render_delta_markdown(&report, 30.0, None, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("_No changes since baseline._"),
@@ -463,5 +476,69 @@ mod tests {
             s.contains("· 1 unchanged"),
             "stats line still printed with full counts:\n{s}"
         );
+    }
+
+    // --- uncovered hints ----------------------------------------------------
+
+    #[test]
+    fn uncovered_hints_extend_header_and_rows() {
+        // Kills: dropping the header suffix, dropping the cell suffix.
+        let entries = super::super::test_support::sample_with_uncovered();
+        let mut buf = Vec::new();
+        render_markdown(&entries, 30.0, None, true, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("| | CRAP | CC | Cov % | Function | Location | Uncovered |"),
+            "extended header:\n{s}"
+        );
+        assert!(
+            s.contains("|---|---:|---:|---:|---|---|---|"),
+            "extended separator:\n{s}"
+        );
+        assert!(s.contains("| 12–14, 18 |"), "range cell:\n{s}");
+    }
+
+    #[test]
+    fn uncovered_hints_off_keep_tables_byte_identical() {
+        // Pins the spec clause "output is byte-identical to today's": the
+        // golden literal is the pre-hint markdown output, so ANY off-state
+        // drift fails — not just drift containing the string "Uncovered".
+        // Kills: inverting/hardcoding the uncovered_hints gate, stray
+        // suffix cells or separator arity in the off state.
+        let entries = super::super::test_support::sample_with_uncovered();
+        let mut buf = Vec::new();
+        render_markdown(&entries, 30.0, None, false, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            s,
+            "<!-- cargo-crap-report -->\n\
+             \n\
+             ## ⚠️ 1 function(s) exceed CRAP threshold 30\n\
+             \n\
+             | | CRAP | CC | Cov % | Function | Location |\n\
+             |---|---:|---:|---:|---|---|\n\
+             | ✓ | 1.0 | 1 | 100.0 | `clean` | `a.rs:1` |\n\
+             | ✗ | 110.0 | 10 | 0.0 | `crappy` | `a.rs:10` |\n\
+             \n\
+             ✗ 1/2 function(s) exceed CRAP threshold 30.\n"
+        );
+    }
+
+    #[test]
+    fn uncovered_hints_extend_the_delta_table() {
+        let mut de = delta_entry("f", DeltaStatus::Regressed);
+        de.current.uncovered = vec![crate::coverage::LineRange { start: 7, end: 9 }];
+        let report = DeltaReport {
+            entries: vec![de],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_markdown(&report, 30.0, None, false, true, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("| | CRAP | Δ | CC | Cov % | Function | Location | Uncovered |"),
+            "extended delta header:\n{s}"
+        );
+        assert!(s.contains("| 7–9 |"), "delta range cell:\n{s}");
     }
 }

@@ -478,6 +478,7 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: None,
+            uncovered: Vec::new(),
         }
     }
 
@@ -623,6 +624,7 @@ mod tests {
             coverage: Some(100.0),
             crap: 5.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let baseline = vec![CrapEntry {
             file: PathBuf::from("src/main.rs"), // different file, same function name
@@ -632,6 +634,7 @@ mod tests {
             coverage: Some(100.0),
             crap: 5.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
         assert_eq!(
@@ -662,6 +665,7 @@ mod tests {
             coverage: Some(100.0),
             crap: 10.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let baseline = vec![CrapEntry {
             file: PathBuf::from("tests/fixtures/src/lib.rs"),
@@ -671,6 +675,7 @@ mod tests {
             coverage: Some(100.0),
             crap: 5.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
         assert_eq!(
@@ -753,6 +758,7 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: None,
+            uncovered: Vec::new(),
         }
     }
 
@@ -953,6 +959,7 @@ mod tests {
                 coverage: Some(0.0),
                 crap: 30.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             CrapEntry {
                 file: PathBuf::from("src/lib.rs"),
@@ -962,6 +969,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
         ];
         let current = baseline.clone();
@@ -995,6 +1003,7 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: None,
+            uncovered: Vec::new(),
         }
     }
 

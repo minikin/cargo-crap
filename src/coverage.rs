@@ -22,8 +22,32 @@ use anyhow::{Context, Result};
 use lcov::reader::Error as LcovReadError;
 use lcov::record::ParseRecordError;
 use lcov::{Reader, Record};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+
+/// Inclusive range of instrumented-but-never-hit lines.
+///
+/// Endpoints are always lines that carry a `DA` record with 0 hits;
+/// non-instrumented lines may sit *inside* a range (they don't break a
+/// run) but never start or end one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineRange {
+    pub start: u32,
+    pub end: u32,
+}
+
+#[cfg(test)]
+impl LineRange {
+    /// Test-only shorthand shared by the coverage and report test modules:
+    /// build a range list from `(start, end)` pairs.
+    pub(crate) fn list(pairs: &[(u32, u32)]) -> Vec<Self> {
+        pairs
+            .iter()
+            .map(|&(start, end)| Self { start, end })
+            .collect()
+    }
+}
 
 /// Per-file coverage, indexed by line number.
 ///
@@ -76,6 +100,42 @@ impl FileCoverage {
         }
         let covered = executable.iter().filter(|(_, hits)| **hits > 0).count();
         (covered as f64 / executable.len() as f64) * 100.0
+    }
+
+    /// Maximal runs of uncovered instrumented lines in `[start..=end]`.
+    ///
+    /// Only a *covered* instrumented line (hits > 0) closes a run;
+    /// non-instrumented gaps are coalesced over. A range's `end` is the
+    /// last unhit line seen, so ranges never extend onto non-instrumented
+    /// padding. A span with no instrumented lines yields no ranges,
+    /// mirroring `coverage_in_span`'s "nothing to cover" stance.
+    #[must_use]
+    pub fn uncovered_ranges_in_span(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> Vec<LineRange> {
+        let start = start as u32;
+        let end = end as u32;
+        let mut ranges = Vec::new();
+        let mut open: Option<LineRange> = None;
+        for (&line, &hits) in self.lines.range(start..=end) {
+            if hits == 0 {
+                match open.as_mut() {
+                    Some(range) => range.end = line,
+                    None => {
+                        open = Some(LineRange {
+                            start: line,
+                            end: line,
+                        });
+                    },
+                }
+            } else if let Some(range) = open.take() {
+                ranges.push(range);
+            }
+        }
+        ranges.extend(open);
+        ranges
     }
 }
 
@@ -286,5 +346,61 @@ mod tests {
         let fc = fc_from(&[(5, 1), (10, 1), (15, 1)]);
         // Only line 10 is inside [10..=10].
         assert_eq!(fc.coverage_in_span(10, 10), 100.0);
+    }
+
+    #[test]
+    fn uncovered_runs_split_only_on_covered_lines() {
+        // Spec 28: line 16 (covered) splits the runs; 12–14 and 18 never merge.
+        let fc = fc_from(&[(10, 3), (12, 0), (13, 0), (14, 0), (16, 2), (18, 0)]);
+        assert_eq!(
+            fc.uncovered_ranges_in_span(10, 20),
+            LineRange::list(&[(12, 14), (18, 18)])
+        );
+    }
+
+    #[test]
+    fn non_instrumented_gaps_do_not_split_a_range() {
+        // Spec 28: lines 13–14 and 16–17 carry no DA records — the run
+        // coalesces across them into 12–18, and endpoints stay on
+        // instrumented lines.
+        let fc = fc_from(&[(12, 0), (15, 0), (18, 0)]);
+        assert_eq!(
+            fc.uncovered_ranges_in_span(10, 20),
+            LineRange::list(&[(12, 18)])
+        );
+    }
+
+    #[test]
+    fn fully_covered_span_has_no_ranges() {
+        let fc = fc_from(&[(10, 1), (11, 2)]);
+        assert!(fc.uncovered_ranges_in_span(10, 20).is_empty());
+    }
+
+    #[test]
+    fn span_with_no_instrumented_lines_has_no_ranges() {
+        // Mirrors `coverage_in_span`'s "nothing to cover" stance.
+        let fc = fc_from(&[(5, 0), (25, 0)]);
+        assert!(fc.uncovered_ranges_in_span(10, 20).is_empty());
+    }
+
+    #[test]
+    fn uncovered_lines_outside_the_span_never_contribute() {
+        // Spec 28: line 25 belongs to the next function.
+        let fc = fc_from(&[(12, 0), (25, 0)]);
+        assert_eq!(
+            fc.uncovered_ranges_in_span(10, 20),
+            LineRange::list(&[(12, 12)])
+        );
+    }
+
+    #[test]
+    fn trailing_open_run_is_closed_at_its_last_unhit_line() {
+        // A run still open at the end of the span must be emitted, ending
+        // on the last unhit line — not on the span bound.
+        let fc = fc_from(&[(10, 1), (11, 0), (12, 0)]);
+        assert_eq!(
+            fc.uncovered_ranges_in_span(10, 20),
+            LineRange::list(&[(11, 12)])
+        );
     }
 }

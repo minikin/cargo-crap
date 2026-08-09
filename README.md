@@ -161,7 +161,10 @@ generate types directly from the schema.
       "cyclomatic": 4.0,
       "coverage": 75.0,        // null when no coverage data was found
       "crap": 5.5625,
-      "crate": "my-crate"      // present only with --workspace
+      "crate": "my-crate",     // present only with --workspace
+      "uncovered": [           // uncovered line ranges; omitted when empty
+        { "start": 15, "end": 16 }
+      ]
     }
   ]
 }
@@ -242,6 +245,12 @@ epsilon = 0.01            # regression-detector tolerance
 jobs    = 4               # cap parallel analysis at 4 threads
 sort    = "file"          # entry ordering: crap (default) | file
 show_unchanged = false    # list Unchanged rows in --baseline mode
+# Append an Uncovered column (per-function uncovered line ranges, e.g.
+# `142–158, 171, 180–184 +2 more`) to the human, markdown, and pr-comment
+# outputs.
+# Config-only — there is deliberately no CLI flag. JSON always carries
+# the full ranges regardless of this key.
+uncovered-hints = false
 ```
 
 All keys are optional. Unknown keys are rejected to catch typos.

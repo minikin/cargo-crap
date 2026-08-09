@@ -1,6 +1,6 @@
 # Spec 28 — Uncovered-span hints
 
-**Status:** Proposed
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/coverage.rs` (range helper), `src/merge.rs` (populate), `src/config.rs` (new key), `src/report/` (render), `schemas/` (spec-03 schema update)
 
@@ -180,9 +180,9 @@ the `default-excludes` precedent. Default off.
 - A shared formatter in `report/types.rs` (`uncovered_display`):
   en-dash ranges, comma-separated, cap 3 + `+N more`, bare number for
   single-line ranges.
-- **human** — extra `Uncovered` column when the key is on; it joins the
-  spec-20 width-aware layout as the lowest-priority column (first to
-  drop when the terminal is narrow).
+- **human** — extra `Uncovered` column when the key is on. If/when
+  spec 20's width-aware layout lands, this column should join it as
+  lowest priority (first to drop when the terminal is narrow).
 - **markdown / pr-comment** — extra column in their tables, same
   formatter.
 - **json** — field always present when non-empty (see scenario); the

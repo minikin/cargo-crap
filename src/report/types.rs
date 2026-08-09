@@ -3,7 +3,9 @@
 //! - [`Grade`]: three-tier severity classification driving icon/colour.
 //! - [`coverage_bar`]: 10-block ASCII bar for human tables.
 //! - [`delta_display`]: Δ-column text for delta rows.
+//! - [`uncovered_display`]: capped Uncovered-column text.
 
+use crate::coverage::LineRange;
 use crate::delta::{DeltaEntry, DeltaStatus};
 use comfy_table::Color;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -105,6 +107,89 @@ pub(crate) fn coverage_bar(pct: Option<f64>) -> String {
             )
         },
     }
+}
+
+/// How many uncovered ranges the human/markdown/pr-comment cell shows
+/// before collapsing the tail into `+N more`. JSON is uncapped.
+const UNCOVERED_DISPLAY_CAP: usize = 3;
+
+/// Format an Uncovered cell: en-dash ranges, comma-separated, capped at
+/// [`UNCOVERED_DISPLAY_CAP`] with a `+N more` tail. Single-line ranges
+/// render as a bare number (`17`, not `17–17`); no ranges render as an
+/// empty cell.
+pub(crate) fn uncovered_display(ranges: &[LineRange]) -> String {
+    let shown: Vec<String> = ranges
+        .iter()
+        .take(UNCOVERED_DISPLAY_CAP)
+        .map(|r| {
+            if r.start == r.end {
+                r.start.to_string()
+            } else {
+                format!("{}–{}", r.start, r.end)
+            }
+        })
+        .collect();
+    let hidden = ranges.len().saturating_sub(UNCOVERED_DISPLAY_CAP);
+    if hidden > 0 {
+        format!("{} +{hidden} more", shown.join(", "))
+    } else {
+        shown.join(", ")
+    }
+}
+
+/// Header/separator cell suffixes for the optional Uncovered column in the
+/// GFM tables (markdown / pr-comment). Returns `("", "")` when hints are
+/// off so every header literal stays byte-identical to the pre-hint output.
+pub(crate) fn uncovered_header_suffix(uncovered_hints: bool) -> (&'static str, &'static str) {
+    if uncovered_hints {
+        (" Uncovered |", "---|")
+    } else {
+        ("", "")
+    }
+}
+
+/// Row-cell suffix matching [`uncovered_header_suffix`]: the formatted
+/// Uncovered cell when hints are on, empty otherwise.
+pub(crate) fn uncovered_cell_suffix(
+    uncovered_hints: bool,
+    ranges: &[LineRange],
+) -> String {
+    if uncovered_hints {
+        format!(" {} |", uncovered_display(ranges))
+    } else {
+        String::new()
+    }
+}
+
+/// Write the GFM header + separator shared by every absolute table
+/// (markdown entries table, pr-comment hot spots and absolute table).
+/// One writer so header and row arity can't drift between call sites.
+pub(crate) fn write_abs_gfm_header(
+    out: &mut dyn std::io::Write,
+    uncovered_hints: bool,
+) -> anyhow::Result<()> {
+    let (head_extra, sep_extra) = uncovered_header_suffix(uncovered_hints);
+    writeln!(
+        out,
+        "| | CRAP | CC | Cov % | Function | Location |{head_extra}"
+    )?;
+    writeln!(out, "|---|---:|---:|---:|---|---|{sep_extra}")?;
+    Ok(())
+}
+
+/// Write the GFM header + separator shared by every delta table (markdown
+/// delta table, pr-comment primary / improved / moved sections).
+pub(crate) fn write_delta_gfm_header(
+    out: &mut dyn std::io::Write,
+    uncovered_hints: bool,
+) -> anyhow::Result<()> {
+    let (head_extra, sep_extra) = uncovered_header_suffix(uncovered_hints);
+    writeln!(
+        out,
+        "| | CRAP | Δ | CC | Cov % | Function | Location |{head_extra}"
+    )?;
+    writeln!(out, "|---|---:|---:|---:|---:|---|---|{sep_extra}")?;
+    Ok(())
 }
 
 /// Select the delta entries that should appear as table rows (spec 16).
@@ -235,5 +320,69 @@ mod tests {
             "✗",
             "just above threshold → Crappy"
         );
+    }
+
+    // --- uncovered_display ---
+
+    #[test]
+    fn uncovered_display_uses_en_dash_ranges_and_bare_singles() {
+        // Kills: swapping start/end, rendering `17–17` instead of `17`,
+        // wrong separator.
+        assert_eq!(
+            uncovered_display(&LineRange::list(&[(12, 14), (17, 17)])),
+            "12–14, 17"
+        );
+    }
+
+    #[test]
+    fn uncovered_display_is_empty_for_no_ranges() {
+        assert_eq!(uncovered_display(&[]), "");
+    }
+
+    #[test]
+    fn uncovered_display_caps_at_three_and_counts_the_rest() {
+        // Kills: cap off-by-one, dropping the `+N more` tail, wrong count.
+        assert_eq!(
+            uncovered_display(&LineRange::list(&[
+                (1, 2),
+                (4, 5),
+                (7, 8),
+                (10, 11),
+                (13, 14)
+            ])),
+            "1–2, 4–5, 7–8 +2 more"
+        );
+    }
+
+    #[test]
+    fn uncovered_display_shows_exactly_three_without_tail() {
+        // Kills: `> cap` replaced with `>= cap` (a spurious `+0 more`).
+        assert_eq!(
+            uncovered_display(&LineRange::list(&[(1, 2), (4, 5), (7, 8)])),
+            "1–2, 4–5, 7–8"
+        );
+    }
+
+    // --- uncovered_header_suffix / uncovered_cell_suffix ---
+
+    #[test]
+    fn uncovered_suffixes_are_empty_when_hints_are_off() {
+        // Off must be byte-identical to the pre-hint output.
+        assert_eq!(uncovered_header_suffix(false), ("", ""));
+        assert_eq!(
+            uncovered_cell_suffix(false, &LineRange::list(&[(1, 2)])),
+            ""
+        );
+    }
+
+    #[test]
+    fn uncovered_suffixes_extend_the_gfm_row_when_hints_are_on() {
+        // Kills: mismatched header/separator arity, missing cell padding.
+        assert_eq!(uncovered_header_suffix(true), (" Uncovered |", "---|"));
+        assert_eq!(
+            uncovered_cell_suffix(true, &LineRange::list(&[(1, 2)])),
+            " 1–2 |"
+        );
+        assert_eq!(uncovered_cell_suffix(true, &[]), "  |");
     }
 }
