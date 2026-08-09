@@ -217,12 +217,25 @@ pub(crate) fn visible_delta_entries(
 /// (Moved = "no meaningful score change").
 pub(crate) fn delta_display(de: &DeltaEntry) -> String {
     match de.status {
-        DeltaStatus::Regressed | DeltaStatus::Improved => {
-            format!("{:+.1}", de.delta.unwrap())
-        },
+        DeltaStatus::Regressed | DeltaStatus::Improved => signed_delta(de.delta.unwrap()),
         DeltaStatus::New => "NEW".to_string(),
         DeltaStatus::Unchanged | DeltaStatus::Moved => String::new(),
     }
+}
+
+/// Format a signed Δ value, widening the precision until it stops rounding
+/// to zero. A Regressed/Improved delta is by definition non-zero (it beat
+/// the epsilon), so displaying it as `-0.0` misreports a real change; a
+/// score that moved by 0.04 shows as `-0.04`, not `-0.0`. Capped at three
+/// decimals — an epsilon small enough to defeat that is pathological.
+fn signed_delta(delta: f64) -> String {
+    for decimals in 1..=3 {
+        let s = format!("{delta:+.decimals$}");
+        if s.bytes().any(|b| b.is_ascii_digit() && b != b'0') {
+            return s;
+        }
+    }
+    format!("{delta:+.3}")
 }
 
 /// Render a Location-cell string, optionally appending `← <prev>` when the
@@ -320,6 +333,31 @@ mod tests {
             "✗",
             "just above threshold → Crappy"
         );
+    }
+
+    // --- signed_delta ---
+
+    #[test]
+    fn signed_delta_uses_one_decimal_for_ordinary_deltas() {
+        // Kills: starting the precision search above 1.
+        assert_eq!(signed_delta(1.0), "+1.0");
+        assert_eq!(signed_delta(-12.34), "-12.3");
+    }
+
+    #[test]
+    fn signed_delta_widens_until_the_value_is_visible() {
+        // A real change must never display as ±0.0 (kills: dropping the
+        // widening loop, off-by-one in the digit check).
+        assert_eq!(signed_delta(-0.04), "-0.04");
+        assert_eq!(signed_delta(0.04), "+0.04");
+        assert_eq!(signed_delta(-0.004), "-0.004");
+    }
+
+    #[test]
+    fn signed_delta_caps_at_three_decimals() {
+        // Sub-milli deltas fall back to the 3-decimal cap instead of
+        // widening forever.
+        assert_eq!(signed_delta(-0.0004), "-0.000");
     }
 
     // --- uncovered_display ---
