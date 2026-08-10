@@ -147,6 +147,10 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The baseline resolution below walks main's first-parent history
+          # from the merge preview's parent (spec 22); a shallow clone can't.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -201,42 +205,94 @@ jobs:
           path: crap-current.json
           retention-days: 90
 
-      # --- On PRs: download the baseline uploaded by the latest successful
-      # main run. `actions/download-artifact@v4` only sees the *current*
-      # workflow run by default, so we resolve main's latest successful
-      # run-id with the gh CLI and pass it explicitly.
-      # Scan recent successful main runs for the newest one that actually
-      # carries a non-expired crap-baseline artifact. Taking the latest
-      # successful run blindly breaks after docs-only merges: their runs
-      # succeed but skip self_score (changes gate), so they upload nothing.
+      # --- On PRs: download the baseline from the main commit the merge
+      # preview is actually based on (spec 22). `github.sha` on a
+      # pull_request event is the merge preview — its first parent IS the
+      # main tip included in this analysis, so that commit's run carries
+      # the only baseline that yields an exact comparison. "Latest
+      # successful main run" is wrong in the race window right after an
+      # unrelated merge: it reports that merge's changes as phantom
+      # NEW/regressed entries on this PR.
+      #
+      # Resolution ladder, walking main's first-parent history from the
+      # merge base (30 commits deep):
+      #   - run succeeded with a non-expired crap-baseline  → use it
+      #   - run succeeded without the artifact (docs-only merge; the
+      #     changes gate skipped self_score)                → keep walking
+      #   - run pending (merge base only): poll up to 5 min → then as above
+      #   - run failed / still pending after the wait       → mark the
+      #     comparison stale and keep walking
+      # A stale marker plus a baseline found below the merge base adds a
+      # visible note to the PR comment (see "Generate PR comment").
       - name: Resolve baseline run-id (PRs only)
         if: github.event_name == 'pull_request'
         id: baseline_run
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          RUN_ID=""
-          for id in $(gh run list \
-            --repo "${{ github.repository }}" \
-            --workflow ci.yml \
-            --branch main \
-            --status success \
-            --limit 20 \
-            --json databaseId \
-            --jq '.[].databaseId'); do
-            count=$(gh api "repos/${{ github.repository }}/actions/runs/$id/artifacts" \
+          fetch_run() {
+            gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&head_sha=$1" \
+              --jq '.workflow_runs[0] | "\(.id) \(.status) \(.conclusion)"' 2>/dev/null \
+              || echo "null null null"
+          }
+          has_baseline() {
+            count=$(gh api "repos/$REPO/actions/runs/$1/artifacts" \
               --jq '[.artifacts[] | select(.name == "crap-baseline" and .expired == false)] | length')
-            if [ "$count" -gt 0 ]; then
-              RUN_ID="$id"
-              break
+            [ "$count" -gt 0 ]
+          }
+
+          MAIN_SHA=$(git rev-parse HEAD^1)
+          echo "Merge preview is based on main commit $MAIN_SHA"
+          RUN_ID=""
+          STALE=""
+          BASELINE_SHA=""
+          BEHIND=0
+          for sha in $(git rev-list --first-parent -n 30 "$MAIN_SHA"); do
+            read -r id status conclusion <<< "$(fetch_run "$sha")"
+            if [ "$sha" = "$MAIN_SHA" ] && { [ "$id" = "null" ] || [ "$status" != "completed" ]; }; then
+              echo "Main run for the merge base is not finished — waiting up to 5 minutes."
+              for _ in 1 2 3 4 5 6 7 8 9 10; do
+                sleep 30
+                read -r id status conclusion <<< "$(fetch_run "$sha")"
+                if [ "$id" != "null" ] && [ "$status" = "completed" ]; then
+                  break
+                fi
+              done
             fi
+            if [ "$id" != "null" ] && [ "$conclusion" = "success" ]; then
+              if has_baseline "$id"; then
+                RUN_ID="$id"
+                BASELINE_SHA="$sha"
+                break
+              fi
+              # Successful run without an artifact: docs-only merge, no
+              # analyzed code changed — the ancestor baseline is
+              # score-identical, so this is not staleness.
+            else
+              # Failed, cancelled, or still pending after the wait: any
+              # baseline found further down describes older code.
+              STALE="1"
+            fi
+            BEHIND=$((BEHIND + 1))
           done
+
           if [ -z "$RUN_ID" ]; then
             echo "No main run with a usable crap-baseline artifact — baseline will be skipped."
+            STALE=""
+            BEHIND=0
+          elif [ "$BASELINE_SHA" = "$MAIN_SHA" ]; then
+            echo "Exact baseline: run $RUN_ID for merge base $MAIN_SHA"
+            STALE=""
           else
-            echo "Found main run with baseline: $RUN_ID"
+            echo "Baseline: run $RUN_ID for ancestor $BASELINE_SHA ($BEHIND commit(s) behind; stale=${STALE:-no})"
           fi
-          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          {
+            echo "run_id=$RUN_ID"
+            echo "stale=$STALE"
+            echo "baseline_short=$(git rev-parse --short "${BASELINE_SHA:-HEAD}")"
+            echo "behind=$BEHIND"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Download baseline (PRs only)
         if: github.event_name == 'pull_request' && steps.baseline_run.outputs.run_id != ''
@@ -280,6 +336,9 @@ jobs:
         env:
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           COMMIT_REF: ${{ github.event.pull_request.head.sha }}
+          BASELINE_STALE: ${{ steps.baseline_run.outputs.stale }}
+          BASELINE_SHORT: ${{ steps.baseline_run.outputs.baseline_short }}
+          BASELINE_BEHIND: ${{ steps.baseline_run.outputs.behind }}
         run: |
           if [ -f baseline/crap-current.json ] && grep -q '"version"' baseline/crap-current.json; then
             cargo run --release -- \
@@ -292,6 +351,13 @@ jobs:
               --repo-url "$REPO_URL" \
               --commit-ref "$COMMIT_REF" \
               --output crap-comment.md || true
+            if [ "$BASELINE_STALE" = "1" ]; then
+              {
+                printf '\n> ⚠ Baseline from `%s` (%s commit(s) behind the merge base) —\n' \
+                  "$BASELINE_SHORT" "$BASELINE_BEHIND"
+                printf '> re-run CI after main'"'"'s run completes for an exact comparison.\n'
+              } >> crap-comment.md
+            fi
           else
             cargo run --release -- \
               --lcov lcov.info \

@@ -1,6 +1,6 @@
 # Spec 22 — Merge-base-pinned CI baseline
 
-**Status:** Proposed
+**Status:** Implemented
 **Effort:** Small
 **Module:** `.github/workflows/ci.yml` (CI infrastructure only — no Rust code)
 
