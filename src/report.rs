@@ -106,11 +106,16 @@ pub struct RenderOptions<'a> {
     /// Show `Unchanged` rows in delta mode (spec 16). Only the human and
     /// markdown renderers consult it; ignored by [`render`].
     pub show_unchanged: bool,
+    /// Append an `Uncovered` column listing each entry's uncovered line
+    /// ranges. Config-only (`uncovered-hints` in
+    /// `.cargo-crap.toml`); consulted by the human, markdown, and
+    /// pr-comment renderers. JSON always carries the data regardless.
+    pub uncovered_hints: bool,
 }
 
 impl Default for RenderOptions<'_> {
     /// CLI defaults: threshold 30, human format, no links, no
-    /// diagnostics, changed-only delta rows.
+    /// diagnostics, changed-only delta rows, no uncovered hints.
     fn default() -> Self {
         Self {
             threshold: crate::score::DEFAULT_THRESHOLD,
@@ -118,6 +123,7 @@ impl Default for RenderOptions<'_> {
             links: None,
             diagnostics: None,
             show_unchanged: false,
+            uncovered_hints: false,
         }
     }
 }
@@ -135,10 +141,14 @@ pub fn render(
     let threshold = opts.threshold;
     match opts.format {
         Format::Json => json::render_json(entries, opts.diagnostics, out),
-        Format::Human => human::render_human(entries, threshold, out),
+        Format::Human => human::render_human(entries, threshold, opts.uncovered_hints, out),
         Format::GitHub => github::render_github(entries, threshold, out),
-        Format::Markdown => markdown::render_markdown(entries, threshold, opts.links, out),
-        Format::PrComment => pr_comment::render_pr_comment(entries, threshold, opts.links, out),
+        Format::Markdown => {
+            markdown::render_markdown(entries, threshold, opts.links, opts.uncovered_hints, out)
+        },
+        Format::PrComment => {
+            pr_comment::render_pr_comment(entries, threshold, opts.links, opts.uncovered_hints, out)
+        },
         Format::Sarif => sarif::render_sarif(entries, threshold, out),
         Format::Shields => shields::render_shields(entries, threshold, out),
     }
@@ -162,14 +172,29 @@ pub fn render_delta(
     let threshold = opts.threshold;
     match opts.format {
         Format::Json => json::render_delta_json(report, opts.diagnostics, out),
-        Format::Human => human::render_delta_human(report, threshold, opts.show_unchanged, out),
+        Format::Human => human::render_delta_human(
+            report,
+            threshold,
+            opts.show_unchanged,
+            opts.uncovered_hints,
+            out,
+        ),
         Format::GitHub => github::render_delta_github(report, threshold, out),
-        Format::Markdown => {
-            markdown::render_delta_markdown(report, threshold, opts.links, opts.show_unchanged, out)
-        },
-        Format::PrComment => {
-            pr_comment::render_delta_pr_comment(report, threshold, opts.links, out)
-        },
+        Format::Markdown => markdown::render_delta_markdown(
+            report,
+            threshold,
+            opts.links,
+            opts.show_unchanged,
+            opts.uncovered_hints,
+            out,
+        ),
+        Format::PrComment => pr_comment::render_delta_pr_comment(
+            report,
+            threshold,
+            opts.links,
+            opts.uncovered_hints,
+            out,
+        ),
         // SARIF describes the *current* set of findings, not deltas. The
         // upstream consumers (GitHub Code Scanning, VS Code) don't model
         // baseline diffs, so combining `--baseline` with `--format sarif`

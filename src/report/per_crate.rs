@@ -126,6 +126,7 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: crate_name.map(std::string::ToString::to_string),
+            uncovered: Vec::new(),
         }
     }
 

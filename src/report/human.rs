@@ -3,7 +3,8 @@
 
 use super::per_crate::write_per_crate_human;
 use super::types::{
-    Grade, apply_table_styling, coverage_bar, delta_display, styled, visible_delta_entries,
+    Grade, apply_table_styling, coverage_bar, delta_display, styled, uncovered_display,
+    visible_delta_entries,
 };
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::merge::CrapEntry;
@@ -15,6 +16,7 @@ use std::io::Write;
 pub(crate) fn render_human(
     entries: &[CrapEntry],
     threshold: f64,
+    uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     if entries.is_empty() {
@@ -22,7 +24,7 @@ pub(crate) fn render_human(
         return Ok(());
     }
     write_per_crate_human(entries, threshold, out)?;
-    let table = build_table(entries, threshold);
+    let table = build_table(entries, threshold, uncovered_hints);
     writeln!(out, "{table}")?;
     write_summary(
         out,
@@ -36,18 +38,21 @@ pub(crate) fn render_human(
 fn build_table(
     entries: &[CrapEntry],
     threshold: f64,
+    uncovered_hints: bool,
 ) -> Table {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
     apply_table_styling(&mut table);
-    table.set_header(vec![
+    let mut header = vec![
         Cell::new("").add_attribute(Attribute::Bold),
         Cell::new("CRAP").add_attribute(Attribute::Bold),
         Cell::new("CC").add_attribute(Attribute::Bold),
         Cell::new("Coverage").add_attribute(Attribute::Bold),
         Cell::new("Function").add_attribute(Attribute::Bold),
         Cell::new("Location").add_attribute(Attribute::Bold),
-    ]);
+    ];
+    header.extend(uncovered_hints.then(|| Cell::new("Uncovered").add_attribute(Attribute::Bold)));
+    table.set_header(header);
     // Numeric columns read more naturally when right-aligned.
     table
         .column_mut(1)
@@ -58,7 +63,7 @@ fn build_table(
         .unwrap()
         .set_cell_alignment(CellAlignment::Right);
     for entry in entries {
-        table.add_row(build_row(entry, threshold));
+        table.add_row(build_row(entry, threshold, uncovered_hints));
     }
     table
 }
@@ -67,17 +72,20 @@ fn build_table(
 fn build_row(
     entry: &CrapEntry,
     threshold: f64,
+    uncovered_hints: bool,
 ) -> Vec<Cell> {
     let grade = Grade::of(entry.crap, threshold);
     let color = grade.color();
-    vec![
+    let mut row = vec![
         Cell::new(grade.icon()).fg(color),
         Cell::new(format!("{:.1}", entry.crap)).fg(color),
         Cell::new(entry.cyclomatic as usize),
         Cell::new(coverage_bar(entry.coverage)),
         Cell::new(&entry.function),
         Cell::new(format!("{}:{}", entry.file.display(), entry.line)),
-    ]
+    ];
+    row.extend(uncovered_hints.then(|| Cell::new(uncovered_display(&entry.uncovered))));
+    row
 }
 
 /// Write the one-line summary (✓ or ✗) after the table.
@@ -112,6 +120,7 @@ pub(crate) fn render_delta_human(
     report: &DeltaReport,
     threshold: f64,
     show_unchanged: bool,
+    uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     if report.entries.is_empty() && report.removed.is_empty() {
@@ -122,7 +131,7 @@ pub(crate) fn render_delta_human(
     // Unchanged rows are hidden by default (spec 16); the summary line below
     // still counts every entry.
     let visible = visible_delta_entries(&report.entries, show_unchanged);
-    write_delta_body(report, &visible, threshold, out)?;
+    write_delta_body(report, &visible, threshold, uncovered_hints, out)?;
     write_delta_summary(out, report)
 }
 
@@ -132,13 +141,14 @@ fn write_delta_body(
     report: &DeltaReport,
     visible: &[&DeltaEntry],
     threshold: f64,
+    uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     if visible.is_empty() && report.removed.is_empty() {
         return writeln!(out, "No changes since baseline.").map_err(Into::into);
     }
     if !visible.is_empty() {
-        let table = build_delta_table(visible, threshold);
+        let table = build_delta_table(visible, threshold, uncovered_hints);
         writeln!(out, "{table}")?;
     }
     if !report.removed.is_empty() {
@@ -168,11 +178,12 @@ fn write_removed_section(
 fn build_delta_table(
     entries: &[&DeltaEntry],
     threshold: f64,
+    uncovered_hints: bool,
 ) -> Table {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
     apply_table_styling(&mut table);
-    table.set_header(vec![
+    let mut header = vec![
         Cell::new("").add_attribute(Attribute::Bold),
         Cell::new("CRAP").add_attribute(Attribute::Bold),
         Cell::new("Δ").add_attribute(Attribute::Bold),
@@ -180,7 +191,9 @@ fn build_delta_table(
         Cell::new("Coverage").add_attribute(Attribute::Bold),
         Cell::new("Function").add_attribute(Attribute::Bold),
         Cell::new("Location").add_attribute(Attribute::Bold),
-    ]);
+    ];
+    header.extend(uncovered_hints.then(|| Cell::new("Uncovered").add_attribute(Attribute::Bold)));
+    table.set_header(header);
     table
         .column_mut(1)
         .unwrap()
@@ -194,7 +207,7 @@ fn build_delta_table(
         .unwrap()
         .set_cell_alignment(CellAlignment::Right);
     for de in entries.iter().copied() {
-        table.add_row(build_delta_row(de, threshold));
+        table.add_row(build_delta_row(de, threshold, uncovered_hints));
     }
     table
 }
@@ -202,6 +215,7 @@ fn build_delta_table(
 fn build_delta_row(
     de: &DeltaEntry,
     threshold: f64,
+    uncovered_hints: bool,
 ) -> Vec<Cell> {
     let e = &de.current;
     let grade = Grade::of(e.crap, threshold);
@@ -224,7 +238,7 @@ fn build_delta_row(
         .unwrap_or_default();
     let location = format!("{}:{}{prev_suffix}", e.file.display(), e.line);
 
-    vec![
+    let mut row = vec![
         Cell::new(grade.icon()).fg(color),
         Cell::new(format!("{:.1}", e.crap)).fg(color),
         delta_cell,
@@ -232,7 +246,9 @@ fn build_delta_row(
         Cell::new(coverage_bar(e.coverage)),
         Cell::new(&e.function),
         Cell::new(location),
-    ]
+    ];
+    row.extend(uncovered_hints.then(|| Cell::new(uncovered_display(&e.uncovered))));
+    row
 }
 
 fn write_delta_summary(
@@ -299,6 +315,7 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: crate_name.map(std::string::ToString::to_string),
+            uncovered: Vec::new(),
         }
     }
 
@@ -322,6 +339,7 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
         render(&all_clean, &opts(30.0, Format::Human), &mut buf).unwrap();
@@ -369,6 +387,7 @@ mod tests {
             coverage: None,
             crap: 1.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
         render(&entries, &opts(30.0, Format::Human), &mut buf).unwrap();
@@ -387,6 +406,7 @@ mod tests {
             coverage: Some(44.4),
             crap: 1.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
         render(&entries, &opts(30.0, Format::Human), &mut buf).unwrap();
@@ -406,6 +426,7 @@ mod tests {
                 coverage: Some(0.0),
                 crap: 72.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             CrapEntry {
                 file: PathBuf::from("a.rs"),
@@ -415,6 +436,7 @@ mod tests {
                 coverage: Some(0.0),
                 crap: 110.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
         ];
         let mut buf = Vec::new();
@@ -436,6 +458,7 @@ mod tests {
             coverage: Some(0.0),
             crap: 20.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
         render(&entries, &opts(30.0, Format::Human), &mut buf).unwrap();
@@ -485,6 +508,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             baseline_crap: Some(1.0),
             delta: Some(0.0),
@@ -501,7 +525,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, &mut buf).unwrap();
+        render_delta_human(&report, 30.0, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("↔ 1 moved"),
@@ -528,6 +552,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 50.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             baseline_crap: Some(40.0),
             delta: Some(10.0),
@@ -552,7 +577,7 @@ mod tests {
     #[test]
     fn delta_human_hides_unchanged_rows_by_default() {
         let mut buf = Vec::new();
-        render_delta_human(&mixed_report(), 30.0, false, &mut buf).unwrap();
+        render_delta_human(&mixed_report(), 30.0, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("reg"), "regressed row must appear:\n{s}");
         assert!(s.contains("imp"), "improved row must appear:\n{s}");
@@ -568,7 +593,7 @@ mod tests {
     #[test]
     fn delta_human_show_unchanged_restores_full_table() {
         let mut buf = Vec::new();
-        render_delta_human(&mixed_report(), 30.0, true, &mut buf).unwrap();
+        render_delta_human(&mixed_report(), 30.0, true, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         for f in ["reg", "imp", "u1", "u2", "u3"] {
             assert!(s.contains(f), "{f} must appear with --show-unchanged:\n{s}");
@@ -585,7 +610,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, &mut buf).unwrap();
+        render_delta_human(&report, 30.0, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("No changes since baseline."),
@@ -611,7 +636,7 @@ mod tests {
             }],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, &mut buf).unwrap();
+        render_delta_human(&report, 30.0, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("Removed since baseline:") && s.contains("gone"),
@@ -621,5 +646,67 @@ mod tests {
             !s.contains("No changes since baseline."),
             "a removal is a change — must not print the quiet confirmation:\n{s}"
         );
+    }
+
+    // --- uncovered hints ----------------------------------------------------
+
+    #[test]
+    fn uncovered_hints_append_column_with_ranges() {
+        // Kills: dropping the header push, dropping the row-cell push.
+        let mut buf = Vec::new();
+        render_human(
+            &super::super::test_support::sample_with_uncovered(),
+            30.0,
+            true,
+            &mut buf,
+        )
+        .unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("Uncovered"), "header column must appear:\n{s}");
+        assert!(s.contains("12–14, 18"), "range cell must appear:\n{s}");
+    }
+
+    #[test]
+    fn uncovered_hints_off_leaves_table_without_the_column() {
+        // Kills: inverting/hardcoding the uncovered_hints gate.
+        let mut buf = Vec::new();
+        render_human(
+            &super::super::test_support::sample_with_uncovered(),
+            30.0,
+            false,
+            &mut buf,
+        )
+        .unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(!s.contains("Uncovered"), "no header column when off:\n{s}");
+        assert!(!s.contains("12–14"), "no range cell when off:\n{s}");
+
+        // Byte-identity: with hints off, entries carrying ranges must render
+        // exactly like entries without them — ranges must not leak into any
+        // cell, padding, or column width.
+        let mut without = Vec::new();
+        render_human(
+            &super::super::test_support::sample(),
+            30.0,
+            false,
+            &mut without,
+        )
+        .unwrap();
+        assert_eq!(s, String::from_utf8(without).unwrap());
+    }
+
+    #[test]
+    fn uncovered_hints_render_in_the_delta_table() {
+        let mut de = delta_entry("reg", DeltaStatus::Regressed);
+        de.current.uncovered = vec![crate::coverage::LineRange { start: 7, end: 9 }];
+        let report = DeltaReport {
+            entries: vec![de],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_human(&report, 30.0, false, true, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("Uncovered"), "delta header column:\n{s}");
+        assert!(s.contains("7–9"), "delta range cell:\n{s}");
     }
 }

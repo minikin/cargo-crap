@@ -186,6 +186,7 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let links = SourceLinks::new("https://github.com/o/r".into(), "sha".into());
         let mut buf = Vec::new();

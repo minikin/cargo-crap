@@ -1,6 +1,6 @@
 # Spec 24 — Source/LCOV scope-mismatch diagnostics
 
-**Status:** Proposed (issue #53)
+**Status:** Implemented (issue #53)
 **Effort:** Medium
 **Module:** `src/merge.rs`, `src/main.rs`, `src/report/json.rs`, `schemas/`
 

@@ -9,7 +9,9 @@
 //! artifacts.
 
 use super::links::{SourceLinks, linkify};
-use super::types::{Grade, delta_display};
+use super::types::{
+    Grade, delta_display, uncovered_cell_suffix, write_abs_gfm_header, write_delta_gfm_header,
+};
 use super::write_pr_comment_marker;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus, RemovedEntry};
 use crate::merge::CrapEntry;
@@ -92,6 +94,7 @@ fn write_pr_comment_row(
     threshold: f64,
     prefix: &Path,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
 ) -> Result<()> {
     let e = &de.current;
     let grade = Grade::of(e.crap, threshold);
@@ -107,7 +110,7 @@ fn write_pr_comment_row(
     let loc = linkify(loc_inner, links, &e.file, e.line);
     writeln!(
         out,
-        "| {} | {:.1} | {} | {} | {} | {} | {} |",
+        "| {} | {:.1} | {} | {} | {} | {} | {} |{}",
         grade.icon(),
         e.crap,
         delta_display(de),
@@ -115,6 +118,7 @@ fn write_pr_comment_row(
         cov,
         func,
         loc,
+        uncovered_cell_suffix(uncovered_hints, &e.uncovered),
     )?;
     Ok(())
 }
@@ -126,6 +130,7 @@ fn write_pr_comment_abs_row(
     threshold: f64,
     prefix: &Path,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
 ) -> Result<()> {
     let grade = Grade::of(e.crap, threshold);
     let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
@@ -134,13 +139,14 @@ fn write_pr_comment_abs_row(
     let loc = linkify(format!("`{loc_text}:{}`", e.line), links, &e.file, e.line);
     writeln!(
         out,
-        "| {} | {:.1} | {} | {} | {} | {} |",
+        "| {} | {:.1} | {} | {} | {} | {} |{}",
         grade.icon(),
         e.crap,
         e.cyclomatic as usize,
         cov,
         func,
         loc,
+        uncovered_cell_suffix(uncovered_hints, &e.uncovered),
     )?;
     Ok(())
 }
@@ -303,21 +309,21 @@ fn write_pr_comment_primary(
     threshold: f64,
     prefix: &Path,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
 ) -> Result<()> {
     let total = b.regressed.len() + b.new_entries.len();
     if total == 0 {
         return Ok(());
     }
     writeln!(out)?;
-    writeln!(out, "| | CRAP | Δ | CC | Cov % | Function | Location |")?;
-    writeln!(out, "|---|---:|---:|---:|---:|---|---|")?;
+    write_delta_gfm_header(out, uncovered_hints)?;
     for de in b
         .regressed
         .iter()
         .chain(b.new_entries.iter())
         .take(MAX_ROWS_PER_SECTION)
     {
-        write_pr_comment_row(out, de, threshold, prefix, links)?;
+        write_pr_comment_row(out, de, threshold, prefix, links, uncovered_hints)?;
     }
     write_truncation_if_capped(out, total)
 }
@@ -328,6 +334,7 @@ fn write_pr_comment_improved_section(
     threshold: f64,
     prefix: &Path,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
 ) -> Result<()> {
     if b.improved.is_empty() {
         return Ok(());
@@ -339,10 +346,9 @@ fn write_pr_comment_improved_section(
         b.improved.len()
     )?;
     writeln!(out)?;
-    writeln!(out, "| | CRAP | Δ | CC | Cov % | Function | Location |")?;
-    writeln!(out, "|---|---:|---:|---:|---:|---|---|")?;
+    write_delta_gfm_header(out, uncovered_hints)?;
     for de in b.improved.iter().take(MAX_ROWS_PER_SECTION) {
-        write_pr_comment_row(out, de, threshold, prefix, links)?;
+        write_pr_comment_row(out, de, threshold, prefix, links, uncovered_hints)?;
     }
     write_truncation_if_capped(out, b.improved.len())?;
     writeln!(out)?;
@@ -359,6 +365,7 @@ fn write_pr_comment_moved_section(
     threshold: f64,
     prefix: &Path,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
 ) -> Result<()> {
     if b.moved.is_empty() {
         return Ok(());
@@ -366,10 +373,9 @@ fn write_pr_comment_moved_section(
     writeln!(out)?;
     writeln!(out, "<details><summary>↔ {} moved</summary>", b.moved.len())?;
     writeln!(out)?;
-    writeln!(out, "| | CRAP | Δ | CC | Cov % | Function | Location |")?;
-    writeln!(out, "|---|---:|---:|---:|---:|---|---|")?;
+    write_delta_gfm_header(out, uncovered_hints)?;
     for de in b.moved.iter().take(MAX_ROWS_PER_SECTION) {
-        write_pr_comment_row(out, de, threshold, prefix, links)?;
+        write_pr_comment_row(out, de, threshold, prefix, links, uncovered_hints)?;
     }
     write_truncation_if_capped(out, b.moved.len())?;
     writeln!(out)?;
@@ -383,6 +389,7 @@ fn write_pr_comment_hot_spots_section(
     threshold: f64,
     prefix: &Path,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
 ) -> Result<()> {
     if b.hot_spots.is_empty() {
         return Ok(());
@@ -393,10 +400,9 @@ fn write_pr_comment_hot_spots_section(
         "<details><summary>🔥 Top hot spots above threshold</summary>"
     )?;
     writeln!(out)?;
-    writeln!(out, "| | CRAP | CC | Cov % | Function | Location |")?;
-    writeln!(out, "|---|---:|---:|---:|---|---|")?;
+    write_abs_gfm_header(out, uncovered_hints)?;
     for de in b.hot_spots.iter().take(MAX_ROWS_PER_SECTION) {
-        write_pr_comment_abs_row(out, &de.current, threshold, prefix, links)?;
+        write_pr_comment_abs_row(out, &de.current, threshold, prefix, links, uncovered_hints)?;
     }
     write_truncation_if_capped(out, b.hot_spots.len())?;
     writeln!(out)?;
@@ -447,6 +453,7 @@ pub(crate) fn render_delta_pr_comment(
     report: &DeltaReport,
     threshold: f64,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     write_pr_comment_marker(out)?;
@@ -458,8 +465,8 @@ pub(crate) fn render_delta_pr_comment(
     let prefix = buckets.common_prefix();
     write_pr_comment_delta_headline(out, buckets.regressed.len())?;
     write_pr_comment_breakdown(out, &buckets, unchanged_count(report))?;
-    write_pr_comment_primary(out, &buckets, threshold, &prefix, links)?;
-    write_pr_comment_secondary_sections(out, &buckets, threshold, &prefix, links)
+    write_pr_comment_primary(out, &buckets, threshold, &prefix, links, uncovered_hints)?;
+    write_pr_comment_secondary_sections(out, &buckets, threshold, &prefix, links, uncovered_hints)
 }
 
 /// Emit the four secondary sections (Improved / Moved / Hot spots /
@@ -472,10 +479,11 @@ fn write_pr_comment_secondary_sections(
     threshold: f64,
     prefix: &Path,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
 ) -> Result<()> {
-    write_pr_comment_improved_section(out, buckets, threshold, prefix, links)?;
-    write_pr_comment_moved_section(out, buckets, threshold, prefix, links)?;
-    write_pr_comment_hot_spots_section(out, buckets, threshold, prefix, links)?;
+    write_pr_comment_improved_section(out, buckets, threshold, prefix, links, uncovered_hints)?;
+    write_pr_comment_moved_section(out, buckets, threshold, prefix, links, uncovered_hints)?;
+    write_pr_comment_hot_spots_section(out, buckets, threshold, prefix, links, uncovered_hints)?;
     write_pr_comment_removed_section(out, buckets, prefix)
 }
 
@@ -510,6 +518,7 @@ fn write_pr_comment_abs_table(
     above: &[&CrapEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
 ) -> Result<()> {
     if above.is_empty() {
         return Ok(());
@@ -517,10 +526,9 @@ fn write_pr_comment_abs_table(
     let paths: Vec<PathBuf> = above.iter().map(|e| e.file.clone()).collect();
     let prefix = compute_render_prefix(&paths);
     writeln!(out)?;
-    writeln!(out, "| | CRAP | CC | Cov % | Function | Location |")?;
-    writeln!(out, "|---|---:|---:|---:|---|---|")?;
+    write_abs_gfm_header(out, uncovered_hints)?;
     for e in above.iter().take(MAX_ROWS_PER_SECTION) {
-        write_pr_comment_abs_row(out, e, threshold, &prefix, links)?;
+        write_pr_comment_abs_row(out, e, threshold, &prefix, links, uncovered_hints)?;
     }
     write_truncation_if_capped(out, above.len())
 }
@@ -529,6 +537,7 @@ pub(crate) fn render_pr_comment(
     entries: &[CrapEntry],
     threshold: f64,
     links: Option<&SourceLinks>,
+    uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     write_pr_comment_marker(out)?;
@@ -543,7 +552,7 @@ pub(crate) fn render_pr_comment(
         entries.len()
     )?;
     let above = above_threshold_sorted(entries, threshold);
-    write_pr_comment_abs_table(out, &above, threshold, links)
+    write_pr_comment_abs_table(out, &above, threshold, links, uncovered_hints)
 }
 
 #[cfg(test)]
@@ -568,6 +577,7 @@ mod tests {
                 coverage: Some(80.0),
                 crap,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             baseline_crap: baseline,
             delta: baseline.map(|b| crap - b),
@@ -578,7 +588,7 @@ mod tests {
 
     fn render_delta_pr_to_string(report: &DeltaReport) -> String {
         let mut buf = Vec::new();
-        render_delta_pr_comment(report, 30.0, None, &mut buf).unwrap();
+        render_delta_pr_comment(report, 30.0, None, false, &mut buf).unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -587,7 +597,7 @@ mod tests {
         links: &SourceLinks,
     ) -> String {
         let mut buf = Vec::new();
-        render_delta_pr_comment(report, 30.0, Some(links), &mut buf).unwrap();
+        render_delta_pr_comment(report, 30.0, Some(links), false, &mut buf).unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -1065,6 +1075,7 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
         render(&entries, &opts(30.0, Format::PrComment), &mut buf).unwrap();
@@ -1082,6 +1093,7 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
         render(&entries, &opts(30.0, Format::PrComment), &mut buf).unwrap();
@@ -1125,6 +1137,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 29.9,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             CrapEntry {
                 file: PathBuf::from("src/a.rs"),
@@ -1134,6 +1147,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 30.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             CrapEntry {
                 file: PathBuf::from("src/a.rs"),
@@ -1143,6 +1157,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 30.1,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
         ];
         let mut buf = Vec::new();
@@ -1174,6 +1189,7 @@ mod tests {
             coverage: Some(0.0),
             crap: 110.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
         render(&entries, &opts(30.0, Format::PrComment), &mut buf).unwrap();
@@ -1476,6 +1492,7 @@ mod tests {
             coverage: Some(0.0),
             crap: 110.0,
             crate_name: None,
+            uncovered: Vec::new(),
         }];
         let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into());
         let mut buf = Vec::new();
@@ -1490,5 +1507,50 @@ mod tests {
             s.contains("[`very_crappy`](https://github.com/o/r/blob/abc/src/a.rs#L42)"),
             "absolute pr-comment must link Function:\n{s}"
         );
+    }
+
+    // --- uncovered hints ----------------------------------------------------
+
+    #[test]
+    fn uncovered_hints_extend_the_absolute_table() {
+        // Kills: dropping the header suffix or cell suffix in the abs path.
+        let entries = super::super::test_support::sample_with_uncovered();
+        let mut buf = Vec::new();
+        render_pr_comment(&entries, 30.0, None, true, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("| | CRAP | CC | Cov % | Function | Location | Uncovered |"),
+            "extended header:\n{s}"
+        );
+        assert!(s.contains("| 12–14, 18 |"), "range cell:\n{s}");
+    }
+
+    #[test]
+    fn uncovered_hints_off_keep_the_absolute_table_unchanged() {
+        // Kills: inverting/hardcoding the uncovered_hints gate.
+        let entries = super::super::test_support::sample_with_uncovered();
+        let mut buf = Vec::new();
+        render_pr_comment(&entries, 30.0, None, false, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(!s.contains("Uncovered"), "no column when off:\n{s}");
+        assert!(!s.contains("12–14"), "no cell when off:\n{s}");
+    }
+
+    #[test]
+    fn uncovered_hints_extend_the_delta_primary_table() {
+        let mut de = delta_entry("src/a.rs", "reg", 50.0, Some(40.0), DeltaStatus::Regressed);
+        de.current.uncovered = vec![crate::coverage::LineRange { start: 7, end: 9 }];
+        let report = DeltaReport {
+            entries: vec![de],
+            removed: vec![],
+        };
+        let mut buf = Vec::new();
+        render_delta_pr_comment(&report, 30.0, None, true, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("| | CRAP | Δ | CC | Cov % | Function | Location | Uncovered |"),
+            "extended delta header:\n{s}"
+        );
+        assert!(s.contains("| 7–9 |"), "delta range cell:\n{s}");
     }
 }

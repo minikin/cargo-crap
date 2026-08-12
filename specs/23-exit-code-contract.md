@@ -1,6 +1,6 @@
 # Spec 23 — Exit-code contract: policy failures vs tool errors
 
-**Status:** Proposed (issue #54)
+**Status:** Implemented (issue #54)
 **Effort:** Small
 **Module:** `src/main.rs` (+ README, `tests/cli.rs`)
 

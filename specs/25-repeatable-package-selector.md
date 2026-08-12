@@ -1,6 +1,6 @@
 # Spec 25 — Repeatable `--package` selector for workspace analysis
 
-**Status:** Proposed (issue #55)
+**Status:** Implemented (issue #55)
 **Effort:** Medium
 **Module:** `src/main.rs` (CLI, `analyze_sources`, baseline filtering)
 

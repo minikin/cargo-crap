@@ -120,6 +120,7 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: crate_name.map(std::string::ToString::to_string),
+            uncovered: Vec::new(),
         }
     }
 
@@ -188,6 +189,7 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                uncovered: Vec::new(),
             },
             baseline_crap: Some(1.0),
             delta: Some(0.0),
