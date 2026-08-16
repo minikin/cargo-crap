@@ -12,10 +12,10 @@ All feature specs live in `specs/`. They are written in Gherkin style (Given/Whe
 
 ## Before committing
 
-1. Run `just dev` — fmt, clippy, tests, and the dogfood run (score the tool against its own source).
-2. If it passes, run `just dev-mutants-diff` — mutation tests on the `src/**/*.rs` files changed vs HEAD (it re-runs `just dev` first). Skip this step only when the diff touches nothing but `.md` and/or `.yml` files.
+1. Run `just dev` — fmt, clippy, tests, and `just crap` (score the tool against its own source).
+2. If it passes, run `just dev-mutants-diff` — mutation tests on the changed `src/` lines (it re-runs `just dev` first). Skip this step only when the diff touches nothing but `.md` and/or `.yml` files.
 
-Both must be clean before any commit. Never commit with a failing dogfood run or surviving mutants.
+Both must be clean before any commit. Never commit with a failing CRAP gate or surviving mutants.
 
 Exception: if the diff touches only `.md` files (docs, specs), no pre-commit check is needed — `just dev` / `just dev-mutants-diff` can be skipped.
 
@@ -114,3 +114,20 @@ syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
 - CLI integration tests live in `tests/cli.rs` and exercise the binary end-to-end via `assert_cmd`.
 - The integration test in `tests/integration.rs` exercises the full pipeline against `tests/fixtures/sample_project/` and is the only test that catches path-matching regressions across the complexity/coverage boundary.
 - The fixture includes a deliberate relative-path LCOV file to exercise suffix matching.
+
+## Keeler workflow
+
+This project follows the Keeler spec-first, test-driven workflow:
+
+@.claude/keeler.md
+
+Two local deviations from a stock Keeler install, both because this repo *is*
+the CRAP tool:
+
+- The `crap*` recipes run `cargo run --release --`, not the installed `cargo
+  crap` — gating on a released binary would score code that isn't the code
+  under review.
+- Keeler's `keeler.yml` workflow is not installed; `.github/workflows/ci.yml`
+  already runs every Keeler gate plus an OS matrix, MSRV, `cargo audit`, and
+  the Self-score baseline/badge/PR-comment pipeline. `just keeler-upgrade`
+  will re-drop `keeler.yml`; delete it again.

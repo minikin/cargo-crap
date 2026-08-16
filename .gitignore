@@ -91,3 +91,10 @@ Cargo.lock
 mutants.out/
 mutants.out.old/
 lcov.info
+crap-report.json
+mutants.out*/
+
+# Claude Code: the shared workflow (commands, skills, keeler.md) is committed;
+# per-developer permissions and stray agent worktrees are not.
+.claude/settings.local.json
+.claude/worktrees/
