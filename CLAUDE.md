@@ -121,13 +121,30 @@ This project follows the Keeler spec-first, test-driven workflow:
 
 @.claude/keeler.md
 
-Two local deviations from a stock Keeler install, both because this repo *is*
-the CRAP tool:
+Installed version: **0.4.0** (the marker lives at the top of
+`.claude/keeler.md`). Graph mode is installed and works here — `just
+keeler-graph / keeler-fan-out / keeler-spawn / keeler-status / keeler-resume /
+keeler-branch / keeler-land`, plus `scripts/keeler-graph.sh` and
+`/keeler:graph`.
+
+Local deviations from a stock Keeler install, all because this repo *is* the
+CRAP tool:
 
 - The `crap*` recipes run `cargo run --release --`, not the installed `cargo
   crap` — gating on a released binary would score code that isn't the code
   under review.
 - Keeler's `keeler.yml` workflow is not installed; `.github/workflows/ci.yml`
   already runs every Keeler gate plus an OS matrix, MSRV, `cargo audit`, and
-  the Self-score baseline/badge/PR-comment pipeline. `just keeler-upgrade`
-  will re-drop `keeler.yml`; delete it again.
+  the Self-score baseline/badge/PR-comment pipeline. Its two graph-mode-only
+  jobs — `branch-baseline` and `review-record`, which gate `keeler/*` pull
+  requests — have no equivalent there, so they are ported into `ci.yml` at the
+  end of the file; re-port them when they change upstream. `just
+  keeler-upgrade` will re-drop `keeler.yml`; delete it again.
+- The justfile is tracked as `Justfile` (capital J) here, so anything reading
+  it by path in CI must spell it that way — a case-insensitive filesystem
+  hides the difference locally and git does not.
+- The local `justfile` keeps its own `cov` / `crap*` / `dev*` recipes; only
+  the `keeler-*` block and the `_main-ref` / `_spawn-preflight` helpers come
+  from upstream. `set export` near the top is required by the graph recipes
+  (parameters reach them as `$SPEC`, never spliced as `{{SPEC}}`) — do not
+  drop it.

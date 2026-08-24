@@ -26,4 +26,17 @@ Merge both parts into one ranked findings list (spec-conformance findings first 
 
 **Do not apply fixes** — the user decides what to act on. Agreed fixes go back through /keeler:tdd (test first), then /keeler:qa, and return here.
 
+## The record
+
+Review is the one stage that would otherwise leave no evidence, so it leaves some. When the findings are settled — on the last pass through this stage, not the first — write `reviews/<spec-slug>/<task-id>.md`, where `<spec-slug>` is the spec's file name without `.md` (`01-login` for `specs/01-login.md`) and `<task-id>` is the task id in lowercase (`t3` for T3). It opens with exactly four header lines, then the findings, or the word `none` — a review that found nothing still happened:
+
+```
+Spec: <spec-slug>
+Task: <task-id>
+Commit: <the SHA this review examined>
+Verdict: pass | fail
+```
+
+`Commit:` is the SHA the review examined — `git rev-parse HEAD` on a clean tree, or the last commit of the diff you read. On a keeler/* task branch that is a commit the branch itself made, and CI on the pull request checks exactly that: the record exists, and its `Commit:` is an ancestor of the branch head and not of the base branch. The record is committed like the rest of the stage's work.
+
 **Next stage: `/keeler:mutants`**, once the findings are settled.

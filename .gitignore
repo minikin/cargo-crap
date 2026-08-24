@@ -98,3 +98,4 @@ mutants.out*/
 # per-developer permissions and stray agent worktrees are not.
 .claude/settings.local.json
 .claude/worktrees/
+.keeler/

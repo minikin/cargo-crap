@@ -32,7 +32,7 @@ jobs:
               - '.cargo/**'
               - '.github/workflows/**'
               - 'tests/fixtures/**'
-              - 'justfile'
+              - 'Justfile'
               - 'rust-toolchain.toml'
               - 'deny.toml'
 
@@ -431,3 +431,123 @@ jobs:
           tree=$(printf '100644 blob %s\tcrap-badge.json\n' "$blob" | git mktree)
           commit=$(git commit-tree "$tree" -m "chore: update CRAP badge")
           git push --force origin "$commit:refs/heads/badges"
+
+  # Graph mode (Keeler 0.4.0): the two gates a `keeler/*` task branch must
+  # pass. Ported from Keeler's shipped keeler.yml, which this repo does not
+  # install — everything else in it is already covered above. Not gated on
+  # `changes`: a task branch owes its review record whatever it touched.
+  branch-baseline:
+    name: Branch leaves the baseline alone
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'keeler/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The check diffs against the merge base; a shallow clone has none.
+          fetch-depth: 0
+      - name: The branch moved neither the baseline nor the coverage bar
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          fail() { echo "branch baseline: $*" >&2; exit 1; }
+          moved="baselines move only at land time, on main — run just keeler-land there"
+          # A checkout on a pull request holds the branches as origin/ refs
+          # and a detached HEAD; a local run holds them by name.
+          resolve() {
+            git rev-parse --verify -q "origin/$1^{commit}" \
+              || git rev-parse --verify -q "$1^{commit}"
+          }
+          base_ref="${BASE_REF:-main}"
+          base=$(resolve "$base_ref") \
+            || fail "cannot resolve base branch $base_ref — is the checkout fetch-depth: 0?"
+          merge_base=$(git merge-base "$base" HEAD) \
+            || fail "no merge base with $base_ref — is the checkout fetch-depth: 0?"
+          if ! git diff --quiet "$merge_base" HEAD -- crap-baseline.json; then
+            fail "crap-baseline.json changed on this branch — $moved"
+          fi
+          # The cov recipe, not the whole Justfile: every task branch adds
+          # its own recipe and git merges those cleanly. What may not move
+          # is the coverage bar the whole repository is measured against.
+          cov_recipe() {
+            # `[^ \t]` rather than `[^[:space:]]`: Ubuntu's default awk is
+            # mawk, which only learned POSIX character classes in 1.3.4.
+            git show "$1:Justfile" 2>/dev/null | awk '
+              /^cov:/ { inside = 1 }
+              inside && NF && /^[^ \t]/ && $0 !~ /^cov:/ { inside = 0 }
+              inside { print }
+            '
+          }
+          base_cov=$(cov_recipe "$merge_base") || fail "cannot read the Justfile at $base_ref"
+          # Finding nothing is not the same as finding no change. If the
+          # recipe is absent or spelled otherwise at the base, this check
+          # cannot tell whether the coverage bar moved — and a gate that
+          # reports success having looked at nothing is worse than no gate.
+          [ -n "$base_cov" ] || fail "no \`cov:\` recipe in the Justfile at $base_ref — this check cannot tell whether the coverage bar moved"
+          if [ "$base_cov" != "$(cov_recipe HEAD)" ]; then
+            fail "the Justfile's cov recipe changed on this branch — $moved"
+          fi
+          echo "crap-baseline.json and the cov recipe are as $base_ref left them"
+
+  # A task branch — keeler/<spec-slug>/<task-id> — must carry the record
+  # /keeler:review writes, and the record must name a commit this branch
+  # made. Existence alone is a gate `touch` satisfies; ancestry of the head
+  # alone lets the merge base through, and that covers none of the branch's
+  # work. So: an ancestor of the head, and not of the base.
+  review-record:
+    name: Review record
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'keeler/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The check walks ancestry: a shallow clone sees none, and every
+          # honest record would fail.
+          fetch-depth: 0
+      - name: The record names a commit this branch made
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          fail() { echo "review record: $*" >&2; exit 1; }
+          shape="keeler/<spec-slug>/<task-id>"
+          case "${HEAD_REF:-}" in
+            keeler/?*/?*) ;;
+            *) fail "branch '${HEAD_REF:-}' is not $shape" ;;
+          esac
+          rest="${HEAD_REF#keeler/}"
+          case "$rest" in
+            */*/*) fail "branch '$HEAD_REF' is not $shape" ;;
+          esac
+          record="reviews/${rest%/*}/${rest#*/}.md"
+          [ -f "$record" ] || fail "$record is missing — /keeler:review writes it at the end of the stage"
+          lines=$(grep -c '^Commit:' "$record" || true)
+          [ "$lines" -eq 1 ] || fail "$record must carry exactly one Commit: line, found $lines"
+          sha=$(sed -n 's/^Commit:[[:space:]]*//p' "$record" | tr -d '[:space:]')
+          [ -n "$sha" ] || fail "$record: the Commit: line names nothing"
+          # A checkout on a pull request holds the branches as origin/ refs
+          # and a detached HEAD; a local run holds them by name.
+          resolve() {
+            git rev-parse --verify -q "origin/$1^{commit}" \
+              || git rev-parse --verify -q "$1^{commit}"
+          }
+          base_ref="${BASE_REF:-main}"
+          # What was checked out is what is under review, and asking for it
+          # by name is how the wrong history gets judged: a pull request
+          # from a fork resolves `origin/<branch>` against the *base*
+          # repository, so an abandoned branch there of the same name would
+          # stand in for this one. HEAD is unambiguous — the branch tip
+          # locally, the merge commit in CI, whose ancestry is the branch's
+          # plus the base's, and the base is excluded below.
+          head=$(git rev-parse --verify -q "HEAD^{commit}") \
+            || fail "cannot resolve the checked-out commit — is the checkout fetch-depth: 0?"
+          base=$(resolve "$base_ref") || fail "cannot resolve base branch $base_ref"
+          git rev-parse --verify -q "$sha^{commit}" >/dev/null \
+            || fail "$record: Commit: $sha is not a commit in this repository"
+          git merge-base --is-ancestor "$sha" "$head" \
+            || fail "$record: Commit: $sha is not an ancestor of $HEAD_REF — the record does not cover this branch"
+          if git merge-base --is-ancestor "$sha" "$base"; then
+            fail "$record: Commit: $sha is already on $base_ref — the record names no work of this branch"
+          fi
+          echo "$record names $sha, a commit of $HEAD_REF"

@@ -34,11 +34,14 @@ Then  <observable outcome>
 
 ## Tasks
 
-Each task lists its scenarios and the test types that pin it
-(unit / property / acceptance).
+Each task lists its scenarios, the test types that pin it (unit /
+property / acceptance), and — when it depends on earlier tasks — a
+`Needs:` naming them. Tasks with no `Needs:` are roots; tasks whose needs
+are all done are ready; the graph is what `scripts/keeler-graph.sh` reads.
 
-- [ ] **T1 — <task name>** — scenarios: <list>; tests: unit + property
-- [ ] **T2 — <task name>** — scenarios: <list>; tests: acceptance
+- [ ] **T1 — <task name>.** Scenarios: _<list>_. Tests: unit + property.
+- [ ] **T2 — <task name>.** Needs: T1. Scenarios: _<list>_. Tests: acceptance.
+- [ ] **T3 — <task name>.** Needs: T1. Scenarios: _<list>_. Tests: acceptance.
 
 ---
 
