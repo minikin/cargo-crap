@@ -94,7 +94,7 @@ struct Cli {
     #[arg(long)]
     threshold: Option<f64>,
 
-    /// Only print functions with a CRAP score above this cutoff.
+    /// Only print functions with a CRAP score at or above this cutoff.
     #[arg(long, value_name = "SCORE")]
     min: Option<f64>,
 

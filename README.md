@@ -136,6 +136,8 @@ Example output:
 | `--epsilon <VALUE>`                                              | `0.01`        | Tolerance for the regression detector. Score deltas with absolute value at or below this count as `Unchanged`. Set to `0.0` to flag every increase, or higher to tolerate noisy coverage. Must be non-negative.                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `--jobs <N>`                                                     | host CPUs     | Cap parallel source-file analysis at `N` threads. Useful in memory-constrained CI/Docker environments. Must be a positive integer.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `--output <FILE>`                                                | —             | Write output to FILE instead of stdout (useful for saving JSON baselines).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `--repo-url <URL>`                                               | —             | Base URL of the source-hosting repo (e.g. `https://github.com/owner/repo`). With `--commit-ref`, makes Function and Location cells in `markdown` / `pr-comment` output clickable links to the source. Defaults from `GITHUB_SERVER_URL` + `GITHUB_REPOSITORY` inside GitHub Actions.                                                                                                                                                                                                                                                                                                              |
+| `--commit-ref <REF>`                                             | —             | Commit SHA or branch to deep-link into. Defaults from `GITHUB_SHA` when set. No effect unless `--repo-url` is also set.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 Colour in the `human` and `--summary` formats is automatic: it is enabled only when writing to a terminal, and never into an `--output` file or a pipe. Set `NO_COLOR=1` to disable colour unconditionally, or `FORCE_COLOR=1` to force it on (e.g. for `| less -R`); `NO_COLOR` wins when both are set.
 
@@ -154,7 +156,7 @@ generate types directly from the schema.
 // cargo crap --format json
 {
   "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
-  "version": "0.0.2",
+  "version": "0.4.3",     // the cargo-crap version that produced the report
   "entries": [
     {
       "file": "src/lib.rs",
@@ -174,7 +176,7 @@ generate types directly from the schema.
 // cargo crap --format json --baseline baseline.json
 {
   "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json",
-  "version": "0.0.2",
+  "version": "0.4.3",     // the cargo-crap version that produced the report
   "entries": [ /* DeltaEntry — current + baseline_crap + delta + status (+ optional previous_file when moved) */ ],
   "removed": [ /* RemovedEntry — function, file, baseline_crap */ ]
 }
@@ -189,6 +191,28 @@ of files present only on one side. When the analyzed tree and the coverage
 run describe different scopes (the classic cause of a delta full of
 unrelated 0%-coverage entries), a warning with the same numbers is printed
 to stderr before the report, and CI wrappers can gate on the JSON counts.
+
+On `--duplicates` runs both envelopes grow a `duplicates` array — one object
+per candidate pair, in the same order as the human section:
+
+```jsonc
+"duplicates": [
+  {
+    "first_file": "src/report/markdown.rs",
+    "first_function": "write_markdown_absolute_heading",
+    "first_start_line": 18,
+    "first_end_line": 33,
+    "second_file": "src/report/pr_comment.rs",
+    "second_function": "write_pr_comment_delta_headline",
+    "second_start_line": 275,
+    "second_end_line": 286,
+    "score": 0.92          // Jaccard similarity, in [0, 1]
+  }
+]
+```
+
+The key is absent — not empty — when detection was not requested, so "not
+asked" stays distinguishable from "asked, found nothing".
 
 ### SARIF output
 
@@ -216,7 +240,8 @@ normal badge image:
 ![CRAP](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/owner/repo/main/crap-badge.json)
 ```
 
-The label embeds the effective threshold (`CRAP > 15`) so the badge reads
+The label embeds the *effective* threshold — `CRAP > 30` by default, or
+whatever `--threshold` was given (`CRAP > 15` in this repo's own run) — so the badge reads
 as a complete statement. The message is `passing` (brightgreen) when no
 function exceeds `--threshold`, `N crappy` in yellow for 1–5 offenders,
 and red for 6 or more. `--baseline` is silently ignored — the badge
@@ -294,9 +319,12 @@ envelope; the key is absent entirely when detection was not requested, so
 
 ## Configuration file
 
-Any flag can be set persistently in `.cargo-crap.toml` at the project root
+Most flags can be set persistently in `.cargo-crap.toml` at the project root
 (or any parent directory — the tool walks up until it finds one). CLI flags
-always take precedence.
+always take precedence. The per-run selectors have no config key —
+`--path`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`,
+`--baseline`, `--no-default-excludes`, `--repo-url` and `--commit-ref` are
+flags only. `uncovered-hints` is the mirror case: config only, no flag.
 
 ```toml
 # .cargo-crap.toml
