@@ -8,3 +8,5 @@
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
+# DB Navigator plugin state (local IDE config)
+/dbnavigator.xml

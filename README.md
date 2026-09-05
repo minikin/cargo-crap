@@ -123,6 +123,8 @@ Example output:
 | `--exclude <GLOB>`                                               | —             | Skip files matching this pattern (repeatable). `**` crosses directories. Appends to the default exclusions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `--no-default-excludes`                                          | off           | Disable the built-in default exclusions (`tests/**`, `benches/**`, `examples/**`, matched relative to each analyzed root). By default these standard Cargo target directories are skipped — integration tests exist to cover production code, and benches/examples are not executed during a coverage run, so they only add 0%-coverage noise.                                                                                                                                                                                                                                                                        |
 | `--allow <GLOB>`                                                 | —             | Suppress matching functions (repeatable). An entry containing `/` or `**` is a path glob and matches the file the function is in (e.g. `src/generated/**`); otherwise it matches the function name and `*` crosses `::` (e.g. `Foo::*`). Path globs analyze the file but hide its functions — distinct from `--exclude`, which skips files at walk time.                                                                                                                                                                                                                                                              |
+| `--duplicates`                                                    | off           | Also report candidate duplicate functions — functions whose normalized structure is close enough to be worth review. A second analysis over the same AST; off by default because it costs time on a large tree. Needs no `--lcov`.                                                                                                                                                                                                          |
+| `--dup-threshold <SCORE>`                                        | `0.82`        | Similarity at or above which a pair is reported, in `0.0..=1.0`. Named apart from `--threshold`, which is the CRAP score threshold.                                                                                                                                                                                                                                                                                                          |
 | `--format {human,json,github,markdown,pr-comment,sarif,shields}` | `human`       | Output format. `json` emits a versioned envelope (see [JSON output schema](#json-output-schema) below). `github` emits `::warning` annotations. `markdown` emits a GFM table (exhaustive). `pr-comment` is the opinionated PR-bot variant: hides unchanged rows, caps each section, collapses non-critical info into `<details>` blocks. `sarif` emits SARIF 2.1.0 JSON for upload to GitHub Code Scanning, VS Code, and other static-analysis tooling (see [SARIF output](#sarif-output) below). `shields` emits Shields.io endpoint-badge JSON for a README badge (see [Shields.io badge](#shieldsio-badge) below). |
 | `--summary`                                                      | off           | Print only aggregate stats (total, crappy count, worst offender) — no per-function table. In `--workspace` mode this becomes the per-crate summary plus the aggregate line. `json` and `github` remain machine-readable and are unaffected.                                                                                                                                                                                                                                                                                                                                                                             |
 | `--workspace`                                                    | off           | Analyze all Cargo workspace members (discovered via `cargo metadata`). Ignores `--path`. Adds a *Per-crate summary* table to human and markdown output, and a `crate` field to JSON entries.                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -221,6 +223,75 @@ and red for 6 or more. `--baseline` is silently ignored — the badge
 always reflects absolute current scores. See [Badge generation](#badge-generation) for a
 CI recipe.
 
+## Finding duplicates
+
+`--duplicates` answers a different question from the CRAP table: *is this
+already implemented somewhere else in this codebase?* Copy-pasted logic is
+invisible to CRAP — two identical 40-line functions each score exactly what
+one of them would.
+
+```bash
+cargo crap --path src --duplicates
+```
+
+```
+2 duplicate candidates:
+
+DUPLICATE score=1.00
+  src/report/types.rs:167-178  write_abs_gfm_header
+  src/report/types.rs:182-193  write_delta_gfm_header
+DUPLICATE score=0.92
+  src/report/markdown.rs:18-33  write_markdown_absolute_heading
+  src/report/pr_comment.rs:275-286  write_pr_comment_delta_headline
+```
+
+How it works: every function is parsed with `syn`, normalized into a
+structural tree, and fingerprinted — one fingerprint per subtree. Two
+functions are compared by Jaccard similarity over their fingerprint sets
+(`|A ∩ B| / |A ∪ B|`), and pairs scoring at or above the threshold are
+reported.
+
+Normalization **drops** what a function is called and what values it
+mentions — function and method names, parameter and local names, field and
+path names, literal values. It **keeps** structure: control flow, statement
+order, receiver shape, type structure, and operators. `x + y` and `x * y`
+are different shapes; `xs`/`items` and `1`/`0` are not:
+
+```rust
+fn alpha(xs: &[i32]) -> Vec<i32> {          fn beta(items: &[i32]) -> Vec<i32> {
+    let mut ys = Vec::new();                    let mut kept = Vec::new();
+    for x in xs {                               for item in items {
+        if x % 2 == 1 {                             if item % 2 == 0 {
+            ys.push(x + 1);                             kept.push(item + 1);
+        }                                           }
+    }                                           }
+    ys                                          kept
+}                                           }
+```
+
+These score **1.00**.
+
+The tool does not decide whether duplication should be removed — two
+functions scoring 1.00 may be a bug waiting to happen or two unrelated trait
+impls that share a shape. It names the candidate; you judge it.
+
+Three things worth knowing:
+
+- **Test code is not compared.** `#[test]` functions and `#[cfg(test)]`
+  modules are skipped, the same way the complexity pass skips them. Test
+  bodies are repetitive by construction and would bury everything else.
+- **Trivial functions are not compared.** Functions below
+  `duplicates.min-nodes` (default 20 normalized nodes) are skipped, because
+  every pair of one-line accessors is a genuine structural match and reports
+  as one. Set it to `0` to compare everything.
+- **Macro bodies are opaque.** `syn` does not parse a macro's token stream,
+  so every `println!`/`vec!` is one node. Two different macro invocations
+  look identical to this analysis.
+
+`--format json` carries the pairs in a `duplicates` array inside the usual
+envelope; the key is absent entirely when detection was not requested, so
+"not asked" is distinguishable from "asked, found nothing".
+
 ## Configuration file
 
 Any flag can be set persistently in `.cargo-crap.toml` at the project root
@@ -251,6 +322,10 @@ show_unchanged = false    # list Unchanged rows in --baseline mode
 # Config-only — there is deliberately no CLI flag. JSON always carries
 # the full ranges regardless of this key.
 uncovered-hints = false
+[duplicates]
+enabled   = false   # same as passing --duplicates
+threshold = 0.82    # similarity at or above which a pair is reported
+min-nodes = 20      # skip functions smaller than this; 0 compares everything
 ```
 
 All keys are optional. Unknown keys are rejected to catch typos.
@@ -492,6 +567,8 @@ self_score:
 
 - [Savoia, A. & Evans, B. (2007). *The CRAP Metric.*](https://www.artima.com/weblogs/viewpost.jsp?thread=210575)
 - [Crap4j](http://www.crap4j.org/) — the original Java implementation.
+- [dry4go](https://github.com/unclebob/dry4go) — the Go duplicate detector whose
+  normalize/fingerprint/Jaccard approach `--duplicates` follows.
 
 ## License
 
