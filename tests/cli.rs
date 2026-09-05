@@ -281,6 +281,103 @@ fn delta_json_output_validates_against_delta_schema() {
     assert_valid(&validator, &value);
 }
 
+/// A tree holding two functions that differ only in names, bindings and
+/// literal values — an exact structural match for `--duplicates`.
+fn duplicate_tree() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("alpha.rs"),
+        "fn alpha(xs: &[i32]) -> Vec<i32> {
+    let mut ys = Vec::new();
+    for x in xs {
+        if x % 2 == 1 {
+            ys.push(x + 1);
+        }
+    }
+    ys
+}
+",
+    )
+    .expect("write alpha.rs");
+    std::fs::write(
+        dir.path().join("beta.rs"),
+        "fn beta(items: &[i32]) -> Vec<i32> {
+    let mut kept = Vec::new();
+    for item in items {
+        if item % 2 == 0 {
+            kept.push(item + 1);
+        }
+    }
+    kept
+}
+",
+    )
+    .expect("write beta.rs");
+    dir
+}
+
+#[test]
+fn duplicates_json_output_validates_against_published_schema() {
+    let dir = duplicate_tree();
+    let output = cmd()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--duplicates")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert!(
+        !value["duplicates"]
+            .as_array()
+            .expect("duplicates array")
+            .is_empty(),
+        "fixture must produce at least one pair:\n{stdout}"
+    );
+    let validator = compile_schema("schemas/report-v1.json");
+    assert_valid(&validator, &value);
+}
+
+#[test]
+fn duplicates_delta_json_output_validates_against_delta_schema() {
+    let dir = duplicate_tree();
+    let baseline_dir = tempfile::tempdir().expect("tempdir");
+    let baseline_path = baseline_dir.path().join("baseline.json");
+    cmd()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--format")
+        .arg("json")
+        .arg("--output")
+        .arg(&baseline_path)
+        .assert()
+        .success();
+
+    let output = cmd()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--baseline")
+        .arg(&baseline_path)
+        .arg("--duplicates")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("delta run");
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert!(
+        !value["duplicates"]
+            .as_array()
+            .expect("duplicates array")
+            .is_empty(),
+        "fixture must produce at least one pair:\n{stdout}"
+    );
+    let validator = compile_schema("schemas/delta-v2.json");
+    assert_valid(&validator, &value);
+}
+
 // --- --fail-above ---
 
 #[test]

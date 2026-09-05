@@ -43,14 +43,14 @@ cargo fmt --all
 # Lint (warnings are errors in CI: RUSTFLAGS="-D warnings")
 cargo clippy --all-targets -- -D warnings
 
-# Run the tool against this repo (dogfood)
-cargo llvm-cov --lcov --output-path lcov.info --workspace
-cargo run --release -- --lcov lcov.info --workspace --threshold 15 --fail-above
+# Run the tool against this repo (dogfood) — prefer the recipe, which is
+# the single definition of this gate; spelling it out here lets the two drift.
+just crap
 ```
 
 ## Architecture
 
-The tool has six orthogonal modules that feed into a pipeline:
+The tool has seven orthogonal modules that feed into a pipeline:
 
 ```
 syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
@@ -78,7 +78,18 @@ syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
                   ├── github.rs           ::warning annotations
                   ├── markdown.rs         exhaustive GFM
                   ├── pr_comment.rs       opinionated PR comment
-                  └── summary.rs          --summary aggregate
+                  ├── sarif.rs            SARIF 2.1.0
+                  ├── shields.rs          Shields.io endpoint badge
+                  ├── duplicates.rs       Duplicate candidates section
+                  ├── summary.rs          --summary aggregate
+                  └── test_support.rs     shared fixtures (cfg(test))
+
+syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicates
+                     ├── extract.rs        one FunctionPrint per non-test fn
+                     ├── normalize.rs      AST ──▶ NormNode (names/literals erased)
+                     ├── fingerprint.rs    NormNode ──▶ BTreeSet<Fingerprint>
+                     ├── compare.rs        pairwise Jaccard ──▶ Vec<DuplicatePair>
+                     └── scan.rs           walk a tree, drive the four above
 ```
 
 **`src/score.rs`** — Pure formula: `CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)`. No I/O, no dependencies on other modules.
@@ -96,7 +107,9 @@ syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
 
 **`src/config.rs`** — Optional `.cargo-crap.toml` loader. Walks up from CWD until the file is found; returns `Config::default()` if absent. Uses `#[serde(deny_unknown_fields)]` to catch typos. CLI flags always override config values.
 
-**`src/report/`** — Renders `Vec<CrapEntry>` or `DeltaReport` in five formats: human (colored Unicode table), JSON (versioned envelope), GitHub Actions (`::warning` annotations), Markdown (exhaustive GFM table), and pr-comment (opinionated PR-comment with capped sections + `<details>` blocks). The entry file `src/report.rs` is a thin dispatcher (`Format` enum, `render` / `render_delta` / `render_summary` / `render_delta_summary`); each format lives in a sibling submodule. Cross-cutting helpers (`Grade`, `coverage_bar`, `delta_display`) live in `report/types.rs`; optional GitHub source-link wrapping (`SourceLinks`, `linkify`) lives in `report/links.rs`; per-crate rollup tables (workspace mode) live in `report/per_crate.rs`. Each submodule owns its `#[cfg(test)] mod tests` block; shared fixtures (e.g. `sample()`) live in `report/test_support.rs`.
+**`src/report/`** — Renders `Vec<CrapEntry>` or `DeltaReport` in seven formats: human (colored Unicode table), JSON (versioned envelope), GitHub Actions (`::warning` annotations), Markdown (exhaustive GFM table), pr-comment (opinionated PR-comment with capped sections + `<details>` blocks), SARIF 2.1.0, and Shields.io endpoint-badge JSON. The entry file `src/report.rs` is a thin dispatcher (`Format` enum, `render` / `render_delta` / `render_summary` / `render_delta_summary`); each format lives in a sibling submodule. Cross-cutting helpers (`Grade`, `coverage_bar`, `delta_display`) live in `report/types.rs`; optional GitHub source-link wrapping (`SourceLinks`, `linkify`) lives in `report/links.rs`; per-crate rollup tables (workspace mode) live in `report/per_crate.rs`. Each submodule owns its `#[cfg(test)] mod tests` block; shared fixtures (e.g. `sample()`) live in `report/test_support.rs`.
+
+**`src/duplicates/`** — A second, opt-in pass over the same AST (`--duplicates`). `extract` collects one `FunctionPrint` per non-test function, `normalize` erases identifiers, literal values and field/path names while keeping control flow, operators, receiver shape and statement order, `fingerprint` hashes every normalized subtree into a `BTreeSet<Fingerprint>` (FNV-1a, not `DefaultHasher` — the fingerprints must be stable across processes), and `compare` scores every pair by Jaccard similarity. Quadratic in the number of functions, which is why it is off by default; functions below `duplicates.min-nodes` (default 20) are dropped before comparison. It reuses the complexity pass's test filter, so the two analyses cannot disagree about what counts as source.
 
 **`src/main.rs`** — CLI via `clap`. Handles the `cargo crap` subcommand invocation by stripping the leading `crap` argument when detected. Heavy logic is extracted into `validate_args`, `collect_complexity`, `apply_filters`, `load_coverage`, and `do_render` to keep `main` CC below 15.
 

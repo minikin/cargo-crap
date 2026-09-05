@@ -6,6 +6,90 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.5.0] - 2026-09-05
+
+Two new analyses land in this release: per-function uncovered line ranges
+(spec 28) and structural duplicate detection (spec 29). Both are additive
+and off by default. Library consumers who build `RenderOptions` or
+`CrapEntry` with an exhaustive struct literal need a one-line change; see
+Changed.
+
+### Added
+
+- **Structural duplicate detection** (spec 29). `--duplicates` runs a
+  second pass over the AST `cargo-crap` already walks: every function is
+  normalized into a structural tree, each subtree is fingerprinted, and
+  pairs are compared by Jaccard similarity over their fingerprint sets.
+  Pairs at or above `--dup-threshold` (default `0.82`) are reported as
+  candidates — the tool names them and stops there, because two functions
+  with the same shape may be a copy-paste bug or two unrelated trait
+  impls, and only a human can tell. Normalization erases identifiers,
+  literal values, field and path names, so renaming and retyping do not
+  change a score; operators, loop kinds, nesting and statement order are
+  structural and do. Off by default because the comparison is quadratic;
+  it needs no `--lcov`. `#[test]` functions and `#[cfg(test)]` modules are
+  excluded through the complexity pass's own filter, so the two analyses
+  cannot drift apart about what counts as source, and functions below
+  `duplicates.min-nodes` (default 20 normalized nodes) are dropped before
+  comparison — every pair of trivial accessors is a genuine structural
+  match, and reporting them buries the pairs worth reading. Configurable
+  as `duplicates.{enabled,threshold,min-nodes}` in `.cargo-crap.toml`.
+  Human output grows a `Duplicate candidates` section after the table and
+  both JSON envelopes grow a `duplicates` array; `markdown`, `pr-comment`,
+  `sarif`, `shields` and `github` warn that `--duplicates` has no effect
+  and skip the sweep rather than pay for a result they discard. The flag
+  is deliberately named apart from `--threshold`, which has meant the CRAP
+  score since v0.1.
+- **Uncovered-span hints** (spec 28). Every entry now carries the maximal
+  runs of instrumented-but-never-hit lines inside its span, so a crappy
+  function points at the lines to test rather than only at itself. JSON
+  always carries the full ranges in an additive `uncovered` array (omitted
+  when empty, or when the file had no coverage data at all). The human,
+  markdown and pr-comment tables show them in an optional `Uncovered`
+  column — `142–158, 171, 180–184 +2 more` — enabled by the
+  `uncovered-hints` key in `.cargo-crap.toml`. That key is config-only:
+  there is deliberately no CLI flag.
+
+### Changed
+
+- **BREAKING (library API):** `RenderOptions` gained `uncovered_hints:
+  bool` and `duplicates: Option<&[DuplicatePair]>`, and `CrapEntry` gained
+  `uncovered: Vec<LineRange>`. `render` / `render_delta` signatures are
+  unchanged. Code that builds either type with an exhaustive struct
+  literal must add the fields or spread `..Default::default()`; code that
+  only reads them is unaffected.
+- `Config` gained `uncovered_hints` and a `duplicates` table
+  (`DuplicatesConfig`). Both are optional, and `#[serde(deny_unknown_fields)]`
+  still rejects typos.
+- The published JSON schemas gained `duplicates` and `uncovered`
+  (`report-v1.json`, `delta-v2.json`). Both are optional additive fields,
+  so existing documents stay valid and neither envelope version was
+  bumped — but validators pinned to a *cached pre-0.5.0 copy* will reject
+  new documents, since the schemas declare `additionalProperties: false`.
+  Refresh them from the repo; the published URLs are unchanged.
+
+### Fixed
+
+- **The published schemas rejected `--duplicates` JSON.** Both envelopes
+  emitted a top-level `duplicates` array that neither schema declared,
+  and both schemas set `additionalProperties: false` — so the documented
+  validation step failed on the tool's own output. The schemas now
+  declare the array, and the CLI test suite validates a `--duplicates`
+  run of both envelopes against them.
+- **A real delta is never displayed as `±0.0`.** A `Regressed` /
+  `Improved` entry has beaten the epsilon by definition, but the
+  one-decimal Δ format rounded sub-0.05 changes to `-0.0`, which read as
+  "no change" beside a status that said otherwise. The formatter now
+  widens precision (up to three decimals) until the value is visible.
+
+### Internal
+
+- CI pins the self-score baseline to the pull request's merge base (spec
+  22) instead of the newest successful `main` run, and notes in the PR
+  comment when it had to fall back past a failed or unfinished run.
+- The repository adopted the Keeler spec-first workflow (0.4.0, graph
+  mode). Development-only: none of it ships in the crate.
+
 ## [0.4.3] - 2026-08-06
 
 ### Fixed
@@ -440,3 +524,19 @@ output points at v2.
 ### Added
 
 - Initial release
+
+<!-- Version links -->
+
+[0.5.0]: https://github.com/minikin/cargo-crap/compare/v0.4.3...v0.5.0
+[0.4.3]: https://github.com/minikin/cargo-crap/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/minikin/cargo-crap/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/minikin/cargo-crap/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/minikin/cargo-crap/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/minikin/cargo-crap/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/minikin/cargo-crap/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/minikin/cargo-crap/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/minikin/cargo-crap/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/minikin/cargo-crap/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/minikin/cargo-crap/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/minikin/cargo-crap/compare/v0.0.1...v0.1.0
+[0.0.1]: https://github.com/minikin/cargo-crap/releases/tag/v0.0.1

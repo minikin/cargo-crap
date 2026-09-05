@@ -148,7 +148,8 @@
 //! | [`coverage`] | LCOV parser. Produces `(file, line) → hit-count` maps. |
 //! | [`merge`] | Joins complexity with coverage. Handles all path-matching cases. |
 //! | [`delta`] | Baseline comparison. Computes per-function deltas and regression counts. |
-//! | [`report`] | Renders `Vec<CrapEntry>` or `DeltaReport` as human table, JSON, GitHub annotations, or Markdown. |
+//! | [`duplicates`] | Structural duplicate detection: normalize each function's AST, fingerprint its subtrees, compare pairs by Jaccard similarity. |
+//! | [`report`] | Renders `Vec<CrapEntry>` or `DeltaReport` as a human table, JSON, GitHub annotations, Markdown, a PR comment, SARIF, or a Shields.io badge. |
 //! | [`config`] | Loads `.cargo-crap.toml` by walking up from CWD. |
 
 pub mod complexity;

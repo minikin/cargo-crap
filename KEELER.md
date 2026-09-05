@@ -1,5 +1,13 @@
 # Keeler — a Polygraph for AI-Written Code
 
+> **Which file is this?** `KEELER.md` is the methodology as published
+> upstream — the essay, kept here so the repository explains itself.
+> `.claude/keeler.md` is this project's operative copy, imported by
+> `CLAUDE.md` and read by the agent; local deviations are recorded in
+> `CLAUDE.md` under "Keeler workflow". Edit `.claude/keeler.md` to change
+> how this repository works; `KEELER.md` is refreshed from upstream by
+> `just keeler-upgrade`.
+
 **Keeler** is a way to build software *with* AI that remains trustworthy: humans own the decisions, the agent does the work, and machines — not vibes — verify the result.
 
 It is built for **[Claude Code](https://claude.com/claude-code)** and

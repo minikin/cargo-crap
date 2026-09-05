@@ -1,6 +1,6 @@
 [package]
 name = "cargo-crap"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Oleksandr Prokhorenko <warbles.lieu_04@icloud.com>"]
@@ -55,7 +55,7 @@ jsonschema = { version = "0.46", default-features = false }
 proptest = "1.11.0"
 
 # cargo-binstall: download a pre-built binary instead of compiling from a source.
-# Archive naming matches the release workflow: cargo-crap-v{version}-{target}.tar.gz
+# Archive naming matches the release workflow: cargo-crap-{target}.tar.gz
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/cargo-crap-{ target }.tar.gz"
 bin-dir = "cargo-crap{ binary-ext }"

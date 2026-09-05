@@ -21,9 +21,22 @@
 //! sort = "file"
 //! # Show Unchanged rows in --baseline mode (human / markdown).
 //! show_unchanged = true
+//! # Hide entries scoring below this; keep only the N worst offenders.
+//! min = 5.0
+//! top = 20
+//! # Exit 1 when any score rises against --baseline.
+//! fail-regression = true
+//! # Regression-detector tolerance, and a cap on analysis threads.
+//! epsilon = 0.01
+//! jobs = 4
 //! # Append an Uncovered column (uncovered line ranges) to the human,
 //! # markdown, and pr-comment outputs.
 //! uncovered-hints = true
+//! # Structural duplicate detection (--duplicates).
+//! [duplicates]
+//! enabled = false
+//! threshold = 0.82
+//! min-nodes = 20
 //! ```
 
 use crate::merge::{MissingCoveragePolicy, SortOrder};
