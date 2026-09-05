@@ -76,6 +76,9 @@ Windows: download `cargo-crap-x86_64-pc-windows-msvc.zip` from the [latest relea
 ## Quick start
 
 ```bash
+# 0. cargo-llvm-cov is a separate tool; install it once.
+cargo install cargo-llvm-cov
+
 # 1. Generate an LCOV coverage report.
 cargo llvm-cov --lcov --output-path lcov.info
 
@@ -100,11 +103,13 @@ Example output:
 
 ```
 ┌───┬───────┬────┬───────────────────┬──────────┬───────────────┐
-│   │  CRAP │ CC │ Coverage          │ Function │ Location      │
+│   ┆  CRAP ┆ CC ┆ Coverage          ┆ Function ┆ Location      │
 ╞═══╪═══════╪════╪═══════════════════╪══════════╪═══════════════╡
-│ ✗ │ 156.0 │ 12 │ ░░░░░░░░░░   0.0% │ crappy   │ src/lib.rs:24 │
-│ ▲ │   6.7 │  4 │ ████░░░░░░  44.4% │ moderate │ src/lib.rs:12 │
-│ ✓ │   1.0 │  1 │ ██████████ 100.0% │ trivial  │ src/lib.rs:8  │
+│ ✗ ┆ 156.0 ┆ 12 ┆ ░░░░░░░░░░   0.0% ┆ crappy   ┆ src/lib.rs:24 │
+├╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ ▲ ┆   6.7 ┆  4 ┆ ████░░░░░░  44.4% ┆ moderate ┆ src/lib.rs:12 │
+├╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ ✓ ┆   1.0 ┆  1 ┆ ██████████ 100.0% ┆ trivial  ┆ src/lib.rs:8  │
 └───┴───────┴────┴───────────────────┴──────────┴───────────────┘
 ✗ 1/3 function(s) exceed CRAP threshold 30.
 ```
@@ -113,7 +118,7 @@ Example output:
 
 | Flag                                                             | Default       | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--lcov <FILE>`                                                  | —             | LCOV file from `cargo llvm-cov` or `cargo tarpaulin`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `--lcov <FILE>`                                                  | —             | LCOV file from `cargo llvm-cov` or `cargo tarpaulin`. **Omitting it is not a coverage-free run**: every function is scored as if it had 0% coverage, so CRAP collapses to `CC² + CC` and the whole table reads red. That is useful for a first look at the complexity distribution — it is not a CRAP run.                                                                                                                                                                            |
 | `--path <DIR>`                                                   | `.`           | Root to walk for `.rs` files (respects `.gitignore`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `--threshold <N>`                                                | `30`          | Score above which a function is flagged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `--min <SCORE>`                                                  | —             | Hide entries below this score.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -343,6 +348,9 @@ allow   = ["generated::*", "src/generated/**"]
 epsilon = 0.01            # regression-detector tolerance
 jobs    = 4               # cap parallel analysis at 4 threads
 sort    = "file"          # entry ordering: crap (default) | file
+min     = 5.0             # hide entries scoring below this
+top     = 20              # keep only the N worst offenders
+fail-regression = true    # exit 1 when a score rises against --baseline
 show_unchanged = false    # list Unchanged rows in --baseline mode
 # Append an Uncovered column (per-function uncovered line ranges, e.g.
 # `142–158, 171, 180–184 +2 more`) to the human, markdown, and pr-comment
@@ -358,9 +366,37 @@ min-nodes = 20      # skip functions smaller than this; 0 compares everything
 
 All keys are optional. Unknown keys are rejected to catch typos.
 
+Every key above accepts both the kebab-case house spelling and its
+snake_case alias (`show-unchanged` / `show_unchanged`). Where a key and
+its flag are not spelled the same, the mapping is:
+
+| Flag                  | Config key             |
+| --------------------- | ---------------------- |
+| `--threshold`         | `threshold`            |
+| `--fail-above`        | `fail-above`           |
+| `--missing`           | `missing`              |
+| `--exclude`           | `exclude` (appends)    |
+| `--allow`             | `allow`                |
+| `--min`               | `min`                  |
+| `--top`               | `top`                  |
+| `--sort`              | `sort`                 |
+| `--epsilon`           | `epsilon`              |
+| `--jobs`              | `jobs`                 |
+| `--fail-regression`   | `fail-regression`      |
+| `--show-unchanged`    | `show-unchanged`       |
+| `--duplicates`        | `duplicates.enabled`   |
+| `--dup-threshold`     | `duplicates.threshold` |
+| *(no flag)*           | `duplicates.min-nodes` |
+| *(no flag)*           | `uncovered-hints`      |
+| *(no key)*            | `--path`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`, `--baseline`, `--no-default-excludes`, `--repo-url`, `--commit-ref` |
+
+`default-excludes` is the one key with no direct flag equivalent: it
+*replaces* the built-in default list, where `--no-default-excludes`
+empties it.
+
 ## Design
 
-The tool has six orthogonal modules. Each is testable in isolation; the
+The tool has seven orthogonal modules. Each is testable in isolation; the
 join between them has its own integration test.
 
 ```
@@ -384,8 +420,16 @@ join between them has its own integration test.
              └─────┬────┘     └───────┘
                    ▼
              ┌──────────┐
-             │  report  │  ← human / JSON / GitHub / Markdown
-             └──────────┘
+             │  report  │  ← human / JSON / GitHub / Markdown /
+             └──────────┘     pr-comment / SARIF / Shields
+
+                syn
+            (Rust AST)
+                 │
+                 ▼
+          ┌────────────┐
+          │ duplicates │  ← second pass, only on --duplicates
+          └────────────┘
 ```
 
 ### The path-matching problem
@@ -419,6 +463,34 @@ would otherwise silently bind them to whatever file happened to exist
 under the tool's working directory. The regression test
 `relative_coverage_paths_are_not_resolved_against_cwd` in `src/merge.rs`
 pins this.
+
+### What gets a score, and what counts as complexity
+
+Two things surprise people the first time their numbers do not match
+another tool.
+
+**Test code is never scored.** A function carrying `#[test]` and every
+item inside a `#[cfg(test)] mod` is skipped by the complexity pass, so it
+never reaches the table. (Only that exact spelling — `#[cfg(not(test))]`
+and `#[cfg(any(test, …))]` are left alone.) On top of that, `tests/**`,
+`benches/**` and `examples/**` are excluded at walk time; pass
+`--no-default-excludes` to get them back. So "my test helpers are
+missing" is the tool working as intended, not a path-matching failure.
+
+**Cyclomatic complexity starts at 1 and adds one for each of:** `if`
+(including every `else if`), `for`, `while`, `loop`, **every** `match`
+arm, each `&&` and `||`, and each `?`. Two consequences worth knowing:
+
+- A three-arm `match` adds 3, giving CC 4 — textbook McCabe counts N−1
+  branch points and would say 3. Scores are internally consistent and
+  comparable across runs of this tool; they are not comparable to
+  another tool's numbers.
+- `?` counts as a decision point, so an idiomatic `Result` chain scores
+  higher than its branching suggests.
+
+Closures and items nested inside a function body (a local `fn`, `impl`,
+`mod`, …) are *not* folded into the enclosing function — each is its own
+scope, and a closure's branches belong to the closure.
 
 ### The `--missing` policy
 
@@ -540,6 +612,13 @@ it back so the README embed stays current:
     git push
 ```
 
+This repository does it differently, and the badge at the top of this file
+points at that: `ci.yml` uploads `crap-badge.json` as an artifact and a
+separate `badge` job pushes it to a dedicated `badges` branch, so the
+default branch never carries a generated file. See
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) if you want that
+shape instead.
+
 ### PR comment bot
 
 `--format pr-comment` produces a sticky comment that surfaces regressions
@@ -590,6 +669,30 @@ self_score:
             await github.rest.issues.createComment({ ...args, issue_number: context.issue.number });
           }
 ```
+
+## Troubleshooting
+
+**Every function shows `—` or 0% coverage.** Either no `--lcov` was
+passed (see the flag table — that run scores everything as uncovered by
+design), or the LCOV file and the analyzed tree describe different
+scopes. `cargo-crap` detects the second case and prints analyzed / LCOV /
+matched file counts to stderr before the report, with examples of files
+present on only one side; the same numbers are in the `diagnostics`
+object of both JSON envelopes, so CI can gate on them. The usual cause is
+a coverage run scoped to one crate and an analysis scoped to the
+workspace, or vice versa.
+
+**My test helpers are not listed.** They are skipped on purpose — see
+[What gets a score](#what-gets-a-score-and-what-counts-as-complexity).
+
+**CC is higher than another tool reports.** Every `match` arm and every
+`?` counts; the same section explains why.
+
+**`--baseline` reports functions as `removed` that clearly still exist.**
+Baseline entries are filtered through the current run's exclusions before
+comparison, so this is usually a scope change instead: a `-p` subset run
+against a whole-workspace baseline, or an `--exclude` added since. Match
+the scope, or regenerate the baseline once.
 
 ## Prior art and references
 

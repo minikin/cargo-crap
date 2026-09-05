@@ -35,7 +35,9 @@ ci: lint test
 # test is the tool doing the measuring, so gating on a released binary would
 # score code that isn't the code under review. Fixtures are excluded to match
 # the Self-score job in CI — deliberately crappy sample projects are inputs,
-# not source.
+# not source. Since spec 14 that exclusion is redundant (`tests/**` is a
+# default exclude); it is kept explicit so the intent survives a change to
+# the default list.
 crap_bin := "cargo run --release --"
 crap_scope := "--workspace --exclude 'tests/fixtures/**'"
 
@@ -66,7 +68,9 @@ crap-delta:
     {{crap_bin}} --lcov lcov.info {{crap_scope}} --threshold 15 --fail-above \
         --baseline crap-baseline.json --fail-regression
 
-# Full local gate: format, lint, tests, coverage, CRAP
+# Full local gate: format, lint, tests, CRAP. Note `cov` is NOT part of it —
+# the `crap` recipe runs llvm-cov to produce lcov.info but never applies the
+# 90% line bar; run `just cov` for that.
 dev: fmt lint test crap
 
 # Mutation tests for a specific file: just mutants src/delta.rs

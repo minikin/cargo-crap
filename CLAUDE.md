@@ -43,9 +43,9 @@ cargo fmt --all
 # Lint (warnings are errors in CI: RUSTFLAGS="-D warnings")
 cargo clippy --all-targets -- -D warnings
 
-# Run the tool against this repo (dogfood)
-cargo llvm-cov --lcov --output-path lcov.info --workspace
-cargo run --release -- --lcov lcov.info --workspace --threshold 15 --fail-above
+# Run the tool against this repo (dogfood) — prefer the recipe, which is
+# the single definition of this gate; spelling it out here lets the two drift.
+just crap
 ```
 
 ## Architecture
