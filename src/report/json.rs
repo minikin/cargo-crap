@@ -5,6 +5,7 @@
 //! input as well — `delta::load_baseline` deserializes the same struct.
 
 use crate::delta::{DeltaEntry, DeltaReport};
+use crate::duplicates::compare::DuplicatePair;
 use crate::merge::{CrapEntry, ScopeDiagnostics};
 use anyhow::Result;
 use std::io::Write;
@@ -51,11 +52,64 @@ pub struct Envelope {
     /// `--baseline` (the mismatch is a property of the producing run).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<ScopeDiagnostics>,
+    /// Candidate duplicate pairs. Present only when duplicate detection was
+    /// requested; absent — not empty — otherwise, so a baseline written by an
+    /// older version still reads, and one written without `--duplicates`
+    /// does not claim there were none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicates: Option<Vec<DuplicateJson>>,
+}
+
+/// One candidate duplicate pair, flattened for the wire.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DuplicateJson {
+    /// Path of the side that sorts first.
+    pub first_file: String,
+    /// Its function or method name.
+    pub first_function: String,
+    /// Its first line, 1-indexed and inclusive.
+    pub first_start_line: usize,
+    /// Its last line, 1-indexed and inclusive.
+    pub first_end_line: usize,
+    /// Path of the side that sorts second.
+    pub second_file: String,
+    /// Its function or method name.
+    pub second_function: String,
+    /// Its first line, 1-indexed and inclusive.
+    pub second_start_line: usize,
+    /// Its last line, 1-indexed and inclusive.
+    pub second_end_line: usize,
+    /// Jaccard similarity of the two fingerprint sets.
+    pub score: f64,
+}
+
+impl DuplicateJson {
+    /// Flatten a pair for serialization.
+    #[must_use]
+    pub fn from_pair(pair: &DuplicatePair) -> Self {
+        Self {
+            first_file: pair.first.file.display().to_string(),
+            first_function: pair.first.name.clone(),
+            first_start_line: pair.first.start_line,
+            first_end_line: pair.first.end_line,
+            second_file: pair.second.file.display().to_string(),
+            second_function: pair.second.name.clone(),
+            second_start_line: pair.second.start_line,
+            second_end_line: pair.second.end_line,
+            score: pair.score,
+        }
+    }
+}
+
+/// Flatten pairs for either envelope, preserving their order.
+fn wire(pairs: Option<&[DuplicatePair]>) -> Option<Vec<DuplicateJson>> {
+    pairs.map(|ps| ps.iter().map(DuplicateJson::from_pair).collect())
 }
 
 pub(crate) fn render_json(
     entries: &[CrapEntry],
     diagnostics: Option<&ScopeDiagnostics>,
+    duplicates: Option<&[DuplicatePair]>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let envelope = Envelope {
@@ -63,6 +117,7 @@ pub(crate) fn render_json(
         version: SCHEMA_VERSION.to_string(),
         entries: entries.to_vec(),
         diagnostics: diagnostics.cloned(),
+        duplicates: wire(duplicates),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
     out.write_all(b"\n")?;
@@ -72,6 +127,7 @@ pub(crate) fn render_json(
 pub(crate) fn render_delta_json(
     report: &DeltaReport,
     diagnostics: Option<&ScopeDiagnostics>,
+    duplicates: Option<&[DuplicatePair]>,
     out: &mut dyn Write,
 ) -> Result<()> {
     #[derive(serde::Serialize)]
@@ -83,6 +139,10 @@ pub(crate) fn render_delta_json(
         removed: &'a [crate::delta::RemovedEntry],
         #[serde(skip_serializing_if = "Option::is_none")]
         diagnostics: Option<&'a ScopeDiagnostics>,
+        // Carried in delta mode too: dropping them here would lose data the
+        // run was explicitly asked for, silently.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        duplicates: Option<Vec<DuplicateJson>>,
     }
     serde_json::to_writer_pretty(
         &mut *out,
@@ -92,6 +152,7 @@ pub(crate) fn render_delta_json(
             entries: &report.entries,
             removed: &report.removed,
             diagnostics,
+            duplicates: wire(duplicates),
         },
     )?;
     out.write_all(b"\n")?;

@@ -18,11 +18,13 @@
 //! links, per-crate rollups) live in [`types`], [`links`], and [`per_crate`].
 
 use crate::delta::DeltaReport;
+use crate::duplicates::compare::DuplicatePair;
 use crate::merge::{CrapEntry, ScopeDiagnostics};
 use crate::score::Severity;
 use anyhow::{Result, bail};
 use std::io::Write;
 
+pub mod duplicates;
 mod github;
 mod human;
 mod json;
@@ -111,11 +113,16 @@ pub struct RenderOptions<'a> {
     /// `.cargo-crap.toml`); consulted by the human, markdown, and
     /// pr-comment renderers. JSON always carries the data regardless.
     pub uncovered_hints: bool,
+    /// Candidate duplicate pairs, already ordered. `None` means detection
+    /// was not asked for. Read by the JSON renderer, which embeds them in
+    /// its envelope, and by [`render_duplicates`], which appends the human
+    /// section; no other format carries duplicates.
+    pub duplicates: Option<&'a [DuplicatePair]>,
 }
 
 impl Default for RenderOptions<'_> {
     /// CLI defaults: threshold 30, human format, no links, no
-    /// diagnostics, changed-only delta rows, no uncovered hints.
+    /// diagnostics, changed-only delta rows, no uncovered hints, no duplicates.
     fn default() -> Self {
         Self {
             threshold: crate::score::DEFAULT_THRESHOLD,
@@ -124,6 +131,7 @@ impl Default for RenderOptions<'_> {
             diagnostics: None,
             show_unchanged: false,
             uncovered_hints: false,
+            duplicates: None,
         }
     }
 }
@@ -140,7 +148,7 @@ pub fn render(
 ) -> Result<()> {
     let threshold = opts.threshold;
     match opts.format {
-        Format::Json => json::render_json(entries, opts.diagnostics, out),
+        Format::Json => json::render_json(entries, opts.diagnostics, opts.duplicates, out),
         Format::Human => human::render_human(entries, threshold, opts.uncovered_hints, out),
         Format::GitHub => github::render_github(entries, threshold, out),
         Format::Markdown => {
@@ -171,7 +179,7 @@ pub fn render_delta(
 ) -> Result<()> {
     let threshold = opts.threshold;
     match opts.format {
-        Format::Json => json::render_delta_json(report, opts.diagnostics, out),
+        Format::Json => json::render_delta_json(report, opts.diagnostics, opts.duplicates, out),
         Format::Human => human::render_delta_human(
             report,
             threshold,
@@ -206,6 +214,34 @@ pub fn render_delta(
         // ignored and the output reflects absolute current scores only.
         Format::Shields => shields::render_delta_shields(report, threshold, out),
     }
+}
+
+/// Append the candidate-duplicate section, when there is one to append.
+///
+/// A section of its own rather than an arm of [`render`], because it is a
+/// second analysis rather than a second view of the same entries — it has to
+/// follow whichever table was printed, including the `--summary` one.
+///
+/// `None` duplicates means detection was not asked for. Only `human` prints
+/// the section: JSON carries the pairs inside its envelope, where appending
+/// text after the document would leave the output unparseable, and no other
+/// format carries duplicates at all.
+///
+/// # Errors
+///
+/// Returns an error when the writer does.
+pub fn render_duplicates(
+    opts: &RenderOptions,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let Some(pairs) = opts.duplicates else {
+        return Ok(());
+    };
+    if !matches!(opts.format, Format::Human) {
+        return Ok(());
+    }
+    writeln!(out)?;
+    duplicates::render(pairs, out)
 }
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR

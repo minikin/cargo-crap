@@ -155,6 +155,7 @@ pub mod complexity;
 pub mod config;
 pub mod coverage;
 pub mod delta;
+pub mod duplicates;
 pub mod merge;
 pub mod report;
 pub mod score;

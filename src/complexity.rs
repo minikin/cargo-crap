@@ -57,7 +57,7 @@ pub fn analyze_file(path: &Path) -> Result<Vec<FunctionComplexity>> {
 
 /// Returns `true` if `attrs` contains an attribute with the given simple name,
 /// e.g. `has_attr(attrs, "test")` matches `#[test]`.
-fn has_attr(
+pub(crate) fn has_attr(
     attrs: &[syn::Attribute],
     name: &str,
 ) -> bool {
@@ -68,7 +68,7 @@ fn has_attr(
 ///
 /// More complex forms (`#[cfg(not(test))]`, `#[cfg(any(test, ...))]`) are not
 /// matched — we only skip the common, unambiguous case.
-fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
         a.path().is_ident("cfg") && a.parse_args::<syn::Ident>().is_ok_and(|id| id == "test")
     })
@@ -285,10 +285,40 @@ pub fn analyze_tree<S: AsRef<str>>(
     root: &Path,
     excludes: &[S],
 ) -> Result<Vec<FunctionComplexity>> {
+    let paths = rust_files(root, excludes)?;
+
+    // Phase 2: analyze files in parallel. Each file is independent so rayon
+    // can schedule them across all available cores with no synchronization.
+    let all: Vec<FunctionComplexity> = paths
+        .par_iter()
+        .flat_map_iter(|path| match analyze_file(path) {
+            Ok(fns) => fns,
+            Err(err) => {
+                eprintln!("warning: could not analyze {}: {err}", path.display());
+                vec![]
+            },
+        })
+        .collect();
+
+    Ok(all)
+}
+
+/// Every `.rs` file under `root` that survives `excludes` and `.gitignore`.
+///
+/// Shared by the complexity pass and the duplicate pass so the two can never
+/// disagree about which files are in scope.
+///
+/// # Errors
+///
+/// Returns an error when an exclude pattern is not a valid glob.
+pub fn rust_files<S: AsRef<str>>(
+    root: &Path,
+    excludes: &[S],
+) -> Result<Vec<PathBuf>> {
     let exclude_set = build_exclude_set(excludes)?;
 
-    // Phase 1: collect eligible paths (single-threaded walk — the filesystem
-    // is inherently sequential and the ignore crate is not Send).
+    // Single-threaded walk — the filesystem is inherently sequential and the
+    // ignore crate is not Send.
     let paths: Vec<PathBuf> = {
         let walker = ignore::WalkBuilder::new(root)
             .standard_filters(true)
@@ -320,20 +350,7 @@ pub fn analyze_tree<S: AsRef<str>>(
             .collect()
     };
 
-    // Phase 2: analyze files in parallel. Each file is independent so rayon
-    // can schedule them across all available cores with no synchronization.
-    let all: Vec<FunctionComplexity> = paths
-        .par_iter()
-        .flat_map_iter(|path| match analyze_file(path) {
-            Ok(fns) => fns,
-            Err(err) => {
-                eprintln!("warning: could not analyze {}: {err}", path.display());
-                vec![]
-            },
-        })
-        .collect();
-
-    Ok(all)
+    Ok(paths)
 }
 
 #[cfg(test)]

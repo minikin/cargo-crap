@@ -11,9 +11,11 @@ use cargo_crap::{
     complexity,
     coverage::{self, FileCoverage},
     delta::{compute_delta, load_baseline},
+    duplicates,
+    duplicates::compare::DuplicatePair,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
     report::{
-        Format, RenderOptions, SourceLinks, crappy_count, render, render_delta,
+        self, Format, RenderOptions, SourceLinks, crappy_count, render, render_delta,
         render_delta_summary, render_summary, set_color_enabled,
     },
     score::DEFAULT_THRESHOLD,
@@ -187,6 +189,18 @@ struct Cli {
     /// when set. Has no effect unless `--repo-url` is also set.
     #[arg(long, value_name = "REF")]
     commit_ref: Option<String>,
+
+    /// Also report candidate duplicate functions: functions whose normalized
+    /// structure is close enough to be worth a look. Off by default — it is a
+    /// second analysis over the same AST, and it costs time on a large tree.
+    #[arg(long)]
+    duplicates: bool,
+
+    /// Similarity at or above which a pair is reported, in `0.0..=1.0`
+    /// (default 0.82). Named apart from `--threshold`, which is the CRAP
+    /// score threshold and has meant that since v0.1.
+    #[arg(long, value_name = "SCORE")]
+    dup_threshold: Option<f64>,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -373,17 +387,22 @@ struct WorkspaceMember {
     dir: PathBuf,
 }
 
-/// Walk source trees and discover Cargo workspace members in one pass.
+/// One tree that was walked, with the excludes that were in force for it.
 ///
-/// Caps rayon's global thread pool to `jobs` first, so the parallel
-/// `analyze_tree` walk respects user-set bounds. In `--workspace` mode all
-/// members discovered via `cargo metadata` are walked; with `-p/--package`
-/// only the selected members are (spec 25). Either way, a member walk never
-/// descends into another member's nested root — each file is analyzed once,
-/// by the member that owns it.
+/// Recorded rather than recomputed so the duplicate pass walks exactly what
+/// the complexity pass walked. Deriving the roots twice is how `--workspace`
+/// came to score member roots while scanning only `--path` for duplicates.
+#[derive(Debug, Clone)]
+struct ScanRoot {
+    dir: PathBuf,
+    excludes: Vec<String>,
+}
+
 /// What [`analyze_sources`] hands back to `main`.
 struct AnalyzedSources {
     fns: Vec<complexity::FunctionComplexity>,
+    /// Every root walked, in order, with its effective excludes.
+    roots: Vec<ScanRoot>,
     /// The analyzed workspace members: all of them under `--workspace`, the
     /// selected subset under `-p/--package`, empty for single-root runs.
     members: Vec<WorkspaceMember>,
@@ -392,6 +411,14 @@ struct AnalyzedSources {
     member_scope: Option<MemberScope>,
 }
 
+/// Walk source trees and discover Cargo workspace members in one pass.
+///
+/// Caps rayon's global thread pool to `jobs` first, so the parallel
+/// `analyze_tree` walk respects user-set bounds. In `--workspace` mode all
+/// members discovered via `cargo metadata` are walked; with `-p/--package`
+/// only the selected members are (spec 25). Either way, a member walk never
+/// descends into another member's nested root — each file is analyzed once,
+/// by the member that owns it.
 fn analyze_sources(
     workspace: bool,
     packages: &[String],
@@ -410,6 +437,10 @@ fn analyze_sources(
             .with_context(|| format!("analyzing {}", path.display()))?;
         return Ok(AnalyzedSources {
             fns,
+            roots: vec![ScanRoot {
+                dir: path.to_path_buf(),
+                excludes: excludes.to_vec(),
+            }],
             members: Vec::new(),
             member_scope: None,
         });
@@ -431,6 +462,7 @@ fn analyze_workspace_members(
         select_members(&discovered, packages)?
     };
     let mut fns = Vec::new();
+    let mut roots = Vec::new();
     for m in &members {
         // Nested exclusion is computed against every discovered member, not
         // just the selected ones: an unselected nested member's files must
@@ -440,11 +472,16 @@ fn analyze_workspace_members(
         let member_fns = complexity::analyze_tree(&m.dir, &walk_excludes)
             .with_context(|| format!("analyzing {}", m.dir.display()))?;
         fns.extend(member_fns);
+        roots.push(ScanRoot {
+            dir: m.dir.clone(),
+            excludes: walk_excludes,
+        });
     }
     let member_scope =
         (!packages.is_empty()).then(|| MemberScope::new(&workspace_root, &discovered, &members));
     Ok(AnalyzedSources {
         fns,
+        roots,
         members,
         member_scope,
     })
@@ -969,12 +1006,23 @@ fn path_is_ignored(cli: &Cli) -> bool {
 fn validate_merged_values(
     epsilon: f64,
     jobs: Option<usize>,
+    dup_threshold: f64,
 ) -> Result<()> {
     if epsilon < 0.0 {
         bail!("invalid epsilon value (--epsilon or config): must be non-negative");
     }
     if matches!(jobs, Some(0)) {
         bail!("invalid jobs value (--jobs or config): must be a positive integer");
+    }
+    // The merged value, not just the flag: a threshold set in
+    // `.cargo-crap.toml` reaches the comparison the same way, and an
+    // unchecked one silently reports everything or nothing. `!(..)` rather
+    // than `<`/`>` so that NaN — which TOML can express — is rejected too.
+    if !(0.0..=1.0).contains(&dup_threshold) {
+        bail!(
+            "invalid duplicates threshold (--dup-threshold or config): \
+             must be between 0.0 and 1.0"
+        );
     }
     Ok(())
 }
@@ -994,6 +1042,11 @@ fn validate_args(cli: &Cli) -> Result<()> {
         && eps < 0.0
     {
         bail!("invalid --epsilon value: must be non-negative");
+    }
+    if let Some(t) = cli.dup_threshold
+        && !(0.0..=1.0).contains(&t)
+    {
+        bail!("invalid --dup-threshold value: must be between 0.0 and 1.0");
     }
     Ok(())
 }
@@ -1062,6 +1115,74 @@ fn apply_member_scope(
     }
 }
 
+/// Everything the duplicate pass needs, resolved before `cli` and `config`
+/// are consumed by the rest of the run.
+struct DupSettings {
+    enabled: bool,
+    threshold: f64,
+    min_nodes: usize,
+}
+
+impl DupSettings {
+    /// CLI wins over config, exactly as `threshold` and `fail_above` do.
+    fn resolve(
+        cli: &Cli,
+        config: &cargo_crap::config::Config,
+    ) -> Self {
+        Self {
+            enabled: cli.duplicates || config.duplicates.enabled.unwrap_or(false),
+            threshold: cli
+                .dup_threshold
+                .or(config.duplicates.threshold)
+                .unwrap_or(cargo_crap::config::DEFAULT_DUP_THRESHOLD),
+            min_nodes: config
+                .duplicates
+                .min_nodes
+                .unwrap_or(cargo_crap::config::DEFAULT_DUP_MIN_NODES),
+        }
+    }
+}
+
+/// Run the duplicate pass, when it was asked for.
+///
+/// Returns `None` — not an empty vector — when detection is off, so the JSON
+/// envelope can tell "not asked" from "asked, found nothing". Does no work at
+/// all in that case: the walk, the parse and the pairwise sweep are a second
+/// analysis over the same tree, and a run that did not ask must not pay.
+///
+/// Walks the roots the complexity pass actually walked, so `--workspace` and
+/// `-p` compare each member's own tree under that member's own excludes.
+fn duplicate_pairs(
+    settings: &DupSettings,
+    roots: &[ScanRoot],
+    format: Format,
+) -> Result<Option<Vec<DuplicatePair>>> {
+    if !settings.enabled {
+        return Ok(None);
+    }
+    // Only two formats can carry the pairs. Paying for a quadratic sweep and
+    // then discarding it silently is worse than saying so and skipping it.
+    if !matches!(format, Format::Human | Format::Json) {
+        eprintln!(
+            "warning: --duplicates has no effect with this format; \
+             use --format human or --format json"
+        );
+        return Ok(None);
+    }
+    let mut functions = Vec::new();
+    for root in roots {
+        functions.extend(duplicates::scan::scan(&root.dir, &root.excludes)?);
+    }
+    // Small functions are dropped before comparison rather than filtered out
+    // of the results: every pair of trivial accessors is a genuine structural
+    // match, and reporting them buries the pairs worth reading.
+    functions.retain(|f| f.node_count >= settings.min_nodes);
+    functions.sort_by(|a, b| a.location.cmp(&b.location));
+    let mut pairs = duplicates::compare::find_pairs(&functions, settings.threshold);
+    report::duplicates::sort_pairs(&mut pairs);
+    Ok(Some(pairs))
+}
+
 /// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
 ///
 /// `baseline` arrives pre-loaded and pre-filtered (see [`BaselineFilter`]) so
@@ -1073,7 +1194,7 @@ fn do_render(
     out: &mut dyn Write,
 ) -> Result<(bool, bool)> {
     let summary = effective_summary(opts.summary, opts.render.format);
-    if let Some(baseline_data) = baseline {
+    let outcome = if let Some(baseline_data) = baseline {
         let mut report = compute_delta(entries, baseline_data, opts.epsilon);
         report.sort(opts.sort);
         let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
@@ -1083,7 +1204,7 @@ fn do_render(
         } else {
             render_delta(&report, &opts.render, out)?;
         }
-        Ok((has_crappy, has_regression))
+        (has_crappy, has_regression)
     } else {
         let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
         if summary {
@@ -1091,8 +1212,12 @@ fn do_render(
         } else {
             render(entries, &opts.render, out)?;
         }
-        Ok((has_crappy, false))
-    }
+        (has_crappy, false)
+    };
+    // After whichever table was printed, and only once: the section follows
+    // both branches and every row policy.
+    report::render_duplicates(&opts.render, out).context("writing duplicate report")?;
+    Ok(outcome)
 }
 
 /// Resolve `--repo-url` / `--commit-ref` against the GitHub Actions env vars,
@@ -1145,11 +1270,14 @@ fn main() -> ExitCode {
 struct LoadedArgs {
     cli: Cli,
     config: cargo_crap::config::Config,
+    /// Resolved and range-checked duplicate settings.
+    dup: DupSettings,
     epsilon: f64,
     jobs: Option<usize>,
 }
 
-/// Parse argv, load config, and validate the merged epsilon/jobs values,
+/// Parse argv, load config, and validate the merged epsilon/jobs/similarity
+/// values,
 /// returning exactly what was validated so [`run`] cannot consume a
 /// different (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
@@ -1159,10 +1287,15 @@ fn parse_and_validate() -> Result<LoadedArgs> {
         .or(config.epsilon)
         .unwrap_or(cargo_crap::delta::DEFAULT_EPSILON);
     let jobs = cli.jobs.or(config.jobs);
-    validate_merged_values(epsilon, jobs)?;
+    // Resolved here rather than at the call site: the merged similarity
+    // threshold has to be validated before anything is analyzed, and the
+    // config half of it is invisible to `validate_args`.
+    let dup = DupSettings::resolve(&cli, &config);
+    validate_merged_values(epsilon, jobs, dup.threshold)?;
     Ok(LoadedArgs {
         cli,
         config,
+        dup,
         epsilon,
         jobs,
     })
@@ -1172,6 +1305,7 @@ fn run() -> Result<ExitCode> {
     let LoadedArgs {
         cli,
         config,
+        dup,
         epsilon,
         jobs,
     } = parse_and_validate()?;
@@ -1209,6 +1343,7 @@ fn run() -> Result<ExitCode> {
     let pb = spinner("Analyzing source files…");
     let AnalyzedSources {
         fns,
+        roots,
         members,
         member_scope,
     } = analyze_sources(
@@ -1258,6 +1393,7 @@ fn run() -> Result<ExitCode> {
     ));
     let mut out_box = open_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref);
+    let dup_pairs = duplicate_pairs(&dup, &roots, cli.format.into())?;
     let opts = RenderOpts {
         render: RenderOptions {
             threshold,
@@ -1266,6 +1402,7 @@ fn run() -> Result<ExitCode> {
             diagnostics: diagnostics.as_ref(),
             show_unchanged,
             uncovered_hints,
+            duplicates: dup_pairs.as_deref(),
         },
         epsilon,
         summary: cli.summary,
@@ -1580,16 +1717,19 @@ mod tests {
         // values the config file could previously smuggle past the
         // CLI-only checks.
         assert!(
-            validate_merged_values(0.0, None).is_ok(),
+            validate_merged_values(0.0, None, 0.82).is_ok(),
             "zero epsilon is valid"
         );
-        assert!(validate_merged_values(0.01, Some(4)).is_ok());
+        assert!(validate_merged_values(0.01, Some(4), 0.82).is_ok());
         assert!(
-            validate_merged_values(-0.001, None).is_err(),
+            validate_merged_values(-0.001, None, 0.82).is_err(),
             "negative epsilon"
         );
-        assert!(validate_merged_values(0.01, Some(0)).is_err(), "zero jobs");
-        let err = validate_merged_values(-1.0, Some(0))
+        assert!(
+            validate_merged_values(0.01, Some(0), 0.82).is_err(),
+            "zero jobs"
+        );
+        let err = validate_merged_values(-1.0, Some(0), 0.82)
             .unwrap_err()
             .to_string();
         assert!(err.contains("epsilon"), "epsilon is checked first: {err}");

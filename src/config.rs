@@ -102,7 +102,37 @@ pub struct Config {
     /// `uncovered-hints` (house style) or `uncovered_hints`.
     #[serde(alias = "uncovered_hints")]
     pub uncovered_hints: Option<bool>,
+
+    /// Settings for structural duplicate detection. Its own table so the
+    /// similarity threshold cannot be confused with the CRAP `threshold`.
+    #[serde(default)]
+    pub duplicates: DuplicatesConfig,
 }
+
+/// The `[duplicates]` table.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct DuplicatesConfig {
+    /// Run duplicate detection without being asked on the command line.
+    pub enabled: Option<bool>,
+
+    /// Similarity at or above which a pair is reported. Defaults to 0.82.
+    pub threshold: Option<f64>,
+
+    /// Functions with fewer normalized nodes than this are not compared.
+    /// Defaults to 20. `0` compares everything, which is what the algorithm
+    /// does unguarded — and which reports every pair of trivial accessors.
+    /// Accepted as `min-nodes` (house style) or `min_nodes`.
+    #[serde(alias = "min_nodes")]
+    pub min_nodes: Option<usize>,
+}
+
+/// Similarity at or above which a pair is reported, absent any configuration.
+pub const DEFAULT_DUP_THRESHOLD: f64 = 0.82;
+
+/// Smallest normalized function that is worth comparing, absent any
+/// configuration.
+pub const DEFAULT_DUP_MIN_NODES: usize = 20;
 
 /// Walk up from `start` until `.cargo-crap.toml` is found.
 ///
