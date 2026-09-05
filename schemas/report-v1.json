@@ -25,9 +25,74 @@
     "diagnostics": {
       "$ref": "#/definitions/ScopeDiagnostics",
       "description": "Optional source/LCOV scope diagnostics (spec 24); absent for complexity-only runs."
+    },
+    "duplicates": {
+      "type": "array",
+      "description": "Candidate duplicate function pairs, ordered by descending score. Present only on `--duplicates` runs; absent — not empty — otherwise, so \"not asked\" stays distinguishable from \"asked, found nothing\".",
+      "items": { "$ref": "#/definitions/DuplicatePair" }
     }
   },
   "definitions": {
+    "DuplicatePair": {
+      "type": "object",
+      "description": "Two functions whose normalized syntax trees are similar enough to be worth review, scored by Jaccard similarity over their subtree fingerprints.",
+      "required": [
+        "first_file",
+        "first_function",
+        "first_start_line",
+        "first_end_line",
+        "second_file",
+        "second_function",
+        "second_start_line",
+        "second_end_line",
+        "score"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "first_file": {
+          "type": "string",
+          "description": "Source file of the side that sorts first."
+        },
+        "first_function": {
+          "type": "string",
+          "description": "Its function name. Methods include the impl-type prefix, e.g. `Foo::bar`."
+        },
+        "first_start_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed first line of that function (inclusive)."
+        },
+        "first_end_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed last line of that function (inclusive)."
+        },
+        "second_file": {
+          "type": "string",
+          "description": "Source file of the side that sorts second."
+        },
+        "second_function": {
+          "type": "string",
+          "description": "Its function name. Methods include the impl-type prefix, e.g. `Foo::bar`."
+        },
+        "second_start_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed first line of that function (inclusive)."
+        },
+        "second_end_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed last line of that function (inclusive)."
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Jaccard similarity of the two fingerprint sets, in [0, 1]."
+        }
+      }
+    },
     "CrapEntry": {
       "type": "object",
       "required": ["file", "function", "line", "cyclomatic", "coverage", "crap"],
