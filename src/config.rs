@@ -333,6 +333,15 @@ allow = ["Foo::*"]
     }
 
     #[test]
+    fn try_weight_accepts_an_integer() {
+        // `try-weight = 0` is the natural spelling of the zero weight; a
+        // TOML integer must load as the same float, not as a type error.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "try-weight = 0\n");
+        assert_eq!(load(dir.path()).unwrap().try_weight, Some(0.0));
+    }
+
+    #[test]
     fn try_weight_absent_means_none() {
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path(), "threshold = 20.0\n");
