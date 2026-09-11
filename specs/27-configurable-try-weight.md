@@ -92,8 +92,8 @@ And   stderr explains the value must be a non-negative number
 
 ```
 Given entries with CC 1.5 and CC 3.0
-When  the human (or markdown) table renders
-Then  the CC column shows `1.5` and `3`
+When  the human, markdown, pr-comment, github or sarif output renders
+Then  each shows those CCs as `1.5` and `3`
 And   a run without `try-weight` renders every CC exactly as today
 ```
 
@@ -128,6 +128,27 @@ And   a current run with `try-weight = 0.5` and `--baseline <file>`
 When  the delta is computed
 Then  no weight warning is emitted
 ```
+
+---
+
+## Tasks
+
+Each task lists its scenarios, the test types that pin it (unit /
+property / acceptance), and — when it depends on earlier tasks — a
+`Needs:` naming them. Tasks with no `Needs:` are roots; tasks whose needs
+are all done are ready; the graph is what `scripts/keeler-graph.sh` reads.
+
+T1, T2 and T3 are roots and touch disjoint files. The hot files are
+`src/main.rs` and `tests/acceptance.rs`, and only the T3 → T4 → T5 chain
+edits them, one after another. Every `RenderOptions` literal outside
+`main.rs` already ends in `..Default::default()`, so the field T4 adds
+does not break tests written on the T2 branch.
+
+- [ ] **T1 — Weighted `?` counting.** Scenarios: _Default weight preserves McCabe exactly; Zero weight makes error propagation free; Fractional weight accumulates per occurrence; Other decision points keep their fixed cost_. Tests: unit + property. Edits `src/complexity.rs` only: `CcCounter` accumulates `f64` and `visit_expr_try` adds the weight; `analyze_file` and `analyze_tree` keep their signatures and delegate to weighted variants at `1.0`, so no caller changes on this branch. The CRAP 2.0 half of the zero-weight scenario goes through `score::crap`. Properties: for any body, CC at weight `w` equals CC at weight 0 plus `w` times the number of `?` operators; weight 1.0 reproduces the integer count exactly; CC never drops below 1.0; CC is monotone non-decreasing in the weight.
+- [ ] **T2 — `cc_display` wherever CC is rendered as text.** Scenarios: _Fractional CC renders with one decimal, integral CC as today_. Tests: unit + property. Adds `cc_display` to `src/report/types.rs` beside `coverage_bar` and replaces the integer CC casts in `src/report/human.rs`, `src/report/markdown.rs`, `src/report/pr_comment.rs`, `src/report/github.rs` and `src/report/sarif.rs`. Properties: integral inputs render with no decimal point; non-integral inputs render with exactly one decimal digit. New tests build `RenderOptions` with `..Default::default()`.
+- [ ] **T3 — `try-weight` config key and merged-value validation.** Scenarios: _Invalid weight is a tool error_. Tests: unit + acceptance. Adds `try_weight: Option<f64>` to `Config` in `src/config.rs` (after `uncovered_hints`, before `duplicates`) and to the module-doc example; extends `validate_merged_values` in `src/main.rs` to reject negative, NaN and infinite weights with exit 2, and carries the resolved weight (default 1.0) on `LoadedArgs`, unconsumed until T4. Opens a `Configurable ?-operator weight` section at the end of `tests/acceptance.rs`.
+- [ ] **T4 — Thread the weight through analysis and the JSON envelope.** Needs: T1, T3. Scenarios: _The envelope records a non-default weight_. Tests: unit + acceptance. `src/main.rs` hands the resolved weight to the weighted analysis entry points in `analyze_sources` and `analyze_workspace_members`, and to a new `try_weight` field on `RenderOptions` (`src/report.rs`, default 1.0). `src/report/json.rs` adds an optional `try_weight` to `Envelope` and `DeltaOutput`, serialized only when it is not 1.0; `schemas/report-v1.json` and `schemas/delta-v2.json` gain it as an optional number. The acceptance tests also run a `?`-only function under `try-weight = 0.0` end to end (CC 1) and assert a default-weight envelope has no `try_weight` key.
+- [ ] **T5 — Warn when the baseline's weight differs.** Needs: T4. Scenarios: _Baseline recorded under a different weight warns and proceeds; Matching weights compare silently_. Tests: unit + acceptance. `src/delta.rs` returns the baseline's weight (absent reads as 1.0) alongside its entries; the baseline load path in `src/main.rs` compares it with the current weight and prints exactly one stderr warning on a mismatch before `compute_delta`, leaving matching, statuses and baseline filtering untouched. Documents `try-weight` in the README's configuration reference.
 
 ---
 
@@ -173,8 +194,10 @@ or spec-18 filtering.
 ### Display (`src/report/types.rs` + table renderers)
 
 A shared `cc_display` helper: integral values render with no decimals
-(as today), non-integral with one. Human and markdown tables use it;
-JSON keeps the raw number.
+(as today), non-integral with one. The human, markdown and pr-comment
+tables, the github annotations and the sarif message use it — every
+place that today truncates CC with an integer cast. JSON keeps the raw
+number.
 
 ### Non-goals
 
