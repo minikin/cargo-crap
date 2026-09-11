@@ -1,6 +1,6 @@
 # Spec 27 — Configurable `?`-operator weight
 
-**Status:** Proposed (issue #33)
+**Status:** Approved (issue #33)
 **Effort:** Medium
 **Module:** `src/complexity.rs`, `src/config.rs` (plus envelope/delta/display plumbing)
 
