@@ -32,6 +32,9 @@
 //! # Append an Uncovered column (uncovered line ranges) to the human,
 //! # markdown, and pr-comment outputs.
 //! uncovered-hints = true
+//! # What each `?` operator adds to cyclomatic complexity. 1.0 (default) is
+//! # classical McCabe; 0.0 makes error propagation free. Finite and >= 0.
+//! try-weight = 0.5
 //! # Structural duplicate detection (--duplicates).
 //! [duplicates]
 //! enabled = false
@@ -116,6 +119,13 @@ pub struct Config {
     #[serde(alias = "uncovered_hints")]
     pub uncovered_hints: Option<bool>,
 
+    /// What each `?` operator adds to a function's cyclomatic complexity.
+    /// Defaults to [`DEFAULT_TRY_WEIGHT`], the classical cyclomatic count; every
+    /// other decision point keeps its fixed cost. Must be finite and
+    /// non-negative when set. Config-only — there is deliberately no CLI
+    /// flag, so a weight cannot change between runs unnoticed.
+    pub try_weight: Option<f64>,
+
     /// Settings for structural duplicate detection. Its own table so the
     /// similarity threshold cannot be confused with the CRAP `threshold`.
     #[serde(default)]
@@ -146,6 +156,10 @@ pub const DEFAULT_DUP_THRESHOLD: f64 = 0.82;
 /// Smallest normalized function that is worth comparing, absent any
 /// configuration.
 pub const DEFAULT_DUP_MIN_NODES: usize = 20;
+
+/// What a `?` operator costs, absent any configuration: one decision point,
+/// the same as an `if`.
+pub const DEFAULT_TRY_WEIGHT: f64 = 1.0;
 
 /// Walk up from `start` until `.cargo-crap.toml` is found.
 ///
@@ -308,6 +322,37 @@ allow = ["Foo::*"]
         write_config(dir.path(), "uncovered_hints = false\n");
         let cfg = load(dir.path()).unwrap();
         assert_eq!(cfg.uncovered_hints, Some(false));
+    }
+
+    #[test]
+    fn try_weight_is_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "try-weight = 0.5\n");
+        let cfg = load(dir.path()).unwrap();
+        assert_eq!(cfg.try_weight, Some(0.5));
+    }
+
+    #[test]
+    fn try_weight_absent_means_none() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "threshold = 20.0\n");
+        let cfg = load(dir.path()).unwrap();
+        assert!(cfg.try_weight.is_none());
+    }
+
+    #[test]
+    fn try_weight_accepts_any_toml_float_leaving_range_to_the_caller() {
+        // TOML can spell `nan` and `inf`, and the loader does not judge
+        // them: the merged-value check is what rejects them, so a value
+        // that parses here must still be validated before it is used.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "try-weight = nan\n");
+        assert!(load(dir.path()).unwrap().try_weight.unwrap().is_nan());
+        write_config(dir.path(), "try-weight = -inf\n");
+        assert_eq!(
+            load(dir.path()).unwrap().try_weight,
+            Some(f64::NEG_INFINITY)
+        );
     }
 
     #[test]

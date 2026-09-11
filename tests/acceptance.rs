@@ -537,3 +537,34 @@ fn json_output_carries_the_pairs() {
             .ends_with("alpha.rs")
     );
 }
+
+// --- Configurable ?-operator weight -----------------------------------------
+
+#[test]
+fn invalid_weight_is_a_tool_error() {
+    // Given a config with `try-weight = -0.5`
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), "lib.rs", "fn plain() {}\n");
+    fs::write(dir.path().join(".cargo-crap.toml"), "try-weight = -0.5\n").expect("write config");
+    // When the tool runs
+    let out = crap()
+        .current_dir(dir.path())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .assert()
+        // Then it exits 2
+        .code(2);
+    // And stderr explains the value must be a non-negative number
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).expect("utf-8");
+    assert!(
+        stderr.contains("try-weight") && stderr.contains("non-negative number"),
+        "names the key and the domain: {stderr}"
+    );
+
+    // And the same tree with a valid weight runs, so the exit was the weight's
+    fs::write(dir.path().join(".cargo-crap.toml"), "try-weight = 0.0\n").expect("write config");
+    crap()
+        .current_dir(dir.path())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .assert()
+        .success();
+}
