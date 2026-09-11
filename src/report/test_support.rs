@@ -6,6 +6,7 @@
 
 use super::{Format, RenderOptions};
 use crate::coverage::LineRange;
+use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::merge::CrapEntry;
 use std::path::PathBuf;
 
@@ -62,4 +63,51 @@ pub(crate) fn sample_with_uncovered() -> Vec<CrapEntry> {
         LineRange { start: 18, end: 18 },
     ];
     entries
+}
+
+/// Two entries whose CCs take both display paths: `halfway` has a
+/// fractional CC (1.5, what a weighted `?` produces) and `whole` an
+/// integral one (3.0). Both sit above threshold 30, so the renderers that
+/// only show crappy functions (github, sarif, pr-comment) render them too.
+pub(crate) fn fractional_cc_sample() -> Vec<CrapEntry> {
+    vec![
+        CrapEntry {
+            file: PathBuf::from("a.rs"),
+            function: "halfway".into(),
+            line: 1,
+            cyclomatic: 1.5,
+            coverage: Some(0.0),
+            crap: 40.0,
+            crate_name: None,
+            uncovered: Vec::new(),
+        },
+        CrapEntry {
+            file: PathBuf::from("a.rs"),
+            function: "whole".into(),
+            line: 10,
+            cyclomatic: 3.0,
+            coverage: Some(0.0),
+            crap: 60.0,
+            crate_name: None,
+            uncovered: Vec::new(),
+        },
+    ]
+}
+
+/// [`fractional_cc_sample`] as a delta report in which both entries
+/// regressed by 10 — the one status every delta renderer shows.
+pub(crate) fn fractional_cc_delta() -> DeltaReport {
+    DeltaReport {
+        entries: fractional_cc_sample()
+            .into_iter()
+            .map(|current| DeltaEntry {
+                baseline_crap: Some(current.crap - 10.0),
+                delta: Some(10.0),
+                status: DeltaStatus::Regressed,
+                previous_file: None,
+                current,
+            })
+            .collect(),
+        removed: vec![],
+    }
 }

@@ -2,6 +2,7 @@
 //!
 //! - [`Grade`]: three-tier severity classification driving icon/colour.
 //! - [`coverage_bar`]: 10-block ASCII bar for human tables.
+//! - [`cc_display`]: CC text — integral as today, fractional to one decimal.
 //! - [`delta_display`]: Δ-column text for delta rows.
 //! - [`uncovered_display`]: capped Uncovered-column text.
 
@@ -106,6 +107,17 @@ pub(crate) fn coverage_bar(pct: Option<f64>) -> String {
                 p
             )
         },
+    }
+}
+
+/// Render a cyclomatic complexity as text. An integral CC renders with no
+/// decimals, exactly as the integer cast it replaces did; a fractional one
+/// (a weighted `?` operator) keeps one decimal, so `1.5` never reads as `1`.
+pub(crate) fn cc_display(cc: f64) -> String {
+    if cc.fract() == 0.0 {
+        format!("{cc:.0}")
+    } else {
+        format!("{cc:.1}")
     }
 }
 
@@ -257,6 +269,50 @@ pub(crate) fn format_location_with_prev(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    // --- cc_display ---
+
+    #[test]
+    fn cc_display_shows_integral_cc_without_a_decimal_point() {
+        assert_eq!(cc_display(1.0), "1");
+        assert_eq!(cc_display(3.0), "3");
+        assert_eq!(cc_display(10.0), "10");
+    }
+
+    #[test]
+    fn cc_display_shows_fractional_cc_with_one_decimal() {
+        assert_eq!(cc_display(1.5), "1.5");
+        assert_eq!(cc_display(2.5), "2.5");
+    }
+
+    #[test]
+    fn cc_display_keeps_the_decimal_when_a_fraction_rounds_to_a_whole() {
+        // A non-integral CC is never passed off as an integral one, even
+        // when one decimal rounds it to `.0`.
+        assert_eq!(cc_display(2.96), "3.0");
+    }
+
+    proptest! {
+        /// An integral CC renders exactly as the integer cast it replaces did.
+        #[test]
+        fn integral_cc_renders_with_no_decimal_point(n in 0u32..=1_000_000) {
+            prop_assert_eq!(cc_display(f64::from(n)), n.to_string());
+        }
+
+        /// A fractional CC shows exactly one decimal digit, and that digit
+        /// is the value rounded, not truncated away.
+        #[test]
+        fn non_integral_cc_renders_with_exactly_one_decimal_digit(
+            cc in (0.0f64..1_000_000.0).prop_filter("non-integral", |c| c.fract() != 0.0)
+        ) {
+            let shown = cc_display(cc);
+            let decimals = shown.split_once('.').map(|(_, d)| d);
+            prop_assert_eq!(decimals.map(str::len), Some(1), "shown as {}", shown);
+            let parsed: f64 = shown.parse().unwrap();
+            prop_assert!((parsed - cc).abs() <= 0.05 + 1e-9, "{} shown as {}", cc, shown);
+        }
+    }
 
     // --- coverage_bar ---
 

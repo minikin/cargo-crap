@@ -5,6 +5,7 @@
 //! The wrapping `runs` / `tool` / `driver` blocks always emit, so an empty
 //! result set still produces a valid SARIF document upload-able to GitHub.
 
+use super::types::cc_display;
 use crate::merge::CrapEntry;
 use crate::score::Severity;
 use anyhow::Result;
@@ -182,7 +183,10 @@ fn format_message(entry: &CrapEntry) -> String {
         .map_or_else(|| "n/a".to_string(), |c| format!("{c:.1}%"));
     format!(
         "Function `{}` has CRAP score {:.1} (cyclomatic complexity {}, coverage {})",
-        entry.function, entry.crap, entry.cyclomatic as u64, coverage,
+        entry.function,
+        entry.crap,
+        cc_display(entry.cyclomatic),
+        coverage,
     )
 }
 
@@ -207,6 +211,27 @@ mod tests {
         };
         render(&sample(), &opts, &mut buf).unwrap();
         serde_json::from_slice(&buf).expect("output must be valid JSON")
+    }
+
+    #[test]
+    fn fractional_cc_renders_with_one_decimal_integral_cc_as_today() {
+        let mut buf = Vec::new();
+        let entries = super::super::test_support::fractional_cc_sample();
+        render(&entries, &opts(30.0, Format::Sarif), &mut buf).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        let messages: Vec<&str> = v["runs"][0]["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .map(|r| r["message"]["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "Function `halfway` has CRAP score 40.0 (cyclomatic complexity 1.5, coverage 0.0%)",
+                "Function `whole` has CRAP score 60.0 (cyclomatic complexity 3, coverage 0.0%)",
+            ]
+        );
     }
 
     #[test]
