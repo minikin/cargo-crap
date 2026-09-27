@@ -10,7 +10,8 @@
 
 use super::links::{SourceLinks, linkify};
 use super::types::{
-    Grade, delta_display, uncovered_cell_suffix, write_abs_gfm_header, write_delta_gfm_header,
+    Grade, cc_display, delta_display, uncovered_cell_suffix, write_abs_gfm_header,
+    write_delta_gfm_header,
 };
 use super::write_pr_comment_marker;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus, RemovedEntry};
@@ -114,7 +115,7 @@ fn write_pr_comment_row(
         grade.icon(),
         e.crap,
         delta_display(de),
-        e.cyclomatic as usize,
+        cc_display(e.cyclomatic),
         cov,
         func,
         loc,
@@ -142,7 +143,7 @@ fn write_pr_comment_abs_row(
         "| {} | {:.1} | {} | {} | {} | {} |{}",
         grade.icon(),
         e.crap,
-        e.cyclomatic as usize,
+        cc_display(e.cyclomatic),
         cov,
         func,
         loc,
@@ -1552,5 +1553,33 @@ mod tests {
             "extended delta header:\n{s}"
         );
         assert!(s.contains("| 7–9 |"), "delta range cell:\n{s}");
+    }
+
+    // --- fractional CC display ----------------------------------------------
+
+    #[test]
+    fn fractional_cc_renders_with_one_decimal_integral_cc_as_today() {
+        let mut buf = Vec::new();
+        let entries = super::super::test_support::fractional_cc_sample();
+        render(&entries, &opts(30.0, Format::PrComment), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("| 40.0 | 1.5 | 0.0 |"), "fractional CC:\n{s}");
+        assert!(s.contains("| 60.0 | 3 | 0.0 |"), "integral CC:\n{s}");
+    }
+
+    #[test]
+    fn fractional_cc_renders_with_one_decimal_integral_cc_as_today_in_delta_rows() {
+        let mut buf = Vec::new();
+        let report = super::super::test_support::fractional_cc_delta();
+        super::super::render_delta(&report, &opts(30.0, Format::PrComment), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("| 40.0 | +10.0 | 1.5 | 0.0 |"),
+            "fractional CC:\n{s}"
+        );
+        assert!(
+            s.contains("| 60.0 | +10.0 | 3 | 0.0 |"),
+            "integral CC:\n{s}"
+        );
     }
 }

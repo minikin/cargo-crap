@@ -6,8 +6,8 @@
 use super::links::{SourceLinks, linkify};
 use super::per_crate::write_per_crate_markdown;
 use super::types::{
-    Grade, delta_display, format_location_with_prev, uncovered_cell_suffix, visible_delta_entries,
-    write_abs_gfm_header, write_delta_gfm_header,
+    Grade, cc_display, delta_display, format_location_with_prev, uncovered_cell_suffix,
+    visible_delta_entries, write_abs_gfm_header, write_delta_gfm_header,
 };
 use super::write_pr_comment_marker;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
@@ -84,7 +84,7 @@ fn write_markdown_entries_table(
             "| {} | {:.1} | {} | {} | {} | {} |{}",
             grade.icon(),
             entry.crap,
-            entry.cyclomatic as usize,
+            cc_display(entry.cyclomatic),
             cov,
             func,
             loc,
@@ -162,7 +162,7 @@ fn write_delta_entries_table(
             grade.icon(),
             e.crap,
             delta_display(de),
-            e.cyclomatic as usize,
+            cc_display(e.cyclomatic),
             cov,
             func,
             loc,
@@ -540,5 +540,43 @@ mod tests {
             "extended delta header:\n{s}"
         );
         assert!(s.contains("| 7–9 |"), "delta range cell:\n{s}");
+    }
+
+    // --- fractional CC display ----------------------------------------------
+
+    #[test]
+    fn fractional_cc_renders_with_one_decimal_integral_cc_as_today() {
+        let mut buf = Vec::new();
+        let entries = super::super::test_support::fractional_cc_sample();
+        let opts = RenderOptions {
+            threshold: 30.0,
+            format: Format::Markdown,
+            ..Default::default()
+        };
+        render(&entries, &opts, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("| 40.0 | 1.5 | 0.0 |"), "fractional CC:\n{s}");
+        assert!(s.contains("| 60.0 | 3 | 0.0 |"), "integral CC:\n{s}");
+    }
+
+    #[test]
+    fn fractional_cc_renders_with_one_decimal_integral_cc_as_today_in_delta_rows() {
+        let mut buf = Vec::new();
+        let report = super::super::test_support::fractional_cc_delta();
+        let opts = RenderOptions {
+            threshold: 30.0,
+            format: Format::Markdown,
+            ..Default::default()
+        };
+        super::super::render_delta(&report, &opts, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("| 40.0 | +10.0 | 1.5 | 0.0 |"),
+            "fractional CC:\n{s}"
+        );
+        assert!(
+            s.contains("| 60.0 | +10.0 | 3 | 0.0 |"),
+            "integral CC:\n{s}"
+        );
     }
 }

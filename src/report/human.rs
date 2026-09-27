@@ -3,7 +3,7 @@
 
 use super::per_crate::write_per_crate_human;
 use super::types::{
-    Grade, apply_table_styling, coverage_bar, delta_display, styled, uncovered_display,
+    Grade, apply_table_styling, cc_display, coverage_bar, delta_display, styled, uncovered_display,
     visible_delta_entries,
 };
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
@@ -79,7 +79,7 @@ fn build_row(
     let mut row = vec![
         Cell::new(grade.icon()).fg(color),
         Cell::new(format!("{:.1}", entry.crap)).fg(color),
-        Cell::new(entry.cyclomatic as usize),
+        Cell::new(cc_display(entry.cyclomatic)),
         Cell::new(coverage_bar(entry.coverage)),
         Cell::new(&entry.function),
         Cell::new(format!("{}:{}", entry.file.display(), entry.line)),
@@ -242,7 +242,7 @@ fn build_delta_row(
         Cell::new(grade.icon()).fg(color),
         Cell::new(format!("{:.1}", e.crap)).fg(color),
         delta_cell,
-        Cell::new(e.cyclomatic as usize),
+        Cell::new(cc_display(e.cyclomatic)),
         Cell::new(coverage_bar(e.coverage)),
         Cell::new(&e.function),
         Cell::new(location),
@@ -708,5 +708,45 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("Uncovered"), "delta header column:\n{s}");
         assert!(s.contains("7–9"), "delta range cell:\n{s}");
+    }
+
+    // --- fractional CC display ----------------------------------------------
+
+    /// The trimmed text of cell `column` in the table row naming `function`.
+    /// Splitting on the borders keeps the assertion independent of padding.
+    fn cell_in_row(
+        table: &str,
+        function: &str,
+        column: usize,
+    ) -> String {
+        let row = table
+            .lines()
+            .find(|l| l.contains(function))
+            .unwrap_or_else(|| panic!("no row for {function}:\n{table}"));
+        row.split(['│', '┆'])
+            .nth(column)
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn fractional_cc_renders_with_one_decimal_integral_cc_as_today() {
+        let mut buf = Vec::new();
+        let entries = super::super::test_support::fractional_cc_sample();
+        render(&entries, &opts(30.0, Format::Human), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert_eq!(cell_in_row(&s, "halfway", 3), "1.5", "fractional CC:\n{s}");
+        assert_eq!(cell_in_row(&s, "whole", 3), "3", "integral CC:\n{s}");
+    }
+
+    #[test]
+    fn fractional_cc_renders_with_one_decimal_integral_cc_as_today_in_delta_rows() {
+        let mut buf = Vec::new();
+        let report = super::super::test_support::fractional_cc_delta();
+        super::super::render_delta(&report, &opts(30.0, Format::Human), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert_eq!(cell_in_row(&s, "halfway", 4), "1.5", "fractional CC:\n{s}");
+        assert_eq!(cell_in_row(&s, "whole", 4), "3", "integral CC:\n{s}");
     }
 }
