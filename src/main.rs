@@ -1007,6 +1007,7 @@ fn validate_merged_values(
     epsilon: f64,
     jobs: Option<usize>,
     dup_threshold: f64,
+    try_weight: f64,
 ) -> Result<()> {
     if epsilon < 0.0 {
         bail!("invalid epsilon value (--epsilon or config): must be non-negative");
@@ -1023,6 +1024,16 @@ fn validate_merged_values(
             "invalid duplicates threshold (--dup-threshold or config): \
              must be between 0.0 and 1.0"
         );
+    }
+    validate_try_weight(try_weight)
+}
+
+/// Reject a `?` weight that is negative, NaN or infinite — TOML can spell
+/// all three, and any of them would make every CC and CRAP score it touches
+/// meaningless. Config-only, so the message names no flag.
+fn validate_try_weight(try_weight: f64) -> Result<()> {
+    if !try_weight.is_finite() || try_weight < 0.0 {
+        bail!("invalid try-weight value (config): must be a finite, non-negative number");
     }
     Ok(())
 }
@@ -1274,10 +1285,16 @@ struct LoadedArgs {
     dup: DupSettings,
     epsilon: f64,
     jobs: Option<usize>,
+    /// Resolved and range-checked `?` weight.
+    #[expect(
+        dead_code,
+        reason = "validated up front; analysis does not take the weight yet"
+    )]
+    try_weight: f64,
 }
 
-/// Parse argv, load config, and validate the merged epsilon/jobs/similarity
-/// values,
+/// Parse argv, load config, and validate the merged epsilon/jobs/similarity/
+/// try-weight values,
 /// returning exactly what was validated so [`run`] cannot consume a
 /// different (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
@@ -1291,13 +1308,17 @@ fn parse_and_validate() -> Result<LoadedArgs> {
     // threshold has to be validated before anything is analyzed, and the
     // config half of it is invisible to `validate_args`.
     let dup = DupSettings::resolve(&cli, &config);
-    validate_merged_values(epsilon, jobs, dup.threshold)?;
+    let try_weight = config
+        .try_weight
+        .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
+    validate_merged_values(epsilon, jobs, dup.threshold, try_weight)?;
     Ok(LoadedArgs {
         cli,
         config,
         dup,
         epsilon,
         jobs,
+        try_weight,
     })
 }
 
@@ -1308,6 +1329,7 @@ fn run() -> Result<ExitCode> {
         dup,
         epsilon,
         jobs,
+        try_weight: _,
     } = parse_and_validate()?;
 
     // Merge: CLI values take precedence; config fills in what's missing.
@@ -1717,22 +1739,53 @@ mod tests {
         // values the config file could previously smuggle past the
         // CLI-only checks.
         assert!(
-            validate_merged_values(0.0, None, 0.82).is_ok(),
+            validate_merged_values(0.0, None, 0.82, 1.0).is_ok(),
             "zero epsilon is valid"
         );
-        assert!(validate_merged_values(0.01, Some(4), 0.82).is_ok());
+        assert!(validate_merged_values(0.01, Some(4), 0.82, 1.0).is_ok());
         assert!(
-            validate_merged_values(-0.001, None, 0.82).is_err(),
+            validate_merged_values(-0.001, None, 0.82, 1.0).is_err(),
             "negative epsilon"
         );
         assert!(
-            validate_merged_values(0.01, Some(0), 0.82).is_err(),
+            validate_merged_values(0.01, Some(0), 0.82, 1.0).is_err(),
             "zero jobs"
         );
-        let err = validate_merged_values(-1.0, Some(0), 0.82)
+        let err = validate_merged_values(-1.0, Some(0), 0.82, 1.0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("epsilon"), "epsilon is checked first: {err}");
+    }
+
+    #[test]
+    fn validate_merged_values_accepts_any_finite_non_negative_try_weight() {
+        // Zero is the point of the knob, and above one is legitimate for
+        // auditing error-handling-heavy code.
+        for weight in [0.0, -0.0, f64::MIN_POSITIVE, 0.5, 1.0, 3.0, f64::MAX] {
+            assert!(
+                validate_merged_values(0.01, None, 0.82, weight).is_ok(),
+                "try-weight {weight} is valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_merged_values_rejects_negative_nan_and_infinite_try_weight() {
+        for weight in [
+            -0.5,
+            -f64::MIN_POSITIVE,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            let err = validate_merged_values(0.01, None, 0.82, weight)
+                .expect_err("an out-of-domain try-weight must be rejected")
+                .to_string();
+            assert!(
+                err.contains("try-weight") && err.contains("non-negative number"),
+                "try-weight {weight} names the key and the domain: {err}"
+            );
+        }
     }
 
     #[test]
