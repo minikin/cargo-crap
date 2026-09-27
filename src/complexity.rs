@@ -187,23 +187,24 @@ impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
 ///
 /// Base count is 1 (the single straight-line path). Each decision point adds
 /// 1, except `?`, which adds `try_weight`. The weight scales increments only,
-/// never the base.
+/// never the base. It is applied once, as a product over the `?` count, so a
+/// non-dyadic weight such as 0.1 does not accumulate float drift the way a
+/// per-occurrence sum would.
 fn count_cyclomatic(
     body: &syn::Block,
     try_weight: f64,
 ) -> f64 {
-    let mut counter = CcCounter {
-        count: 1.0,
-        try_weight,
-    };
+    let mut counter = CcCounter::default();
     counter.visit_block(body);
-    counter.count
+    f64::from(1 + counter.decisions) + try_weight * f64::from(counter.tries)
 }
 
 /// Visitor that counts decision points to compute cyclomatic complexity.
+/// `?` operators are counted apart from the fixed-cost decision points.
+#[derive(Default)]
 struct CcCounter {
-    count: f64,
-    try_weight: f64,
+    decisions: u32,
+    tries: u32,
 }
 
 impl<'ast> Visit<'ast> for CcCounter {
@@ -211,7 +212,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::ExprIf,
     ) {
-        self.count += 1.0;
+        self.decisions += 1;
         visit::visit_expr_if(self, node); // recurse to catch else-if chains
     }
 
@@ -219,7 +220,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::ExprForLoop,
     ) {
-        self.count += 1.0;
+        self.decisions += 1;
         visit::visit_expr_for_loop(self, node);
     }
 
@@ -227,7 +228,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::ExprWhile,
     ) {
-        self.count += 1.0;
+        self.decisions += 1;
         visit::visit_expr_while(self, node);
     }
 
@@ -235,7 +236,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::ExprLoop,
     ) {
-        self.count += 1.0;
+        self.decisions += 1;
         visit::visit_expr_loop(self, node);
     }
 
@@ -243,7 +244,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::Arm,
     ) {
-        self.count += 1.0;
+        self.decisions += 1;
         visit::visit_arm(self, node);
     }
 
@@ -252,7 +253,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         node: &'ast syn::ExprBinary,
     ) {
         if matches!(node.op, BinOp::And(_) | BinOp::Or(_)) {
-            self.count += 1.0;
+            self.decisions += 1;
         }
         visit::visit_expr_binary(self, node);
     }
@@ -261,7 +262,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::ExprTry,
     ) {
-        self.count += self.try_weight;
+        self.tries += 1;
         visit::visit_expr_try(self, node);
     }
 
@@ -392,7 +393,7 @@ pub fn rust_files<S: AsRef<str>>(
 #[cfg(test)]
 #[expect(
     clippy::float_cmp,
-    reason = "CC sums whole decision points and dyadic `?` weights, which f64 represents exactly; exact equality is the right comparison"
+    reason = "CC is a whole decision count plus one `weight × tries` product; the tests recompute that same expression or compare against values it yields exactly, so exact equality is the right comparison"
 )]
 mod tests {
     use super::*;
@@ -640,6 +641,24 @@ fn c() {}
         let f = write_temp("fn run() -> R { f()?; Ok(()) }");
         let fns = analyze_file_weighted(f.path(), 0.5).expect("analyze");
         assert_eq!(fns[0].cyclomatic, 1.5, "one `?` at weight 0.5 adds 0.5");
+    }
+
+    #[test]
+    fn non_dyadic_weights_do_not_drift_across_occurrences() {
+        let tries = |n: usize| {
+            write_temp(&format!(
+                "fn run() -> R {{ {} Ok(()) }}",
+                "f()?; ".repeat(n)
+            ))
+        };
+        let cc = |n: usize, w: f64| {
+            analyze_file_weighted(tries(n).path(), w).expect("analyze")[0].cyclomatic
+        };
+        // Summed per occurrence these land at 1.9999999999999998,
+        // 2.000000000000001 and 3.999999999999999.
+        assert_eq!(cc(5, 0.2), 2.0, "five `?` at 0.2");
+        assert_eq!(cc(10, 0.1), 2.0, "ten `?` at 0.1");
+        assert_eq!(cc(10, 0.3), 4.0, "ten `?` at 0.3");
     }
 
     #[test]
@@ -966,12 +985,9 @@ fn allowed() -> i32 { 42 }
             let (body, decisions, tries) = assemble(&picks);
             let at_zero = cc_of_body(&body, 0.0);
             prop_assert_eq!(at_zero, (1 + decisions) as f64);
-            let at_w = cc_of_body(&body, w);
-            let expected = at_zero + w * tries as f64;
-            prop_assert!(
-                (at_w - expected).abs() <= 1e-9,
-                "CC at weight {} was {}, expected {}", w, at_w, expected
-            );
+            // Exact: the weight is applied once, as a product, so there is no
+            // per-occurrence rounding for a tolerance to absorb.
+            prop_assert_eq!(cc_of_body(&body, w), at_zero + w * tries as f64);
         }
 
         /// Weight 1.0 is classical McCabe: an exact integer count.
