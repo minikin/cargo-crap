@@ -31,7 +31,9 @@ pub struct FunctionComplexity {
     pub start_line: usize,
     /// 1-indexed last line of the function (inclusive).
     pub end_line: usize,
-    /// `McCabe` cyclomatic complexity, minimum 1.0.
+    /// `McCabe` cyclomatic complexity, minimum 1.0. Each `?` contributes the
+    /// analysis's try weight rather than a fixed 1, so the value is
+    /// fractional whenever that weight is.
     pub cyclomatic: f64,
 }
 
@@ -41,6 +43,18 @@ pub struct FunctionComplexity {
 /// CRAP is a per-function metric, and rolling up file-level CC into the
 /// formula produces misleading scores on large files.
 pub fn analyze_file(path: &Path) -> Result<Vec<FunctionComplexity>> {
+    analyze_file_weighted(path, 1.0)
+}
+
+/// [`analyze_file`], with each `?` operator counting `try_weight` instead
+/// of 1. Every other decision point keeps its fixed cost of 1.
+///
+/// `try_weight` is expected to be finite and non-negative; validating it is
+/// the caller's job.
+pub fn analyze_file_weighted(
+    path: &Path,
+    try_weight: f64,
+) -> Result<Vec<FunctionComplexity>> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("reading source file {}", path.display()))?;
 
@@ -50,6 +64,7 @@ pub fn analyze_file(path: &Path) -> Result<Vec<FunctionComplexity>> {
         file: path,
         out: Vec::new(),
         impl_type: None,
+        try_weight,
     };
     visitor.visit_file(&syntax);
     Ok(visitor.out)
@@ -92,6 +107,8 @@ struct FunctionVisitor<'a> {
     out: Vec<FunctionComplexity>,
     /// Type name of the enclosing `impl` block, if any.
     impl_type: Option<String>,
+    /// What each `?` operator adds to a function's CC.
+    try_weight: f64,
 }
 
 impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
@@ -107,7 +124,7 @@ impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
         let name = node.sig.ident.to_string();
         let start_line = node.sig.fn_token.span.start().line;
         let end_line = node.block.brace_token.span.close().end().line;
-        let cyclomatic = count_cyclomatic(&node.block) as f64;
+        let cyclomatic = count_cyclomatic(&node.block, self.try_weight);
         self.out.push(FunctionComplexity {
             file: self.file.to_path_buf(),
             name,
@@ -144,7 +161,7 @@ impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
         };
         let start_line = node.sig.fn_token.span.start().line;
         let end_line = node.block.brace_token.span.close().end().line;
-        let cyclomatic = count_cyclomatic(&node.block) as f64;
+        let cyclomatic = count_cyclomatic(&node.block, self.try_weight);
         self.out.push(FunctionComplexity {
             file: self.file.to_path_buf(),
             name,
@@ -168,16 +185,26 @@ impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
 
 /// Compute cyclomatic complexity for a function body.
 ///
-/// Base count is 1 (the single straight-line path). Each decision point adds 1.
-fn count_cyclomatic(body: &syn::Block) -> usize {
-    let mut counter = CcCounter { count: 1 };
+/// Base count is 1 (the single straight-line path). Each decision point adds
+/// 1, except `?`, which adds `try_weight`. The weight scales increments only,
+/// never the base. It is applied once, as a product over the `?` count, so a
+/// non-dyadic weight such as 0.1 does not accumulate float drift the way a
+/// per-occurrence sum would.
+fn count_cyclomatic(
+    body: &syn::Block,
+    try_weight: f64,
+) -> f64 {
+    let mut counter = CcCounter::default();
     counter.visit_block(body);
-    counter.count
+    f64::from(1 + counter.decisions) + try_weight * f64::from(counter.tries)
 }
 
 /// Visitor that counts decision points to compute cyclomatic complexity.
+/// `?` operators are counted apart from the fixed-cost decision points.
+#[derive(Default)]
 struct CcCounter {
-    count: usize,
+    decisions: u32,
+    tries: u32,
 }
 
 impl<'ast> Visit<'ast> for CcCounter {
@@ -185,7 +212,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::ExprIf,
     ) {
-        self.count += 1;
+        self.decisions += 1;
         visit::visit_expr_if(self, node); // recurse to catch else-if chains
     }
 
@@ -193,7 +220,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::ExprForLoop,
     ) {
-        self.count += 1;
+        self.decisions += 1;
         visit::visit_expr_for_loop(self, node);
     }
 
@@ -201,7 +228,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::ExprWhile,
     ) {
-        self.count += 1;
+        self.decisions += 1;
         visit::visit_expr_while(self, node);
     }
 
@@ -209,7 +236,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::ExprLoop,
     ) {
-        self.count += 1;
+        self.decisions += 1;
         visit::visit_expr_loop(self, node);
     }
 
@@ -217,7 +244,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::Arm,
     ) {
-        self.count += 1;
+        self.decisions += 1;
         visit::visit_arm(self, node);
     }
 
@@ -226,7 +253,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         node: &'ast syn::ExprBinary,
     ) {
         if matches!(node.op, BinOp::And(_) | BinOp::Or(_)) {
-            self.count += 1;
+            self.decisions += 1;
         }
         visit::visit_expr_binary(self, node);
     }
@@ -235,7 +262,7 @@ impl<'ast> Visit<'ast> for CcCounter {
         &mut self,
         node: &'ast syn::ExprTry,
     ) {
-        self.count += 1;
+        self.tries += 1;
         visit::visit_expr_try(self, node);
     }
 
@@ -285,13 +312,23 @@ pub fn analyze_tree<S: AsRef<str>>(
     root: &Path,
     excludes: &[S],
 ) -> Result<Vec<FunctionComplexity>> {
+    analyze_tree_weighted(root, excludes, 1.0)
+}
+
+/// [`analyze_tree`], with each `?` operator counting `try_weight` instead of
+/// 1 — see [`analyze_file_weighted`].
+pub fn analyze_tree_weighted<S: AsRef<str>>(
+    root: &Path,
+    excludes: &[S],
+    try_weight: f64,
+) -> Result<Vec<FunctionComplexity>> {
     let paths = rust_files(root, excludes)?;
 
     // Phase 2: analyze files in parallel. Each file is independent so rayon
     // can schedule them across all available cores with no synchronization.
     let all: Vec<FunctionComplexity> = paths
         .par_iter()
-        .flat_map_iter(|path| match analyze_file(path) {
+        .flat_map_iter(|path| match analyze_file_weighted(path, try_weight) {
             Ok(fns) => fns,
             Err(err) => {
                 eprintln!("warning: could not analyze {}: {err}", path.display());
@@ -356,10 +393,11 @@ pub fn rust_files<S: AsRef<str>>(
 #[cfg(test)]
 #[expect(
     clippy::float_cmp,
-    reason = "CC counter increments by integer steps stored as f64; exact equality is the right comparison"
+    reason = "CC is a whole decision count plus one `weight × tries` product; the tests recompute that same expression or compare against values it yields exactly, so exact equality is the right comparison"
 )]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::io::Write;
 
     fn write_temp(source: &str) -> tempfile::NamedTempFile {
@@ -569,6 +607,106 @@ fn c() {}
         );
     }
 
+    // --- configurable `?` weight ---
+
+    /// A function whose only decision points are two `?` operators.
+    const TWO_TRIES: &str = "fn run() -> R { f1()?; f2()?; Ok(()) }";
+
+    #[test]
+    fn default_weight_preserves_mccabe_exactly() {
+        let f = write_temp(TWO_TRIES);
+        let unweighted = analyze_file(f.path()).expect("analyze");
+        assert_eq!(unweighted[0].cyclomatic, 3.0, "two `?` add 2 to base CC");
+        let weighted = analyze_file_weighted(f.path(), 1.0).expect("analyze");
+        assert_eq!(
+            weighted[0].cyclomatic, 3.0,
+            "weight 1.0 must match the unweighted count"
+        );
+    }
+
+    #[test]
+    fn zero_weight_makes_error_propagation_free() {
+        let f = write_temp(TWO_TRIES);
+        let fns = analyze_file_weighted(f.path(), 0.0).expect("analyze");
+        assert_eq!(fns[0].cyclomatic, 1.0, "`?` must cost nothing at weight 0");
+        assert_eq!(
+            crate::score::crap(fns[0].cyclomatic, 0.0),
+            2.0,
+            "CC 1 at 0% coverage scores 1² × 1 + 1"
+        );
+    }
+
+    #[test]
+    fn fractional_weight_accumulates_per_occurrence() {
+        let f = write_temp("fn run() -> R { f()?; Ok(()) }");
+        let fns = analyze_file_weighted(f.path(), 0.5).expect("analyze");
+        assert_eq!(fns[0].cyclomatic, 1.5, "one `?` at weight 0.5 adds 0.5");
+    }
+
+    #[test]
+    fn non_dyadic_weights_do_not_drift_across_occurrences() {
+        let tries = |n: usize| {
+            write_temp(&format!(
+                "fn run() -> R {{ {} Ok(()) }}",
+                "f()?; ".repeat(n)
+            ))
+        };
+        let cc = |n: usize, w: f64| {
+            analyze_file_weighted(tries(n).path(), w).expect("analyze")[0].cyclomatic
+        };
+        // Summed per occurrence these land at 1.9999999999999998,
+        // 2.000000000000001 and 3.999999999999999.
+        assert_eq!(cc(5, 0.2), 2.0, "five `?` at 0.2");
+        assert_eq!(cc(10, 0.1), 2.0, "ten `?` at 0.1");
+        assert_eq!(cc(10, 0.3), 4.0, "ten `?` at 0.3");
+    }
+
+    #[test]
+    fn other_decision_points_keep_their_fixed_cost() {
+        let f = write_temp("fn run(a: bool, b: bool) -> R { if a && b { f()?; } Ok(()) }");
+        let fns = analyze_file_weighted(f.path(), 0.0).expect("analyze");
+        assert_eq!(
+            fns[0].cyclomatic, 3.0,
+            "`if` and `&&` keep +1 each; only the `?` is discounted"
+        );
+    }
+
+    #[test]
+    fn try_weight_applies_to_impl_methods() {
+        let f = write_temp("struct S; impl S { fn run(&self) -> R { f()?; Ok(()) } }");
+        let fns = analyze_file_weighted(f.path(), 0.25).expect("analyze");
+        assert_eq!(fns[0].name, "S::run");
+        assert_eq!(
+            fns[0].cyclomatic, 1.25,
+            "methods are weighted like free fns"
+        );
+    }
+
+    #[test]
+    fn analyze_tree_weighted_applies_the_weight_to_every_file() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.rs"), "fn a() -> R { f()?; Ok(()) }").expect("write a.rs");
+        fs::write(dir.path().join("b.rs"), TWO_TRIES).expect("write b.rs");
+
+        let mut fns = analyze_tree_weighted(dir.path(), &[] as &[&str], 0.5).expect("analyze");
+        fns.sort_by(|x, y| x.name.cmp(&y.name));
+        let ccs: Vec<(&str, f64)> = fns
+            .iter()
+            .map(|f| (f.name.as_str(), f.cyclomatic))
+            .collect();
+        assert_eq!(ccs, [("a", 1.5), ("run", 2.0)]);
+    }
+
+    #[test]
+    fn analyze_tree_counts_try_at_full_weight() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("lib.rs"), TWO_TRIES).expect("write");
+
+        let fns = analyze_tree(dir.path(), &[] as &[&str]).expect("analyze");
+        assert_eq!(fns[0].cyclomatic, 3.0, "the unweighted walk is weight 1.0");
+    }
+
     #[test]
     fn closure_decisions_not_counted_in_enclosing_fn() {
         // A closure with branches must not inflate the outer function's CC.
@@ -772,5 +910,106 @@ fn allowed() -> i32 { 42 }
         let dir = tempfile::tempdir().expect("tempdir");
         let result = analyze_tree(dir.path(), &["[invalid"]);
         assert!(result.is_err(), "invalid glob must return an error");
+    }
+
+    // --- `?` weight properties ---
+
+    /// One statement of a generated function body, with what it contributes
+    /// to the *enclosing* function: fixed-cost decision points and `?`
+    /// operators. Closures and nested items contribute nothing, whatever
+    /// they contain.
+    struct Fragment {
+        src: &'static str,
+        decisions: usize,
+        tries: usize,
+    }
+
+    const fn frag(
+        src: &'static str,
+        decisions: usize,
+        tries: usize,
+    ) -> Fragment {
+        Fragment {
+            src,
+            decisions,
+            tries,
+        }
+    }
+
+    const FRAGMENTS: [Fragment; 13] = [
+        frag("x;", 0, 0),
+        frag("if a {}", 1, 0),
+        frag("if a {} else if b {}", 2, 0),
+        frag("let _ = a && b;", 1, 0),
+        frag("let _ = a || b;", 1, 0),
+        frag("for _ in v {}", 1, 0),
+        frag("while a {}", 1, 0),
+        frag("loop { break; }", 1, 0),
+        frag("f()?;", 0, 1),
+        frag("let _ = g(h()?)?;", 0, 2),
+        frag("match f()? { _ => {} }", 1, 1),
+        frag("let _ = |y: i32| f(y)?;", 0, 0),
+        frag("fn inner() -> R { f()?; if a {} Ok(()) }", 0, 0),
+    ];
+
+    /// Concatenate the picked fragments into a body; return it with its
+    /// total decision points and `?` operators.
+    fn assemble(picks: &[usize]) -> (String, usize, usize) {
+        picks.iter().map(|&i| &FRAGMENTS[i]).fold(
+            (String::new(), 0, 0),
+            |(mut src, decisions, tries), frag| {
+                src.push_str(frag.src);
+                src.push(' ');
+                (src, decisions + frag.decisions, tries + frag.tries)
+            },
+        )
+    }
+
+    fn cc_of_body(
+        body: &str,
+        try_weight: f64,
+    ) -> f64 {
+        let block: syn::Block = syn::parse_str(&format!("{{ {body} }}")).expect("body must parse");
+        count_cyclomatic(&block, try_weight)
+    }
+
+    fn picks() -> impl Strategy<Value = Vec<usize>> {
+        prop::collection::vec(0..FRAGMENTS.len(), 0..12)
+    }
+
+    proptest! {
+        /// Weighting `?` shifts CC by exactly `w` per `?`, and the weight-0
+        /// count is the fixed-cost decision points alone.
+        #[test]
+        fn cc_at_weight_is_cc_at_zero_plus_weight_per_try(picks in picks(), w in 0.0f64..10.0) {
+            let (body, decisions, tries) = assemble(&picks);
+            let at_zero = cc_of_body(&body, 0.0);
+            prop_assert_eq!(at_zero, (1 + decisions) as f64);
+            // Exact: the weight is applied once, as a product, so there is no
+            // per-occurrence rounding for a tolerance to absorb.
+            prop_assert_eq!(cc_of_body(&body, w), at_zero + w * tries as f64);
+        }
+
+        /// Weight 1.0 is classical McCabe: an exact integer count.
+        #[test]
+        fn weight_one_reproduces_the_integer_count(picks in picks()) {
+            let (body, decisions, tries) = assemble(&picks);
+            prop_assert_eq!(cc_of_body(&body, 1.0), (1 + decisions + tries) as f64);
+        }
+
+        /// The weight scales increments, never the base path.
+        #[test]
+        fn cc_never_drops_below_one(picks in picks(), w in 0.0f64..10.0) {
+            let (body, _, _) = assemble(&picks);
+            prop_assert!(cc_of_body(&body, w) >= 1.0);
+        }
+
+        /// A heavier `?` never makes a function simpler.
+        #[test]
+        fn cc_is_monotone_in_the_weight(picks in picks(), a in 0.0f64..10.0, b in 0.0f64..10.0) {
+            let (body, _, _) = assemble(&picks);
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            prop_assert!(cc_of_body(&body, lo) <= cc_of_body(&body, hi));
+        }
     }
 }
