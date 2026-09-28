@@ -757,3 +757,22 @@ fn matching_weights_compare_silently() {
         serde_json::from_slice(&out.get_output().stdout).expect("one JSON document");
     assert_eq!(delta["entries"][0]["status"], "unchanged", "{delta}");
 }
+
+// --- Spec 30 · Duplicate-pair triage ----------------------------------------
+//
+// Each task fills only its own heading, so parallel branches never touch the
+// same lines. The recording TypeSafe stub lives in `support::typesafe_stub`.
+
+mod support;
+
+// ---- Spec 30 · T1 ----
+
+// ---- Spec 30 · T8 ----
+
+// ---- Spec 30 · T9 ----
+
+// ---- Spec 30 · T10 ----
+
+// ---- Spec 30 · T11 ----
+
+// ---- Spec 30 · T12 ----
