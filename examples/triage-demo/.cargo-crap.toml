@@ -1,0 +1,5 @@
+[duplicates]
+enabled = true
+
+[duplicates.triage]
+enabled = true
