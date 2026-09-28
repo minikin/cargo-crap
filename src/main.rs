@@ -1301,39 +1301,42 @@ fn duplicate_section(
     let pairs = duplicate_pairs(settings, roots, format)?;
     let triage = pairs
         .as_deref()
-        .map(|pairs| triage_assessments(settings, pairs))
-        .transpose()?
-        .flatten();
+        .and_then(|pairs| triage_assessments(settings, pairs));
     Ok(DuplicateSection { pairs, triage })
 }
 
 /// Ask the model about `pairs` when triage is enabled, and hold each verdict
-/// to the confidence floor. A build without the `triage` feature has no
-/// client: it says how to get one and reports the pairs untriaged.
-#[cfg_attr(
-    not(feature = "triage"),
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "only the build with the triage client can fail here"
-    )
-)]
+/// to the confidence floor.
+///
+/// Triage is advisory, so nothing about it can fail the run: any failure —
+/// no key, no network, an API error, an answer that does not decode — is one
+/// warning naming the cause, and the pairs are reported untriaged, exactly
+/// as with triage off. A build without the `triage` feature has no client:
+/// it says how to get one and reports the pairs untriaged.
 fn triage_assessments(
     settings: &DupSettings,
     pairs: &[DuplicatePair],
-) -> Result<Option<Vec<Assessment>>> {
+) -> Option<Vec<Assessment>> {
     if !settings.triage_enabled {
-        return Ok(None);
+        return None;
     }
     #[cfg(feature = "triage")]
     {
         use cargo_crap::duplicates::triage;
-        let verdicts = triage::run(pairs, &triage::Settings::from_env(&settings.triage_model))?;
-        Ok(Some(
-            verdicts
-                .into_iter()
-                .map(|verdict| verdict.assessment(settings.triage_floor))
-                .collect(),
-        ))
+        let api_settings = triage::Settings::from_env(&settings.triage_model);
+        triage::run(pairs, &api_settings)
+            .inspect_err(|e| {
+                eprintln!(
+                    "warning: duplicate triage skipped: {e}; the pairs are reported untriaged"
+                );
+            })
+            .ok()
+            .map(|verdicts| {
+                verdicts
+                    .into_iter()
+                    .map(|verdict| verdict.assessment(settings.triage_floor))
+                    .collect()
+            })
     }
     #[cfg(not(feature = "triage"))]
     {
@@ -1343,7 +1346,7 @@ fn triage_assessments(
              the `triage` feature; reinstall with `cargo install cargo-crap --features triage` \
              to use it"
         );
-        Ok(None)
+        None
     }
 }
 

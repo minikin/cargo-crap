@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 405c4d4bf93b0d70a3b194833cd30035ace5d7dc80cf23392902abb85de5fa58 # shrinks to failure = Answer { status: 400, body: "{\"error\":\"stub status 400\"}", headers: [] }, gate = false

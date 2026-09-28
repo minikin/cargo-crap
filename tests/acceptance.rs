@@ -1061,7 +1061,12 @@ fn a_build_without_the_triage_feature_says_how_to_get_it() {
     let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
     assert!(out.status.success());
     // Then the duplicates section is byte-identical to the spec-29 output
-    assert_eq!(out.stdout, plain.stdout);
+    assert_eq!(
+        out.stdout,
+        plain.stdout,
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     // And stderr carries one warning naming the `triage` feature
     let stderr = String::from_utf8(out.stderr).expect("utf-8");
     let warnings: Vec<&str> = stderr.lines().filter(|l| l.contains("triage")).collect();
@@ -1072,6 +1077,212 @@ fn a_build_without_the_triage_feature_says_how_to_get_it() {
 }
 
 // ---- Spec 30 · T9 ----
+
+/// Run with `config`, a key unless `key` is false, and `base_url` as the API.
+#[cfg(feature = "triage")]
+fn run_against(
+    dir: &Path,
+    config: &str,
+    base_url: &str,
+    key: bool,
+    extra: &[&str],
+) -> std::process::Output {
+    write(dir, ".cargo-crap.toml", config);
+    let mut command = crap();
+    command
+        .current_dir(dir)
+        .env("TYPESAFE_BASE_URL", base_url)
+        .args(["--path", dir.to_str().expect("utf-8")])
+        .args(extra);
+    if key {
+        command.env("TYPESAFE_API_KEY", "test-key");
+    } else {
+        command.env_remove("TYPESAFE_API_KEY");
+    }
+    command.output().expect("cargo-crap runs")
+}
+
+/// The warning every degraded run prints, around its cause.
+#[cfg(feature = "triage")]
+const TRIAGE_SKIPPED: &str = "warning: duplicate triage skipped: ";
+#[cfg(feature = "triage")]
+const REPORTED_UNTRIAGED: &str = "; the pairs are reported untriaged";
+
+/// The same tree run with triage off: what every degraded run must equal.
+#[cfg(feature = "triage")]
+fn untriaged(
+    dir: &Path,
+    extra: &[&str],
+) -> std::process::Output {
+    run_against(dir, DUPLICATES_ONLY, UNREACHABLE_API, true, extra)
+}
+
+/// An address nothing listens on — port 9, "discard" — fixed rather than
+/// freed from an ephemeral bind, so a parallel test's stub can never be
+/// handed the same port.
+#[cfg(feature = "triage")]
+const UNREACHABLE_API: &str = "http://127.0.0.1:9";
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_missing_api_key_degrades_to_the_untriaged_report() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled in configuration
+    // And the API key environment variable is unset
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs
+    let out = run_against(dir.path(), TRIAGE_ON, &stub.base_url(), false, &[]);
+    let plain = untriaged(dir.path(), &[]);
+    // Then the duplicates section is byte-identical to the spec-29 output
+    assert_eq!(
+        out.stdout,
+        plain.stdout,
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // And stderr carries a warning naming the missing environment variable
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        stderr.contains(&format!(
+            "{TRIAGE_SKIPPED}TYPESAFE_API_KEY is not set{REPORTED_UNTRIAGED}"
+        )),
+        "{stderr}"
+    );
+    // And the exit code is what the same run would produce with triage disabled
+    assert_eq!(out.status.code(), plain.status.code());
+    assert_eq!(stub.request_count(), 0);
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn an_unreachable_api_degrades_to_the_untriaged_report() {
+    // Given triage is enabled and the API key is set
+    // And every request to the API fails
+    let dir = three_pairs_tree();
+    // When cargo-crap runs
+    let out = run_against(dir.path(), TRIAGE_ON, UNREACHABLE_API, true, &[]);
+    let plain = untriaged(dir.path(), &[]);
+    // Then the duplicates section is byte-identical to the spec-29 output
+    assert_eq!(
+        out.stdout,
+        plain.stdout,
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // And stderr carries a warning naming the failure
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        stderr.contains(TRIAGE_SKIPPED) && stderr.contains(UNREACHABLE_API),
+        "{stderr}"
+    );
+    // And the exit code is what the same run would produce with triage disabled
+    assert_eq!(out.status.code(), plain.status.code());
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn one_failed_pair_discards_the_whole_triage() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled and four pairs were found
+    let dir = three_pairs_tree();
+    let loop_and_match = |name: &str| {
+        format!(
+            "fn {name}(n: u32) -> u32 {{
+    let mut total = 0;
+    let mut i = 0;
+    while i < n {{
+        match i % 3 {{
+            0 => total += i,
+            1 => total -= 1,
+            _ => total *= 2,
+        }}
+        i += 1;
+    }}
+    total
+}}
+"
+        )
+    };
+    write(dir.path(), "gamma.rs", &loop_and_match("gamma"));
+    write(dir.path(), "delta.rs", &loop_and_match("delta"));
+    // And three requests succeed and the fourth fails after its retries
+    let stub = TypesafeStub::respond_with(|request| {
+        if request.body.contains("fn gamma") {
+            Reply::status(500)
+        } else {
+            Reply::json(&triage_answer("same_logic", 0.9))
+        }
+    });
+    // When cargo-crap runs
+    let out = run_against(dir.path(), TRIAGE_ON, &stub.base_url(), true, &[]);
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf-8");
+    assert!(stdout.contains("4 duplicate candidates:"), "{stdout}");
+    let requests = stub.requests();
+    let failing = requests
+        .iter()
+        .filter(|r| r.body.contains("fn gamma"))
+        .count();
+    assert_eq!(
+        requests.len() - failing,
+        3,
+        "the other three pairs were asked"
+    );
+    assert_eq!(failing, 3, "the fourth failed after its retries");
+    // Then no pair carries a triage line
+    assert!(!stdout.contains("triage:"), "{stdout}");
+    assert_eq!(out.stdout, untriaged(dir.path(), &[]).stdout, "{stdout}");
+    // And stderr carries a warning naming the failure
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        stderr.contains(TRIAGE_SKIPPED) && stderr.contains("500"),
+        "{stderr}"
+    );
+}
+
+#[cfg(feature = "triage")]
+mod degradation {
+    use super::*;
+    use proptest::prelude::*;
+    use proptest::test_runner::FileFailurePersistence;
+    use support::typesafe_stub::{Reply, TypesafeStub};
+
+    fn failures() -> impl Strategy<Value = Reply> {
+        prop_oneof![
+            prop::sample::select(vec![400u16, 401, 403, 404, 422, 429, 500, 503, 529])
+                .prop_map(Reply::status),
+            Just(Reply::Drop),
+            Just(Reply::json(r#"{"answers":{}}"#)),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 8,
+            failure_persistence: Some(Box::new(FileFailurePersistence::WithSource("proptest-regressions"))),
+            ..ProptestConfig::default()
+        })]
+
+        /// For any failure the API can produce, a triaged run prints exactly
+        /// what the same run prints with triage disabled, and exits the same.
+        #[test]
+        fn any_failure_leaves_the_report_and_the_exit_code_untouched(
+            failure in failures(),
+            gate in any::<bool>(),
+        ) {
+            let dir = alpha_beta_tree();
+            let stub = TypesafeStub::scripted(vec![failure]);
+            // A gate that fails (every function scores above 0.5) or passes.
+            let extra: &[&str] = if gate { &["--threshold", "0.5", "--fail-above"] } else { &[] };
+            let out = run_against(dir.path(), TRIAGE_ON, &stub.base_url(), true, extra);
+            let plain = untriaged(dir.path(), extra);
+            prop_assert_eq!(&out.stdout, &plain.stdout, "{}", String::from_utf8_lossy(&out.stdout));
+            prop_assert_eq!(out.status.code(), plain.status.code());
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            prop_assert!(stderr.contains(TRIAGE_SKIPPED), "{}", stderr);
+        }
+    }
+}
 
 // ---- Spec 30 · T10 ----
 
