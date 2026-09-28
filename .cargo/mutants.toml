@@ -8,3 +8,7 @@
 # TIMEOUT (exit 3). 120s keeps such mutants cheap to kill while still
 # bounding genuine hangs.
 minimum_test_timeout = 120
+
+# Mutate with every feature on: the `triage` feature's code (the TypeSafe
+# client) is only compiled, and only tested, when it is enabled.
+all_features = true

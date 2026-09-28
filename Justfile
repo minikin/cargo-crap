@@ -9,10 +9,12 @@ default:
 # can refuse it. `$SPEC` reads as `{{SPEC}}` did and cannot.
 set export
 
-# Run all tests
+# Run all tests — the default build, then with every feature (the `triage`
+# feature compiles the TypeSafe client, so its tests only exist there)
 test:
     cargo nextest run --all-targets
-    cargo test --doc
+    cargo nextest run --all-targets --all-features
+    cargo test --doc --all-features
 
 # Apply formatting
 fmt:
@@ -22,10 +24,12 @@ fmt:
 lint:
     cargo fmt --all -- --check
     cargo clippy --all-targets -- -D warnings
+    cargo clippy --all-targets --all-features -- -D warnings
 
 # Fast compile check without building test binaries
 check:
     cargo check --all-targets
+    cargo check --all-targets --all-features
 
 # Run all CI checks locally (requires cargo-nextest: cargo binstall cargo-nextest)
 ci: lint test
@@ -43,16 +47,16 @@ crap_scope := "--workspace --exclude 'tests/fixtures/**'"
 
 # Line coverage summary; fails mechanically below 90% lines
 cov:
-    cargo llvm-cov nextest --all-targets --summary-only --fail-under-lines 90
+    cargo llvm-cov nextest --all-targets --all-features --summary-only --fail-under-lines 90
 
 # Dogfood: coverage + CRAP gate, fails if any function scores above threshold 15
 crap:
-    cargo llvm-cov --lcov --output-path lcov.info --workspace
+    cargo llvm-cov --lcov --output-path lcov.info --workspace --all-features
     {{crap_bin}} --lcov lcov.info {{crap_scope}} --threshold 15 --fail-above
 
 # Record a CRAP baseline (run before starting a feature)
 crap-baseline:
-    cargo llvm-cov --lcov --output-path lcov.info --workspace
+    cargo llvm-cov --lcov --output-path lcov.info --workspace --all-features
     {{crap_bin}} --lcov lcov.info {{crap_scope}} --format json --sort file --output crap-baseline.json
     @echo "CRAP baseline saved to crap-baseline.json"
 
@@ -64,7 +68,7 @@ crap-delta:
         echo "No crap-baseline.json — run 'just crap-baseline' and commit it first." >&2
         exit 1
     fi
-    cargo llvm-cov --lcov --output-path lcov.info --workspace
+    cargo llvm-cov --lcov --output-path lcov.info --workspace --all-features
     {{crap_bin}} --lcov lcov.info {{crap_scope}} --threshold 15 --fail-above \
         --baseline crap-baseline.json --fail-regression
 
@@ -130,6 +134,19 @@ dev-mutants-diff: dev mutants-diff
 
 # Full validation including mutation tests (slow)
 dev-full: dev mutants-all
+
+# --- Duplicate-pair triage, live (spec 30) ----------------------------------
+# Every other recipe here is offline and free. This one is neither: it calls
+# the real TypeSafe API, costs API calls and needs TYPESAFE_API_KEY. It is
+# never part of `dev` or CI — run it by hand to check that the model still
+# names the spec's example pairs (tests/fixtures/triage/) as a person would.
+#
+# Live triage check against the real TypeSafe API (needs TYPESAFE_API_KEY)
+triage-live:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${TYPESAFE_API_KEY:?set TYPESAFE_API_KEY to run the live triage check}"
+    cargo test --features triage --test triage_live -- --ignored
 
 # "Main" is one thing, decided once: the first of the four names below
 # that exists in this repository. `mutants-diff` diffs against it and

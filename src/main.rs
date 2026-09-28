@@ -13,6 +13,7 @@ use cargo_crap::{
     delta::{compute_delta, load_baseline_with_weight},
     duplicates,
     duplicates::compare::DuplicatePair,
+    duplicates::triage::verdict::Assessment,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
     report::{
         self, Format, RenderOptions, SourceLinks, crappy_count, render, render_delta,
@@ -790,6 +791,18 @@ fn load_coverage(lcov: Option<&PathBuf>) -> Result<HashMap<PathBuf, FileCoverage
     }
 }
 
+/// Turn ANSI colour on or off for this run, from the environment, whether
+/// output goes to an `--output` file, and whether stdout is a terminal.
+fn apply_color_policy(output_to_file: bool) {
+    let env_set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    set_color_enabled(resolve_color(
+        env_set("NO_COLOR"),
+        env_set("FORCE_COLOR"),
+        output_to_file,
+        io::stdout().is_terminal(),
+    ));
+}
+
 /// Decide whether the human/summary renderers may emit ANSI colour.
 ///
 /// Precedence: `NO_COLOR` (non-empty) always disables; `FORCE_COLOR`
@@ -1008,7 +1021,7 @@ fn path_is_ignored(cli: &Cli) -> bool {
 fn validate_merged_values(
     epsilon: f64,
     jobs: Option<usize>,
-    dup_threshold: f64,
+    dup: &DupSettings,
     try_weight: f64,
 ) -> Result<()> {
     if epsilon < 0.0 {
@@ -1021,13 +1034,25 @@ fn validate_merged_values(
     // `.cargo-crap.toml` reaches the comparison the same way, and an
     // unchecked one silently reports everything or nothing. `!(..)` rather
     // than `<`/`>` so that NaN — which TOML can express — is rejected too.
-    if !(0.0..=1.0).contains(&dup_threshold) {
+    if !(0.0..=1.0).contains(&dup.threshold) {
         bail!(
             "invalid duplicates threshold (--dup-threshold or config): \
              must be between 0.0 and 1.0"
         );
     }
-    validate_try_weight(try_weight)
+    validate_triage_floor(dup.triage_floor).and_then(|()| validate_try_weight(try_weight))
+}
+
+/// Reject a triage confidence floor outside `0.0..=1.0` — NaN included,
+/// which TOML can spell. Config-only, so the message names no flag.
+fn validate_triage_floor(floor: f64) -> Result<()> {
+    if !(0.0..=1.0).contains(&floor) {
+        bail!(
+            "invalid duplicates.triage.confidence-floor (config): \
+             must be between 0.0 and 1.0"
+        );
+    }
+    Ok(())
 }
 
 /// Reject a `?` weight that is negative, NaN, infinite or above the cap —
@@ -1173,6 +1198,28 @@ struct DupSettings {
     enabled: bool,
     threshold: f64,
     min_nodes: usize,
+    /// Whether to ask the model about each reported pair.
+    triage_enabled: bool,
+    /// The project the configuration describes; triage caches under its
+    /// target directory.
+    #[cfg_attr(
+        not(feature = "triage"),
+        expect(
+            dead_code,
+            reason = "only a build with the triage client caches verdicts"
+        )
+    )]
+    triage_root: PathBuf,
+    /// The model to ask.
+    #[cfg_attr(
+        not(feature = "triage"),
+        expect(dead_code, reason = "only a build with the triage client asks a model")
+    )]
+    triage_model: String,
+    /// Confidence below which a triage verdict names no kind. Carried here,
+    /// range-checked with the threshold, so the triage pass reads the value
+    /// that was validated rather than re-resolving its own.
+    triage_floor: f64,
 }
 
 impl DupSettings {
@@ -1180,8 +1227,10 @@ impl DupSettings {
     fn resolve(
         cli: &Cli,
         config: &cargo_crap::config::Config,
+        project_root: PathBuf,
     ) -> Self {
         Self {
+            triage_root: project_root,
             enabled: cli.duplicates || config.duplicates.enabled.unwrap_or(false),
             threshold: cli
                 .dup_threshold
@@ -1191,6 +1240,18 @@ impl DupSettings {
                 .duplicates
                 .min_nodes
                 .unwrap_or(cargo_crap::config::DEFAULT_DUP_MIN_NODES),
+            triage_enabled: config.duplicates.triage.enabled.unwrap_or(false),
+            triage_model: config
+                .duplicates
+                .triage
+                .model
+                .clone()
+                .unwrap_or_else(|| cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned()),
+            triage_floor: config
+                .duplicates
+                .triage
+                .confidence_floor
+                .unwrap_or(cargo_crap::config::DEFAULT_TRIAGE_CONFIDENCE_FLOOR),
         }
     }
 }
@@ -1233,6 +1294,73 @@ fn duplicate_pairs(
     let mut pairs = duplicates::compare::find_pairs(&functions, settings.threshold);
     report::duplicates::sort_pairs(&mut pairs);
     Ok(Some(pairs))
+}
+
+/// The duplicate section's content: the pairs, and their triage when it ran.
+struct DuplicateSection {
+    pairs: Option<Vec<DuplicatePair>>,
+    triage: Option<Vec<Assessment>>,
+}
+
+/// Find the duplicate pairs, then triage them when configured to. Triage
+/// only ever sees pairs that will be reported, so a format that cannot
+/// carry duplicates never triggers a request.
+fn duplicate_section(
+    settings: &DupSettings,
+    roots: &[ScanRoot],
+    format: Format,
+) -> Result<DuplicateSection> {
+    let pairs = duplicate_pairs(settings, roots, format)?;
+    let triage = pairs
+        .as_deref()
+        .and_then(|pairs| triage_assessments(settings, pairs));
+    Ok(DuplicateSection { pairs, triage })
+}
+
+/// Ask the model about `pairs` when triage is enabled, and hold each verdict
+/// to the confidence floor.
+///
+/// Triage is advisory, so nothing about it can fail the run: any failure —
+/// no key, no network, an API error, an answer that does not decode — is one
+/// warning naming the cause, and the pairs are reported untriaged, exactly
+/// as with triage off. A build without the `triage` feature has no client:
+/// it says how to get one and reports the pairs untriaged.
+fn triage_assessments(
+    settings: &DupSettings,
+    pairs: &[DuplicatePair],
+) -> Option<Vec<Assessment>> {
+    if !settings.triage_enabled {
+        return None;
+    }
+    #[cfg(feature = "triage")]
+    {
+        use cargo_crap::duplicates::triage;
+        let api_settings =
+            triage::Settings::from_env(&settings.triage_model, &settings.triage_root);
+        triage::run(pairs, &api_settings)
+            .inspect_err(|e| {
+                eprintln!(
+                    "warning: duplicate triage skipped: {e}; the pairs are reported untriaged"
+                );
+            })
+            .ok()
+            .map(|verdicts| {
+                verdicts
+                    .into_iter()
+                    .map(|verdict| verdict.assessment(settings.triage_floor))
+                    .collect()
+            })
+    }
+    #[cfg(not(feature = "triage"))]
+    {
+        let _ = pairs;
+        eprintln!(
+            "warning: [duplicates.triage] is enabled, but this cargo-crap was built without \
+             the `triage` feature; reinstall with `cargo install cargo-crap --features triage` \
+             to use it"
+        );
+        None
+    }
 }
 
 /// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
@@ -1294,12 +1422,18 @@ fn resolve_source_links(
 
 /// Parse argv, validate flag combinations, and load the optional
 /// `.cargo-crap.toml` (defaults when absent — the tool works without one).
-fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config)> {
+/// Parse argv and load the configuration, returning also the project root:
+/// the directory of the `.cargo-crap.toml` that was read, or the working
+/// directory when there is none.
+fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config, PathBuf)> {
     let cli = Cli::parse_from(strip_cargo_subcommand(std::env::args().collect()));
     validate_args(&cli)?;
     let cwd = std::env::current_dir().unwrap_or_else(|_| cli.path.clone());
     let config = cargo_crap::config::load(&cwd)?;
-    Ok((cli, config))
+    let root = cargo_crap::config::find(&cwd)
+        .and_then(|file| file.parent().map(Path::to_path_buf))
+        .unwrap_or(cwd);
+    Ok((cli, config, root))
 }
 
 /// Exit-code contract (spec 23): 0 = analysis completed and no requested
@@ -1330,12 +1464,12 @@ struct LoadedArgs {
     try_weight: f64,
 }
 
-/// Parse argv, load config, and validate the merged epsilon/jobs/similarity/
-/// try-weight values,
-/// returning exactly what was validated so [`run`] cannot consume a
-/// different (unchecked) merge of the same knobs.
+/// Parse argv, load config, and validate the merged epsilon, jobs,
+/// similarity threshold, triage confidence floor and try-weight, returning
+/// exactly what was validated so [`run`] cannot consume a different
+/// (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
-    let (cli, config) = parse_and_load_config()?;
+    let (cli, config, project_root) = parse_and_load_config()?;
     let epsilon = cli
         .epsilon
         .or(config.epsilon)
@@ -1344,11 +1478,11 @@ fn parse_and_validate() -> Result<LoadedArgs> {
     // Resolved here rather than at the call site: the merged similarity
     // threshold has to be validated before anything is analyzed, and the
     // config half of it is invisible to `validate_args`.
-    let dup = DupSettings::resolve(&cli, &config);
+    let dup = DupSettings::resolve(&cli, &config, project_root);
     let try_weight = config
         .try_weight
         .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
-    validate_merged_values(epsilon, jobs, dup.threshold, try_weight)?;
+    validate_merged_values(epsilon, jobs, &dup, try_weight)?;
     Ok(LoadedArgs {
         cli,
         config,
@@ -1445,16 +1579,10 @@ fn run() -> Result<ExitCode> {
     )?;
 
     // --- Render ---
-    let env_set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
-    set_color_enabled(resolve_color(
-        env_set("NO_COLOR"),
-        env_set("FORCE_COLOR"),
-        cli.output.is_some(),
-        io::stdout().is_terminal(),
-    ));
+    apply_color_policy(cli.output.is_some());
     let mut out_box = open_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref);
-    let dup_pairs = duplicate_pairs(&dup, &roots, cli.format.into())?;
+    let dups = duplicate_section(&dup, &roots, cli.format.into())?;
     let opts = RenderOpts {
         render: RenderOptions {
             threshold,
@@ -1463,8 +1591,9 @@ fn run() -> Result<ExitCode> {
             diagnostics: diagnostics.as_ref(),
             show_unchanged,
             uncovered_hints,
-            duplicates: dup_pairs.as_deref(),
+            duplicates: dups.pairs.as_deref(),
             try_weight,
+            triage: dups.triage.as_deref(),
         },
         epsilon,
         summary: cli.summary,
@@ -1779,19 +1908,19 @@ mod tests {
         // values the config file could previously smuggle past the
         // CLI-only checks.
         assert!(
-            validate_merged_values(0.0, None, 0.82, 1.0).is_ok(),
+            validate_merged_values(0.0, None, &dup_settings(0.82, 0.5), 1.0).is_ok(),
             "zero epsilon is valid"
         );
-        assert!(validate_merged_values(0.01, Some(4), 0.82, 1.0).is_ok());
+        assert!(validate_merged_values(0.01, Some(4), &dup_settings(0.82, 0.5), 1.0).is_ok());
         assert!(
-            validate_merged_values(-0.001, None, 0.82, 1.0).is_err(),
+            validate_merged_values(-0.001, None, &dup_settings(0.82, 0.5), 1.0).is_err(),
             "negative epsilon"
         );
         assert!(
-            validate_merged_values(0.01, Some(0), 0.82, 1.0).is_err(),
+            validate_merged_values(0.01, Some(0), &dup_settings(0.82, 0.5), 1.0).is_err(),
             "zero jobs"
         );
-        let err = validate_merged_values(-1.0, Some(0), 0.82, 1.0)
+        let err = validate_merged_values(-1.0, Some(0), &dup_settings(0.82, 0.5), 1.0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("epsilon"), "epsilon is checked first: {err}");
@@ -1823,13 +1952,52 @@ mod tests {
         }
     }
 
+    /// Duplicate settings with only the two range-checked values chosen.
+    fn dup_settings(
+        threshold: f64,
+        triage_floor: f64,
+    ) -> DupSettings {
+        DupSettings {
+            enabled: false,
+            threshold,
+            min_nodes: cargo_crap::config::DEFAULT_DUP_MIN_NODES,
+            triage_enabled: false,
+            triage_root: PathBuf::from("."),
+            triage_model: cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned(),
+            triage_floor,
+        }
+    }
+
+    #[test]
+    fn validate_merged_values_accepts_a_triage_floor_from_zero_to_one() {
+        for floor in [0.0, 0.5, 1.0] {
+            assert!(
+                validate_merged_values(0.01, None, &dup_settings(0.82, floor), 1.0).is_ok(),
+                "floor {floor} is valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_merged_values_rejects_an_out_of_range_triage_floor() {
+        for floor in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            let err = validate_merged_values(0.01, None, &dup_settings(0.82, floor), 1.0)
+                .expect_err("an out-of-range floor must be rejected")
+                .to_string();
+            assert!(
+                err.contains("confidence-floor") && err.contains("0.0") && err.contains("1.0"),
+                "floor {floor} names the key and the range: {err}"
+            );
+        }
+    }
+
     #[test]
     fn validate_merged_values_accepts_any_try_weight_from_zero_to_one_hundred() {
         // Zero is the point of the knob, and above one is legitimate for
         // auditing error-handling-heavy code, up to the cap.
         for weight in [0.0, -0.0, f64::MIN_POSITIVE, 0.5, 1.0, 3.0, 100.0] {
             assert!(
-                validate_merged_values(0.01, None, 0.82, weight).is_ok(),
+                validate_merged_values(0.01, None, &dup_settings(0.82, 0.5), weight).is_ok(),
                 "try-weight {weight} is valid"
             );
         }
@@ -1849,7 +2017,7 @@ mod tests {
             1e308,
             f64::MAX,
         ] {
-            let err = validate_merged_values(0.01, None, 0.82, weight)
+            let err = validate_merged_values(0.01, None, &dup_settings(0.82, 0.5), weight)
                 .expect_err("an out-of-domain try-weight must be rejected")
                 .to_string();
             assert!(

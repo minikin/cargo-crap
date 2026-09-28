@@ -6,6 +6,7 @@
 
 use crate::delta::{DeltaEntry, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
+use crate::duplicates::triage::verdict::Assessment;
 use crate::merge::{CrapEntry, ScopeDiagnostics};
 use crate::report::RenderOptions;
 use anyhow::Result;
@@ -94,6 +95,53 @@ pub struct DuplicateJson {
     pub second_end_line: usize,
     /// Jaccard similarity of the two fingerprint sets.
     pub score: f64,
+    /// The triage verdict on this pair, when triage ran. Absent — not
+    /// empty — otherwise, so untriaged output is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage: Option<TriageJson>,
+}
+
+/// A pair's triage verdict, flattened for the wire. Below the confidence
+/// floor `kind` is `uncertain` and only the confidence is carried: no kind,
+/// and none of the other answers, is asserted.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TriageJson {
+    /// The kind's label (`same-logic`, …), or `uncertain`.
+    pub kind: String,
+    /// The worth-extracting level's label (`leave-it` … `should-be-one`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worth_extracting: Option<String>,
+    /// The worth-extracting score the label rounds, `0.0..=3.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worth_extracting_score: Option<f64>,
+    /// Probability that a fix to one side would be missed in the other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divergence_risk: Option<f64>,
+    /// The kind's confidence, `0.0..=1.0`.
+    pub confidence: f64,
+}
+
+impl TriageJson {
+    /// Flatten an assessment for serialization.
+    #[must_use]
+    pub fn from_assessment(assessment: &Assessment) -> Self {
+        match assessment {
+            Assessment::Kind(verdict) => Self {
+                kind: verdict.kind.label().to_owned(),
+                worth_extracting: Some(verdict.worth_extracting.label().to_owned()),
+                worth_extracting_score: Some(verdict.worth_extracting.score()),
+                divergence_risk: Some(verdict.divergence_risk),
+                confidence: verdict.confidence,
+            },
+            Assessment::Uncertain { confidence } => Self {
+                kind: "uncertain".to_owned(),
+                worth_extracting: None,
+                worth_extracting_score: None,
+                divergence_risk: None,
+                confidence: *confidence,
+            },
+        }
+    }
 }
 
 impl DuplicateJson {
@@ -110,13 +158,36 @@ impl DuplicateJson {
             second_start_line: pair.second.start_line,
             second_end_line: pair.second.end_line,
             score: pair.score,
+            triage: None,
         }
     }
 }
 
-/// Flatten pairs for either envelope, preserving their order.
-fn wire(pairs: Option<&[DuplicatePair]>) -> Option<Vec<DuplicateJson>> {
-    pairs.map(|ps| ps.iter().map(DuplicateJson::from_pair).collect())
+/// Flatten pairs for either envelope, preserving their order, each with its
+/// triage verdict when `triage` holds exactly one per pair — all or nothing,
+/// as in the human section.
+fn wire(
+    pairs: Option<&[DuplicatePair]>,
+    triage: Option<&[Assessment]>,
+) -> Option<Vec<DuplicateJson>> {
+    pairs.map(|pairs| wire_pairs(pairs, triage.filter(|t| t.len() == pairs.len())))
+}
+
+/// Each pair beside its assessment, when there is one per pair.
+fn wire_pairs(
+    pairs: &[DuplicatePair],
+    triage: Option<&[Assessment]>,
+) -> Vec<DuplicateJson> {
+    pairs
+        .iter()
+        .enumerate()
+        .map(|(n, pair)| DuplicateJson {
+            triage: triage
+                .and_then(|t| t.get(n))
+                .map(TriageJson::from_assessment),
+            ..DuplicateJson::from_pair(pair)
+        })
+        .collect()
 }
 
 pub(crate) fn render_json(
@@ -129,7 +200,7 @@ pub(crate) fn render_json(
         version: SCHEMA_VERSION.to_string(),
         entries: entries.to_vec(),
         diagnostics: opts.diagnostics.cloned(),
-        duplicates: wire(opts.duplicates),
+        duplicates: wire(opts.duplicates, opts.triage),
         try_weight: recorded_try_weight(opts.try_weight),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
@@ -166,7 +237,7 @@ pub(crate) fn render_delta_json(
             entries: &report.entries,
             removed: &report.removed,
             diagnostics: opts.diagnostics,
-            duplicates: wire(opts.duplicates),
+            duplicates: wire(opts.duplicates, opts.triage),
             try_weight: recorded_try_weight(opts.try_weight),
         },
     )?;
@@ -339,5 +410,112 @@ mod tests {
             envelope.try_weight, None,
             "absent on the wire reads as None"
         );
+    }
+
+    fn one_pair() -> Vec<DuplicatePair> {
+        use crate::duplicates::extract::Location;
+        let at = |line: usize, name: &str| Location {
+            file: PathBuf::from("src/a.rs"),
+            start_line: line,
+            end_line: line + 4,
+            name: name.to_owned(),
+        };
+        vec![DuplicatePair {
+            first: at(1, "alpha"),
+            second: at(10, "beta"),
+            score: 0.95,
+        }]
+    }
+
+    fn duplicates_json(
+        pairs: &[DuplicatePair],
+        triage: Option<&[crate::duplicates::triage::verdict::Assessment]>,
+    ) -> serde_json::Value {
+        let mut buf = Vec::new();
+        render(
+            &sample(),
+            &RenderOptions {
+                format: Format::Json,
+                duplicates: Some(pairs),
+                triage,
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&buf).unwrap()["duplicates"].clone()
+    }
+
+    #[test]
+    fn an_asserted_verdict_is_carried_beside_its_pair() {
+        use crate::duplicates::triage::verdict::{Assessment, Kind, Verdict, WorthExtracting};
+        let triage = [Assessment::Kind(Verdict {
+            kind: Kind::SameLogic,
+            confidence: 0.9,
+            worth_extracting: WorthExtracting::new(2.25).unwrap(),
+            divergence_risk: 0.6,
+        })];
+        let pair = &duplicates_json(&one_pair(), Some(&triage))[0];
+        assert_eq!(
+            pair["first_function"], "alpha",
+            "the pair itself is unchanged"
+        );
+        assert_eq!(
+            pair["triage"],
+            serde_json::json!({
+                "kind": "same-logic",
+                "worth_extracting": "worthwhile",
+                "worth_extracting_score": 2.25,
+                "divergence_risk": 0.6,
+                "confidence": 0.9,
+            })
+        );
+    }
+
+    #[test]
+    fn an_uncertain_verdict_asserts_nothing_but_its_confidence() {
+        use crate::duplicates::triage::verdict::Assessment;
+        let triage = [Assessment::Uncertain { confidence: 0.31 }];
+        let pair = &duplicates_json(&one_pair(), Some(&triage))[0];
+        assert_eq!(
+            pair["triage"],
+            serde_json::json!({"kind": "uncertain", "confidence": 0.31})
+        );
+    }
+
+    #[test]
+    fn an_untriaged_pair_has_no_triage_key() {
+        let pair = &duplicates_json(&one_pair(), None)[0];
+        assert!(pair.get("triage").is_none(), "{pair}");
+    }
+
+    #[test]
+    fn a_triage_that_does_not_cover_every_pair_is_left_out() {
+        // All or nothing, as in the human section.
+        let pair = &duplicates_json(&one_pair(), Some(&[]))[0];
+        assert!(pair.get("triage").is_none(), "{pair}");
+    }
+
+    #[test]
+    fn the_delta_envelope_carries_the_verdict_too() {
+        use super::super::render_delta;
+        use super::super::test_support::fractional_cc_delta;
+        use crate::duplicates::triage::verdict::Assessment;
+        let pairs = one_pair();
+        let triage = [Assessment::Uncertain { confidence: 0.4 }];
+        let mut buf = Vec::new();
+        render_delta(
+            &fractional_cc_delta(),
+            &RenderOptions {
+                format: Format::Json,
+                duplicates: Some(&pairs),
+                triage: Some(&triage),
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(doc["duplicates"][0]["triage"]["kind"], "uncertain");
     }
 }

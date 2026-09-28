@@ -322,6 +322,60 @@ Three things worth knowing:
 envelope; the key is absent entirely when detection was not requested, so
 "not asked" is distinguishable from "asked, found nothing".
 
+### Triage (optional)
+
+Structural similarity cannot tell *the same logic written twice* from *two
+unrelated functions that share a Rust idiom* — two functions that are each a
+run of `writeln!` calls score as high as a real copy-paste. Triage asks a
+[TypeSafe](https://docs.typesafe.ai) System One model three narrow questions
+about each reported pair and prints the answers beside it:
+
+```
+DUPLICATE score=1.00
+  src/report/pr_comment.rs:120-148  write_pr_comment_improved_section
+  src/report/pr_comment.rs:150-178  write_pr_comment_moved_section
+  triage: same-logic, should-be-one (conf 0.84)
+```
+
+The kind is one of `same-logic`, `shared-shape-only`,
+`structural-obligation` or `parameterisable`; the second word says whether
+the pair is worth merging (`leave-it`, `optional`, `worthwhile`,
+`should-be-one`). Below the confidence floor the line says
+`triage: uncertain (conf 0.31)` and names no kind. With `--format json` each
+pair carries the same verdict as a `triage` object — its kind,
+worth-extracting level and score, divergence risk and confidence, or only
+`"kind": "uncertain"` and the confidence below the floor — and the key is
+absent when triage did not run.
+
+It is opt-in twice over, because it sends each pair's two function bodies to
+a third-party API:
+
+1. **Build it in.** The HTTP client is behind a Cargo feature, off by
+   default — a plain install compiles no network code at all:
+
+   ```bash
+   cargo install cargo-crap --features triage
+   ```
+
+2. **Switch it on** in `.cargo-crap.toml` (there is no flag), and put the key
+   in the environment — it is never read from the config file:
+
+   ```toml
+   [duplicates.triage]
+   enabled = true
+   ```
+
+   ```bash
+   export TYPESAFE_API_KEY=...
+   cargo crap --path src --duplicates
+   ```
+
+Triage only annotates: every pair still prints in the same order with the
+same score, and the exit code never depends on it. Without a key, a network
+or a working API, the run prints the untriaged section and one warning
+saying why. Verdicts are cached under `target/cargo-crap/triage/`, keyed by
+both function bodies, so an unchanged pair is never asked about twice.
+
 ## Configuration file
 
 Most flags can be set persistently in `.cargo-crap.toml` at the project root
@@ -369,6 +423,12 @@ try-weight = 1.0
 enabled   = false   # same as passing --duplicates
 threshold = 0.82    # similarity at or above which a pair is reported
 min-nodes = 20      # skip functions smaller than this; 0 compares everything
+# Triage each reported pair with a TypeSafe model (needs the `triage` build
+# feature and TYPESAFE_API_KEY; see "Triage (optional)").
+[duplicates.triage]
+enabled          = false
+model            = "jev-latest"
+confidence-floor = 0.5   # below this a verdict says "uncertain"; 0.0..=1.0
 ```
 
 All keys are optional. Unknown keys are rejected to catch typos.
@@ -396,6 +456,7 @@ its flag are not spelled the same, the mapping is:
 | `--duplicates`        | `duplicates.enabled`   |
 | `--dup-threshold`     | `duplicates.threshold` |
 | *(no flag)*           | `duplicates.min-nodes` |
+| *(no flag)*           | `duplicates.triage.*`  |
 | *(no flag)*           | `uncovered-hints`      |
 | *(no flag)*           | `try-weight`           |
 | *(no key)*            | `--path`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`, `--baseline`, `--no-default-excludes`, `--repo-url`, `--commit-ref` |

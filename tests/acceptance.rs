@@ -757,3 +757,803 @@ fn matching_weights_compare_silently() {
         serde_json::from_slice(&out.get_output().stdout).expect("one JSON document");
     assert_eq!(delta["entries"][0]["status"], "unchanged", "{delta}");
 }
+
+// --- Spec 30 · Duplicate-pair triage ----------------------------------------
+//
+// Each task fills only its own heading, so parallel branches never touch the
+// same lines. The recording TypeSafe stub lives in `support::typesafe_stub`.
+
+mod support;
+
+// ---- Spec 30 · T1 ----
+
+#[test]
+fn an_invalid_confidence_floor_is_rejected_before_any_analysis() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given a .cargo-crap.toml whose triage confidence floor is outside
+    // 0.0..=1.0 — with triage otherwise ready to call an API
+    let dir = alpha_beta_tree();
+    write(
+        dir.path(),
+        ".cargo-crap.toml",
+        "[duplicates]\nenabled = true\n[duplicates.triage]\nenabled = true\nconfidence-floor = 1.5\n",
+    );
+    let stub = TypesafeStub::scripted(vec![Reply::json("{}")]);
+    // When cargo-crap runs
+    let out = crap()
+        .current_dir(dir.path())
+        .env("TYPESAFE_API_KEY", "test-key")
+        .env("TYPESAFE_BASE_URL", stub.base_url())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .assert()
+        // Then it exits with the configuration-error code
+        .code(2);
+    // And the message names the key and the accepted range
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).expect("utf-8");
+    assert!(
+        stderr.contains("confidence-floor") && stderr.contains("0.0") && stderr.contains("1.0"),
+        "{stderr}"
+    );
+    // And no analysis and no network request happen
+    assert!(out.get_output().stdout.is_empty(), "no report was written");
+    assert_eq!(stub.request_count(), 0);
+}
+
+// ---- Spec 30 · T8 ----
+
+/// A full `/v1/systemone` answer naming `kind` with `confidence`.
+fn triage_answer(
+    kind: &str,
+    confidence: f64,
+) -> String {
+    format!(
+        r#"{{"model":"jev-1.13.0","answers":{{
+            "duplication_kind":{{"type":"choice","choice":"{kind}","confidence":{confidence}}},
+            "worth_extracting":{{"type":"score","score":2.0,"confidence":0.8}},
+            "divergence_risk":{{"type":"noul","noul":0.6}}}},"usage":{{}}}}"#
+    )
+}
+
+/// A tree whose three identical functions make three duplicate pairs.
+fn three_pairs_tree() -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    let body = |name: &str| {
+        format!(
+            "fn {name}(xs: &[i32]) -> Vec<i32> {{
+    let mut ys = Vec::new();
+    for x in xs {{
+        if x % 2 == 1 {{
+            ys.push(x + 1);
+        }}
+    }}
+    ys
+}}
+"
+        )
+    };
+    write(
+        dir.path(),
+        "three.rs",
+        &format!("{}{}{}", body("one"), body("two"), body("three")),
+    );
+    dir
+}
+
+/// A function unlike the `alpha_beta_tree` pair — a loop around a match —
+/// so two copies of it make a second, separate pair.
+#[cfg(feature = "triage")]
+fn loop_and_match(name: &str) -> String {
+    format!(
+        "fn {name}(n: u32) -> u32 {{
+    let mut total = 0;
+    let mut i = 0;
+    while i < n {{
+        match i % 3 {{
+            0 => total += i,
+            1 => total -= 1,
+            _ => total *= 2,
+        }}
+        i += 1;
+    }}
+    total
+}}
+"
+    )
+}
+
+/// The longest a triaged run may take before it is killed. Far above any
+/// real retry schedule; it exists so a retry loop that never stops fails its
+/// test instead of hanging the suite (or a mutation run).
+const TRIAGE_RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+const DUPLICATES_ONLY: &str = "[duplicates]\nenabled = true\n";
+const TRIAGE_ON: &str = "[duplicates]\nenabled = true\n[duplicates.triage]\nenabled = true\n";
+
+/// Run from `dir` with `config` as its `.cargo-crap.toml`, the stub as the
+/// API and a key set; return the output and the stub's request count.
+fn run_with_config(
+    dir: &Path,
+    config: &str,
+    stub: &support::typesafe_stub::TypesafeStub,
+    extra: &[&str],
+) -> std::process::Output {
+    write(dir, ".cargo-crap.toml", config);
+    crap()
+        .timeout(TRIAGE_RUN_LIMIT)
+        .current_dir(dir)
+        .env("CARGO_TARGET_DIR", dir.join("target"))
+        .env("TYPESAFE_API_KEY", "test-key")
+        .env("TYPESAFE_BASE_URL", stub.base_url())
+        .args(["--path", dir.to_str().expect("utf-8")])
+        .args(extra)
+        .output()
+        .expect("cargo-crap runs")
+}
+
+#[test]
+fn triage_is_off_by_default() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given a project with a .cargo-crap.toml that does not mention triage
+    // And duplicate detection is enabled
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs — with a key and an API at hand
+    let out = run_with_config(dir.path(), DUPLICATES_ONLY, &stub, &[]);
+    assert!(out.status.success());
+    // Then the duplicates section is byte-identical to the spec-29 output:
+    // the same run with no key and no API anywhere in reach
+    let spec_29 = crap()
+        .current_dir(dir.path())
+        .env_remove("TYPESAFE_API_KEY")
+        .env_remove("TYPESAFE_BASE_URL")
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .output()
+        .expect("cargo-crap runs");
+    assert_eq!(out.stdout, spec_29.stdout);
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    assert!(stdout.contains("3 duplicate candidates:"), "{stdout}");
+    assert!(!stdout.contains("triage:"), "{stdout}");
+    // And no network request is made
+    assert_eq!(stub.request_count(), 0);
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn an_enabled_run_annotates_every_pair_it_reports() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled in configuration
+    // And the API key environment variable is set
+    // And duplicate detection reports three pairs
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let plain = run_with_config(dir.path(), DUPLICATES_ONLY, &stub, &[]);
+    // When cargo-crap runs
+    let triaged = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    assert!(triaged.status.success());
+    let triaged = String::from_utf8(triaged.stdout).expect("utf-8");
+    // Then the same three pairs print, in the same order, with the same scores
+    let without_triage_lines: String = triaged
+        .lines()
+        .filter(|l| !l.starts_with("  triage: "))
+        .flat_map(|l| [l, "\n"])
+        .collect();
+    assert_eq!(
+        without_triage_lines,
+        String::from_utf8(plain.stdout).expect("utf-8")
+    );
+    // And each pair is followed by a triage line naming its kind, its
+    // worth-extracting level and its confidence
+    let lines: Vec<&str> = triaged.lines().collect();
+    let duplicates: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].starts_with("DUPLICATE "))
+        .collect();
+    assert_eq!(duplicates.len(), 3, "{triaged}");
+    for at in duplicates {
+        assert_eq!(
+            lines[at + 3],
+            "  triage: same-logic, worthwhile (conf 0.90)",
+            "{triaged}"
+        );
+    }
+    assert_eq!(stub.request_count(), 3, "one request per pair");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_verdict_below_the_confidence_floor_is_reported_as_uncertain() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled
+    // And the model returns a kind whose confidence is below the configured floor
+    let dir = alpha_beta_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.3))]);
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    // Then the pair's triage line reports uncertain and the confidence value
+    assert!(
+        stdout.contains("  triage: uncertain (conf 0.30)\n"),
+        "{stdout}"
+    );
+    // And no kind is asserted for that pair
+    assert!(!stdout.contains("same-logic"), "{stdout}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn no_pairs_means_no_requests() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled and the API key is set
+    // And duplicate detection finds no pairs
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), "lone.rs", "fn lone() -> i32 { 1 }\n");
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    assert!(out.status.success());
+    // Then the duplicates section reports no candidates
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    assert!(
+        stdout.contains("No candidate duplicates found."),
+        "{stdout}"
+    );
+    // And no network request is made
+    assert_eq!(stub.request_count(), 0);
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_request_carries_exactly_the_pair_under_judgment() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled and two pairs were found
+    let dir = alpha_beta_tree();
+    write(dir.path(), "gamma.rs", &loop_and_match("gamma"));
+    write(dir.path(), "delta.rs", &loop_and_match("delta"));
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs against a recording API
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Then two requests were made
+    let requests = stub.requests();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        let state = &request.json()["state"];
+        let a = state["function_a"]["source"].as_str().expect("a source");
+        let b = state["function_b"]["source"].as_str().expect("b source");
+        // And each request's state contains exactly the two function bodies
+        // of one pair and their locations
+        let pair = [a, b];
+        let one_pair = pair
+            .iter()
+            .all(|s| s.contains("fn alpha") || s.contains("fn beta"))
+            || pair
+                .iter()
+                .all(|s| s.contains("fn gamma") || s.contains("fn delta"));
+        assert!(one_pair, "{a}\n---\n{b}");
+        assert!(state["function_a"]["location"].is_string());
+        assert!(state["function_b"]["location"].is_string());
+        // And no request contains a function body from any other pair
+        let body = request.body;
+        let first_pair = body.contains("fn alpha") || body.contains("fn beta");
+        let second_pair = body.contains("fn gamma") || body.contains("fn delta");
+        assert!(first_pair != second_pair, "{body}");
+    }
+}
+
+#[test]
+fn triage_never_runs_for_a_format_that_cannot_carry_duplicates() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled and the API key is set
+    // And the output format is markdown
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &["--format", "markdown"]);
+    // Then the existing warning that --duplicates has no effect is printed
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(stderr.contains("--duplicates has no effect"), "{stderr}");
+    // And no network request is made
+    assert_eq!(stub.request_count(), 0);
+}
+
+#[cfg(not(feature = "triage"))]
+#[test]
+fn a_build_without_the_triage_feature_says_how_to_get_it() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given a cargo-crap built without the `triage` feature
+    // And a .cargo-crap.toml that enables triage
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let plain = run_with_config(dir.path(), DUPLICATES_ONLY, &stub, &[]);
+    // When cargo-crap runs with duplicate detection
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    assert!(out.status.success());
+    // Then the duplicates section is byte-identical to the spec-29 output
+    assert_eq!(
+        out.stdout,
+        plain.stdout,
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // And stderr carries one warning naming the `triage` feature
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    let warnings: Vec<&str> = stderr.lines().filter(|l| l.contains("triage")).collect();
+    assert_eq!(warnings.len(), 1, "{stderr}");
+    assert!(warnings[0].contains("--features triage"), "{stderr}");
+    // And no network request is made
+    assert_eq!(stub.request_count(), 0);
+}
+
+// ---- Spec 30 · T9 ----
+
+/// Run with `config`, a key unless `key` is false, and `base_url` as the API.
+#[cfg(feature = "triage")]
+fn run_against(
+    dir: &Path,
+    config: &str,
+    base_url: &str,
+    key: bool,
+    extra: &[&str],
+) -> std::process::Output {
+    write(dir, ".cargo-crap.toml", config);
+    let mut command = crap();
+    command
+        .timeout(TRIAGE_RUN_LIMIT)
+        .current_dir(dir)
+        .env("CARGO_TARGET_DIR", dir.join("target"))
+        .env("TYPESAFE_BASE_URL", base_url)
+        .args(["--path", dir.to_str().expect("utf-8")])
+        .args(extra);
+    if key {
+        command.env("TYPESAFE_API_KEY", "test-key");
+    } else {
+        command.env_remove("TYPESAFE_API_KEY");
+    }
+    command.output().expect("cargo-crap runs")
+}
+
+/// The warning every degraded run prints, around its cause.
+#[cfg(feature = "triage")]
+const TRIAGE_SKIPPED: &str = "warning: duplicate triage skipped: ";
+#[cfg(feature = "triage")]
+const REPORTED_UNTRIAGED: &str = "; the pairs are reported untriaged";
+
+/// The same tree run with triage off: what every degraded run must equal.
+#[cfg(feature = "triage")]
+fn untriaged(
+    dir: &Path,
+    extra: &[&str],
+) -> std::process::Output {
+    run_against(dir, DUPLICATES_ONLY, UNREACHABLE_API, true, extra)
+}
+
+/// An address nothing listens on — port 9, "discard" — fixed rather than
+/// freed from an ephemeral bind, so a parallel test's stub can never be
+/// handed the same port.
+#[cfg(feature = "triage")]
+const UNREACHABLE_API: &str = "http://127.0.0.1:9";
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_missing_api_key_degrades_to_the_untriaged_report() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled in configuration
+    // And the API key environment variable is unset
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs
+    let out = run_against(dir.path(), TRIAGE_ON, &stub.base_url(), false, &[]);
+    let plain = untriaged(dir.path(), &[]);
+    // Then the duplicates section is byte-identical to the spec-29 output
+    assert_eq!(
+        out.stdout,
+        plain.stdout,
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // And stderr carries a warning naming the missing environment variable
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        stderr.contains(&format!(
+            "{TRIAGE_SKIPPED}TYPESAFE_API_KEY is not set{REPORTED_UNTRIAGED}"
+        )),
+        "{stderr}"
+    );
+    // And the exit code is what the same run would produce with triage disabled
+    assert_eq!(out.status.code(), plain.status.code());
+    assert_eq!(stub.request_count(), 0);
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn an_unreachable_api_degrades_to_the_untriaged_report() {
+    // Given triage is enabled and the API key is set
+    // And every request to the API fails
+    let dir = three_pairs_tree();
+    // When cargo-crap runs
+    let out = run_against(dir.path(), TRIAGE_ON, UNREACHABLE_API, true, &[]);
+    let plain = untriaged(dir.path(), &[]);
+    // Then the duplicates section is byte-identical to the spec-29 output
+    assert_eq!(
+        out.stdout,
+        plain.stdout,
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // And stderr carries a warning naming the failure
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        stderr.contains(TRIAGE_SKIPPED) && stderr.contains(UNREACHABLE_API),
+        "{stderr}"
+    );
+    // And the exit code is what the same run would produce with triage disabled
+    assert_eq!(out.status.code(), plain.status.code());
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn one_failed_pair_discards_the_whole_triage() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled and four pairs were found
+    let dir = three_pairs_tree();
+    write(dir.path(), "gamma.rs", &loop_and_match("gamma"));
+    write(dir.path(), "delta.rs", &loop_and_match("delta"));
+    // And three requests succeed and the fourth fails after its retries
+    let stub = TypesafeStub::respond_with(|request| {
+        if request.body.contains("fn gamma") {
+            Reply::status(500)
+        } else {
+            Reply::json(&triage_answer("same_logic", 0.9))
+        }
+    });
+    // When cargo-crap runs
+    let out = run_against(dir.path(), TRIAGE_ON, &stub.base_url(), true, &[]);
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf-8");
+    assert!(stdout.contains("4 duplicate candidates:"), "{stdout}");
+    let requests = stub.requests();
+    let failing = requests
+        .iter()
+        .filter(|r| r.body.contains("fn gamma"))
+        .count();
+    assert_eq!(
+        requests.len() - failing,
+        3,
+        "the other three pairs were asked"
+    );
+    assert_eq!(failing, 3, "the fourth failed after its retries");
+    // Then no pair carries a triage line
+    assert!(!stdout.contains("triage:"), "{stdout}");
+    assert_eq!(out.stdout, untriaged(dir.path(), &[]).stdout, "{stdout}");
+    // And stderr carries a warning naming the failure
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        stderr.contains(TRIAGE_SKIPPED) && stderr.contains("500"),
+        "{stderr}"
+    );
+}
+
+#[cfg(feature = "triage")]
+mod degradation {
+    use super::*;
+    use proptest::prelude::*;
+    use proptest::test_runner::FileFailurePersistence;
+    use support::typesafe_stub::{Reply, TypesafeStub};
+
+    fn failures() -> impl Strategy<Value = Reply> {
+        prop_oneof![
+            prop::sample::select(vec![400u16, 401, 403, 404, 422, 429, 500, 503, 529])
+                .prop_map(Reply::status),
+            Just(Reply::Drop),
+            Just(Reply::json(r#"{"answers":{}}"#)),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 8,
+            failure_persistence: Some(Box::new(FileFailurePersistence::WithSource("proptest-regressions"))),
+            ..ProptestConfig::default()
+        })]
+
+        /// For any failure the API can produce, a triaged run prints exactly
+        /// what the same run prints with triage disabled, and exits the same.
+        #[test]
+        fn any_failure_leaves_the_report_and_the_exit_code_untouched(
+            failure in failures(),
+            gate in any::<bool>(),
+        ) {
+            let dir = alpha_beta_tree();
+            let stub = TypesafeStub::scripted(vec![failure]);
+            // A gate that fails (every function scores above 0.5) or passes.
+            let extra: &[&str] = if gate { &["--threshold", "0.5", "--fail-above"] } else { &[] };
+            let out = run_against(dir.path(), TRIAGE_ON, &stub.base_url(), true, extra);
+            let plain = untriaged(dir.path(), extra);
+            prop_assert_eq!(&out.stdout, &plain.stdout, "{}", String::from_utf8_lossy(&out.stdout));
+            prop_assert_eq!(out.status.code(), plain.status.code());
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            prop_assert!(stderr.contains(TRIAGE_SKIPPED), "{}", stderr);
+        }
+    }
+}
+
+// ---- Spec 30 · T10 ----
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_second_run_over_unchanged_code_asks_nothing() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled and a previous run cached its verdicts
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let first = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    assert_eq!(stub.request_count(), 3);
+    // And neither function body in any pair has changed
+    // When cargo-crap runs again
+    let second = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    // Then every pair carries the same triage line as the previous run
+    assert_eq!(
+        second.stdout,
+        first.stdout,
+        "{}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    assert!(String::from_utf8_lossy(&second.stdout).contains("  triage: same-logic"));
+    // And no network request is made
+    assert_eq!(stub.request_count(), 3, "the second run asked nothing");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn editing_a_function_body_invalidates_that_pairs_cached_verdict() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given a cached verdict for a pair
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    assert_eq!(stub.request_count(), 3);
+    // When one of the two function bodies is edited — `three` gains a
+    // different literal, so every pair still matches structurally
+    let file = dir.path().join("three.rs");
+    let source = fs::read_to_string(&file).expect("read");
+    let at = source.rfind("x + 1").expect("three's body");
+    let edited = format!("{}x + 2{}", &source[..at], &source[at + "x + 1".len()..]);
+    fs::write(&file, edited).expect("write");
+    // And cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("3 duplicate candidates:"));
+    // Then a request is made for that pair
+    // And the other pairs' cached verdicts are reused
+    let second_run: Vec<_> = stub.requests().into_iter().skip(3).collect();
+    assert_eq!(second_run.len(), 2, "the two pairs with `three` in them");
+    assert!(second_run.iter().all(|r| r.body.contains("fn three")));
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_retry_pays_only_for_the_pair_that_failed() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // A run discarded because one pair failed still caches the others.
+    let dir = alpha_beta_tree();
+    write(dir.path(), "gamma.rs", &loop_and_match("gamma"));
+    write(dir.path(), "delta.rs", &loop_and_match("delta"));
+    let failing = TypesafeStub::respond_with(|request| {
+        if request.body.contains("fn gamma") {
+            Reply::status(400)
+        } else {
+            Reply::json(&triage_answer("same_logic", 0.9))
+        }
+    });
+    let first = run_with_config(dir.path(), TRIAGE_ON, &failing, &[]);
+    assert!(
+        !String::from_utf8_lossy(&first.stdout).contains("triage:"),
+        "discarded"
+    );
+    // Retried against a healthy API, only the pair that failed is asked.
+    let healthy = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let second = run_with_config(dir.path(), TRIAGE_ON, &healthy, &[]);
+    assert_eq!(
+        healthy.request_count(),
+        1,
+        "the alpha/beta verdict was cached"
+    );
+    assert!(healthy.requests()[0].body.contains("fn gamma"));
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert_eq!(
+        stdout.matches("  triage: same-logic").count(),
+        2,
+        "{stdout}"
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_cache_that_cannot_be_written_warns_once_and_triage_still_runs() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    let dir = three_pairs_tree();
+    // A file where the cache directory should be.
+    fs::create_dir_all(dir.path().join("target/cargo-crap")).expect("mkdir");
+    write(
+        &dir.path().join("target/cargo-crap"),
+        "triage",
+        "not a directory",
+    );
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.matches("  triage: same-logic").count(),
+        3,
+        "{stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warnings: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("triage cache"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "one warning for three failed writes: {stderr}"
+    );
+    assert!(warnings[0].starts_with("warning:"), "{stderr}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_warm_cache_needs_no_key() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Offline must keep working: once every pair is cached, triage needs
+    // neither the API nor its key.
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let warm = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    assert_eq!(stub.request_count(), 3);
+    let keyless = run_against(dir.path(), TRIAGE_ON, UNREACHABLE_API, false, &[]);
+    assert_eq!(
+        keyless.stdout,
+        warm.stdout,
+        "{}",
+        String::from_utf8_lossy(&keyless.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&keyless.stderr);
+    assert!(!stderr.contains(TRIAGE_SKIPPED), "{stderr}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_cache_lives_beside_the_configuration() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Run from a subdirectory: the cache belongs to the project the
+    // .cargo-crap.toml describes, where `cargo clean` will find it.
+    let dir = three_pairs_tree();
+    write(dir.path(), ".cargo-crap.toml", TRIAGE_ON);
+    let subdir = dir.path().join("src");
+    fs::create_dir_all(&subdir).expect("mkdir");
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let out = crap()
+        .current_dir(&subdir)
+        .env_remove("CARGO_TARGET_DIR")
+        .env("TYPESAFE_API_KEY", "test-key")
+        .env("TYPESAFE_BASE_URL", stub.base_url())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .output()
+        .expect("cargo-crap runs");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("  triage: same-logic"));
+    let cache = dir.path().join("target/cargo-crap/triage");
+    let entries = fs::read_dir(&cache).map_or(0, Iterator::count);
+    assert_eq!(entries, 3, "one entry per pair beside the config");
+    assert!(
+        !subdir.join("target").exists(),
+        "no stray target/ where it ran"
+    );
+}
+
+// ---- Spec 30 · T11 ----
+
+#[cfg(feature = "triage")]
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
+#[cfg(feature = "triage")]
+#[test]
+fn two_functions_sharing_only_an_idiom_are_named_as_such() {
+    use fixtures::triage_fixture;
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given two functions whose bodies are each an unrelated run of writeln!
+    // calls — copied from this repository's report writers
+    // And their similarity clears the duplicates threshold (0.92, checked below)
+    let dir = triage_fixture("shared_shape");
+    // And triage is enabled with a reachable API
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("shared_shape_only", 0.9))]);
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 duplicate candidate:"), "{stdout}");
+    assert!(stdout.contains("DUPLICATE score=0.92"), "{stdout}");
+    // Then the pair's triage line reports the kind shared-shape-only
+    assert!(
+        stdout.contains("\n  triage: shared-shape-only, "),
+        "{stdout}"
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_same_logic_written_twice_is_named_as_such() {
+    use fixtures::triage_fixture;
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given two functions that compute the same result from the same inputs,
+    // differing only in names and literals — copied from this repository
+    let dir = triage_fixture("same_logic");
+    // And triage is enabled with a reachable API
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 duplicate candidate:"), "{stdout}");
+    assert!(stdout.contains("DUPLICATE score=1.00"), "{stdout}");
+    // Then the pair's triage line reports the kind same-logic
+    assert!(stdout.contains("\n  triage: same-logic, "), "{stdout}");
+}
+
+// ---- Spec 30 · T12 ----
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_json_envelope_carries_the_verdict_beside_the_pair() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled and the API key is set
+    // And the output format is json
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &["--format", "json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON document");
+    assert_matches_schema("schemas/report-v1.json", &doc);
+    // Then each duplicates entry carries a triage object with its kind,
+    // worth-extracting level, divergence risk and confidence
+    let pairs = doc["duplicates"].as_array().expect("a duplicates array");
+    assert_eq!(pairs.len(), 3);
+    for pair in pairs {
+        let triage = &pair["triage"];
+        assert_eq!(triage["kind"], "same-logic", "{pair}");
+        assert_eq!(triage["worth_extracting"], "worthwhile", "{pair}");
+        assert_eq!(triage["divergence_risk"], 0.6, "{pair}");
+        assert_eq!(triage["confidence"], 0.9, "{pair}");
+    }
+    // And a run with triage disabled emits the same entries with no triage key
+    let plain = run_with_config(dir.path(), DUPLICATES_ONLY, &stub, &["--format", "json"]);
+    let plain: serde_json::Value = serde_json::from_slice(&plain.stdout).expect("JSON");
+    let mut stripped = doc["duplicates"].clone();
+    for pair in stripped.as_array_mut().expect("an array") {
+        pair.as_object_mut().expect("an object").remove("triage");
+    }
+    assert_eq!(stripped, plain["duplicates"]);
+    assert!(plain["duplicates"][0].get("triage").is_none());
+
+    // The delta envelope carries it the same way
+    let baseline = dir.path().join("baseline.json");
+    fs::write(&baseline, plain.to_string()).expect("write baseline");
+    let delta = run_with_config(
+        dir.path(),
+        TRIAGE_ON,
+        &stub,
+        &[
+            "--format",
+            "json",
+            "--baseline",
+            baseline.to_str().expect("utf-8"),
+        ],
+    );
+    let delta: serde_json::Value = serde_json::from_slice(&delta.stdout).expect("JSON");
+    assert_matches_schema("schemas/delta-v2.json", &delta);
+    assert_eq!(delta["duplicates"][0]["triage"]["kind"], "same-logic");
+}

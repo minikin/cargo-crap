@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 147f776a2a75166563c4cc49e400dbec9816ee60295f3506b45d29bdcafb6f1c # shrinks to verdict = Verdict { kind: SameLogic, confidence: 0.0, worth_extracting: WorthExtracting(1.6407364223753333), divergence_risk: 0.0 }, a = "", b = ""
