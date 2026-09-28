@@ -36,3 +36,35 @@ cargo run --release --features triage --manifest-path ../../Cargo.toml -- --summ
 The run sends the four pairs' function bodies to TypeSafe and caches the
 verdicts under `target/`, so a second run asks nothing. Without a key it
 prints the same pairs untriaged, with one warning saying why.
+
+## Output
+
+A real run, with `--summary` so the CRAP table stays out of the way:
+
+```text
+✗ Analyzed: 8 · Crappy: 2 (threshold 30) · Worst: write_receipt (CRAP 42.0)
+
+4 duplicate candidates:
+
+DUPLICATE score=1.00
+  ./src/lib.rs:19-28  order_total
+  ./src/lib.rs:31-40  quote_total
+  triage: same-logic, should-be-one (conf 1.00)
+DUPLICATE score=1.00
+  ./src/lib.rs:43-51  shipped_weight
+  ./src/lib.rs:54-62  shipped_volume
+  triage: parameterisable, worthwhile (conf 0.88)
+DUPLICATE score=1.00
+  ./src/lib.rs:124-134  visit_category
+  ./src/lib.rs:136-146  visit_product
+  triage: uncertain (conf 0.46)
+DUPLICATE score=0.84
+  ./src/lib.rs:65-76  write_receipt
+  ./src/lib.rs:79-90  write_shipping_label
+  triage: shared-shape-only, leave-it (conf 0.56)
+```
+
+Three pairs get the verdict they were written for. The visitor pair comes
+back below the confidence floor (0.5 by default), so its line says
+`uncertain` and names no kind. `--format json` also carries each verdict's
+worth-extracting score and divergence risk.
