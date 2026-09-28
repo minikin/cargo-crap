@@ -5,6 +5,11 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/minikin/cargo-crap/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/minikin/cargo-crap/actions/workflows/ci.yml)
 [![CRAP](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fminikin%2Fcargo-crap%2Fbadges%2Fcrap-badge.json&style=for-the-badge)](docs/guides/badge.md)
 
+
+Background: the blog post
+[cargo-crap: Finding Untested Complexity in AI-Generated Rust Code](https://minikin.me/blog/cargo-crap)
+and the video [Your AI Code Might Be CRAP! (Here's How To Fix It)](https://www.youtube.com/watch?v=XuMR1pgc6pc).
+
 cargo-crap finds the Rust functions that are both complex and untested: the
 ones where a change is most likely to break something without a test
 failing. It parses your source with `syn`, reads the LCOV file your coverage
@@ -148,9 +153,6 @@ delta as a pull-request comment.
   [the path-matching problem](docs/explanation/path-matching.md).
 - [Troubleshooting](docs/troubleshooting.md) starts with the usual cause of a
   table full of 0%.
-- Background: the blog post
-  [cargo-crap: Finding Untested Complexity in AI-Generated Rust Code](https://minikin.me/blog/cargo-crap)
-  and the talk [Your AI Code Might Be CRAP! (Here's How To Fix It)](https://www.youtube.com/watch?v=XuMR1pgc6pc).
 
 ## License
 
