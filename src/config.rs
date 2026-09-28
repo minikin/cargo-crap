@@ -33,13 +33,19 @@
 //! # markdown, and pr-comment outputs.
 //! uncovered-hints = true
 //! # What each `?` operator adds to cyclomatic complexity. 1.0 (default) is
-//! # classical McCabe; 0.0 makes error propagation free. Finite and >= 0.
+//! # classical McCabe; 0.0 makes error propagation free. Any value 0..=100.
 //! try-weight = 0.5
 //! # Structural duplicate detection (--duplicates).
 //! [duplicates]
 //! enabled = false
 //! threshold = 0.82
 //! min-nodes = 20
+//! # Advisory triage of each reported pair by a TypeSafe model. Sends the
+//! # two function bodies to the API; the key comes from TYPESAFE_API_KEY.
+//! [duplicates.triage]
+//! enabled = false
+//! model = "jev-latest"
+//! confidence-floor = 0.5
 //! ```
 
 use crate::merge::{MissingCoveragePolicy, SortOrder};
@@ -148,7 +154,39 @@ pub struct DuplicatesConfig {
     /// Accepted as `min-nodes` (house style) or `min_nodes`.
     #[serde(alias = "min_nodes")]
     pub min_nodes: Option<usize>,
+
+    /// Advisory triage of the reported pairs by a `TypeSafe` model.
+    #[serde(default)]
+    pub triage: TriageConfig,
 }
+
+/// The `[duplicates.triage]` table. Turning triage on sends each reported
+/// pair's two function bodies to a third-party API, so it is off unless
+/// switched on here — there is deliberately no flag. The API key is read
+/// from `TYPESAFE_API_KEY` and never from this file; an `api-key` entry is
+/// an unknown key, rejected like any other.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TriageConfig {
+    /// Ask the model about each pair. Defaults to `false`.
+    pub enabled: Option<bool>,
+
+    /// The model to ask. Defaults to [`DEFAULT_TRIAGE_MODEL`].
+    pub model: Option<String>,
+
+    /// Below this confidence a verdict names no kind and reports
+    /// `uncertain`. Defaults to [`DEFAULT_TRIAGE_CONFIDENCE_FLOOR`]; must lie
+    /// in `0.0..=1.0`. Accepted as `confidence-floor` (house style) or
+    /// `confidence_floor`.
+    #[serde(alias = "confidence_floor")]
+    pub confidence_floor: Option<f64>,
+}
+
+/// The triage model, absent any configuration.
+pub const DEFAULT_TRIAGE_MODEL: &str = "jev-latest";
+
+/// The triage confidence floor, absent any configuration.
+pub const DEFAULT_TRIAGE_CONFIDENCE_FLOOR: f64 = 0.5;
 
 /// Similarity at or above which a pair is reported, absent any configuration.
 pub const DEFAULT_DUP_THRESHOLD: f64 = 0.82;
@@ -379,5 +417,60 @@ allow = ["Foo::*"]
             err.to_string().contains("parsing"),
             "expected parse error, got: {err}"
         );
+    }
+
+    #[test]
+    fn triage_is_absent_unless_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "[duplicates]\nenabled = true\n");
+        let cfg = load(dir.path()).unwrap();
+        assert_eq!(cfg.duplicates.triage, TriageConfig::default());
+        assert!(cfg.duplicates.triage.enabled.is_none());
+        assert!(cfg.duplicates.triage.model.is_none());
+        assert!(cfg.duplicates.triage.confidence_floor.is_none());
+        // What an unset key resolves to.
+        assert_eq!(DEFAULT_TRIAGE_MODEL, "jev-latest");
+        assert!((DEFAULT_TRIAGE_CONFIDENCE_FLOOR - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn triage_table_is_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(
+            dir.path(),
+            "[duplicates.triage]\nenabled = true\nmodel = \"jev-1.13.0\"\nconfidence-floor = 0.7\n",
+        );
+        let triage = load(dir.path()).unwrap().duplicates.triage;
+        assert_eq!(triage.enabled, Some(true));
+        assert_eq!(triage.model.as_deref(), Some("jev-1.13.0"));
+        assert_eq!(triage.confidence_floor, Some(0.7));
+    }
+
+    #[test]
+    fn triage_floor_accepts_its_snake_case_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "[duplicates.triage]\nconfidence_floor = 0.25\n");
+        assert_eq!(
+            load(dir.path()).unwrap().duplicates.triage.confidence_floor,
+            Some(0.25)
+        );
+    }
+
+    #[test]
+    fn an_unknown_triage_key_is_rejected() {
+        // Notably the API key: it is read from the environment only, and a
+        // config that tries to carry one is a typo or a leak, never honoured.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "[duplicates.triage]\napi-key = \"secret\"\n");
+        let err = load(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("api-key"), "{err:#}");
+    }
+
+    #[test]
+    fn triage_floor_accepts_any_toml_float_leaving_range_to_the_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "[duplicates.triage]\nconfidence-floor = nan\n");
+        let floor = load(dir.path()).unwrap().duplicates.triage.confidence_floor;
+        assert!(floor.is_some_and(f64::is_nan));
     }
 }

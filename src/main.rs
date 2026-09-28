@@ -1008,7 +1008,7 @@ fn path_is_ignored(cli: &Cli) -> bool {
 fn validate_merged_values(
     epsilon: f64,
     jobs: Option<usize>,
-    dup_threshold: f64,
+    dup: &DupSettings,
     try_weight: f64,
 ) -> Result<()> {
     if epsilon < 0.0 {
@@ -1021,13 +1021,25 @@ fn validate_merged_values(
     // `.cargo-crap.toml` reaches the comparison the same way, and an
     // unchecked one silently reports everything or nothing. `!(..)` rather
     // than `<`/`>` so that NaN — which TOML can express — is rejected too.
-    if !(0.0..=1.0).contains(&dup_threshold) {
+    if !(0.0..=1.0).contains(&dup.threshold) {
         bail!(
             "invalid duplicates threshold (--dup-threshold or config): \
              must be between 0.0 and 1.0"
         );
     }
-    validate_try_weight(try_weight)
+    validate_triage_floor(dup.triage_floor).and_then(|()| validate_try_weight(try_weight))
+}
+
+/// Reject a triage confidence floor outside `0.0..=1.0` — NaN included,
+/// which TOML can spell. Config-only, so the message names no flag.
+fn validate_triage_floor(floor: f64) -> Result<()> {
+    if !(0.0..=1.0).contains(&floor) {
+        bail!(
+            "invalid duplicates.triage.confidence-floor (config): \
+             must be between 0.0 and 1.0"
+        );
+    }
+    Ok(())
 }
 
 /// Reject a `?` weight that is negative, NaN, infinite or above the cap —
@@ -1173,6 +1185,10 @@ struct DupSettings {
     enabled: bool,
     threshold: f64,
     min_nodes: usize,
+    /// Confidence below which a triage verdict names no kind. Carried here,
+    /// range-checked with the threshold, so the triage pass reads the value
+    /// that was validated rather than re-resolving its own.
+    triage_floor: f64,
 }
 
 impl DupSettings {
@@ -1191,6 +1207,11 @@ impl DupSettings {
                 .duplicates
                 .min_nodes
                 .unwrap_or(cargo_crap::config::DEFAULT_DUP_MIN_NODES),
+            triage_floor: config
+                .duplicates
+                .triage
+                .confidence_floor
+                .unwrap_or(cargo_crap::config::DEFAULT_TRIAGE_CONFIDENCE_FLOOR),
         }
     }
 }
@@ -1330,10 +1351,10 @@ struct LoadedArgs {
     try_weight: f64,
 }
 
-/// Parse argv, load config, and validate the merged epsilon/jobs/similarity/
-/// try-weight values,
-/// returning exactly what was validated so [`run`] cannot consume a
-/// different (unchecked) merge of the same knobs.
+/// Parse argv, load config, and validate the merged epsilon, jobs,
+/// similarity threshold, triage confidence floor and try-weight, returning
+/// exactly what was validated so [`run`] cannot consume a different
+/// (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
     let (cli, config) = parse_and_load_config()?;
     let epsilon = cli
@@ -1348,7 +1369,7 @@ fn parse_and_validate() -> Result<LoadedArgs> {
     let try_weight = config
         .try_weight
         .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
-    validate_merged_values(epsilon, jobs, dup.threshold, try_weight)?;
+    validate_merged_values(epsilon, jobs, &dup, try_weight)?;
     Ok(LoadedArgs {
         cli,
         config,
@@ -1779,19 +1800,19 @@ mod tests {
         // values the config file could previously smuggle past the
         // CLI-only checks.
         assert!(
-            validate_merged_values(0.0, None, 0.82, 1.0).is_ok(),
+            validate_merged_values(0.0, None, &dup_settings(0.82, 0.5), 1.0).is_ok(),
             "zero epsilon is valid"
         );
-        assert!(validate_merged_values(0.01, Some(4), 0.82, 1.0).is_ok());
+        assert!(validate_merged_values(0.01, Some(4), &dup_settings(0.82, 0.5), 1.0).is_ok());
         assert!(
-            validate_merged_values(-0.001, None, 0.82, 1.0).is_err(),
+            validate_merged_values(-0.001, None, &dup_settings(0.82, 0.5), 1.0).is_err(),
             "negative epsilon"
         );
         assert!(
-            validate_merged_values(0.01, Some(0), 0.82, 1.0).is_err(),
+            validate_merged_values(0.01, Some(0), &dup_settings(0.82, 0.5), 1.0).is_err(),
             "zero jobs"
         );
-        let err = validate_merged_values(-1.0, Some(0), 0.82, 1.0)
+        let err = validate_merged_values(-1.0, Some(0), &dup_settings(0.82, 0.5), 1.0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("epsilon"), "epsilon is checked first: {err}");
@@ -1823,13 +1844,49 @@ mod tests {
         }
     }
 
+    /// Duplicate settings with only the two range-checked values chosen.
+    fn dup_settings(
+        threshold: f64,
+        triage_floor: f64,
+    ) -> DupSettings {
+        DupSettings {
+            enabled: false,
+            threshold,
+            min_nodes: cargo_crap::config::DEFAULT_DUP_MIN_NODES,
+            triage_floor,
+        }
+    }
+
+    #[test]
+    fn validate_merged_values_accepts_a_triage_floor_from_zero_to_one() {
+        for floor in [0.0, 0.5, 1.0] {
+            assert!(
+                validate_merged_values(0.01, None, &dup_settings(0.82, floor), 1.0).is_ok(),
+                "floor {floor} is valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_merged_values_rejects_an_out_of_range_triage_floor() {
+        for floor in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            let err = validate_merged_values(0.01, None, &dup_settings(0.82, floor), 1.0)
+                .expect_err("an out-of-range floor must be rejected")
+                .to_string();
+            assert!(
+                err.contains("confidence-floor") && err.contains("0.0") && err.contains("1.0"),
+                "floor {floor} names the key and the range: {err}"
+            );
+        }
+    }
+
     #[test]
     fn validate_merged_values_accepts_any_try_weight_from_zero_to_one_hundred() {
         // Zero is the point of the knob, and above one is legitimate for
         // auditing error-handling-heavy code, up to the cap.
         for weight in [0.0, -0.0, f64::MIN_POSITIVE, 0.5, 1.0, 3.0, 100.0] {
             assert!(
-                validate_merged_values(0.01, None, 0.82, weight).is_ok(),
+                validate_merged_values(0.01, None, &dup_settings(0.82, 0.5), weight).is_ok(),
                 "try-weight {weight} is valid"
             );
         }
@@ -1849,7 +1906,7 @@ mod tests {
             1e308,
             f64::MAX,
         ] {
-            let err = validate_merged_values(0.01, None, 0.82, weight)
+            let err = validate_merged_values(0.01, None, &dup_settings(0.82, 0.5), weight)
                 .expect_err("an out-of-domain try-weight must be rejected")
                 .to_string();
             assert!(

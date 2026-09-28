@@ -767,6 +767,38 @@ mod support;
 
 // ---- Spec 30 · T1 ----
 
+#[test]
+fn an_invalid_confidence_floor_is_rejected_before_any_analysis() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given a .cargo-crap.toml whose triage confidence floor is outside
+    // 0.0..=1.0 — with triage otherwise ready to call an API
+    let dir = alpha_beta_tree();
+    write(
+        dir.path(),
+        ".cargo-crap.toml",
+        "[duplicates]\nenabled = true\n[duplicates.triage]\nenabled = true\nconfidence-floor = 1.5\n",
+    );
+    let stub = TypesafeStub::scripted(vec![Reply::json("{}")]);
+    // When cargo-crap runs
+    let out = crap()
+        .current_dir(dir.path())
+        .env("TYPESAFE_API_KEY", "test-key")
+        .env("TYPESAFE_BASE_URL", stub.base_url())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .assert()
+        // Then it exits with the configuration-error code
+        .code(2);
+    // And the message names the key and the accepted range
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).expect("utf-8");
+    assert!(
+        stderr.contains("confidence-floor") && stderr.contains("0.0") && stderr.contains("1.0"),
+        "{stderr}"
+    );
+    // And no analysis and no network request happen
+    assert!(out.get_output().stdout.is_empty(), "no report was written");
+    assert_eq!(stub.request_count(), 0);
+}
+
 // ---- Spec 30 · T8 ----
 
 // ---- Spec 30 · T9 ----
