@@ -13,6 +13,7 @@ use cargo_crap::{
     delta::{compute_delta, load_baseline_with_weight},
     duplicates,
     duplicates::compare::DuplicatePair,
+    duplicates::triage::verdict::Assessment,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
     report::{
         self, Format, RenderOptions, SourceLinks, crappy_count, render, render_delta,
@@ -1197,6 +1198,14 @@ struct DupSettings {
     enabled: bool,
     threshold: f64,
     min_nodes: usize,
+    /// Whether to ask the model about each reported pair.
+    triage_enabled: bool,
+    /// The model to ask.
+    #[cfg_attr(
+        not(feature = "triage"),
+        expect(dead_code, reason = "only a build with the triage client asks a model")
+    )]
+    triage_model: String,
     /// Confidence below which a triage verdict names no kind. Carried here,
     /// range-checked with the threshold, so the triage pass reads the value
     /// that was validated rather than re-resolving its own.
@@ -1219,6 +1228,13 @@ impl DupSettings {
                 .duplicates
                 .min_nodes
                 .unwrap_or(cargo_crap::config::DEFAULT_DUP_MIN_NODES),
+            triage_enabled: config.duplicates.triage.enabled.unwrap_or(false),
+            triage_model: config
+                .duplicates
+                .triage
+                .model
+                .clone()
+                .unwrap_or_else(|| cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned()),
             triage_floor: config
                 .duplicates
                 .triage
@@ -1266,6 +1282,69 @@ fn duplicate_pairs(
     let mut pairs = duplicates::compare::find_pairs(&functions, settings.threshold);
     report::duplicates::sort_pairs(&mut pairs);
     Ok(Some(pairs))
+}
+
+/// The duplicate section's content: the pairs, and their triage when it ran.
+struct DuplicateSection {
+    pairs: Option<Vec<DuplicatePair>>,
+    triage: Option<Vec<Assessment>>,
+}
+
+/// Find the duplicate pairs, then triage them when configured to. Triage
+/// only ever sees pairs that will be reported, so a format that cannot
+/// carry duplicates never triggers a request.
+fn duplicate_section(
+    settings: &DupSettings,
+    roots: &[ScanRoot],
+    format: Format,
+) -> Result<DuplicateSection> {
+    let pairs = duplicate_pairs(settings, roots, format)?;
+    let triage = pairs
+        .as_deref()
+        .map(|pairs| triage_assessments(settings, pairs))
+        .transpose()?
+        .flatten();
+    Ok(DuplicateSection { pairs, triage })
+}
+
+/// Ask the model about `pairs` when triage is enabled, and hold each verdict
+/// to the confidence floor. A build without the `triage` feature has no
+/// client: it says how to get one and reports the pairs untriaged.
+#[cfg_attr(
+    not(feature = "triage"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only the build with the triage client can fail here"
+    )
+)]
+fn triage_assessments(
+    settings: &DupSettings,
+    pairs: &[DuplicatePair],
+) -> Result<Option<Vec<Assessment>>> {
+    if !settings.triage_enabled {
+        return Ok(None);
+    }
+    #[cfg(feature = "triage")]
+    {
+        use cargo_crap::duplicates::triage;
+        let verdicts = triage::run(pairs, &triage::Settings::from_env(&settings.triage_model))?;
+        Ok(Some(
+            verdicts
+                .into_iter()
+                .map(|verdict| verdict.assessment(settings.triage_floor))
+                .collect(),
+        ))
+    }
+    #[cfg(not(feature = "triage"))]
+    {
+        let _ = pairs;
+        eprintln!(
+            "warning: [duplicates.triage] is enabled, but this cargo-crap was built without \
+             the `triage` feature; reinstall with `cargo install cargo-crap --features triage` \
+             to use it"
+        );
+        Ok(None)
+    }
 }
 
 /// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
@@ -1481,7 +1560,7 @@ fn run() -> Result<ExitCode> {
     apply_color_policy(cli.output.is_some());
     let mut out_box = open_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref);
-    let dup_pairs = duplicate_pairs(&dup, &roots, cli.format.into())?;
+    let dups = duplicate_section(&dup, &roots, cli.format.into())?;
     let opts = RenderOpts {
         render: RenderOptions {
             threshold,
@@ -1490,10 +1569,9 @@ fn run() -> Result<ExitCode> {
             diagnostics: diagnostics.as_ref(),
             show_unchanged,
             uncovered_hints,
-            duplicates: dup_pairs.as_deref(),
+            duplicates: dups.pairs.as_deref(),
             try_weight,
-            // Wired in with the triage pass itself.
-            triage: None,
+            triage: dups.triage.as_deref(),
         },
         epsilon,
         summary: cli.summary,
@@ -1861,6 +1939,8 @@ mod tests {
             enabled: false,
             threshold,
             min_nodes: cargo_crap::config::DEFAULT_DUP_MIN_NODES,
+            triage_enabled: false,
+            triage_model: cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned(),
             triage_floor,
         }
     }
