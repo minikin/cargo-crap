@@ -1,0 +1,8 @@
+[package]
+name = "triage-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Three duplicate pairs for trying cargo-crap's TypeSafe triage"
+
+[dependencies]
