@@ -28,7 +28,8 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Every kind, in the order the question offers them.
+    /// Every kind. A Choice's answer is an option key, not a position, so
+    /// this order carries no meaning on the wire.
     pub const ALL: [Kind; 4] = [
         Kind::SameLogic,
         Kind::SharedShapeOnly,
