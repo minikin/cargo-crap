@@ -861,6 +861,11 @@ fn loop_and_match(name: &str) -> String {
     )
 }
 
+/// The longest a triaged run may take before it is killed. Far above any
+/// real retry schedule; it exists so a retry loop that never stops fails its
+/// test instead of hanging the suite (or a mutation run).
+const TRIAGE_RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 const DUPLICATES_ONLY: &str = "[duplicates]\nenabled = true\n";
 const TRIAGE_ON: &str = "[duplicates]\nenabled = true\n[duplicates.triage]\nenabled = true\n";
 
@@ -874,6 +879,7 @@ fn run_with_config(
 ) -> std::process::Output {
     write(dir, ".cargo-crap.toml", config);
     crap()
+        .timeout(TRIAGE_RUN_LIMIT)
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", dir.join("target"))
         .env("TYPESAFE_API_KEY", "test-key")
@@ -1095,6 +1101,7 @@ fn run_against(
     write(dir, ".cargo-crap.toml", config);
     let mut command = crap();
     command
+        .timeout(TRIAGE_RUN_LIMIT)
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", dir.join("target"))
         .env("TYPESAFE_BASE_URL", base_url)
@@ -1445,5 +1452,51 @@ fn the_cache_lives_beside_the_configuration() {
 }
 
 // ---- Spec 30 · T11 ----
+
+#[cfg(feature = "triage")]
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
+#[cfg(feature = "triage")]
+#[test]
+fn two_functions_sharing_only_an_idiom_are_named_as_such() {
+    use fixtures::triage_fixture;
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given two functions whose bodies are each an unrelated run of writeln!
+    // calls — copied from this repository's report writers
+    // And their similarity clears the duplicates threshold (0.92, checked below)
+    let dir = triage_fixture("shared_shape");
+    // And triage is enabled with a reachable API
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("shared_shape_only", 0.9))]);
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 duplicate candidate:"), "{stdout}");
+    assert!(stdout.contains("DUPLICATE score=0.92"), "{stdout}");
+    // Then the pair's triage line reports the kind shared-shape-only
+    assert!(
+        stdout.contains("\n  triage: shared-shape-only, "),
+        "{stdout}"
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_same_logic_written_twice_is_named_as_such() {
+    use fixtures::triage_fixture;
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given two functions that compute the same result from the same inputs,
+    // differing only in names and literals — copied from this repository
+    let dir = triage_fixture("same_logic");
+    // And triage is enabled with a reachable API
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 duplicate candidate:"), "{stdout}");
+    assert!(stdout.contains("DUPLICATE score=1.00"), "{stdout}");
+    // Then the pair's triage line reports the kind same-logic
+    assert!(stdout.contains("\n  triage: same-logic, "), "{stdout}");
+}
 
 // ---- Spec 30 · T12 ----

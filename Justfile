@@ -135,6 +135,19 @@ dev-mutants-diff: dev mutants-diff
 # Full validation including mutation tests (slow)
 dev-full: dev mutants-all
 
+# --- Duplicate-pair triage, live (spec 30) ----------------------------------
+# Every other recipe here is offline and free. This one is neither: it calls
+# the real TypeSafe API, costs API calls and needs TYPESAFE_API_KEY. It is
+# never part of `dev` or CI — run it by hand to check that the model still
+# names the spec's example pairs (tests/fixtures/triage/) as a person would.
+#
+# Live triage check against the real TypeSafe API (needs TYPESAFE_API_KEY)
+triage-live:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${TYPESAFE_API_KEY:?set TYPESAFE_API_KEY to run the live triage check}"
+    cargo test --features triage --test triage_live -- --ignored
+
 # "Main" is one thing, decided once: the first of the four names below
 # that exists in this repository. `mutants-diff` diffs against it and
 # `keeler-land` tells it from a feature branch — through this one helper, so
