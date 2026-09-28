@@ -89,7 +89,12 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
                      ├── normalize.rs      AST ──▶ NormNode (names/literals erased)
                      ├── fingerprint.rs    NormNode ──▶ BTreeSet<Fingerprint>
                      ├── compare.rs        pairwise Jaccard ──▶ Vec<DuplicatePair>
-                     └── scan.rs           walk a tree, drive the four above
+                     ├── scan.rs           walk a tree, drive the four above
+                     └── triage/           opt-in advisory verdicts (spec 30)
+                         ├── verdict.rs    decode answers; the confidence floor
+                         ├── request.rs    one pair's state + the three questions
+                         ├── cache.rs      content-keyed verdicts under target/
+                         └── client.rs     ureq client, retries (`triage` feature)
 ```
 
 **`src/score.rs`** — Pure formula: `CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)`. No I/O, no dependencies on other modules.
@@ -109,7 +114,7 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`src/report/`** — Renders `Vec<CrapEntry>` or `DeltaReport` in seven formats: human (colored Unicode table), JSON (versioned envelope), GitHub Actions (`::warning` annotations), Markdown (exhaustive GFM table), pr-comment (opinionated PR-comment with capped sections + `<details>` blocks), SARIF 2.1.0, and Shields.io endpoint-badge JSON. The entry file `src/report.rs` is a thin dispatcher (`Format` enum, `render` / `render_delta` / `render_summary` / `render_delta_summary`); each format lives in a sibling submodule. Cross-cutting helpers (`Grade`, `coverage_bar`, `delta_display`) live in `report/types.rs`; optional GitHub source-link wrapping (`SourceLinks`, `linkify`) lives in `report/links.rs`; per-crate rollup tables (workspace mode) live in `report/per_crate.rs`. Each submodule owns its `#[cfg(test)] mod tests` block; shared fixtures (e.g. `sample()`) live in `report/test_support.rs`.
 
-**`src/duplicates/`** — A second, opt-in pass over the same AST (`--duplicates`). `extract` collects one `FunctionPrint` per non-test function, `normalize` erases identifiers, literal values and field/path names while keeping control flow, operators, receiver shape and statement order, `fingerprint` hashes every normalized subtree into a `BTreeSet<Fingerprint>` (FNV-1a, not `DefaultHasher` — the fingerprints must be stable across processes), and `compare` scores every pair by Jaccard similarity. Quadratic in the number of functions, which is why it is off by default; functions below `duplicates.min-nodes` (default 20) are dropped before comparison. It reuses the complexity pass's test filter, so the two analyses cannot disagree about what counts as source.
+**`src/duplicates/`** — A second, opt-in pass over the same AST (`--duplicates`). `extract` collects one `FunctionPrint` per non-test function, `normalize` erases identifiers, literal values and field/path names while keeping control flow, operators, receiver shape and statement order, `fingerprint` hashes every normalized subtree into a `BTreeSet<Fingerprint>` (FNV-1a, not `DefaultHasher` — the fingerprints must be stable across processes), and `compare` scores every pair by Jaccard similarity. Quadratic in the number of functions, which is why it is off by default; functions below `duplicates.min-nodes` (default 20) are dropped before comparison. It reuses the complexity pass's test filter, so the two analyses cannot disagree about what counts as source. Its `triage/` submodule (spec 30) asks a TypeSafe model three typed questions about each reported pair and annotates the human and JSON output; it is opt-in twice — the HTTP client is behind the `triage` Cargo feature (off by default) and the run needs `[duplicates.triage] enabled = true` plus `TYPESAFE_API_KEY` — and any failure degrades to the untriaged report. `just dev` and CI test both builds.
 
 **`src/main.rs`** — CLI via `clap`. Handles the `cargo crap` subcommand invocation by stripping the leading `crap` argument when detected. Heavy logic is extracted into `validate_args`, `collect_complexity`, `apply_filters`, `load_coverage`, and `do_render` to keep `main` CC below 15.
 

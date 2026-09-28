@@ -1500,3 +1500,60 @@ fn the_same_logic_written_twice_is_named_as_such() {
 }
 
 // ---- Spec 30 · T12 ----
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_json_envelope_carries_the_verdict_beside_the_pair() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given triage is enabled and the API key is set
+    // And the output format is json
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &["--format", "json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON document");
+    assert_matches_schema("schemas/report-v1.json", &doc);
+    // Then each duplicates entry carries a triage object with its kind,
+    // worth-extracting level, divergence risk and confidence
+    let pairs = doc["duplicates"].as_array().expect("a duplicates array");
+    assert_eq!(pairs.len(), 3);
+    for pair in pairs {
+        let triage = &pair["triage"];
+        assert_eq!(triage["kind"], "same-logic", "{pair}");
+        assert_eq!(triage["worth_extracting"], "worthwhile", "{pair}");
+        assert_eq!(triage["divergence_risk"], 0.6, "{pair}");
+        assert_eq!(triage["confidence"], 0.9, "{pair}");
+    }
+    // And a run with triage disabled emits the same entries with no triage key
+    let plain = run_with_config(dir.path(), DUPLICATES_ONLY, &stub, &["--format", "json"]);
+    let plain: serde_json::Value = serde_json::from_slice(&plain.stdout).expect("JSON");
+    let mut stripped = doc["duplicates"].clone();
+    for pair in stripped.as_array_mut().expect("an array") {
+        pair.as_object_mut().expect("an object").remove("triage");
+    }
+    assert_eq!(stripped, plain["duplicates"]);
+    assert!(plain["duplicates"][0].get("triage").is_none());
+
+    // The delta envelope carries it the same way
+    let baseline = dir.path().join("baseline.json");
+    fs::write(&baseline, plain.to_string()).expect("write baseline");
+    let delta = run_with_config(
+        dir.path(),
+        TRIAGE_ON,
+        &stub,
+        &[
+            "--format",
+            "json",
+            "--baseline",
+            baseline.to_str().expect("utf-8"),
+        ],
+    );
+    let delta: serde_json::Value = serde_json::from_slice(&delta.stdout).expect("JSON");
+    assert_matches_schema("schemas/delta-v2.json", &delta);
+    assert_eq!(delta["duplicates"][0]["triage"]["kind"], "same-logic");
+}

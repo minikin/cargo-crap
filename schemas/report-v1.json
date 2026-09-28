@@ -96,6 +96,45 @@
           "minimum": 0,
           "maximum": 1,
           "description": "Jaccard similarity of the two fingerprint sets, in [0, 1]."
+        },
+        "triage": {
+          "type": "object",
+          "description": "The TypeSafe model's advisory verdict on this pair (spec 30), present only when triage ran. Below the confidence floor `kind` is `uncertain` and only `confidence` accompanies it: no kind, and none of the other answers, is asserted.",
+          "required": ["kind", "confidence"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["same-logic", "shared-shape-only", "structural-obligation", "parameterisable", "uncertain"],
+              "description": "What kind of duplication the pair is, or `uncertain` below the confidence floor."
+            },
+            "worth_extracting": {
+              "type": "string",
+              "enum": ["leave-it", "optional", "worthwhile", "should-be-one"],
+              "description": "Whether the pair should become one function: the level nearest `worth_extracting_score`."
+            },
+            "worth_extracting_score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 3,
+              "description": "The model's probability-weighted position across the four worth-extracting levels."
+            },
+            "divergence_risk": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Probability that a fix to one side would be needed in the other and missed there."
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "The kind's confidence; below the configured floor the kind is `uncertain`."
+            }
+          },
+          "if": { "properties": { "kind": { "const": "uncertain" } } },
+          "then": { "maxProperties": 2 },
+          "else": { "required": ["kind", "worth_extracting", "worth_extracting_score", "divergence_risk", "confidence"] }
         }
       }
     },

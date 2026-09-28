@@ -124,7 +124,9 @@ pub struct RenderOptions<'a> {
     /// [`DEFAULT_TRY_WEIGHT`](crate::config::DEFAULT_TRY_WEIGHT).
     pub try_weight: f64,
     /// One triage assessment per duplicate pair, in the pairs' order, or
-    /// `None` when triage did not run. Read by [`render_duplicates`] only.
+    /// `None` when triage did not run. Read by the JSON renderer, which puts
+    /// each verdict beside its pair, and by [`render_duplicates`], which
+    /// prints the human triage lines; no other format carries it.
     pub triage: Option<&'a [Assessment]>,
 }
 

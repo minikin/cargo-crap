@@ -341,7 +341,11 @@ The kind is one of `same-logic`, `shared-shape-only`,
 `structural-obligation` or `parameterisable`; the second word says whether
 the pair is worth merging (`leave-it`, `optional`, `worthwhile`,
 `should-be-one`). Below the confidence floor the line says
-`triage: uncertain (conf 0.31)` and names no kind.
+`triage: uncertain (conf 0.31)` and names no kind. With `--format json` each
+pair carries the same verdict as a `triage` object — its kind,
+worth-extracting level and score, divergence risk and confidence, or only
+`"kind": "uncertain"` and the confidence below the floor — and the key is
+absent when triage did not run.
 
 It is opt-in twice over, because it sends each pair's two function bodies to
 a third-party API:
