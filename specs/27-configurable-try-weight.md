@@ -158,10 +158,11 @@ does not break tests written on the T2 branch.
 
 ### Counting (`src/complexity.rs`)
 
-`visit_expr_try` adds the configured weight instead of a fixed 1; the
-accumulator becomes `f64` (today `count_cyclomatic` counts in integers
-and casts at the end). The minimum stays `1.0`. Weight applies to the
-increments, never the base. Closures and nested items remain pruned
+`CcCounter` keeps integer counters, one for decision points and one for
+`?` operators, and CC is `1 + decisions + weight × tries`, computed once
+at the end. A non-dyadic weight such as 0.1 therefore never accumulates
+float drift. The minimum stays `1.0`. Weight applies to the `?`
+operators, never the base. Closures and nested items remain pruned
 subtrees; a `?` inside a closure still costs nothing for the enclosing
 function, regardless of weight.
 

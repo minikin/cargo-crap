@@ -101,12 +101,15 @@ Example output:
 ╞═══╪═══════╪════╪═══════════════════╪══════════╪═══════════════╡
 │ ✗ ┆ 156.0 ┆ 12 ┆ ░░░░░░░░░░   0.0% ┆ crappy   ┆ src/lib.rs:24 │
 ├╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ ▲ ┆   6.7 ┆  4 ┆ ████░░░░░░  44.4% ┆ moderate ┆ src/lib.rs:12 │
+│ ✓ ┆   6.7 ┆  4 ┆ ████░░░░░░  44.4% ┆ moderate ┆ src/lib.rs:12 │
 ├╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
 │ ✓ ┆   1.0 ┆  1 ┆ ██████████ 100.0% ┆ trivial  ┆ src/lib.rs:8  │
 └───┴───────┴────┴───────────────────┴──────────┴───────────────┘
 ✗ 1/3 function(s) exceed CRAP threshold 30.
 ```
+
+`✗` marks a score above `--threshold`, `▲` a score above a third of it, and
+`✓` everything else.
 
 ## Flags
 
@@ -171,8 +174,8 @@ always selects the N highest-CRAP functions first, and `--sort` then reorders
 what survived. The ordering applies to every format.
 
 `--summary` replaces the per-function table with the total, the crappy count
-and the worst offender. Under `--workspace` it prints the per-crate summary
-above that aggregate line. `json` and `github` stay machine-readable and are
+and the worst offender. Under `--workspace` or `-p`/`--package` it prints
+the per-crate summary above that aggregate line. `json` and `github` stay machine-readable and are
 unaffected.
 
 `--workspace` walks every member found by `cargo metadata`, ignores `--path`,
@@ -220,12 +223,13 @@ generate types from the schema.
       "cyclomatic": 4.0,
       "coverage": 75.0,        // null when no coverage data was found
       "crap": 5.5625,
-      "crate": "my-crate",     // present only with --workspace
+      "crate": "my-crate",     // present only with --workspace or -p
       "uncovered": [           // uncovered line ranges; omitted when empty
         { "start": 15, "end": 16 }
       ]
     }
-  ]
+  ],
+  "try_weight": 0.5       // present only when try-weight is not the default 1.0
 }
 
 // cargo crap --format json --baseline baseline.json
@@ -259,8 +263,8 @@ per candidate pair, in the same order as the human section:
     "first_end_line": 33,
     "second_file": "src/report/pr_comment.rs",
     "second_function": "write_pr_comment_delta_headline",
-    "second_start_line": 275,
-    "second_end_line": 286,
+    "second_start_line": 276,
+    "second_end_line": 287,
     "score": 0.92          // Jaccard similarity, in [0, 1]
   }
 ]
@@ -315,16 +319,21 @@ because it is a second walk over the same AST and costs time on a large tree.
 cargo crap --path src --duplicates
 ```
 
+The section prints after the CRAP table. With two pairs it looks like this:
+
 ```
 2 duplicate candidates:
 
 DUPLICATE score=1.00
-  src/report/types.rs:167-178  write_abs_gfm_header
-  src/report/types.rs:182-193  write_delta_gfm_header
+  src/report/types.rs:181-192  write_abs_gfm_header
+  src/report/types.rs:196-207  write_delta_gfm_header
 DUPLICATE score=0.92
   src/report/markdown.rs:18-33  write_markdown_absolute_heading
-  src/report/pr_comment.rs:275-286  write_pr_comment_delta_headline
+  src/report/pr_comment.rs:276-287  write_pr_comment_delta_headline
 ```
+
+Only `--format human` and `--format json` carry duplicates. Any other format
+prints a warning and skips the pass, triage included.
 
 How it works: every function is parsed with `syn`, normalized into a
 structural tree, and fingerprinted, one fingerprint per subtree. Two
@@ -380,8 +389,8 @@ about each reported pair and prints the answers beside it:
 
 ```
 DUPLICATE score=1.00
-  src/report/pr_comment.rs:120-148  write_pr_comment_improved_section
-  src/report/pr_comment.rs:150-178  write_pr_comment_moved_section
+  src/report/pr_comment.rs:332-358  write_pr_comment_improved_section
+  src/report/pr_comment.rs:363-385  write_pr_comment_moved_section
   triage: same-logic, should-be-one (conf 0.84)
 ```
 
@@ -421,15 +430,21 @@ a third-party API:
 Triage only annotates: every pair still prints in the same order with the
 same score, and the exit code never depends on it. Without a key, a network
 or a working API, the run prints the untriaged section and one warning
-saying why. Verdicts are cached under `target/cargo-crap/triage/`, keyed by
-both function bodies, so an unchanged pair is never asked about twice.
+saying why.
+
+Verdicts are cached in `cargo-crap/triage/` under the target directory:
+`CARGO_TARGET_DIR` when it is set, otherwise `target/` beside
+`.cargo-crap.toml`. The cache is keyed by both function bodies, so an
+unchanged pair is never asked about twice, and `cargo clean` removes it.
+`TYPESAFE_BASE_URL` points the client at another API host (the default is
+`https://api.typesafe.ai`).
 
 ## Configuration file
 
 Most flags can be set persistently in `.cargo-crap.toml` at the project root
 or any parent directory. The tool walks up until it finds one. CLI flags
 always take precedence. The per-run selectors are flags only: `--path`,
-`--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`,
+`--lcov`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`,
 `--baseline`, `--no-default-excludes`, `--repo-url` and `--commit-ref`.
 `uncovered-hints` and `try-weight` go the other way, config only, no flag.
 
@@ -504,7 +519,7 @@ its snake_case alias (`show-unchanged` / `show_unchanged`), except
 | *(no flag)*           | `duplicates.triage.*`  |
 | *(no flag)*           | `uncovered-hints`      |
 | *(no flag)*           | `try-weight`           |
-| *(no key)*            | `--path`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`, `--baseline`, `--no-default-excludes`, `--repo-url`, `--commit-ref` |
+| *(no key)*            | `--path`, `--lcov`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`, `--baseline`, `--no-default-excludes`, `--repo-url`, `--commit-ref` |
 
 `default-excludes` has no flag that does the same job, since it *replaces*
 the built-in default list where `--no-default-excludes` empties it.

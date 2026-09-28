@@ -2,7 +2,7 @@
 
 **Status:** Implemented
 **Effort:** Large
-**Module:** `src/duplicates/triage.rs` (new), `src/report/duplicates.rs`, `src/report/json.rs`, `src/config.rs`
+**Module:** `src/duplicates/triage/` (new), `src/report/duplicates.rs`, `src/report/json.rs`, `src/config.rs`
 
 ## Context
 
@@ -20,7 +20,7 @@ not distinguish *the same logic written twice* from *two unrelated functions
 that happen to share a Rust idiom*.
 
 Run `--duplicates` against this repository's own `src/` and the gap is
-measurable. 23 candidates come back. Among them:
+measurable. Among the candidates that come back:
 
 | Pair | Score | What it is |
 | --- | --- | --- |
@@ -294,11 +294,12 @@ lines.
 src/duplicates/compare.rs ──▶ Vec<DuplicatePair>        (unchanged, spec 29)
                                       │
                                       ▼
-                        src/duplicates/triage.rs        (new, opt-in)
-                        ├── spans.rs-worth of body re-reading
+                        src/duplicates/triage/          (new, opt-in)
+                        ├── request: re-read both bodies, build the questions
                         ├── cache: content hash ──▶ Verdict
                         ├── client: POST /v1/systemone
-                        └── Vec<Option<Verdict>>, or None for the whole run
+                        ├── verdict: decode, then floor ──▶ Assessment
+                        └── Option<Vec<Assessment>>: every pair, or None
                                       │
                                       ▼
               src/report/duplicates.rs   (triage line under each pair)
@@ -357,8 +358,8 @@ that produced it.
 ### Errors
 
 Bounded retries on transient failures, then the whole triage is discarded
-and a warning names the cause. `Option<Vec<Verdict>>` rather than
-`Vec<Option<Verdict>>` at the render boundary makes all-or-nothing a type,
+and a warning names the cause. `Option<Vec<Assessment>>` rather than
+`Vec<Option<Assessment>>` at the render boundary makes all-or-nothing a type,
 not a convention.
 
 ### Invariants worth a property test
