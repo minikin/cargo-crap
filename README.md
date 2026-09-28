@@ -381,6 +381,8 @@ Limits of the comparison:
 
 ### Triage (optional)
 
+*Since 0.6.0.*
+
 Structural similarity cannot tell *the same logic written twice* from *two
 unrelated functions that share a Rust idiom*. Two functions that are each a
 run of `writeln!` calls score as high as a real copy-paste. Triage asks a
@@ -475,18 +477,19 @@ show_unchanged = false    # list Unchanged rows in --baseline mode
 # Config-only — there is deliberately no CLI flag. JSON always carries
 # the full ranges regardless of this key.
 uncovered-hints = false
-# What each `?` adds to cyclomatic complexity: 1.0 (the default) is
-# classical McCabe, 0.0 makes error propagation free, a fraction sits in
-# between. Any value from 0 to 100. Config-only. JSON output records a
-# non-default weight, and a --baseline recorded under a different weight
-# gets a warning: its deltas measure the weight change, not code changes.
+# Since 0.6.0. What each `?` adds to cyclomatic complexity: 1.0 (the
+# default) is classical McCabe, 0.0 makes error propagation free, a
+# fraction sits in between. Any value from 0 to 100. Config-only. JSON
+# output records a non-default weight, and a --baseline recorded under a
+# different weight gets a warning: its deltas measure the weight change,
+# not code changes.
 try-weight = 1.0
 [duplicates]
 enabled   = false   # same as passing --duplicates
 threshold = 0.82    # similarity at or above which a pair is reported
 min-nodes = 20      # skip functions smaller than this; 0 compares everything
-# Triage each reported pair with a TypeSafe model (needs the `triage` build
-# feature and TYPESAFE_API_KEY; see "Triage (optional)").
+# Since 0.6.0. Triage each reported pair with a TypeSafe model (needs the
+# `triage` build feature and TYPESAFE_API_KEY; see "Triage (optional)").
 [duplicates.triage]
 enabled          = false
 model            = "jev-latest"
@@ -615,8 +618,8 @@ arm, each `&&` and `||`, and each `?`.
   branch points and would say 3. Scores are internally consistent and
   comparable across runs of this tool, not against another tool's numbers.
 - `?` counts as a decision point, so an idiomatic `Result` chain scores
-  higher than its branching suggests. Set `try-weight` in
-  `.cargo-crap.toml` to change that: `0.0` makes `?` free, a fraction
+  higher than its branching suggests. Since 0.6.0, `try-weight` in
+  `.cargo-crap.toml` changes that: `0.0` makes `?` free, a fraction
   discounts it, and a fractional CC is shown to one decimal.
 
 Closures and items nested inside a function body (a local `fn`, `impl` or
