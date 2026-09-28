@@ -5,3 +5,4 @@ pub mod extract;
 pub mod fingerprint;
 pub mod normalize;
 pub mod scan;
+pub mod triage;
