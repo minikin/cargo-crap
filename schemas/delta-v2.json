@@ -33,6 +33,12 @@
       "type": "array",
       "description": "Candidate duplicate function pairs, ordered by descending score. Present only on `--duplicates` runs; absent — not empty — otherwise, so \"not asked\" stays distinguishable from \"asked, found nothing\".",
       "items": { "$ref": "#/definitions/DuplicatePair" }
+    },
+    "try_weight": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "The weight each `?` operator added to cyclomatic complexity when the current run's entries were scored (`try-weight` in `.cargo-crap.toml`). Present only when it is not the default 1.0; absent means 1.0."
     }
   },
   "definitions": {

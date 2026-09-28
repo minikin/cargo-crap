@@ -1,6 +1,7 @@
 //! `--format github` workflow-command output — `::warning` annotations
 //! that GitHub renders as inline diff comments on the PR.
 
+use super::types::cc_display;
 use crate::delta::{DeltaReport, DeltaStatus};
 use crate::merge::CrapEntry;
 use anyhow::Result;
@@ -37,7 +38,7 @@ pub(crate) fn render_github(
             "{fn_name} has CRAP score {crap:.1} (CC={cc}, cov={cov})",
             fn_name = entry.function,
             crap = entry.crap,
-            cc = entry.cyclomatic as usize,
+            cc = cc_display(entry.cyclomatic),
             cov = cov_str,
         );
 
@@ -95,7 +96,7 @@ pub(crate) fn render_delta_github(
             crap = e.crap,
             delta = delta_str,
             moved = moved_str,
-            cc = e.cyclomatic as usize,
+            cc = cc_display(e.cyclomatic),
             cov = cov_str,
         );
         writeln!(
@@ -316,5 +317,28 @@ mod tests {
             s.is_empty(),
             "pure moves must not emit warnings, got: {s:?}"
         );
+    }
+
+    // --- fractional CC display ----------------------------------------------
+
+    #[test]
+    fn fractional_cc_renders_with_one_decimal_integral_cc_as_today() {
+        let mut buf = Vec::new();
+        let entries = super::super::test_support::fractional_cc_sample();
+        render(&entries, &opts(30.0, Format::GitHub), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        // `%` is percent-encoded in workflow-command messages.
+        assert!(s.contains("(CC=1.5, cov=0.0%25)"), "fractional CC:\n{s}");
+        assert!(s.contains("(CC=3, cov=0.0%25)"), "integral CC:\n{s}");
+    }
+
+    #[test]
+    fn fractional_cc_renders_with_one_decimal_integral_cc_as_today_in_delta_rows() {
+        let mut buf = Vec::new();
+        let report = super::super::test_support::fractional_cc_delta();
+        super::super::render_delta(&report, &opts(30.0, Format::GitHub), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains(" CC=1.5 cov=0.0%25"), "fractional CC:\n{s}");
+        assert!(s.contains(" CC=3 cov=0.0%25"), "integral CC:\n{s}");
     }
 }

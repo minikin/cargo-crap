@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use cargo_crap::{
     complexity,
     coverage::{self, FileCoverage},
-    delta::{compute_delta, load_baseline},
+    delta::{compute_delta, load_baseline_with_weight},
     duplicates,
     duplicates::compare::DuplicatePair,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
@@ -425,6 +425,7 @@ fn analyze_sources(
     path: &std::path::Path,
     excludes: &[String],
     jobs: Option<usize>,
+    try_weight: f64,
 ) -> Result<AnalyzedSources> {
     if let Some(n) = jobs {
         rayon::ThreadPoolBuilder::new()
@@ -433,7 +434,7 @@ fn analyze_sources(
             .with_context(|| format!("configuring rayon thread pool to {n} threads"))?;
     }
     if !workspace && packages.is_empty() {
-        let fns = complexity::analyze_tree(path, excludes)
+        let fns = complexity::analyze_tree_weighted(path, excludes, try_weight)
             .with_context(|| format!("analyzing {}", path.display()))?;
         return Ok(AnalyzedSources {
             fns,
@@ -445,7 +446,7 @@ fn analyze_sources(
             member_scope: None,
         });
     }
-    analyze_workspace_members(packages, excludes)
+    analyze_workspace_members(packages, excludes, try_weight)
 }
 
 /// The workspace side of [`analyze_sources`]: discover members, narrow to
@@ -454,6 +455,7 @@ fn analyze_sources(
 fn analyze_workspace_members(
     packages: &[String],
     excludes: &[String],
+    try_weight: f64,
 ) -> Result<AnalyzedSources> {
     let (workspace_root, discovered) = workspace_members()?;
     let members = if packages.is_empty() {
@@ -469,7 +471,7 @@ fn analyze_workspace_members(
         // not leak into its parent's walk either.
         let mut walk_excludes = excludes.to_vec();
         walk_excludes.extend(nested_member_excludes(&m.dir, &discovered));
-        let member_fns = complexity::analyze_tree(&m.dir, &walk_excludes)
+        let member_fns = complexity::analyze_tree_weighted(&m.dir, &walk_excludes, try_weight)
             .with_context(|| format!("analyzing {}", m.dir.display()))?;
         fns.extend(member_fns);
         roots.push(ScanRoot {
@@ -1007,6 +1009,7 @@ fn validate_merged_values(
     epsilon: f64,
     jobs: Option<usize>,
     dup_threshold: f64,
+    try_weight: f64,
 ) -> Result<()> {
     if epsilon < 0.0 {
         bail!("invalid epsilon value (--epsilon or config): must be non-negative");
@@ -1022,6 +1025,22 @@ fn validate_merged_values(
         bail!(
             "invalid duplicates threshold (--dup-threshold or config): \
              must be between 0.0 and 1.0"
+        );
+    }
+    validate_try_weight(try_weight)
+}
+
+/// Reject a `?` weight that is negative, NaN, infinite or above the cap —
+/// TOML can spell all of them, and each would make every CC and CRAP score
+/// it touches meaningless (a huge finite weight overflows them to inf/NaN).
+/// `!contains` rather than `<`/`>` so NaN is rejected too. Config-only, so
+/// the message names no flag.
+fn validate_try_weight(try_weight: f64) -> Result<()> {
+    use cargo_crap::config::MAX_TRY_WEIGHT;
+    if !(0.0..=MAX_TRY_WEIGHT).contains(&try_weight) {
+        bail!(
+            "invalid try-weight value (config): must be a non-negative number \
+             no greater than {MAX_TRY_WEIGHT}"
         );
     }
     Ok(())
@@ -1080,7 +1099,9 @@ fn effective_summary(
 /// Load the `--baseline` file (if any) and filter it through the current
 /// run's identity-based filters (spec 18) before delta computation. The
 /// analyzed roots are the workspace member dirs, or the single `--path`
-/// root outside `--workspace` mode.
+/// root outside `--workspace` mode. A baseline scored under a different `?`
+/// weight than `try_weight` gets one stderr warning; the comparison still
+/// proceeds.
 fn load_filtered_baseline(
     baseline: Option<&PathBuf>,
     excludes: &[String],
@@ -1088,11 +1109,14 @@ fn load_filtered_baseline(
     path: &Path,
     members: &[WorkspaceMember],
     member_scope: Option<&MemberScope>,
+    try_weight: f64,
 ) -> Result<Option<Vec<cargo_crap::merge::CrapEntry>>> {
     let Some(baseline_path) = baseline else {
         return Ok(None);
     };
-    let mut data = load_baseline(baseline_path)?;
+    let baseline = load_baseline_with_weight(baseline_path)?;
+    warn_on_try_weight_mismatch(baseline.try_weight, try_weight);
+    let mut data = baseline.entries;
     let roots = if members.is_empty() {
         vec![path.to_path_buf()]
     } else {
@@ -1101,6 +1125,34 @@ fn load_filtered_baseline(
     BaselineFilter::new(excludes, allow_patterns, roots)?.retain(&mut data);
     apply_member_scope(&mut data, member_scope);
     Ok(Some(data))
+}
+
+/// Print [`try_weight_mismatch_warning`] to stderr when there is one.
+fn warn_on_try_weight_mismatch(
+    baseline: f64,
+    current: f64,
+) {
+    if let Some(warning) = try_weight_mismatch_warning(baseline, current) {
+        eprintln!("{warning}");
+    }
+}
+
+/// The warning for a baseline scored under a different `?` weight than this
+/// run, or `None` when the weights match.
+#[expect(
+    clippy::float_cmp,
+    reason = "any difference in the weight rescored every function with a `?`; there is no tolerance to apply"
+)]
+fn try_weight_mismatch_warning(
+    baseline: f64,
+    current: f64,
+) -> Option<String> {
+    (baseline != current).then(|| {
+        format!(
+            "warning: the baseline was recorded with try-weight {baseline} and this run \
+             uses {current} — deltas reflect the weight change, not code changes"
+        )
+    })
 }
 
 /// Drop baseline entries owned by unselected members (spec 25): a `-p` run
@@ -1274,10 +1326,12 @@ struct LoadedArgs {
     dup: DupSettings,
     epsilon: f64,
     jobs: Option<usize>,
+    /// Resolved and range-checked `?` weight.
+    try_weight: f64,
 }
 
-/// Parse argv, load config, and validate the merged epsilon/jobs/similarity
-/// values,
+/// Parse argv, load config, and validate the merged epsilon/jobs/similarity/
+/// try-weight values,
 /// returning exactly what was validated so [`run`] cannot consume a
 /// different (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
@@ -1291,13 +1345,17 @@ fn parse_and_validate() -> Result<LoadedArgs> {
     // threshold has to be validated before anything is analyzed, and the
     // config half of it is invisible to `validate_args`.
     let dup = DupSettings::resolve(&cli, &config);
-    validate_merged_values(epsilon, jobs, dup.threshold)?;
+    let try_weight = config
+        .try_weight
+        .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
+    validate_merged_values(epsilon, jobs, dup.threshold, try_weight)?;
     Ok(LoadedArgs {
         cli,
         config,
         dup,
         epsilon,
         jobs,
+        try_weight,
     })
 }
 
@@ -1308,6 +1366,7 @@ fn run() -> Result<ExitCode> {
         dup,
         epsilon,
         jobs,
+        try_weight,
     } = parse_and_validate()?;
 
     // Merge: CLI values take precedence; config fills in what's missing.
@@ -1352,6 +1411,7 @@ fn run() -> Result<ExitCode> {
         &cli.path,
         &effective_exclude,
         jobs,
+        try_weight,
     )?;
 
     pb.set_message("Parsing coverage report…");
@@ -1381,6 +1441,7 @@ fn run() -> Result<ExitCode> {
         &cli.path,
         &members,
         member_scope.as_ref(),
+        try_weight,
     )?;
 
     // --- Render ---
@@ -1403,6 +1464,7 @@ fn run() -> Result<ExitCode> {
             show_unchanged,
             uncovered_hints,
             duplicates: dup_pairs.as_deref(),
+            try_weight,
         },
         epsilon,
         summary: cli.summary,
@@ -1717,22 +1779,84 @@ mod tests {
         // values the config file could previously smuggle past the
         // CLI-only checks.
         assert!(
-            validate_merged_values(0.0, None, 0.82).is_ok(),
+            validate_merged_values(0.0, None, 0.82, 1.0).is_ok(),
             "zero epsilon is valid"
         );
-        assert!(validate_merged_values(0.01, Some(4), 0.82).is_ok());
+        assert!(validate_merged_values(0.01, Some(4), 0.82, 1.0).is_ok());
         assert!(
-            validate_merged_values(-0.001, None, 0.82).is_err(),
+            validate_merged_values(-0.001, None, 0.82, 1.0).is_err(),
             "negative epsilon"
         );
         assert!(
-            validate_merged_values(0.01, Some(0), 0.82).is_err(),
+            validate_merged_values(0.01, Some(0), 0.82, 1.0).is_err(),
             "zero jobs"
         );
-        let err = validate_merged_values(-1.0, Some(0), 0.82)
+        let err = validate_merged_values(-1.0, Some(0), 0.82, 1.0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("epsilon"), "epsilon is checked first: {err}");
+    }
+
+    #[test]
+    fn a_baseline_weight_mismatch_names_both_weights_and_what_it_means() {
+        let warning = try_weight_mismatch_warning(1.0, 0.0).expect("the weights differ");
+        assert!(warning.starts_with("warning: "), "{warning}");
+        assert!(
+            warning.contains("recorded with try-weight 1") && warning.contains("uses 0"),
+            "names the baseline's weight, then the run's: {warning}"
+        );
+        assert!(
+            warning.contains("weight change, not code changes"),
+            "{warning}"
+        );
+        let warning = try_weight_mismatch_warning(0.5, 2.0).expect("the weights differ");
+        assert!(
+            warning.contains("try-weight 0.5") && warning.contains("uses 2"),
+            "{warning}"
+        );
+    }
+
+    #[test]
+    fn matching_try_weights_produce_no_warning() {
+        for weight in [0.0, 0.5, 1.0, 100.0] {
+            assert_eq!(try_weight_mismatch_warning(weight, weight), None);
+        }
+    }
+
+    #[test]
+    fn validate_merged_values_accepts_any_try_weight_from_zero_to_one_hundred() {
+        // Zero is the point of the knob, and above one is legitimate for
+        // auditing error-handling-heavy code, up to the cap.
+        for weight in [0.0, -0.0, f64::MIN_POSITIVE, 0.5, 1.0, 3.0, 100.0] {
+            assert!(
+                validate_merged_values(0.01, None, 0.82, weight).is_ok(),
+                "try-weight {weight} is valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_merged_values_rejects_negative_nan_infinite_and_over_cap_try_weight() {
+        for weight in [
+            -0.5,
+            -f64::MIN_POSITIVE,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            // Finite, but large enough to overflow CC or CRAP to inf/NaN,
+            // which serialize as `null` and slip past the gate.
+            100.5,
+            1e308,
+            f64::MAX,
+        ] {
+            let err = validate_merged_values(0.01, None, 0.82, weight)
+                .expect_err("an out-of-domain try-weight must be rejected")
+                .to_string();
+            assert!(
+                err.contains("try-weight") && err.contains("non-negative number"),
+                "try-weight {weight} names the key and the domain: {err}"
+            );
+        }
     }
 
     #[test]

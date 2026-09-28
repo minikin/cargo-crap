@@ -2,6 +2,7 @@
 //!
 //! - [`Grade`]: three-tier severity classification driving icon/colour.
 //! - [`coverage_bar`]: 10-block ASCII bar for human tables.
+//! - [`cc_display`]: CC text — integral as today, fractional to one decimal.
 //! - [`delta_display`]: Δ-column text for delta rows.
 //! - [`uncovered_display`]: capped Uncovered-column text.
 
@@ -106,6 +107,19 @@ pub(crate) fn coverage_bar(pct: Option<f64>) -> String {
                 p
             )
         },
+    }
+}
+
+/// Render a cyclomatic complexity as text: rounded to one decimal, with a
+/// trailing `.0` dropped. An integral CC renders exactly as the integer cast
+/// it replaces did, a weighted `?` operator keeps its fraction (`1.5` never
+/// reads as `1`), and float noise from a non-dyadic weight
+/// (`1.9999999999999998`) still reads as `2`.
+pub(crate) fn cc_display(cc: f64) -> String {
+    let shown = format!("{cc:.1}");
+    match shown.strip_suffix(".0") {
+        Some(whole) => whole.to_owned(),
+        None => shown,
     }
 }
 
@@ -257,6 +271,69 @@ pub(crate) fn format_location_with_prev(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    // --- cc_display ---
+
+    #[test]
+    fn cc_display_shows_integral_cc_without_a_decimal_point() {
+        assert_eq!(cc_display(1.0), "1");
+        assert_eq!(cc_display(3.0), "3");
+        assert_eq!(cc_display(10.0), "10");
+    }
+
+    #[test]
+    fn cc_display_shows_fractional_cc_with_one_decimal() {
+        assert_eq!(cc_display(1.5), "1.5");
+        assert_eq!(cc_display(2.5), "2.5");
+    }
+
+    #[test]
+    fn cc_display_drops_the_decimal_when_a_fraction_rounds_to_a_whole() {
+        // One decimal is the display precision: a value that rounds to a
+        // whole number at that precision reads as the whole number.
+        assert_eq!(cc_display(2.96), "3");
+        assert_eq!(cc_display(2.04), "2");
+    }
+
+    #[test]
+    fn cc_display_hides_float_noise_from_a_non_dyadic_weight() {
+        // Sums of 0.1 / 0.2 / 0.3 weights that land a hair off a whole number.
+        assert_eq!(cc_display(1.999_999_999_999_999_8), "2");
+        assert_eq!(cc_display(2.000_000_000_000_001), "2");
+        assert_eq!(cc_display(3.999_999_999_999_999), "4");
+    }
+
+    proptest! {
+        /// An integral CC renders exactly as the integer cast it replaces did.
+        #[test]
+        fn integral_cc_renders_with_no_decimal_point(n in 0u32..=1_000_000) {
+            prop_assert_eq!(cc_display(f64::from(n)), n.to_string());
+        }
+
+        /// A whole number plus float noise still renders as the whole number.
+        #[test]
+        fn cc_within_float_noise_of_a_whole_renders_as_the_whole(
+            n in 1u32..=1_000_000,
+            noise in -1e-9f64..1e-9,
+        ) {
+            prop_assert_eq!(cc_display(f64::from(n) + noise), n.to_string());
+        }
+
+        /// Any CC shows at most one decimal digit, never a trailing `.0`, and
+        /// the shown value is the input rounded, not truncated away.
+        #[test]
+        fn cc_renders_rounded_to_one_decimal_without_a_trailing_zero(
+            cc in 0.0f64..1_000_000.0
+        ) {
+            let shown = cc_display(cc);
+            let decimals = shown.split_once('.').map(|(_, d)| d);
+            prop_assert!(decimals.is_none_or(|d| d.len() == 1), "shown as {}", shown);
+            prop_assert!(!shown.ends_with(".0"), "shown as {}", shown);
+            let parsed: f64 = shown.parse().unwrap();
+            prop_assert!((parsed - cc).abs() <= 0.05 + 1e-9, "{} shown as {}", cc, shown);
+        }
+    }
 
     // --- coverage_bar ---
 

@@ -114,8 +114,23 @@ impl DeltaReport {
     }
 }
 
+/// A loaded baseline: its entries and the `?` weight they were scored under.
+#[derive(Debug, Clone)]
+pub struct Baseline {
+    pub entries: Vec<CrapEntry>,
+    /// The envelope's `try_weight`; a baseline without the key was recorded
+    /// at [`DEFAULT_TRY_WEIGHT`](crate::config::DEFAULT_TRY_WEIGHT).
+    pub try_weight: f64,
+}
+
 /// Load a JSON baseline produced by a previous `cargo crap --format json` run.
 pub fn load_baseline(path: &Path) -> Result<Vec<CrapEntry>> {
+    load_baseline_with_weight(path).map(|baseline| baseline.entries)
+}
+
+/// [`load_baseline`], keeping the `?` weight the baseline was recorded under
+/// so a caller can tell when the current run scores under a different one.
+pub fn load_baseline_with_weight(path: &Path) -> Result<Baseline> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading baseline {}", path.display()))?;
     let envelope: crate::report::Envelope = serde_json::from_str(&raw).with_context(|| {
@@ -124,7 +139,12 @@ pub fn load_baseline(path: &Path) -> Result<Vec<CrapEntry>> {
             path.display()
         )
     })?;
-    Ok(envelope.entries)
+    Ok(Baseline {
+        entries: envelope.entries,
+        try_weight: envelope
+            .try_weight
+            .unwrap_or(crate::config::DEFAULT_TRY_WEIGHT),
+    })
 }
 
 fn path_key(p: &Path) -> String {
@@ -739,6 +759,39 @@ mod tests {
         )
         .expect("write");
         assert!(load_baseline(&path).is_err());
+    }
+
+    #[test]
+    fn a_baseline_without_try_weight_was_recorded_at_the_default_weight() {
+        // Every baseline written before the key existed, and every one
+        // written at the default since.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("default.json");
+        std::fs::write(
+            &path,
+            r#"{"version":"0.5.0","entries":[{"file":"src/lib.rs","function":"foo","line":1,"cyclomatic":1.0,"coverage":100.0,"crap":1.0}]}"#,
+        )
+        .expect("write");
+        let baseline = load_baseline_with_weight(&path).expect("parse");
+        assert_eq!(baseline.try_weight, crate::config::DEFAULT_TRY_WEIGHT);
+        assert_eq!(baseline.entries.len(), 1);
+        assert_eq!(baseline.entries[0].function, "foo");
+    }
+
+    #[test]
+    fn a_baseline_carries_the_try_weight_it_was_recorded_with() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("weighted.json");
+        std::fs::write(
+            &path,
+            r#"{"version":"0.5.0","try_weight":0.5,"entries":[{"file":"src/lib.rs","function":"foo","line":1,"cyclomatic":1.5,"coverage":100.0,"crap":1.5}]}"#,
+        )
+        .expect("write");
+        let baseline = load_baseline_with_weight(&path).expect("parse");
+        assert_eq!(baseline.try_weight, 0.5);
+        assert_eq!(baseline.entries.len(), 1);
+        // The entries-only loader reads the same file unchanged.
+        assert_eq!(load_baseline(&path).expect("parse").len(), 1);
     }
 
     // ─── Move-aware delta detection (spec 13) ────────────────────────────
