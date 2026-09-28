@@ -36,6 +36,9 @@ pub enum Reply {
     Delay { after: Duration, then: Box<Reply> },
     /// Close the connection without answering.
     Drop,
+    /// Send these bytes verbatim, then close — for responses no well-behaved
+    /// server sends, such as a body cut short.
+    Raw(String),
 }
 
 impl Reply {
@@ -90,6 +93,7 @@ impl Reply {
             },
             Self::Delay { after, then } => Self::delayed(after, then.with_header(name, value)),
             Self::Drop => panic!("a dropped connection sends no headers"),
+            Self::Raw(_) => panic!("a raw reply carries its own headers"),
         }
     }
 }
@@ -292,6 +296,10 @@ fn deliver(
             deliver(stream, *then);
         },
         Reply::Drop => {},
+        Reply::Raw(bytes) => {
+            let mut stream = stream;
+            let _ = stream.write_all(bytes.as_bytes());
+        },
     }
 }
 
@@ -668,6 +676,17 @@ mod tests {
         let raw = send(&stub.base_url(), "/v1/systemone", &[], "{}");
         assert_eq!(status_of(&raw), 429, "{raw}");
         assert!(raw.contains("\r\nRetry-After: 0\r\n"), "{raw}");
+    }
+
+    #[test]
+    fn a_raw_reply_is_sent_byte_for_byte() {
+        // For responses no well-behaved server sends: a body cut short, a
+        // lying Content-Length.
+        let response = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 99\r\n\r\n{\"err";
+        let stub = TypesafeStub::scripted(vec![Reply::Raw(response.to_owned())]);
+        let raw = send(&stub.base_url(), "/v1/systemone", &[], "{}");
+        assert_eq!(raw, response);
+        assert_eq!(stub.request_count(), 1);
     }
 
     #[test]

@@ -50,10 +50,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-nextest
-      - name: Test
+      - name: Test (default features)
         run: cargo nextest run --all-targets
+      # The `triage` feature compiles the TypeSafe client (spec 30); its tests
+      # only exist with it on.
+      - name: Test (all features)
+        run: cargo nextest run --all-targets --all-features
       - name: Doc tests
-        run: cargo test --doc
+        run: cargo test --doc --all-features
 
   lints:
     name: Lints
@@ -68,8 +72,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: rustfmt
         run: cargo fmt --all -- --check
-      - name: clippy
+      - name: clippy (default features)
         run: cargo clippy --all-targets -- -D warnings
+      - name: clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   msrv:
     name: MSRV (Rust 1.88)
@@ -81,10 +87,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-nextest
-      - name: Test (MSRV)
+      - name: Test (MSRV, default features)
         run: cargo nextest run --all-targets
+      - name: Test (MSRV, all features)
+        run: cargo nextest run --all-targets --all-features
       - name: Doc tests (MSRV)
-        run: cargo test --doc
+        run: cargo test --doc --all-features
 
   audit:
     name: Security audit
@@ -160,7 +168,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Generate coverage
-        run: cargo llvm-cov --lcov --output-path lcov.info --workspace
+        run: cargo llvm-cov --lcov --output-path lcov.info --workspace --all-features
 
       # --- On main: generate the README badge JSON (spec 15). Runs *before*
       # the threshold gate so a failing gate still publishes a yellow/red
