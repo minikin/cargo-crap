@@ -30,6 +30,28 @@ The first pair is one routine pasted and renamed. The second differs only in
 the field it adds up. The last pair scores 0.84 on structure because both are
 a run of `writeln!` calls, and triage says to leave it.
 
+## Why turn it on
+
+Without triage, `--duplicates` gives a similarity score and nothing else, and
+that score does not say what to do. In the run above all three pairs score
+0.84 or higher, yet one should be merged now, one needs a parameter first,
+and one should be left alone. On a real codebase the list runs to dozens of
+pairs, and reading each one to find the few worth merging is the slow part.
+Triage does that first pass.
+
+It also asks something structure cannot see: whether a fix to one side of a
+pair would be missed in the other. That divergence risk (`divergence_risk`
+in the JSON) points at the copies where a bug fix is most likely to reach
+only one side.
+
+The answers are typed, not prose. A System One model picks the kind from a
+fixed list, places the pair on a fixed four-level scale, returns a
+probability for the divergence question, and reports how confident it is.
+cargo-crap can print, cache and test answers like that, and when the model
+is not confident enough it says `uncertain` instead of passing on a guess.
+
+## Reading the verdict
+
 The kind is one of `same-logic`, `shared-shape-only`,
 `structural-obligation` or `parameterisable`. The second word says whether
 the pair is worth merging (`leave-it`, `optional`, `worthwhile`,
@@ -49,6 +71,8 @@ is absent when triage did not run. For the first pair above:
   "confidence": 1.0
 }
 ```
+
+## Turning it on
 
 It is opt-in twice over, because it sends each pair's two function bodies to
 a third-party API:

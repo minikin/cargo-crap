@@ -157,6 +157,10 @@ DUPLICATE score=0.84
   triage: shared-shape-only, leave-it (conf 0.56)
 ```
 
+By structure alone both pairs sit near the top of the list and look equally
+urgent. Triage says to merge the first and leave the second, so you know
+which pairs are worth your time before you open them.
+
 Triage sends both function bodies to TypeSafe, so it is off twice over: build
 with `cargo install cargo-crap --features triage`, then set
 `[duplicates.triage] enabled = true` in `.cargo-crap.toml` and put
