@@ -7,6 +7,7 @@
 use crate::delta::{DeltaEntry, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
 use crate::merge::{CrapEntry, ScopeDiagnostics};
+use crate::report::RenderOptions;
 use anyhow::Result;
 use std::io::Write;
 
@@ -58,6 +59,18 @@ pub struct Envelope {
     /// does not claim there were none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicates: Option<Vec<DuplicateJson>>,
+    /// The `?` weight the entries were scored under. Written only when it is
+    /// not the default, so a default envelope stays byte-identical to one
+    /// from before the knob existed; absent reads back as the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub try_weight: Option<f64>,
+}
+
+/// The envelope's `try_weight`: the weight when it is not the default,
+/// `None` (no key on the wire) when it is. Exact comparison on purpose: any
+/// other weight, however close, scored the entries differently.
+fn recorded_try_weight(try_weight: f64) -> Option<f64> {
+    (try_weight != crate::config::DEFAULT_TRY_WEIGHT).then_some(try_weight)
 }
 
 /// One candidate duplicate pair, flattened for the wire.
@@ -108,16 +121,16 @@ fn wire(pairs: Option<&[DuplicatePair]>) -> Option<Vec<DuplicateJson>> {
 
 pub(crate) fn render_json(
     entries: &[CrapEntry],
-    diagnostics: Option<&ScopeDiagnostics>,
-    duplicates: Option<&[DuplicatePair]>,
+    opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
     let envelope = Envelope {
         schema: Some(REPORT_SCHEMA_URL.to_string()),
         version: SCHEMA_VERSION.to_string(),
         entries: entries.to_vec(),
-        diagnostics: diagnostics.cloned(),
-        duplicates: wire(duplicates),
+        diagnostics: opts.diagnostics.cloned(),
+        duplicates: wire(opts.duplicates),
+        try_weight: recorded_try_weight(opts.try_weight),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
     out.write_all(b"\n")?;
@@ -126,8 +139,7 @@ pub(crate) fn render_json(
 
 pub(crate) fn render_delta_json(
     report: &DeltaReport,
-    diagnostics: Option<&ScopeDiagnostics>,
-    duplicates: Option<&[DuplicatePair]>,
+    opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
     #[derive(serde::Serialize)]
@@ -143,6 +155,8 @@ pub(crate) fn render_delta_json(
         // run was explicitly asked for, silently.
         #[serde(skip_serializing_if = "Option::is_none")]
         duplicates: Option<Vec<DuplicateJson>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        try_weight: Option<f64>,
     }
     serde_json::to_writer_pretty(
         &mut *out,
@@ -151,8 +165,9 @@ pub(crate) fn render_delta_json(
             version: SCHEMA_VERSION,
             entries: &report.entries,
             removed: &report.removed,
-            diagnostics,
-            duplicates: wire(duplicates),
+            diagnostics: opts.diagnostics,
+            duplicates: wire(opts.duplicates),
+            try_weight: recorded_try_weight(opts.try_weight),
         },
     )?;
     out.write_all(b"\n")?;
@@ -266,6 +281,63 @@ mod tests {
         assert!(
             !s.contains("](https://"),
             "JSON output must not contain markdown links:\n{s}"
+        );
+    }
+
+    fn json_opts(try_weight: f64) -> RenderOptions<'static> {
+        RenderOptions {
+            format: Format::Json,
+            try_weight,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn envelope_records_the_try_weight_only_when_it_is_not_the_default() {
+        let at = |w: f64| {
+            let mut buf = Vec::new();
+            render(&sample(), &json_opts(w), &mut buf).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&buf).unwrap()
+        };
+        assert_eq!(at(0.0)["try_weight"], 0.0);
+        assert_eq!(at(0.5)["try_weight"], 0.5);
+        assert_eq!(at(2.0)["try_weight"], 2.0);
+        assert!(
+            at(1.0).get("try_weight").is_none(),
+            "the default weight leaves the envelope as it was before the key existed"
+        );
+    }
+
+    #[test]
+    fn delta_envelope_records_the_try_weight_only_when_it_is_not_the_default() {
+        use super::super::render_delta;
+        use super::super::test_support::fractional_cc_delta;
+        let at = |w: f64| {
+            let mut buf = Vec::new();
+            render_delta(&fractional_cc_delta(), &json_opts(w), &mut buf).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&buf).unwrap()
+        };
+        assert_eq!(at(0.0)["try_weight"], 0.0);
+        assert_eq!(at(0.5)["try_weight"], 0.5);
+        assert!(
+            at(1.0).get("try_weight").is_none(),
+            "the default weight leaves the delta envelope unchanged"
+        );
+    }
+
+    #[test]
+    fn a_baseline_envelope_reads_back_its_try_weight() {
+        let mut buf = Vec::new();
+        render(&sample(), &json_opts(0.5), &mut buf).unwrap();
+        let envelope: Envelope = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(envelope.try_weight, Some(0.5));
+
+        let mut buf = Vec::new();
+        render(&sample(), &json_opts(1.0), &mut buf).unwrap();
+        let envelope: Envelope = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(
+            envelope.try_weight, None,
+            "absent on the wire reads as None"
         );
     }
 }

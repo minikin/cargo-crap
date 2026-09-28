@@ -425,6 +425,7 @@ fn analyze_sources(
     path: &std::path::Path,
     excludes: &[String],
     jobs: Option<usize>,
+    try_weight: f64,
 ) -> Result<AnalyzedSources> {
     if let Some(n) = jobs {
         rayon::ThreadPoolBuilder::new()
@@ -433,7 +434,7 @@ fn analyze_sources(
             .with_context(|| format!("configuring rayon thread pool to {n} threads"))?;
     }
     if !workspace && packages.is_empty() {
-        let fns = complexity::analyze_tree(path, excludes)
+        let fns = complexity::analyze_tree_weighted(path, excludes, try_weight)
             .with_context(|| format!("analyzing {}", path.display()))?;
         return Ok(AnalyzedSources {
             fns,
@@ -445,7 +446,7 @@ fn analyze_sources(
             member_scope: None,
         });
     }
-    analyze_workspace_members(packages, excludes)
+    analyze_workspace_members(packages, excludes, try_weight)
 }
 
 /// The workspace side of [`analyze_sources`]: discover members, narrow to
@@ -454,6 +455,7 @@ fn analyze_sources(
 fn analyze_workspace_members(
     packages: &[String],
     excludes: &[String],
+    try_weight: f64,
 ) -> Result<AnalyzedSources> {
     let (workspace_root, discovered) = workspace_members()?;
     let members = if packages.is_empty() {
@@ -469,7 +471,7 @@ fn analyze_workspace_members(
         // not leak into its parent's walk either.
         let mut walk_excludes = excludes.to_vec();
         walk_excludes.extend(nested_member_excludes(&m.dir, &discovered));
-        let member_fns = complexity::analyze_tree(&m.dir, &walk_excludes)
+        let member_fns = complexity::analyze_tree_weighted(&m.dir, &walk_excludes, try_weight)
             .with_context(|| format!("analyzing {}", m.dir.display()))?;
         fns.extend(member_fns);
         roots.push(ScanRoot {
@@ -1028,12 +1030,18 @@ fn validate_merged_values(
     validate_try_weight(try_weight)
 }
 
-/// Reject a `?` weight that is negative, NaN or infinite — TOML can spell
-/// all three, and any of them would make every CC and CRAP score it touches
-/// meaningless. Config-only, so the message names no flag.
+/// Reject a `?` weight that is negative, NaN, infinite or above the cap —
+/// TOML can spell all of them, and each would make every CC and CRAP score
+/// it touches meaningless (a huge finite weight overflows them to inf/NaN).
+/// `!contains` rather than `<`/`>` so NaN is rejected too. Config-only, so
+/// the message names no flag.
 fn validate_try_weight(try_weight: f64) -> Result<()> {
-    if !try_weight.is_finite() || try_weight < 0.0 {
-        bail!("invalid try-weight value (config): must be a finite, non-negative number");
+    use cargo_crap::config::MAX_TRY_WEIGHT;
+    if !(0.0..=MAX_TRY_WEIGHT).contains(&try_weight) {
+        bail!(
+            "invalid try-weight value (config): must be a non-negative number \
+             no greater than {MAX_TRY_WEIGHT}"
+        );
     }
     Ok(())
 }
@@ -1286,10 +1294,6 @@ struct LoadedArgs {
     epsilon: f64,
     jobs: Option<usize>,
     /// Resolved and range-checked `?` weight.
-    #[expect(
-        dead_code,
-        reason = "validated up front; analysis does not take the weight yet"
-    )]
     try_weight: f64,
 }
 
@@ -1329,7 +1333,7 @@ fn run() -> Result<ExitCode> {
         dup,
         epsilon,
         jobs,
-        try_weight: _,
+        try_weight,
     } = parse_and_validate()?;
 
     // Merge: CLI values take precedence; config fills in what's missing.
@@ -1374,6 +1378,7 @@ fn run() -> Result<ExitCode> {
         &cli.path,
         &effective_exclude,
         jobs,
+        try_weight,
     )?;
 
     pb.set_message("Parsing coverage report…");
@@ -1425,6 +1430,7 @@ fn run() -> Result<ExitCode> {
             show_unchanged,
             uncovered_hints,
             duplicates: dup_pairs.as_deref(),
+            try_weight,
         },
         epsilon,
         summary: cli.summary,
@@ -1758,10 +1764,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_merged_values_accepts_any_finite_non_negative_try_weight() {
+    fn validate_merged_values_accepts_any_try_weight_from_zero_to_one_hundred() {
         // Zero is the point of the knob, and above one is legitimate for
-        // auditing error-handling-heavy code.
-        for weight in [0.0, -0.0, f64::MIN_POSITIVE, 0.5, 1.0, 3.0, f64::MAX] {
+        // auditing error-handling-heavy code, up to the cap.
+        for weight in [0.0, -0.0, f64::MIN_POSITIVE, 0.5, 1.0, 3.0, 100.0] {
             assert!(
                 validate_merged_values(0.01, None, 0.82, weight).is_ok(),
                 "try-weight {weight} is valid"
@@ -1770,13 +1776,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_merged_values_rejects_negative_nan_and_infinite_try_weight() {
+    fn validate_merged_values_rejects_negative_nan_infinite_and_over_cap_try_weight() {
         for weight in [
             -0.5,
             -f64::MIN_POSITIVE,
             f64::NAN,
             f64::INFINITY,
             f64::NEG_INFINITY,
+            // Finite, but large enough to overflow CC or CRAP to inf/NaN,
+            // which serialize as `null` and slip past the gate.
+            100.5,
+            1e308,
+            f64::MAX,
         ] {
             let err = validate_merged_values(0.01, None, 0.82, weight)
                 .expect_err("an out-of-domain try-weight must be rejected")

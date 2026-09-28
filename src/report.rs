@@ -118,11 +118,16 @@ pub struct RenderOptions<'a> {
     /// its envelope, and by [`render_duplicates`], which appends the human
     /// section; no other format carries duplicates.
     pub duplicates: Option<&'a [DuplicatePair]>,
+    /// The `?` weight the entries were analyzed under. Only the JSON
+    /// renderers read it, recording it in the envelope when it is not
+    /// [`DEFAULT_TRY_WEIGHT`](crate::config::DEFAULT_TRY_WEIGHT).
+    pub try_weight: f64,
 }
 
 impl Default for RenderOptions<'_> {
     /// CLI defaults: threshold 30, human format, no links, no
-    /// diagnostics, changed-only delta rows, no uncovered hints, no duplicates.
+    /// diagnostics, changed-only delta rows, no uncovered hints, no
+    /// duplicates, the classical `?` weight.
     fn default() -> Self {
         Self {
             threshold: crate::score::DEFAULT_THRESHOLD,
@@ -132,6 +137,7 @@ impl Default for RenderOptions<'_> {
             show_unchanged: false,
             uncovered_hints: false,
             duplicates: None,
+            try_weight: crate::config::DEFAULT_TRY_WEIGHT,
         }
     }
 }
@@ -148,7 +154,7 @@ pub fn render(
 ) -> Result<()> {
     let threshold = opts.threshold;
     match opts.format {
-        Format::Json => json::render_json(entries, opts.diagnostics, opts.duplicates, out),
+        Format::Json => json::render_json(entries, opts, out),
         Format::Human => human::render_human(entries, threshold, opts.uncovered_hints, out),
         Format::GitHub => github::render_github(entries, threshold, out),
         Format::Markdown => {
@@ -179,7 +185,7 @@ pub fn render_delta(
 ) -> Result<()> {
     let threshold = opts.threshold;
     match opts.format {
-        Format::Json => json::render_delta_json(report, opts.diagnostics, opts.duplicates, out),
+        Format::Json => json::render_delta_json(report, opts, out),
         Format::Human => human::render_delta_human(
             report,
             threshold,

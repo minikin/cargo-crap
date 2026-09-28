@@ -568,3 +568,110 @@ fn invalid_weight_is_a_tool_error() {
         .assert()
         .success();
 }
+
+/// A tree whose one function is straight-line code with two `?` operators,
+/// under an optional `.cargo-crap.toml`.
+fn two_tries_tree(config: Option<&str>) -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    write(
+        dir.path(),
+        "lib.rs",
+        "fn run() -> Result<(), E> {\n    f()?;\n    g()?;\n    Ok(())\n}\n",
+    );
+    if let Some(config) = config {
+        write(dir.path(), ".cargo-crap.toml", config);
+    }
+    dir
+}
+
+/// Run `--format json` from `dir` (so its config applies) and parse stdout.
+fn json_run(
+    dir: &Path,
+    extra: &[&str],
+) -> serde_json::Value {
+    let out = crap()
+        .current_dir(dir)
+        .args(["--format", "json"])
+        .args(extra)
+        .assert()
+        .success();
+    serde_json::from_slice(&out.get_output().stdout).expect("one JSON document")
+}
+
+fn assert_matches_schema(
+    schema: &str,
+    doc: &serde_json::Value,
+) {
+    let raw = fs::read_to_string(schema).expect("read schema");
+    let schema_doc: serde_json::Value = serde_json::from_str(&raw).expect("schema is JSON");
+    let validator = jsonschema::validator_for(&schema_doc).expect("schema compiles");
+    let errors: Vec<String> = validator.iter_errors(doc).map(|e| e.to_string()).collect();
+    assert!(errors.is_empty(), "{schema}: {errors:?}");
+}
+
+#[test]
+fn the_envelope_records_a_non_default_weight() {
+    // Given a run with `try-weight = 0.0` and `--format json`
+    let dir = two_tries_tree(Some("try-weight = 0.0\n"));
+    let path = dir.path().to_str().expect("utf-8");
+    // When the envelope is written
+    let doc = json_run(dir.path(), &["--path", path]);
+    // Then it contains `"try_weight": 0.0`
+    assert_eq!(doc["try_weight"], 0.0, "{doc}");
+    // (the weight reached the analysis too: the `?`-only function is CC 1)
+    assert_eq!(doc["entries"][0]["cyclomatic"], 1.0, "{doc}");
+    assert_matches_schema("schemas/report-v1.json", &doc);
+
+    // And the delta envelope records it the same way
+    let baseline = dir.path().join("baseline.json");
+    fs::write(&baseline, doc.to_string()).expect("write baseline");
+    let delta = json_run(
+        dir.path(),
+        &[
+            "--path",
+            path,
+            "--baseline",
+            baseline.to_str().expect("utf-8"),
+        ],
+    );
+    assert_eq!(delta["try_weight"], 0.0, "{delta}");
+    assert_matches_schema("schemas/delta-v2.json", &delta);
+
+    // And a run at the default weight omits the field entirely — spelled
+    // out or left unset
+    for config in [Some("try-weight = 1.0\n"), None] {
+        let dir = two_tries_tree(config);
+        let doc = json_run(dir.path(), &["--path", dir.path().to_str().expect("utf-8")]);
+        assert!(doc.get("try_weight").is_none(), "{config:?}: {doc}");
+        assert_eq!(doc["entries"][0]["cyclomatic"], 3.0, "{config:?}: {doc}");
+    }
+}
+
+#[test]
+fn the_envelope_records_a_non_default_weight_in_workspace_mode() {
+    // Given a one-member workspace under `try-weight = 0.0`
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    fs::create_dir_all(root.join("crates/one/src")).expect("mkdir");
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/one\"]\nresolver = \"2\"\n",
+    );
+    write(root, ".cargo-crap.toml", "try-weight = 0.0\n");
+    write(
+        &root.join("crates/one"),
+        "Cargo.toml",
+        "[package]\nname = \"one\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(
+        &root.join("crates/one/src"),
+        "lib.rs",
+        "pub fn run() -> Result<(), E> {\n    f()?;\n    g()?;\n    Ok(())\n}\n",
+    );
+    // When the workspace is analyzed as JSON
+    let doc = json_run(root, &["--workspace"]);
+    // Then the member's `?`-only function is weighted too, and recorded
+    assert_eq!(doc["entries"][0]["cyclomatic"], 1.0, "{doc}");
+    assert_eq!(doc["try_weight"], 0.0, "{doc}");
+}

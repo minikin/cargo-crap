@@ -21,9 +21,10 @@ Design (per the issue discussion and the config-over-flags house rule):
   default `1.0`. The default preserves exact McCabe semantics — every
   score, table, and envelope is byte-identical to today unless someone
   opts in.
-- **Domain: any finite float ≥ 0**, validated like `epsilon` (invalid
-  value → tool error, exit 2). `0` is the issue's ask, values above 1
-  are legitimate for auditing error-handling-heavy code.
+- **Domain: any finite float in [0, 100]**, validated like `epsilon`
+  (invalid value → tool error, exit 2). `0` is the issue's ask, values
+  above 1 are legitimate for auditing error-handling-heavy code; the cap
+  keeps CC and CRAP finite for any real function.
 - **Comparability is handled, not ignored.** The JSON envelope records
   `try_weight` only when it differs from `1.0`; a `--baseline` recorded
   under a different weight produces one stderr warning and the

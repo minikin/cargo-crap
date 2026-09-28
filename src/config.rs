@@ -121,8 +121,8 @@ pub struct Config {
 
     /// What each `?` operator adds to a function's cyclomatic complexity.
     /// Defaults to [`DEFAULT_TRY_WEIGHT`], the classical cyclomatic count; every
-    /// other decision point keeps its fixed cost. Must be finite and
-    /// non-negative when set. Config-only — there is deliberately no CLI
+    /// other decision point keeps its fixed cost. Must lie in
+    /// `0.0..=`[`MAX_TRY_WEIGHT`] when set. Config-only — there is deliberately no CLI
     /// flag, so a weight cannot change between runs unnoticed.
     pub try_weight: Option<f64>,
 
@@ -160,6 +160,12 @@ pub const DEFAULT_DUP_MIN_NODES: usize = 20;
 /// What a `?` operator costs, absent any configuration: one decision point,
 /// the same as an `if`.
 pub const DEFAULT_TRY_WEIGHT: f64 = 1.0;
+
+/// The heaviest `?` weight accepted. Far above any sensible audit weight,
+/// and low enough that CC and CRAP stay finite for any real function — an
+/// overflowed score serializes as `null` and compares false against the
+/// threshold, so it would pass the gate.
+pub const MAX_TRY_WEIGHT: f64 = 100.0;
 
 /// Walk up from `start` until `.cargo-crap.toml` is found.
 ///

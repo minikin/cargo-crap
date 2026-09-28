@@ -43,7 +43,7 @@ pub struct FunctionComplexity {
 /// CRAP is a per-function metric, and rolling up file-level CC into the
 /// formula produces misleading scores on large files.
 pub fn analyze_file(path: &Path) -> Result<Vec<FunctionComplexity>> {
-    analyze_file_weighted(path, 1.0)
+    analyze_file_weighted(path, crate::config::DEFAULT_TRY_WEIGHT)
 }
 
 /// [`analyze_file`], with each `?` operator counting `try_weight` instead
@@ -312,7 +312,7 @@ pub fn analyze_tree<S: AsRef<str>>(
     root: &Path,
     excludes: &[S],
 ) -> Result<Vec<FunctionComplexity>> {
-    analyze_tree_weighted(root, excludes, 1.0)
+    analyze_tree_weighted(root, excludes, crate::config::DEFAULT_TRY_WEIGHT)
 }
 
 /// [`analyze_tree`], with each `?` operator counting `try_weight` instead of
