@@ -13,6 +13,9 @@ the threshold or goes up.
   for a first run and how to read the report.
 - The guides cover CI gates, pull-request comments, workspaces, the badge and
   duplicate detection, starting with [Integrating with CI](guides/ci.md).
+- Since 0.6.0, a [TypeSafe](https://docs.typesafe.ai) model can
+  [triage the duplicates](guides/triage.md): it tells the same logic written
+  twice from two functions that only share a Rust idiom.
 - The reference lists every [flag](reference/cli.md), every
   [configuration key](reference/config.md), the
   [output formats](reference/output-formats.md) and the

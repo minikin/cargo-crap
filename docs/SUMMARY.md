@@ -13,6 +13,7 @@
 - [Workspaces and changed-package CI](guides/workspaces.md)
 - [Shields.io badge](guides/badge.md)
 - [Finding duplicates](guides/duplicates.md)
+- [Triaging duplicates with TypeSafe](guides/triage.md)
 
 # Reference
 
