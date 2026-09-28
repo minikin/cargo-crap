@@ -19,6 +19,7 @@
 
 use crate::delta::DeltaReport;
 use crate::duplicates::compare::DuplicatePair;
+use crate::duplicates::triage::verdict::Assessment;
 use crate::merge::{CrapEntry, ScopeDiagnostics};
 use crate::score::Severity;
 use anyhow::{Result, bail};
@@ -122,6 +123,9 @@ pub struct RenderOptions<'a> {
     /// renderers read it, recording it in the envelope when it is not
     /// [`DEFAULT_TRY_WEIGHT`](crate::config::DEFAULT_TRY_WEIGHT).
     pub try_weight: f64,
+    /// One triage assessment per duplicate pair, in the pairs' order, or
+    /// `None` when triage did not run. Read by [`render_duplicates`] only.
+    pub triage: Option<&'a [Assessment]>,
 }
 
 impl Default for RenderOptions<'_> {
@@ -138,6 +142,7 @@ impl Default for RenderOptions<'_> {
             uncovered_hints: false,
             duplicates: None,
             try_weight: crate::config::DEFAULT_TRY_WEIGHT,
+            triage: None,
         }
     }
 }
@@ -247,7 +252,7 @@ pub fn render_duplicates(
         return Ok(());
     }
     writeln!(out)?;
-    duplicates::render(pairs, out)
+    duplicates::render(pairs, opts.triage, out)
 }
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR

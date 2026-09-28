@@ -790,6 +790,18 @@ fn load_coverage(lcov: Option<&PathBuf>) -> Result<HashMap<PathBuf, FileCoverage
     }
 }
 
+/// Turn ANSI colour on or off for this run, from the environment, whether
+/// output goes to an `--output` file, and whether stdout is a terminal.
+fn apply_color_policy(output_to_file: bool) {
+    let env_set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    set_color_enabled(resolve_color(
+        env_set("NO_COLOR"),
+        env_set("FORCE_COLOR"),
+        output_to_file,
+        io::stdout().is_terminal(),
+    ));
+}
+
 /// Decide whether the human/summary renderers may emit ANSI colour.
 ///
 /// Precedence: `NO_COLOR` (non-empty) always disables; `FORCE_COLOR`
@@ -1466,13 +1478,7 @@ fn run() -> Result<ExitCode> {
     )?;
 
     // --- Render ---
-    let env_set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
-    set_color_enabled(resolve_color(
-        env_set("NO_COLOR"),
-        env_set("FORCE_COLOR"),
-        cli.output.is_some(),
-        io::stdout().is_terminal(),
-    ));
+    apply_color_policy(cli.output.is_some());
     let mut out_box = open_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref);
     let dup_pairs = duplicate_pairs(&dup, &roots, cli.format.into())?;
@@ -1486,6 +1492,8 @@ fn run() -> Result<ExitCode> {
             uncovered_hints,
             duplicates: dup_pairs.as_deref(),
             try_weight,
+            // Wired in with the triage pass itself.
+            triage: None,
         },
         epsilon,
         summary: cli.summary,
