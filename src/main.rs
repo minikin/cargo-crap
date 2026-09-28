@@ -1115,9 +1115,7 @@ fn load_filtered_baseline(
         return Ok(None);
     };
     let baseline = load_baseline_with_weight(baseline_path)?;
-    if let Some(warning) = try_weight_mismatch_warning(baseline.try_weight, try_weight) {
-        eprintln!("{warning}");
-    }
+    warn_on_try_weight_mismatch(baseline.try_weight, try_weight);
     let mut data = baseline.entries;
     let roots = if members.is_empty() {
         vec![path.to_path_buf()]
@@ -1127,6 +1125,16 @@ fn load_filtered_baseline(
     BaselineFilter::new(excludes, allow_patterns, roots)?.retain(&mut data);
     apply_member_scope(&mut data, member_scope);
     Ok(Some(data))
+}
+
+/// Print [`try_weight_mismatch_warning`] to stderr when there is one.
+fn warn_on_try_weight_mismatch(
+    baseline: f64,
+    current: f64,
+) {
+    if let Some(warning) = try_weight_mismatch_warning(baseline, current) {
+        eprintln!("{warning}");
+    }
 }
 
 /// The warning for a baseline scored under a different `?` weight than this
