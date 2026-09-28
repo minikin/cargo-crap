@@ -675,3 +675,85 @@ fn the_envelope_records_a_non_default_weight_in_workspace_mode() {
     assert_eq!(doc["entries"][0]["cyclomatic"], 1.0, "{doc}");
     assert_eq!(doc["try_weight"], 0.0, "{doc}");
 }
+
+/// Record `dir`'s JSON output as a baseline file inside it and return the
+/// file's path. `.json`, so the next walk does not analyze it.
+fn record_baseline(dir: &Path) -> String {
+    let recorded = json_run(dir, &["--path", dir.to_str().expect("utf-8")]);
+    let baseline = dir.join("baseline.json");
+    fs::write(&baseline, recorded.to_string()).expect("write baseline");
+    baseline.to_str().expect("utf-8").to_owned()
+}
+
+#[test]
+fn baseline_recorded_under_a_different_weight_warns_and_proceeds() {
+    // Given a baseline JSON with no `try_weight` field (i.e. 1.0)
+    let dir = two_tries_tree(None);
+    let baseline = record_baseline(dir.path());
+    let recorded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&baseline).expect("read")).expect("JSON");
+    assert!(recorded.get("try_weight").is_none(), "{recorded}");
+    // And a current run with `try-weight = 0.0` and `--baseline <file>`
+    write(dir.path(), ".cargo-crap.toml", "try-weight = 0.0\n");
+    // When the delta is computed
+    let out = crap()
+        .current_dir(dir.path())
+        .args([
+            "--path",
+            dir.path().to_str().expect("utf-8"),
+            "--format",
+            "json",
+            "--baseline",
+            &baseline,
+        ])
+        .assert()
+        // And the exit code is not affected by the mismatch itself
+        .success();
+    // Then stderr carries one warning that the baseline was recorded with
+    // try-weight 1 and the current run uses 0, so deltas reflect the weight
+    // change, not code changes
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).expect("utf-8");
+    let warnings: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("try-weight"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "exactly one weight warning: {stderr}");
+    assert!(
+        warnings[0].contains("recorded with try-weight 1")
+            && warnings[0].contains("uses 0")
+            && warnings[0].contains("weight change, not code changes"),
+        "{stderr}"
+    );
+    // And the comparison proceeds normally: CC 3 → 1 is an improvement
+    let delta: serde_json::Value =
+        serde_json::from_slice(&out.get_output().stdout).expect("one JSON document");
+    assert_eq!(delta["entries"][0]["status"], "improved", "{delta}");
+    assert_eq!(delta["entries"][0]["cyclomatic"], 1.0, "{delta}");
+}
+
+#[test]
+fn matching_weights_compare_silently() {
+    // Given a baseline recorded with `try-weight = 0.5`
+    let dir = two_tries_tree(Some("try-weight = 0.5\n"));
+    let baseline = record_baseline(dir.path());
+    // And a current run with `try-weight = 0.5` and `--baseline <file>`
+    // When the delta is computed
+    let out = crap()
+        .current_dir(dir.path())
+        .args([
+            "--path",
+            dir.path().to_str().expect("utf-8"),
+            "--format",
+            "json",
+            "--baseline",
+            &baseline,
+        ])
+        .assert()
+        .success();
+    // Then no weight warning is emitted
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).expect("utf-8");
+    assert!(!stderr.contains("try-weight"), "{stderr}");
+    let delta: serde_json::Value =
+        serde_json::from_slice(&out.get_output().stdout).expect("one JSON document");
+    assert_eq!(delta["entries"][0]["status"], "unchanged", "{delta}");
+}

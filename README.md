@@ -329,7 +329,8 @@ Most flags can be set persistently in `.cargo-crap.toml` at the project root
 always take precedence. The per-run selectors have no config key —
 `--path`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`,
 `--baseline`, `--no-default-excludes`, `--repo-url` and `--commit-ref` are
-flags only. `uncovered-hints` is the mirror case: config only, no flag.
+flags only. `uncovered-hints` and `try-weight` are the mirror case: config
+only, no flag.
 
 ```toml
 # .cargo-crap.toml
@@ -358,6 +359,12 @@ show_unchanged = false    # list Unchanged rows in --baseline mode
 # Config-only — there is deliberately no CLI flag. JSON always carries
 # the full ranges regardless of this key.
 uncovered-hints = false
+# What each `?` adds to cyclomatic complexity: 1.0 (the default) is
+# classical McCabe, 0.0 makes error propagation free, a fraction sits in
+# between. Any value from 0 to 100. Config-only. JSON output records a
+# non-default weight, and a --baseline recorded under a different weight
+# gets a warning: its deltas measure the weight change, not code changes.
+try-weight = 1.0
 [duplicates]
 enabled   = false   # same as passing --duplicates
 threshold = 0.82    # similarity at or above which a pair is reported
@@ -366,8 +373,10 @@ min-nodes = 20      # skip functions smaller than this; 0 compares everything
 
 All keys are optional. Unknown keys are rejected to catch typos.
 
-Every key above accepts both the kebab-case house spelling and its
-snake_case alias (`show-unchanged` / `show_unchanged`). Where a key and
+Every multi-word key above accepts both the kebab-case house spelling and
+its snake_case alias (`show-unchanged` / `show_unchanged`), except
+`fail-above`, `fail-regression` and `try-weight`, which are kebab-case
+only. Where a key and
 its flag are not spelled the same, the mapping is:
 
 | Flag                  | Config key             |
@@ -388,6 +397,7 @@ its flag are not spelled the same, the mapping is:
 | `--dup-threshold`     | `duplicates.threshold` |
 | *(no flag)*           | `duplicates.min-nodes` |
 | *(no flag)*           | `uncovered-hints`      |
+| *(no flag)*           | `try-weight`           |
 | *(no key)*            | `--path`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`, `--baseline`, `--no-default-excludes`, `--repo-url`, `--commit-ref` |
 
 `default-excludes` is the one key with no direct flag equivalent: it
@@ -486,7 +496,9 @@ arm, each `&&` and `||`, and each `?`. Two consequences worth knowing:
   comparable across runs of this tool; they are not comparable to
   another tool's numbers.
 - `?` counts as a decision point, so an idiomatic `Result` chain scores
-  higher than its branching suggests.
+  higher than its branching suggests. Set `try-weight` in
+  `.cargo-crap.toml` to change that: `0.0` makes `?` free, a fraction
+  discounts it, and a fractional CC is shown to one decimal.
 
 Closures and items nested inside a function body (a local `fn`, `impl`,
 `mod`, …) are *not* folded into the enclosing function — each is its own

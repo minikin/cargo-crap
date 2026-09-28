@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use cargo_crap::{
     complexity,
     coverage::{self, FileCoverage},
-    delta::{compute_delta, load_baseline},
+    delta::{compute_delta, load_baseline_with_weight},
     duplicates,
     duplicates::compare::DuplicatePair,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
@@ -1099,7 +1099,9 @@ fn effective_summary(
 /// Load the `--baseline` file (if any) and filter it through the current
 /// run's identity-based filters (spec 18) before delta computation. The
 /// analyzed roots are the workspace member dirs, or the single `--path`
-/// root outside `--workspace` mode.
+/// root outside `--workspace` mode. A baseline scored under a different `?`
+/// weight than `try_weight` gets one stderr warning; the comparison still
+/// proceeds.
 fn load_filtered_baseline(
     baseline: Option<&PathBuf>,
     excludes: &[String],
@@ -1107,11 +1109,16 @@ fn load_filtered_baseline(
     path: &Path,
     members: &[WorkspaceMember],
     member_scope: Option<&MemberScope>,
+    try_weight: f64,
 ) -> Result<Option<Vec<cargo_crap::merge::CrapEntry>>> {
     let Some(baseline_path) = baseline else {
         return Ok(None);
     };
-    let mut data = load_baseline(baseline_path)?;
+    let baseline = load_baseline_with_weight(baseline_path)?;
+    if let Some(warning) = try_weight_mismatch_warning(baseline.try_weight, try_weight) {
+        eprintln!("{warning}");
+    }
+    let mut data = baseline.entries;
     let roots = if members.is_empty() {
         vec![path.to_path_buf()]
     } else {
@@ -1120,6 +1127,24 @@ fn load_filtered_baseline(
     BaselineFilter::new(excludes, allow_patterns, roots)?.retain(&mut data);
     apply_member_scope(&mut data, member_scope);
     Ok(Some(data))
+}
+
+/// The warning for a baseline scored under a different `?` weight than this
+/// run, or `None` when the weights match.
+#[expect(
+    clippy::float_cmp,
+    reason = "any difference in the weight rescored every function with a `?`; there is no tolerance to apply"
+)]
+fn try_weight_mismatch_warning(
+    baseline: f64,
+    current: f64,
+) -> Option<String> {
+    (baseline != current).then(|| {
+        format!(
+            "warning: the baseline was recorded with try-weight {baseline} and this run \
+             uses {current} — deltas reflect the weight change, not code changes"
+        )
+    })
 }
 
 /// Drop baseline entries owned by unselected members (spec 25): a `-p` run
@@ -1408,6 +1433,7 @@ fn run() -> Result<ExitCode> {
         &cli.path,
         &members,
         member_scope.as_ref(),
+        try_weight,
     )?;
 
     // --- Render ---
@@ -1761,6 +1787,32 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("epsilon"), "epsilon is checked first: {err}");
+    }
+
+    #[test]
+    fn a_baseline_weight_mismatch_names_both_weights_and_what_it_means() {
+        let warning = try_weight_mismatch_warning(1.0, 0.0).expect("the weights differ");
+        assert!(warning.starts_with("warning: "), "{warning}");
+        assert!(
+            warning.contains("recorded with try-weight 1") && warning.contains("uses 0"),
+            "names the baseline's weight, then the run's: {warning}"
+        );
+        assert!(
+            warning.contains("weight change, not code changes"),
+            "{warning}"
+        );
+        let warning = try_weight_mismatch_warning(0.5, 2.0).expect("the weights differ");
+        assert!(
+            warning.contains("try-weight 0.5") && warning.contains("uses 2"),
+            "{warning}"
+        );
+    }
+
+    #[test]
+    fn matching_try_weights_produce_no_warning() {
+        for weight in [0.0, 0.5, 1.0, 100.0] {
+            assert_eq!(try_weight_mismatch_warning(weight, weight), None);
+        }
     }
 
     #[test]
