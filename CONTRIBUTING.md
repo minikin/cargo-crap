@@ -82,6 +82,10 @@ CI runs the same gates and adds:
   `tests/fixtures/sample_project/`. It is the test that catches a path
   mismatch between the source walk and the LCOV file. If you add a function
   to the fixture, update its `lcov.info` to match.
+- `tests/docs.rs` checks the docs against the code: the flags table against
+  `--help`, the configuration reference against `Config`, and every sample
+  marked `<!-- output: ARGS -->` against a real run. A new flag or config
+  key fails it until the docs describe it.
 
 ## Finding your way around
 
