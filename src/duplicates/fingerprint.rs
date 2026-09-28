@@ -24,12 +24,13 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// FNV-1a as a [`Hasher`], so the derived `Hash` impls do the walking.
-struct Fnv1a {
+/// Shared with the triage cache, whose keys must be just as stable.
+pub(crate) struct Fnv1a {
     state: u64,
 }
 
 impl Fnv1a {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { state: FNV_OFFSET }
     }
 }

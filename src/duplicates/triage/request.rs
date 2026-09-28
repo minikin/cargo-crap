@@ -14,9 +14,10 @@ use serde_json::{Map, Value, json};
 use std::io;
 use std::path::Path;
 
-/// The version of the question set below. Bump it whenever any question's
-/// wording, options or levels change: it is part of the cache key, so a
-/// verdict never outlives the question that produced it.
+/// The version of the question set below. Bump it whenever anything changes
+/// what the model is asked — a question's wording, options or levels, or how
+/// the state's similarity score is computed: it is part of the cache key, so
+/// a verdict never outlives the question that produced it.
 pub const QUESTION_SET_VERSION: u32 = 1;
 
 /// The worth-extracting levels in the order they are sent, each beside the
