@@ -6,15 +6,19 @@
 //! back-off; any other 4xx is final, since the same request will be refused
 //! the same way.
 
+use crate::duplicates::triage::cache;
 use crate::duplicates::triage::verdict::DecodeError;
 use std::fmt;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Where the API key is read from — the only place it is read from.
 pub const API_KEY_VAR: &str = "TYPESAFE_API_KEY";
 /// Overrides the API's base URL (tests point it at a local stub).
 pub const BASE_URL_VAR: &str = "TYPESAFE_BASE_URL";
+/// Cargo's target directory, where the verdict cache lives.
+pub const TARGET_DIR_VAR: &str = "CARGO_TARGET_DIR";
 /// The API's base URL, absent an override.
 pub const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
 
@@ -45,25 +49,36 @@ pub struct Settings {
     pub attempts: u32,
     /// The wait after the first failed attempt; it doubles after each one.
     pub backoff: Duration,
+    /// Where verdicts are cached; `None` asks about every pair every time.
+    pub cache_dir: Option<PathBuf>,
 }
 
 impl Settings {
-    /// Settings for `model`, with the key and base URL read from the
-    /// process environment.
+    /// Settings for `model` in the project rooted at `project_root`, with the
+    /// key, base URL and target directory read from the process environment.
     #[must_use]
-    pub fn from_env(model: &str) -> Self {
-        Self::from_lookup(model, |name| std::env::var(name).ok())
+    pub fn from_env(
+        model: &str,
+        project_root: &Path,
+    ) -> Self {
+        Self::from_lookup(model, project_root, |name| std::env::var(name).ok())
     }
 
-    /// Settings for `model`, with the key and base URL read through
-    /// `lookup` — so tests can supply an environment without mutating the
-    /// process's. An empty value counts as unset.
+    /// Settings for `model` in the project rooted at `project_root`, with
+    /// `TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL` and `CARGO_TARGET_DIR` read
+    /// through `lookup` — so tests can supply an environment without mutating
+    /// the process's. An empty value counts as unset. Verdicts are cached in
+    /// the project's target directory — `CARGO_TARGET_DIR` when set, as for
+    /// cargo, else `target/` beside the configuration — so `cargo clean`
+    /// sweeps them, wherever the command was run from.
     #[must_use]
     pub fn from_lookup(
         model: &str,
+        project_root: &Path,
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Self {
         let set = |name| lookup(name).filter(|value: &String| !value.is_empty());
+        let target = set(TARGET_DIR_VAR).map_or_else(|| project_root.join("target"), PathBuf::from);
         Self {
             model: model.to_owned(),
             base_url: set(BASE_URL_VAR).unwrap_or_else(|| DEFAULT_BASE_URL.to_owned()),
@@ -72,6 +87,7 @@ impl Settings {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
             backoff: DEFAULT_BACKOFF,
+            cache_dir: Some(cache::default_dir(&target)),
         }
     }
 
@@ -333,6 +349,7 @@ mod tests {
     fn settings_read_the_key_and_base_url_from_the_environment() {
         let settings = Settings::from_lookup(
             "jev-1",
+            Path::new("/proj"),
             lookup(&[
                 (API_KEY_VAR, "secret"),
                 (BASE_URL_VAR, "http://127.0.0.1:9"),
@@ -345,29 +362,37 @@ mod tests {
 
     #[test]
     fn an_unset_or_empty_key_is_no_key() {
-        assert_eq!(Settings::from_lookup("m", lookup(&[])).api_key, None);
         assert_eq!(
-            Settings::from_lookup("m", lookup(&[(API_KEY_VAR, "")])).api_key,
+            Settings::from_lookup("m", Path::new("/proj"), lookup(&[])).api_key,
+            None
+        );
+        assert_eq!(
+            Settings::from_lookup("m", Path::new("/proj"), lookup(&[(API_KEY_VAR, "")])).api_key,
             None
         );
     }
 
     #[test]
     fn the_base_url_defaults_to_the_public_api() {
-        let settings = Settings::from_lookup("m", lookup(&[(BASE_URL_VAR, "")]));
+        let settings =
+            Settings::from_lookup("m", Path::new("/proj"), lookup(&[(BASE_URL_VAR, "")]));
         assert_eq!(settings.base_url, "https://api.typesafe.ai");
         assert_eq!(settings.endpoint(), "https://api.typesafe.ai/v1/systemone");
     }
 
     #[test]
     fn the_endpoint_joins_the_base_url_without_a_double_slash() {
-        let settings = Settings::from_lookup("m", lookup(&[(BASE_URL_VAR, "http://stub:1/")]));
+        let settings = Settings::from_lookup(
+            "m",
+            Path::new("/proj"),
+            lookup(&[(BASE_URL_VAR, "http://stub:1/")]),
+        );
         assert_eq!(settings.endpoint(), "http://stub:1/v1/systemone");
     }
 
     #[test]
     fn the_defaults_bound_every_request() {
-        let settings = Settings::from_lookup("m", lookup(&[]));
+        let settings = Settings::from_lookup("m", Path::new("/proj"), lookup(&[]));
         assert_eq!(settings.timeout, std::time::Duration::from_secs(10));
         assert_eq!(settings.attempts, 3);
     }
@@ -375,7 +400,7 @@ mod tests {
     #[test]
     fn a_connection_attempt_is_bounded_separately() {
         // A host that drops SYNs fails in seconds, not a full request timeout.
-        let settings = Settings::from_lookup("m", lookup(&[]));
+        let settings = Settings::from_lookup("m", Path::new("/proj"), lookup(&[]));
         assert_eq!(settings.connect_timeout, std::time::Duration::from_secs(3));
     }
 
@@ -391,6 +416,30 @@ mod tests {
             retry_delay(Some("Wed, 21 Oct 2026 07:28:00 GMT"), base, 1),
             backoff(base, 1),
             "an HTTP date falls back to the back-off"
+        );
+    }
+
+    #[test]
+    fn verdicts_are_cached_under_the_projects_target_directory() {
+        // Beside the configuration that enabled triage, not wherever the
+        // command happened to run; CARGO_TARGET_DIR still wins, as for cargo.
+        let default = Settings::from_lookup("m", Path::new("/proj"), lookup(&[]));
+        assert_eq!(
+            default.cache_dir,
+            Some(
+                PathBuf::from("/proj/target")
+                    .join("cargo-crap")
+                    .join("triage")
+            )
+        );
+        let custom = Settings::from_lookup(
+            "m",
+            Path::new("/proj"),
+            lookup(&[(TARGET_DIR_VAR, "/tmp/t")]),
+        );
+        assert_eq!(
+            custom.cache_dir,
+            Some(PathBuf::from("/tmp/t").join("cargo-crap").join("triage"))
         );
     }
 

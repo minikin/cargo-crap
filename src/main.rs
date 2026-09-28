@@ -1200,6 +1200,16 @@ struct DupSettings {
     min_nodes: usize,
     /// Whether to ask the model about each reported pair.
     triage_enabled: bool,
+    /// The project the configuration describes; triage caches under its
+    /// target directory.
+    #[cfg_attr(
+        not(feature = "triage"),
+        expect(
+            dead_code,
+            reason = "only a build with the triage client caches verdicts"
+        )
+    )]
+    triage_root: PathBuf,
     /// The model to ask.
     #[cfg_attr(
         not(feature = "triage"),
@@ -1217,8 +1227,10 @@ impl DupSettings {
     fn resolve(
         cli: &Cli,
         config: &cargo_crap::config::Config,
+        project_root: PathBuf,
     ) -> Self {
         Self {
+            triage_root: project_root,
             enabled: cli.duplicates || config.duplicates.enabled.unwrap_or(false),
             threshold: cli
                 .dup_threshold
@@ -1323,7 +1335,8 @@ fn triage_assessments(
     #[cfg(feature = "triage")]
     {
         use cargo_crap::duplicates::triage;
-        let api_settings = triage::Settings::from_env(&settings.triage_model);
+        let api_settings =
+            triage::Settings::from_env(&settings.triage_model, &settings.triage_root);
         triage::run(pairs, &api_settings)
             .inspect_err(|e| {
                 eprintln!(
@@ -1409,12 +1422,18 @@ fn resolve_source_links(
 
 /// Parse argv, validate flag combinations, and load the optional
 /// `.cargo-crap.toml` (defaults when absent — the tool works without one).
-fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config)> {
+/// Parse argv and load the configuration, returning also the project root:
+/// the directory of the `.cargo-crap.toml` that was read, or the working
+/// directory when there is none.
+fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config, PathBuf)> {
     let cli = Cli::parse_from(strip_cargo_subcommand(std::env::args().collect()));
     validate_args(&cli)?;
     let cwd = std::env::current_dir().unwrap_or_else(|_| cli.path.clone());
     let config = cargo_crap::config::load(&cwd)?;
-    Ok((cli, config))
+    let root = cargo_crap::config::find(&cwd)
+        .and_then(|file| file.parent().map(Path::to_path_buf))
+        .unwrap_or(cwd);
+    Ok((cli, config, root))
 }
 
 /// Exit-code contract (spec 23): 0 = analysis completed and no requested
@@ -1450,7 +1469,7 @@ struct LoadedArgs {
 /// exactly what was validated so [`run`] cannot consume a different
 /// (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
-    let (cli, config) = parse_and_load_config()?;
+    let (cli, config, project_root) = parse_and_load_config()?;
     let epsilon = cli
         .epsilon
         .or(config.epsilon)
@@ -1459,7 +1478,7 @@ fn parse_and_validate() -> Result<LoadedArgs> {
     // Resolved here rather than at the call site: the merged similarity
     // threshold has to be validated before anything is analyzed, and the
     // config half of it is invisible to `validate_args`.
-    let dup = DupSettings::resolve(&cli, &config);
+    let dup = DupSettings::resolve(&cli, &config, project_root);
     let try_weight = config
         .try_weight
         .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
@@ -1943,6 +1962,7 @@ mod tests {
             threshold,
             min_nodes: cargo_crap::config::DEFAULT_DUP_MIN_NODES,
             triage_enabled: false,
+            triage_root: PathBuf::from("."),
             triage_model: cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned(),
             triage_floor,
         }

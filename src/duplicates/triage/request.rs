@@ -66,9 +66,19 @@ pub fn build(
     pair: &DuplicatePair,
     model: &str,
 ) -> io::Result<Value> {
-    let source_a = read_location(&pair.first)?;
-    let source_b = read_location(&pair.second)?;
+    let (source_a, source_b) = sources(pair)?;
     Ok(body(pair, &source_a, &source_b, model))
+}
+
+/// Both sides' source, read back from disk — what the request carries and
+/// what the cache key covers.
+///
+/// # Errors
+///
+/// When either side's file cannot be read, or no longer holds the lines the
+/// scan located the function on.
+pub fn sources(pair: &DuplicatePair) -> io::Result<(String, String)> {
+    Ok((read_location(&pair.first)?, read_location(&pair.second)?))
 }
 
 /// The request body: the pair's state, the model and the three questions.
@@ -413,6 +423,27 @@ mod tests {
         bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
         })
+    }
+
+    #[test]
+    fn the_similarity_score_is_pinned_to_the_question_set_version() {
+        // The score is sent as `structural_similarity` but is not part of the
+        // cache key. If this fails, the fingerprinting changed what the model
+        // is shown: bump QUESTION_SET_VERSION, then update the pinned score.
+        use crate::duplicates::compare::find_pairs;
+        use crate::duplicates::extract::functions_in_source;
+        let source = "
+            fn a(v: &[i32]) -> i32 { let mut t = 0; for x in v { if *x > 0 { t += x; } } t }
+            fn b(v: &[i32]) -> i32 { let mut t = 0; for x in v { if *x > 0 { t += x; } else { t -= 1; } } t }
+        ";
+        let functions = functions_in_source(source, Path::new("pin.rs")).expect("parses");
+        let pairs = find_pairs(&functions, 0.0);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(
+            (QUESTION_SET_VERSION, pairs[0].score.to_string()),
+            (1, "0.46875".to_owned()),
+            "the similarity score changed; bump QUESTION_SET_VERSION"
+        );
     }
 
     #[test]

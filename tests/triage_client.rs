@@ -64,6 +64,8 @@ fn settings(base_url: String) -> Settings {
         connect_timeout: Duration::from_secs(3),
         attempts: 3,
         backoff: Duration::from_millis(1),
+        // No cache: every test here counts the requests it causes.
+        cache_dir: None,
     }
 }
 

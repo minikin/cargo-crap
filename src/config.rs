@@ -52,7 +52,7 @@ use crate::merge::{MissingCoveragePolicy, SortOrder};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Persistent settings loaded from `.cargo-crap.toml`.
 ///
@@ -210,25 +210,30 @@ pub const MAX_TRY_WEIGHT: f64 = 100.0;
 /// Returns [`Config::default`] when no config file exists anywhere in the
 /// directory hierarchy — this means the tool works without any config file.
 pub fn load(start: &Path) -> Result<Config> {
+    let Some(candidate) = find(start) else {
+        return Ok(Config::default());
+    };
+    let raw = fs::read_to_string(&candidate)
+        .with_context(|| format!("reading {}", candidate.display()))?;
+    toml::from_str(&raw).with_context(|| format!("parsing {}", candidate.display()))
+}
+
+/// The `.cargo-crap.toml` that [`load`] would read: the first one found
+/// walking up from `start`, or `None` when there is none. Its directory is
+/// the project the configuration describes.
+#[must_use]
+pub fn find(start: &Path) -> Option<PathBuf> {
     let mut dir = if start.is_file() {
         start.parent().unwrap_or(start)
     } else {
         start
     };
-
     loop {
         let candidate = dir.join(".cargo-crap.toml");
         if candidate.exists() {
-            let raw = fs::read_to_string(&candidate)
-                .with_context(|| format!("reading {}", candidate.display()))?;
-            let cfg: Config =
-                toml::from_str(&raw).with_context(|| format!("parsing {}", candidate.display()))?;
-            return Ok(cfg);
+            return Some(candidate);
         }
-        match dir.parent() {
-            Some(p) => dir = p,
-            None => return Ok(Config::default()),
-        }
+        dir = dir.parent()?;
     }
 }
 
@@ -406,6 +411,16 @@ allow = ["Foo::*"]
             load(dir.path()).unwrap().try_weight,
             Some(f64::NEG_INFINITY)
         );
+    }
+
+    #[test]
+    fn find_reports_where_the_config_file_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a/b");
+        fs::create_dir_all(&nested).unwrap();
+        assert_eq!(find(&nested), None, "no config anywhere above");
+        write_config(dir.path(), "threshold = 20.0\n");
+        assert_eq!(find(&nested), Some(dir.path().join(".cargo-crap.toml")));
     }
 
     #[test]
