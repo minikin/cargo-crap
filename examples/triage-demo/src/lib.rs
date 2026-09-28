@@ -1,4 +1,4 @@
-//! A small shop backend with four pairs of look-alike functions. Each pair
+//! A small shop backend with three pairs of look-alike functions. Each pair
 //! scores high on structural similarity, and each is a different kind of
 //! duplication.
 
@@ -87,61 +87,4 @@ pub fn write_shipping_label(
     writeln!(out, "Handle with care")?;
     writeln!(out, "Keep dry")?;
     Ok(())
-}
-
-/// A category tree in the catalogue.
-pub struct Category {
-    pub name: String,
-    pub children: Vec<Category>,
-}
-
-/// A product and its variants (sizes, colours).
-pub struct Product {
-    pub name: String,
-    pub variants: Vec<Product>,
-}
-
-/// Walks the catalogue. Each method sees one kind of node and is
-/// responsible for walking into that node's children.
-pub trait Visit {
-    fn visit_category(
-        &mut self,
-        category: &Category,
-    );
-    fn visit_product(
-        &mut self,
-        product: &Product,
-    );
-}
-
-/// Collects every name in the catalogue, with its nesting depth.
-pub struct NameCollector {
-    pub names: Vec<(usize, String)>,
-    depth: usize,
-}
-
-impl Visit for NameCollector {
-    fn visit_category(
-        &mut self,
-        category: &Category,
-    ) {
-        self.names.push((self.depth, category.name.clone()));
-        self.depth += 1;
-        for child in &category.children {
-            self.visit_category(child);
-        }
-        self.depth -= 1;
-    }
-
-    fn visit_product(
-        &mut self,
-        product: &Product,
-    ) {
-        self.names.push((self.depth, product.name.clone()));
-        self.depth += 1;
-        for variant in &product.variants {
-            self.visit_product(variant);
-        }
-        self.depth -= 1;
-    }
 }
