@@ -274,6 +274,8 @@ fn documentation_files() -> Vec<PathBuf> {
 }
 
 /// Runs the binary in the fixture project, as a reader would in theirs.
+/// The docs show Unix paths; on Windows the same run prints `.\src\lib.rs`,
+/// which has the same width, so only the separator is normalized.
 fn fixture_run(args: &str) -> String {
     let out = cmd()
         .current_dir(repo_path("tests/fixtures/sample_project"))
@@ -282,7 +284,12 @@ fn fixture_run(args: &str) -> String {
         .env_remove("FORCE_COLOR")
         .output()
         .unwrap();
-    String::from_utf8(out.stdout).unwrap()
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    if cfg!(windows) {
+        stdout.replace('\\', "/")
+    } else {
+        stdout
+    }
 }
 
 #[test]
