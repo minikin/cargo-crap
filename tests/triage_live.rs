@@ -1,9 +1,9 @@
-//! Live judgment check against the real `TypeSafe` API (spec 30, T11).
+//! Live judgment check against the real `TypeSafe` API.
 //!
-//! Ignored by default — every test here costs API calls and needs
+//! Ignored by default: every test here costs API calls and needs
 //! `TYPESAFE_API_KEY`. Run by hand with `just triage-live`. The fixtures are
-//! the spec's Context table: pairs this repository's own `--duplicates` run
-//! reports, whose kind a person has already decided.
+//! pairs this repository's own `--duplicates` run reports, whose kind a
+//! person has already decided.
 
 #![cfg(feature = "triage")]
 

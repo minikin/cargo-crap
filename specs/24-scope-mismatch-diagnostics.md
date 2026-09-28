@@ -1,4 +1,4 @@
-# Spec 24 — Source/LCOV scope-mismatch diagnostics
+# Spec 24: Source/LCOV scope-mismatch diagnostics
 
 **Status:** Implemented (issue #53)
 **Effort:** Medium
@@ -6,25 +6,26 @@
 
 ## Context
 
-When the analyzed source tree and the LCOV file describe different
-scopes — e.g. an analysis root that recursively includes nested
-workspace packages absent from the LCOV — every function in the
-uncovered files scores as 0 % covered (`--missing pessimistic`), and a
-delta fills with entries that have nothing to do with the code change.
+The analyzed source tree and the LCOV file can describe different
+scopes: an analysis root that recursively includes nested workspace
+packages absent from the LCOV, for instance. Every function in the
+uncovered files then scores as 0 % covered (`--missing pessimistic`),
+and a delta fills with entries that have nothing to do with the code
+change.
 The report looks like a mass CRAP regression when the real problem is
 a scope mismatch between the two inputs.
 
 Today's diagnostic surface is one stderr warning listing source files
-with no LCOV match — unbounded (it prints every path), counting
-nothing, invisible to machine consumers, and silent about the mirror
-case (LCOV records for files that were never analyzed).
+with no LCOV match. It is unbounded (it prints every path), counts
+nothing, is invisible to machine consumers, and says nothing about the
+mirror case: LCOV records for files that were never analyzed.
 
 This spec makes the mismatch measurable and visible before the report:
 counts on both sides, bounded examples, a severity escalation for very
 low overlap, and the same numbers in the JSON envelope so CI wrappers
 can apply their own policy.
 
-Scores, gates, and `--missing` semantics are unchanged — this is
+Scores, gates, and `--missing` semantics are unchanged. This is
 diagnostics only.
 
 ---
@@ -33,11 +34,11 @@ diagnostics only.
 
 "Diagnostics" below means the five quantities:
 
-- `analyzed_files` — distinct source files that produced ≥ 1 analyzed function
-- `lcov_files` — distinct `SF` records in the LCOV file
-- `matched_files` — files present on both sides after path matching
-- `source_only` — analyzed files with no LCOV match (count + examples)
-- `lcov_only` — LCOV `SF` files matched by no analyzed file (count + examples)
+- `analyzed_files`: distinct source files that produced ≥ 1 analyzed function
+- `lcov_files`: distinct `SF` records in the LCOV file
+- `matched_files`: files present on both sides after path matching
+- `source_only`: analyzed files with no LCOV match (count + examples)
+- `lcov_only`: LCOV `SF` files matched by no analyzed file (count + examples)
 
 ### Scenario: Matching scopes behave exactly as today
 
@@ -114,28 +115,28 @@ And   the envelope contains no "diagnostics" object
 - `merge::MergeResult` already tracks `unmapped_files` (source-only).
   Add the mirror `lcov_only_files`: coverage-map keys never consumed
   by either the fast or the slow path of `PathIndex`. Counts derive
-  from these plus the entry set — no new walking.
+  from these plus the entry set, with no new walking.
 - `warn_unmapped` in `main.rs` grows into the scope warning: counts
-  first, then ≤ 10 examples per side with a "… and N more" tail. This
+  first, then ≤ 10 examples per side with a "... and N more" tail. This
   intentionally REPLACES today's unbounded per-file listing (the full
   list moves behind the JSON examples cap; stderr stays readable on
   1000-file mismatches).
 - Threshold for the escalated wording: `matched_files * 2 <
   analyzed_files` (i.e. < 50 % of analyzed files matched), zero
   matches gets its own wording. Values chosen for the warning text
-  only — no behavioural gate hangs off them.
+  only, since no behavioural gate hangs off them.
 - JSON: the `diagnostics` object is optional and additive in both
   envelopes; emitted only when `--lcov` was supplied. Schema files
-  updated in place — an optional field does not invalidate previously
+  updated in place. An optional field does not invalidate previously
   published documents, so `report-v1` / `delta-v2` keep their names.
-- Delta note: the baseline side needs no diagnostics of its own — the
-  mismatch is a property of the current run's inputs. The warning
+- Delta note: the baseline side needs no diagnostics of its own, since
+  the mismatch is a property of the current run's inputs. The warning
   printing before the delta output satisfies "visible before
   presenting the delta" from the issue.
 
 ### Non-goals
 
-- No new gate (`--fail-on-mismatch` or similar) — CI wrappers can
+- No new gate (`--fail-on-mismatch` or similar): CI wrappers can
   gate on the JSON counts themselves. Revisit only if requested.
 - No coverage generation, no CI-artifact management (explicitly out
   of scope in the issue).

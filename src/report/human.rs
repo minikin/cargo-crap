@@ -710,8 +710,6 @@ mod tests {
         assert!(s.contains("7–9"), "delta range cell:\n{s}");
     }
 
-    // --- fractional CC display ----------------------------------------------
-
     /// The trimmed text of cell `column` in the table row naming `function`.
     /// Splitting on the borders keeps the assertion independent of padding.
     fn cell_in_row(

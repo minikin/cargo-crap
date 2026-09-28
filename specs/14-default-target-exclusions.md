@@ -1,4 +1,4 @@
-# Spec 14 — Default exclusion of tests, benches, and examples
+# Spec 14: Default exclusion of tests, benches, and examples
 
 **Status:** Implemented
 **Effort:** Small
@@ -7,9 +7,9 @@
 ## Context
 
 `tests/`, `benches/`, and `examples/` are standard Cargo target directories
-that rarely benefit from CRAP analysis: integration tests exist to cover
-production code, not to be covered themselves; benchmarks and examples are
-scaffolding that is not even executed during a coverage run. Including them
+that rarely benefit from CRAP analysis. Integration tests exist to cover
+production code, not to be covered themselves, and benchmarks and examples
+are scaffolding that a coverage run never even executes. Including them
 inflates the function count and creates noise in CI gates.
 
 `#[cfg(test)]` inline modules are already excluded during the AST walk.
@@ -27,12 +27,12 @@ examples/**
 ```
 
 which is prepended to the user's exclude patterns during effective-exclude
-assembly in `src/main.rs`. `analyze_tree` is unchanged — the defaults flow
+assembly in `src/main.rs`. `analyze_tree` is unchanged: the defaults flow
 through the same glob pipeline as `--exclude`.
 
 Because exclude globs are matched relative to each analyzed root (each
 workspace member's directory in `--workspace` mode), the defaults only match
-the *top-level* target directories of each crate — mirroring Cargo's own
+the *top-level* target directories of each crate, mirroring Cargo's own
 auto-discovery. A module directory that happens to be named `tests/` deeper
 in the tree (e.g. `src/tests/helpers.rs`) is not affected. Likewise,
 explicitly analyzing a path inside a target directory
@@ -43,8 +43,8 @@ that root, so nothing matches.
 
 1. The built-in default list is `["tests/**", "benches/**", "examples/**"]`.
 2. `default_excludes = [...]` in `.cargo-crap.toml`, if present, **replaces**
-   the built-in list entirely. `[]` disables the defaults; a subset
-   re-includes some directories; a superset extends the defaults.
+   the built-in list entirely. `[]` disables the defaults. A subset
+   re-includes some directories, a superset extends them.
 3. `--no-default-excludes` on the CLI sets the effective default list to
    empty, overriding both the built-in list and any config replacement.
 4. The existing `exclude` config key and `--exclude` CLI flag **append** to
@@ -56,8 +56,8 @@ that root, so nothing matches.
   `autotests = false`) are not consulted. This is a directory-name heuristic
   on the standard layout, not a `cargo metadata`-driven feature.
 - No CLI flag to *set* the default list (`--default-excludes <globs>`).
-  Config replacement plus `--no-default-excludes` covers the known cases;
-  a setter flag can be added later without breaking anything.
+  Config replacement plus `--no-default-excludes` covers the known cases.
+  A setter flag can be added later without breaking anything.
 
 ---
 

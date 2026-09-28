@@ -1,4 +1,4 @@
-# Spec 15 — Shields.io endpoint badge
+# Spec 15: Shields.io endpoint badge
 
 **Status:** Implemented
 **Effort:** Small
@@ -53,7 +53,7 @@ fractional thresholds like `12.5` keep their fraction).
 | 6+                        | `N crappy`     | `red`         |
 
 `N` is the count of functions whose CRAP score exceeds `--threshold`
-(strictly greater — a function exactly at the threshold passes).
+(strictly greater: a function exactly at the threshold passes).
 
 ---
 
@@ -148,7 +148,8 @@ let (message, color) = match count {
 };
 ```
 
-The output is a single `serde_json` object — no versioned envelope, no array.
+The output is a single `serde_json` object, with no versioned envelope and no
+array.
 
 ### No delta variant
 

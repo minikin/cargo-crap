@@ -72,8 +72,8 @@ fn write_pair(
 }
 
 /// What a triage line says: the kind and worth-extracting level when the
-/// model was sure enough, only `uncertain` when it was not — with the
-/// confidence either way.
+/// model was sure enough, only `uncertain` when it was not. The confidence
+/// is printed either way.
 fn triage_line(assessment: &Assessment) -> String {
     match assessment {
         Assessment::Kind(verdict) => format!(
@@ -354,7 +354,7 @@ mod tests {
 
     proptest! {
         /// Triage only adds lines: removing them gives back the untriaged
-        /// section byte for byte — every pair in the same order, at the same
+        /// section byte for byte, every pair in the same order, at the same
         /// location, with the same score.
         #[test]
         fn triage_lines_are_the_only_difference(

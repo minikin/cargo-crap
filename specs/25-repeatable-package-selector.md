@@ -1,4 +1,4 @@
-# Spec 25 — Repeatable `--package` selector for workspace analysis
+# Spec 25: Repeatable `--package` selector for workspace analysis
 
 **Status:** Implemented (issue #55)
 **Effort:** Medium
@@ -18,7 +18,7 @@ cargo crap -p backend_core -p backend_identity --lcov lcov.info
 ```
 
 One invocation, one LCOV parse, one baseline comparison, one report,
-one gate decision — over exactly the selected members.
+one gate decision, over exactly the selected members.
 
 CLI-only, deliberately no config key: the selection is inherently
 per-run (a changed-file pipeline computes a different set on every
@@ -124,7 +124,7 @@ Then  --path is ignored, exactly as it is under --workspace
   selected member's dir. `members` returned for `assign_crate_names`
   is the selected subset.
 - **Nested-member exclusion:** when walking a member root, skip any
-  other discovered member's root nested beneath it — the nested
+  other discovered member's root nested beneath it, since the nested
   member owns its files (analyzed only if itself selected). Note:
   `--workspace` mode has the same latent double-analysis for nested
   layouts (a root package whose dir contains member dirs); the
@@ -139,7 +139,7 @@ Then  --path is ignored, exactly as it is under --workspace
 
 ### Non-goals
 
-- No git change detection — the caller selects packages (explicit in
+- No git change detection. The caller selects packages (explicit in
   the issue).
 - No glob/spec matching on package names (`-p 'backend_*'`); exact
   names only until someone asks.

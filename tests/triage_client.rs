@@ -1,4 +1,4 @@
-//! The triage client against the recording `TypeSafe` stub (spec 30, T6).
+//! The triage client against the recording `TypeSafe` stub.
 //!
 //! No test here touches the network or needs a key. Built only with the
 //! `triage` feature, which is what compiles the client in.
@@ -280,7 +280,7 @@ fn a_rate_limit_waits_as_long_as_the_api_asks() {
 
 #[test]
 fn pairs_are_requested_concurrently_whatever_pool_calls_run() {
-    // Network waits must not be sized to — or starve — the caller's pool.
+    // Network waits must not be sized to the caller's pool, or starve it.
     let dir = TempDir::new().expect("temp dir");
     // Delayed outside the stub's lock, so the stub itself never serialises
     // the requests; only the client could.

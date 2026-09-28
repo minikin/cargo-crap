@@ -1,4 +1,4 @@
-# Spec NN — <Title>
+# Spec NN: <Title>
 
 **Status:** Draft | Approved | Implemented
 **Effort:** Small | Medium | Large
@@ -35,9 +35,9 @@ Then  <observable outcome>
 ## Tasks
 
 Each task lists its scenarios, the test types that pin it (unit /
-property / acceptance), and — when it depends on earlier tasks — a
-`Needs:` naming them. Tasks with no `Needs:` are roots; tasks whose needs
-are all done are ready; the graph is what `scripts/keeler-graph.sh` reads.
+property / acceptance), and, when it depends on earlier tasks, a
+`Needs:` naming them. A task with no `Needs:` is a root. A task whose
+needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
 
 - [ ] **T1 — <task name>.** Scenarios: _<list>_. Tests: unit + property.
 - [ ] **T2 — <task name>.** Needs: T1. Scenarios: _<list>_. Tests: acceptance.

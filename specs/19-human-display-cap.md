@@ -1,4 +1,4 @@
-# Spec 19 — Human-format display cap
+# Spec 19: Human-format display cap
 
 **Status:** Proposed
 **Effort:** Medium
@@ -7,9 +7,9 @@
 ## Context
 
 `--format human` prints one row per analyzed function. On large projects this
-produces thousands of rows, almost all of them below the threshold and
-therefore not actionable — a passing run on a 140-function project prints a
-140-row table just to say "nothing to do here."
+produces thousands of rows, almost all of them below the threshold and not
+actionable. A passing run on a 140-function project prints a 140-row table
+just to say "nothing to do here."
 
 The actionable rows are the ones above the threshold. Below-threshold rows
 are only interesting as "hot spots": the handful of functions closest to
@@ -24,8 +24,8 @@ This spec applies to `--format human` only. All other formats are unchanged.
 
 After sorting by CRAP score descending:
 
-- **Above-threshold entries are always shown** — all of them. They are the
-  failures; capping them would hide the reason a CI gate went red.
+- **Above-threshold entries are always shown**, all of them. They are the
+  failures, and capping them would hide the reason a CI gate went red.
 - **Below-threshold entries show only the 10 worst** ("hot spots").
 - When below-threshold rows were hidden, a single footer line reports the
   count and the escape hatches:
@@ -37,7 +37,7 @@ After sorting by CRAP score descending:
 - An explicit `--top N` or `--min S` disables the implicit cap entirely: the
   user asked for a specific slice and gets exactly that slice, as today.
 - In delta mode (`--baseline`), `Regressed` rows are always shown even when
-  below threshold — a regression is actionable regardless of its absolute
+  below threshold, since a regression is actionable regardless of its absolute
   score. The cap otherwise applies identically.
 
 ---

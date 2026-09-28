@@ -15,14 +15,14 @@ use std::io;
 use std::path::Path;
 
 /// The version of the question set below. Bump it whenever anything changes
-/// what the model is asked — a question's wording, options or levels, or how
-/// the state's similarity score is computed: it is part of the cache key, so
+/// what the model is asked: a question's wording, options or levels, or how
+/// the state's similarity score is computed. It is part of the cache key, so
 /// a verdict never outlives the question that produced it.
 pub const QUESTION_SET_VERSION: u32 = 1;
 
 /// The worth-extracting levels in the order they are sent, each beside the
-/// label the report prints for it — one table, so the two orders cannot
-/// drift apart.
+/// label the report prints for it. One table, so the two orders cannot drift
+/// apart.
 pub const WORTH_LEVELS: [(&str, &str); 4] = [
     (
         "leave-it",
@@ -70,7 +70,7 @@ pub fn build(
     Ok(body(pair, &source_a, &source_b, model))
 }
 
-/// Both sides' source, read back from disk — what the request carries and
+/// Both sides' source, read back from disk: what the request carries and
 /// what the cache key covers.
 ///
 /// # Errors
@@ -96,7 +96,7 @@ pub fn body(
     })
 }
 
-/// What the model judges: both sides — name, location, source — and the
+/// What the model judges: each side's name, location and source, plus the
 /// similarity score that made them a pair.
 #[must_use]
 pub fn state(
@@ -192,8 +192,8 @@ fn read_location(at: &Location) -> io::Result<String> {
 ///
 /// # Errors
 ///
-/// When the file cannot be read, or the range is empty or not within it —
-/// which, for a range the scan produced, means the file changed since.
+/// When the file cannot be read, or the range is empty or not within it,
+/// which for a range the scan produced means the file changed since.
 pub fn read_span(
     file: &Path,
     start_line: usize,
@@ -494,7 +494,7 @@ mod tests {
     }
 
     proptest! {
-        /// The source sent for a side is exactly its lines — nothing before,
+        /// The source sent for a side is exactly its lines: nothing before,
         /// nothing after, nothing in between changed.
         #[test]
         fn a_span_is_exactly_its_lines(

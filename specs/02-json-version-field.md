@@ -1,4 +1,4 @@
-# Spec 02 — Version field in JSON output
+# Spec 02: Version field in JSON output
 
 **Status:** Implemented  
 **Effort:** Low  

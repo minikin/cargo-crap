@@ -200,7 +200,6 @@ fn count_cyclomatic(
 }
 
 /// Visitor that counts decision points to compute cyclomatic complexity.
-/// `?` operators are counted apart from the fixed-cost decision points.
 #[derive(Default)]
 struct CcCounter {
     decisions: u32,
@@ -316,7 +315,7 @@ pub fn analyze_tree<S: AsRef<str>>(
 }
 
 /// [`analyze_tree`], with each `?` operator counting `try_weight` instead of
-/// 1 — see [`analyze_file_weighted`].
+/// 1. See [`analyze_file_weighted`].
 pub fn analyze_tree_weighted<S: AsRef<str>>(
     root: &Path,
     excludes: &[S],
@@ -606,8 +605,6 @@ fn c() {}
             "? operator must add exactly 1 to base CC"
         );
     }
-
-    // --- configurable `?` weight ---
 
     /// A function whose only decision points are two `?` operators.
     const TWO_TRIES: &str = "fn run() -> R { f1()?; f2()?; Ok(()) }";
@@ -911,8 +908,6 @@ fn allowed() -> i32 { 42 }
         let result = analyze_tree(dir.path(), &["[invalid"]);
         assert!(result.is_err(), "invalid glob must return an error");
     }
-
-    // --- `?` weight properties ---
 
     /// One statement of a generated function body, with what it contributes
     /// to the *enclosing* function: fixed-cost decision points and `?`

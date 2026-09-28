@@ -1,4 +1,4 @@
-# Spec 13 — Move-aware delta detection
+# Spec 13: Move-aware delta detection
 
 **Status:** Implemented
 **Effort:** Medium
@@ -8,17 +8,17 @@
 
 `compute_delta` joins current results against the baseline by exact
 `(file_path, function_name)` key. A pure refactor that moves a function from
-one file to another — same body, same CC, same coverage — therefore appears
-as one `Removed` entry plus one `New` entry. The PR for the recent
+one file to another, with the same body, the same CC and the same coverage,
+appears as one `Removed` entry plus one `New` entry. The PR for the recent
 `src/report.rs` → `src/report/<submodule>.rs` split surfaced this:
 
 > ✅ No CRAP regressions
 > ↑ 0 regressed · ★ **60 new** · ↓ 0 improved · 64 unchanged · — **59 removed**
 
-That breakdown is *technically correct* (the regression gate passes — nothing
+That breakdown is *technically correct* (the regression gate passes, since nothing
 got worse) but it misleads reviewers, who see 60 new + 59 removed and
-reasonably ask "what changed?" The answer is "nothing meaningful — code just
-moved files." The delta engine should be able to tell.
+reasonably ask "what changed?" The answer is "nothing meaningful. The code
+just moved files." The delta engine should be able to tell.
 
 This spec adds a second matching pass that pairs unmatched `Removed` and
 `New` entries by function name when the pairing is unambiguous. Paired
@@ -237,7 +237,7 @@ Key invariants:
 - Pass 2 only consults entries Pass 1 left as `New` (current side) and the
   pre-existing `removed` set (baseline side).
 - Pairing requires **exactly one** match on each side. Anything ambiguous
-  stays unpaired; the test `Ambiguous matches stay separate` pins this.
+  stays unpaired. The test `Ambiguous matches stay separate` pins this.
 
 ### Type changes
 
@@ -281,7 +281,7 @@ this.
 `schemas/delta-v2.json`:
 - New optional `previous_file: string` on each entry
 - `status` enum gains `"moved"` value
-- `report-v1.json` (the absolute envelope) is unchanged — `Moved` only
+- `report-v1.json` (the absolute envelope) is unchanged, since `Moved` only
   appears in delta output
 
 `DELTA_SCHEMA_URL` constant in `src/report/json.rs` updates to point at
@@ -305,28 +305,28 @@ treatment:
   - Score-changed moves stay in their primary table (Regressed / New /
     Improved); their location cell reads `<new-loc> ← <previous_file>`
 - **GitHub**: skip pure moves (no `::warning`). Score-changed moves still
-  emit a warning — the message includes "moved from <previous_file>".
+  emit a warning, and the message includes "moved from <previous_file>".
 - **Summary**: aggregate-only line gets a `↔ N moved` term.
 
 ### Backwards compatibility
 
 - Older baseline files: still load (baselines store `CrapEntry`, not
-  `DeltaEntry` — no schema field on the moves).
+  `DeltaEntry`, so there is no schema field on the moves).
 - Older delta JSON consumers: see `previous_file` skipped when null;
   see `"moved"` as a new status value (consumers using `match` may need to
-  add a default arm — that's a v1 → v2 schema bump's intended cost).
+  add a default arm, the intended cost of a v1 → v2 schema bump).
 
 ### Constants / config
 
-No new constants. No new CLI flags (the matcher runs always; opt-out is
-not needed because the worst case is "we report a move correctly").
+No new constants. No new CLI flags. The matcher always runs, and no opt-out
+is needed: the worst case is "we report a move correctly".
 
 ### Tests to add (`src/delta.rs`)
 
-- `move_detected_for_unique_name` — pure move with same score → `Moved`
-- `moved_with_regression_keeps_regressed_status` — same name, score went up
-- `ambiguous_names_left_unpaired` — two-of-each scenario
-- `truly_new_function_stays_new` — no baseline entry by that name
-- `truly_removed_function_stays_removed` — no current entry by that name
-- `exact_path_match_takes_precedence` — same name in two files; only one
-  matches by path; the other does NOT pair via name fallback
+- `move_detected_for_unique_name`: pure move with same score → `Moved`
+- `moved_with_regression_keeps_regressed_status`: same name, score went up
+- `ambiguous_names_left_unpaired`: two-of-each scenario
+- `truly_new_function_stays_new`: no baseline entry by that name
+- `truly_removed_function_stays_removed`: no current entry by that name
+- `exact_path_match_takes_precedence`: same name in two files, only one of
+  them matching by path. The other does NOT pair via name fallback

@@ -1,4 +1,4 @@
-# Spec 20 — Width-aware human table
+# Spec 20: Width-aware human table
 
 **Status:** Proposed
 **Effort:** Medium
@@ -8,13 +8,13 @@
 
 The human-format table derives its column widths purely from content. Long
 paths (`src/report/pr_comment.rs:380`) routinely push the table wider than
-the terminal, and the terminal then hard-wraps the box-drawing characters —
-the table "breaks" on anything narrower than the widest row.
+the terminal, and the terminal then hard-wraps the box-drawing characters.
+The table "breaks" on anything narrower than the widest row.
 
 The fix is to measure the available width once at render time and lay the
 table out to fit it. Out of scope: re-flowing after the user resizes the
-window post-print — a one-shot CLI cannot reflow text it has already
-emitted; that would require a TUI.
+window post-print. A one-shot CLI cannot reflow text it has already emitted,
+and doing so would need a TUI.
 
 This spec applies to `--format human` only (absolute and delta tables, and
 the per-crate rollup table in `--workspace` mode).
@@ -30,7 +30,7 @@ the per-crate rollup table in `--workspace` mode).
 ## Degradation ladder
 
 Columns degrade in a fixed priority order as width shrinks. At every width
-the rendered table must fit — no overflowing box-drawing characters.
+the rendered table must fit, with no overflowing box-drawing characters.
 
 | Available width | Layout                                                             |
 | --------------- | ------------------------------------------------------------------ |
@@ -123,7 +123,7 @@ Then  the output is identical regardless of terminal width
   terminal-size probe (crossterm) for the TTY case. The `$COLUMNS` / 120
   fallback for the non-TTY case is ours.
 - Column dropping and bar shrinking are decided *before* rows are built
-  (one decision per table from the measured width), not per row — every row
+  (one decision per table from the measured width), not per row. Every row
   must agree on the layout.
 - The Location middle-truncation helper belongs in `report/types.rs` next to
   `coverage_bar`; it needs unit tests for the keep-the-tail invariant,

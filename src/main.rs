@@ -1043,7 +1043,7 @@ fn validate_merged_values(
     validate_triage_floor(dup.triage_floor).and_then(|()| validate_try_weight(try_weight))
 }
 
-/// Reject a triage confidence floor outside `0.0..=1.0` — NaN included,
+/// Reject a triage confidence floor outside `0.0..=1.0`, NaN included,
 /// which TOML can spell. Config-only, so the message names no flag.
 fn validate_triage_floor(floor: f64) -> Result<()> {
     if !(0.0..=1.0).contains(&floor) {
@@ -1055,7 +1055,7 @@ fn validate_triage_floor(floor: f64) -> Result<()> {
     Ok(())
 }
 
-/// Reject a `?` weight that is negative, NaN, infinite or above the cap —
+/// Reject a `?` weight that is negative, NaN, infinite or above the cap.
 /// TOML can spell all of them, and each would make every CC and CRAP score
 /// it touches meaningless (a huge finite weight overflows them to inf/NaN).
 /// `!contains` rather than `<`/`>` so NaN is rejected too. Config-only, so
@@ -1152,7 +1152,6 @@ fn load_filtered_baseline(
     Ok(Some(data))
 }
 
-/// Print [`try_weight_mismatch_warning`] to stderr when there is one.
 fn warn_on_try_weight_mismatch(
     baseline: f64,
     current: f64,
@@ -1320,8 +1319,8 @@ fn duplicate_section(
 /// Ask the model about `pairs` when triage is enabled, and hold each verdict
 /// to the confidence floor.
 ///
-/// Triage is advisory, so nothing about it can fail the run: any failure —
-/// no key, no network, an API error, an answer that does not decode — is one
+/// Triage is advisory, so nothing about it can fail the run: no key, no
+/// network, an API error or an answer that does not decode each become one
 /// warning naming the cause, and the pairs are reported untriaged, exactly
 /// as with triage off. A build without the `triage` feature has no client:
 /// it says how to get one and reports the pairs untriaged.
@@ -1422,9 +1421,8 @@ fn resolve_source_links(
 
 /// Parse argv, validate flag combinations, and load the optional
 /// `.cargo-crap.toml` (defaults when absent — the tool works without one).
-/// Parse argv and load the configuration, returning also the project root:
-/// the directory of the `.cargo-crap.toml` that was read, or the working
-/// directory when there is none.
+/// Also returns the project root: the directory the config file was found
+/// in, or the working directory when there was none.
 fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config, PathBuf)> {
     let cli = Cli::parse_from(strip_cargo_subcommand(std::env::args().collect()));
     validate_args(&cli)?;

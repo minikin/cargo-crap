@@ -1,4 +1,4 @@
-# Spec 05 — Per-crate rollup in --workspace
+# Spec 05: Per-crate rollup in --workspace
 
 **Status:** Implemented  
 **Effort:** Medium  

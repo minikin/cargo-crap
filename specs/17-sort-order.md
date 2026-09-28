@@ -1,4 +1,4 @@
-# Spec 17 — `--sort` option for stable output ordering
+# Spec 17: `--sort` option for stable output ordering
 
 **Status:** Implemented
 **Effort:** Small
@@ -8,22 +8,22 @@
 
 [Issue #24](https://github.com/minikin/cargo-crap/issues/24): users who
 commit a JSON baseline to git (`cargo crap --lcov lcov.info --format json
---output cargo_crap_baseline.json`) get noisy diffs — entries are sorted
+--output cargo_crap_baseline.json`) get noisy diffs. Entries are sorted
 by CRAP score descending, so any score change reorders the whole array.
 
 This spec adds `--sort <crap|file>`:
 
-- `crap` (default) — current behaviour: CRAP score descending. The right
-  order for humans reading a report top-down.
-- `file` — ascending by `(file, function, line)`. Entries stay put when
+- `crap` (default) keeps the current behaviour: CRAP score descending. The
+  right order for humans reading a report top-down.
+- `file` sorts ascending by `(file, function, line)`. Entries stay put when
   their scores change, so committed baselines produce minimal diffs.
 
-The sort applies to the final entry ordering in **every** format — it is
+The sort applies to the final entry ordering in **every** format. It is
 an ordering concern, not a format concern. In delta mode it orders
 `DeltaReport.entries` by the current entry's key.
 
 `--top N` keeps meaning "the N crappiest functions": selection always
-happens by CRAP descending *first*; `--sort` then orders the selected
+happens by CRAP descending *first*, and `--sort` then orders the selected
 entries for display. Without this rule, `--sort file --top 5` would
 silently return the first five functions alphabetically, which nobody
 wants.
@@ -139,16 +139,16 @@ Then  aggregate statistics are identical to a `--sort crap` run
 - New `#[derive(ValueEnum)] enum SortOrder { Crap, File }` on the CLI,
   mirrored by `sort: Option<SortOrder>` in `Config` (serde lowercase).
   Precedence: CLI flag → config file → default `Crap`.
-- `merge::merge` keeps sorting by CRAP descending unconditionally — that
+- `merge::merge` keeps sorting by CRAP descending unconditionally, because that
   ordering is the selection invariant `--top` relies on. Apply the
   user-requested sort as a final step in `main.rs` *after*
   `apply_filters` (i.e. after `--allow`, `--min`, `--top` have run).
 - File-order comparator: `(file, function, line)` ascending,
-  `Ord`-based — no float comparison involved, fully deterministic.
+  `Ord`-based, with no float comparison involved and fully deterministic.
 - Delta mode: sort `DeltaReport.entries` by the current entry's key and
   `removed` by `(file, function)` after `compute_delta`. This also makes
   `removed` ordering deterministic regardless of match-pass internals.
-- No JSON schema change: entry shape is untouched; array order is not
+- No JSON schema change: entry shape is untouched, and array order is not
   part of the schema contract. No new schema files needed.
 - The baseline *reader* (`load_baseline`) is order-insensitive (it
   builds keyed maps), so baselines written with either sort load fine.

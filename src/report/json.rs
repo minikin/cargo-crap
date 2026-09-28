@@ -95,8 +95,8 @@ pub struct DuplicateJson {
     pub second_end_line: usize,
     /// Jaccard similarity of the two fingerprint sets.
     pub score: f64,
-    /// The triage verdict on this pair, when triage ran. Absent — not
-    /// empty — otherwise, so untriaged output is unchanged.
+    /// The triage verdict on this pair, when triage ran. Absent rather than
+    /// empty otherwise, so untriaged output is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage: Option<TriageJson>,
 }
@@ -106,9 +106,10 @@ pub struct DuplicateJson {
 /// and none of the other answers, is asserted.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TriageJson {
-    /// The kind's label (`same-logic`, …), or `uncertain`.
+    /// The kind's label, such as `same-logic`, or `uncertain`.
     pub kind: String,
-    /// The worth-extracting level's label (`leave-it` … `should-be-one`).
+    /// The worth-extracting level's label, from `leave-it` to
+    /// `should-be-one`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worth_extracting: Option<String>,
     /// The worth-extracting score the label rounds, `0.0..=3.0`.
@@ -164,7 +165,7 @@ impl DuplicateJson {
 }
 
 /// Flatten pairs for either envelope, preserving their order, each with its
-/// triage verdict when `triage` holds exactly one per pair — all or nothing,
+/// triage verdict when `triage` holds exactly one per pair. All or nothing,
 /// as in the human section.
 fn wire(
     pairs: Option<&[DuplicatePair]>,

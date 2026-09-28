@@ -2,7 +2,7 @@
 
 ## Development setup
 
-1. Install Rust (stable, 1.88+ — the crate's MSRV): https://rustup.rs
+1. Install Rust from https://rustup.rs (stable, 1.88+, the crate's MSRV).
 2. Clone the repository and build:
    ```bash
    cargo build --all-targets
@@ -34,4 +34,4 @@ cargo run --release -- --lcov lcov.info --workspace --exclude 'tests/fixtures/**
 
 - All CI jobs must pass before merge.
 - Run `cargo fmt --all` before opening a PR.
-- Every behavioral change needs a corresponding test.
+- Every behavioral change needs a test.
