@@ -1,4 +1,4 @@
-# Spec 07 — SARIF output format
+# Spec 07: SARIF output format
 
 **Status:** Implemented  
 **Effort:** Medium  
@@ -7,9 +7,8 @@
 ## Context
 
 SARIF (Static Analysis Results Interchange Format) is consumed by GitHub's
-Security tab, rust-analyzer, VS Code, and many CI tools. Adding `--format sarif`
-gives cargo-crap first-class integration with the broader static analysis
-ecosystem without any extra tooling.
+Security tab, rust-analyzer, VS Code, and many CI tools. `--format sarif` lets
+those tools read cargo-crap output directly, with no converter in between.
 
 ---
 

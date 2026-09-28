@@ -1,4 +1,4 @@
-//! Copies of the spec-30 triage fixtures in `tests/fixtures/triage/`.
+//! Copies of the triage fixtures in `tests/fixtures/triage/`.
 
 use std::path::Path;
 

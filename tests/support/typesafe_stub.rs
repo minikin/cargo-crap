@@ -1,8 +1,8 @@
 //! A recording stand-in for the `TypeSafe` API, so no test needs a network or
 //! a key.
 //!
-//! A std-only HTTP/1.1 server on `127.0.0.1:0`. Every request is recorded —
-//! method, path, headers, body — before it is answered, so a test can read
+//! A std-only HTTP/1.1 server on `127.0.0.1:0`. Every request is recorded
+//! (method, path, headers, body) before it is answered, so a test can read
 //! back exactly what was sent even when the reply was a failure. Bodies are
 //! read by `Content-Length`; a chunked upload or an unreadable length is
 //! refused with a 400 naming the problem, never recorded with a guessed body.
@@ -36,7 +36,7 @@ pub enum Reply {
     Delay { after: Duration, then: Box<Reply> },
     /// Close the connection without answering.
     Drop,
-    /// Send these bytes verbatim, then close — for responses no well-behaved
+    /// Send these bytes verbatim, then close. For responses no well-behaved
     /// server sends, such as a body cut short.
     Raw(String),
 }
@@ -168,7 +168,7 @@ impl TypesafeStub {
     }
 
     /// Answer the n-th request to be answered with `replies[n]`; once the
-    /// script runs out, its last reply repeats — so `[Reply::status(503)]`
+    /// script runs out, its last reply repeats, so `[Reply::status(503)]`
     /// is an API that always fails.
     ///
     /// Positions follow the order requests reach the responder. With
@@ -279,8 +279,8 @@ fn serve(
     deliver(stream, reply);
 }
 
-/// Send `reply` down `stream`; for [`Reply::Drop`], send nothing — the
-/// stream closes when the caller lets go of it.
+/// Send `reply` down `stream`. [`Reply::Drop`] sends nothing: the stream
+/// closes when the caller lets go of it.
 fn deliver(
     stream: &TcpStream,
     reply: Reply,

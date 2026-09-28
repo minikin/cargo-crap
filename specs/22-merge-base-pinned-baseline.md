@@ -1,15 +1,15 @@
-# Spec 22 — Merge-base-pinned CI baseline
+# Spec 22: Merge-base-pinned CI baseline
 
 **Status:** Implemented
 **Effort:** Small
-**Module:** `.github/workflows/ci.yml` (CI infrastructure only — no Rust code)
+**Module:** `.github/workflows/ci.yml` (CI infrastructure only, no Rust code)
 
 ## Context
 
 The self-score job resolves its regression baseline as "the newest
 successful main CI run that carries a non-expired `crap-baseline`
-artifact". The PR analysis, however, runs against the PR's **merge
-preview** — the PR branch merged into the *current* main tip.
+artifact". The PR analysis runs against the PR's **merge preview**: the PR
+branch merged into the *current* main tip.
 
 Those two references can disagree. Every PR CI run that starts between a
 merge to main and the completion of that merge's own main run compares
@@ -18,10 +18,10 @@ it". Observed on PR #51 immediately after PR #50 merged: a release PR
 touching only `Cargo.toml`/`CHANGELOG.md`/`README.md` reported PR #50's
 four new functions as `★ 4 new`.
 
-The cosmetic case is misleading; the dangerous case is worse: if the
-previously merged PR legitimately changed scores, the stale baseline
-reports those changes as regressions on an unrelated PR, and the
-`--fail-regression` gate fails spuriously.
+That miscount is only cosmetic. The dangerous case: if the previously merged PR
+legitimately changed scores, the stale baseline reports those changes
+as regressions on an unrelated PR, and the `--fail-regression` gate
+fails spuriously.
 
 The fix is to pin the baseline lookup to the main commit that is actually
 part of the merge preview (its first parent), instead of "latest
@@ -31,8 +31,8 @@ successful main run".
 
 ## Acceptance Tests
 
-Scenarios describe observable CI behaviour; "MAIN_SHA" is the first
-parent of the merge-preview commit — the exact main tip the analysis
+Scenarios describe observable CI behaviour. "MAIN_SHA" is the first
+parent of the merge-preview commit, the exact main tip the analysis
 includes.
 
 ### Scenario: Baseline comes from the merge preview's own main parent
@@ -155,13 +155,13 @@ append one line to the file after the generated report:
 > re-run CI after main's run completes for an exact comparison.
 ```
 
-No changes to the cargo-crap binary or the pr-comment renderer — the
-note is workflow-level text.
+No changes to the cargo-crap binary or the pr-comment renderer (the
+note is workflow-level text).
 
 ### Non-goals
 
 - No change to the baseline artifact format, name, or retention.
 - No change to `pr-comment.yml` (it only relays the artifact).
-- No attempt to solve concurrent merges racing each other on main —
-  pinning to the merge base makes each PR's comparison self-consistent,
+- No attempt to solve concurrent merges racing each other on main.
+  Pinning to the merge base makes each PR's comparison self-consistent,
   which is all the gate needs.

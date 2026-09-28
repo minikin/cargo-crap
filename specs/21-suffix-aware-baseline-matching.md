@@ -1,4 +1,4 @@
-# Spec 21 — Suffix-aware baseline matching
+# Spec 21: Suffix-aware baseline matching
 
 **Status:** Implemented
 **Effort:** Medium
@@ -8,13 +8,13 @@
 
 `compute_delta` pass 1 joins current entries against the baseline by exact
 `(file_path, function_name, start_line)` string equality. When the baseline
-was recorded under a different checkout root than the current analysis —
-a CI baseline at `/app/src/backup.rs` compared on a developer machine at
-`/home/user/project/src/backup.rs` — pass 1 matches nothing, and the entire
+was recorded under a different checkout root than the current analysis
+(a CI baseline at `/app/src/backup.rs` compared on a developer machine at
+`/home/user/project/src/backup.rs`), pass 1 matches nothing, and the entire
 join collapses onto the spec-13 name-only fallback (issue #46). That
 fallback was designed for occasional file moves, not as a primary matcher:
 
-- Unique names pair up, but as `Moved` — the report claims the whole
+- Unique names pair up, but as `Moved`, so the report claims the whole
   codebase relocated.
 - Duplicate names (a free function `run_backup` defined in two modules)
   stay unpaired and are misreported as `New` + `removed`, spuriously
@@ -150,7 +150,7 @@ Paired entries are filled exactly like pass-1 matches: `baseline_crap`,
 `delta`, epsilon-classified status, `previous_file = None`. The baseline
 key is added to `matched` so `collect_removed` and pass 2 skip it.
 
-- One round only — no fixpoint iteration. Ties stay unpaired; determinism
+- One round only, no fixpoint iteration. Ties stay unpaired: determinism
   over cleverness, mirroring spec 13's ambiguity philosophy.
 - The start line is deliberately ignored (unlike pass 1's `EntryKey`), so
   a cross-root baseline still matches when unrelated edits shifted a
@@ -172,5 +172,5 @@ subcase. Filename-changing moves keep full spec-13 `Moved` reporting.
 
 - No change to `EntryKey` / pass 1 exactness.
 - No change to the spec-18 baseline pre-filtering.
-- No new CLI flags or config keys — the pass always runs; its worst case
-  is declining to pair (existing behaviour).
+- No new CLI flags or config keys. The pass always runs, and its worst
+  case is declining to pair (existing behaviour).

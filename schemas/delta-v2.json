@@ -31,7 +31,7 @@
     },
     "duplicates": {
       "type": "array",
-      "description": "Candidate duplicate function pairs, ordered by descending score. Present only on `--duplicates` runs; absent — not empty — otherwise, so \"not asked\" stays distinguishable from \"asked, found nothing\".",
+      "description": "Candidate duplicate function pairs, ordered by descending score. Present only on `--duplicates` runs; absent (not empty) otherwise, so \"not asked\" stays distinguishable from \"asked, found nothing\".",
       "items": { "$ref": "#/definitions/DuplicatePair" }
     },
     "try_weight": {

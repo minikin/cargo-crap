@@ -1,4 +1,4 @@
-# Spec 23 — Exit-code contract: policy failures vs tool errors
+# Spec 23: Exit-code contract for policy failures vs tool errors
 
 **Status:** Implemented (issue #54)
 **Effort:** Small
@@ -7,18 +7,17 @@
 ## Context
 
 `--fail-above` and `--fail-regression` exit with code 1 when the gate
-trips — but so does every runtime error, because `main` returns
+trips, and so does every runtime error, because `main` returns
 `anyhow::Result` and the standard library maps `Err` to exit code 1.
 A CI wrapper cannot distinguish "the analysis ran and found a
 regression" from "the LCOV file was unreadable", which forces
 file-size and log-parsing heuristics downstream.
 
 The 0.3.1 flush fix (#47) guarantees the report file is complete
-before a gate exit; a stable exit-code contract completes the
-automation story.
+before a gate exit, so the remaining gap is the exit code itself.
 
-The contract (following the `grep` convention — 0 hit, 1 miss, 2
-error):
+The contract, following the `grep` convention of 0 hit, 1 miss, 2
+error:
 
 | Code | Meaning                                                          |
 |------|------------------------------------------------------------------|
@@ -102,7 +101,7 @@ Then  the exit code is 2 (clap's default, now part of the documented contract)
   stays (destructors now also run, but the flush must still precede
   the verdict so an `ENOSPC` becomes exit 2, not a truncated file
   with exit 1).
-- A flush/write error on `--output` is class 2 by construction — it
+- A flush/write error on `--output` is class 2 by construction: it
   propagates as `Err` before the gate decision.
 - README: document the table above in the CI section.
 

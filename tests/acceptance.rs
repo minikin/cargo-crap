@@ -637,7 +637,7 @@ fn the_envelope_records_a_non_default_weight() {
     assert_eq!(delta["try_weight"], 0.0, "{delta}");
     assert_matches_schema("schemas/delta-v2.json", &delta);
 
-    // And a run at the default weight omits the field entirely — spelled
+    // And a run at the default weight omits the field entirely, spelled
     // out or left unset
     for config in [Some("try-weight = 1.0\n"), None] {
         let dir = two_tries_tree(config);
@@ -761,7 +761,7 @@ fn matching_weights_compare_silently() {
 // --- Spec 30 · Duplicate-pair triage ----------------------------------------
 //
 // Each task fills only its own heading, so parallel branches never touch the
-// same lines. The recording TypeSafe stub lives in `support::typesafe_stub`.
+// same lines.
 
 mod support;
 
@@ -771,7 +771,7 @@ mod support;
 fn an_invalid_confidence_floor_is_rejected_before_any_analysis() {
     use support::typesafe_stub::{Reply, TypesafeStub};
     // Given a .cargo-crap.toml whose triage confidence floor is outside
-    // 0.0..=1.0 — with triage otherwise ready to call an API
+    // 0.0..=1.0, with triage otherwise ready to call an API
     let dir = alpha_beta_tree();
     write(
         dir.path(),
@@ -839,8 +839,8 @@ fn three_pairs_tree() -> TempDir {
     dir
 }
 
-/// A function unlike the `alpha_beta_tree` pair — a loop around a match —
-/// so two copies of it make a second, separate pair.
+/// A function unlike the `alpha_beta_tree` pair (a loop around a match), so
+/// two copies of it make a second, separate pair.
 #[cfg(feature = "triage")]
 fn loop_and_match(name: &str) -> String {
     format!(
@@ -897,7 +897,7 @@ fn triage_is_off_by_default() {
     // And duplicate detection is enabled
     let dir = three_pairs_tree();
     let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
-    // When cargo-crap runs — with a key and an API at hand
+    // When cargo-crap runs, with a key and an API at hand
     let out = run_with_config(dir.path(), DUPLICATES_ONLY, &stub, &[]);
     assert!(out.status.success());
     // Then the duplicates section is byte-identical to the spec-29 output:
@@ -1130,7 +1130,7 @@ fn untriaged(
     run_against(dir, DUPLICATES_ONLY, UNREACHABLE_API, true, extra)
 }
 
-/// An address nothing listens on — port 9, "discard" — fixed rather than
+/// An address nothing listens on (port 9, "discard"), fixed rather than
 /// freed from an ephemeral bind, so a parallel test's stub can never be
 /// handed the same port.
 #[cfg(feature = "triage")]
@@ -1314,7 +1314,7 @@ fn editing_a_function_body_invalidates_that_pairs_cached_verdict() {
     let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
     run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
     assert_eq!(stub.request_count(), 3);
-    // When one of the two function bodies is edited — `three` gains a
+    // When one of the two function bodies is edited: `three` gains a
     // different literal, so every pair still matches structurally
     let file = dir.path().join("three.rs");
     let source = fs::read_to_string(&file).expect("read");
@@ -1463,7 +1463,7 @@ fn two_functions_sharing_only_an_idiom_are_named_as_such() {
     use fixtures::triage_fixture;
     use support::typesafe_stub::{Reply, TypesafeStub};
     // Given two functions whose bodies are each an unrelated run of writeln!
-    // calls — copied from this repository's report writers
+    // calls, copied from this repository's report writers
     // And their similarity clears the duplicates threshold (0.92, checked below)
     let dir = triage_fixture("shared_shape");
     // And triage is enabled with a reachable API
@@ -1486,7 +1486,7 @@ fn the_same_logic_written_twice_is_named_as_such() {
     use fixtures::triage_fixture;
     use support::typesafe_stub::{Reply, TypesafeStub};
     // Given two functions that compute the same result from the same inputs,
-    // differing only in names and literals — copied from this repository
+    // differing only in names and literals, copied from this repository
     let dir = triage_fixture("same_logic");
     // And triage is enabled with a reachable API
     let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);

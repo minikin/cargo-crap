@@ -1,8 +1,8 @@
-# Spec 30 — Duplicate-pair triage
+# Spec 30: Duplicate-pair triage
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
-**Module:** `src/duplicates/triage.rs` (new), `src/report/duplicates.rs`, `src/report/json.rs`, `src/config.rs`
+**Module:** `src/duplicates/triage/` (new), `src/report/duplicates.rs`, `src/report/json.rs`, `src/config.rs`
 
 ## Context
 
@@ -20,7 +20,7 @@ not distinguish *the same logic written twice* from *two unrelated functions
 that happen to share a Rust idiom*.
 
 Run `--duplicates` against this repository's own `src/` and the gap is
-measurable. 23 candidates come back. Among them:
+measurable. Among the candidates that come back:
 
 | Pair | Score | What it is |
 | --- | --- | --- |
@@ -32,7 +32,7 @@ measurable. 23 candidates come back. Among them:
 
 Roughly half the list is the last family: two functions that are each a
 sequence of writes. No threshold separates it from the first row, because
-the two are structurally indistinguishable — only *meaning* tells them
+the two are structurally indistinguishable. Only *meaning* tells them
 apart. Raising the threshold loses the genuine 0.83–0.92 findings; lowering
 it drowns the report. The knob has no setting that answers the question.
 
@@ -272,15 +272,15 @@ task fills only its own heading, so parallel branches never touch the same
 lines.
 
 - [x] **T1 — `[duplicates.triage]` configuration and floor validation.** Needs: T5. `TriageConfig` (`enabled`, `model`, `confidence-floor`, kebab + snake aliases, `deny_unknown_fields`) nested in `DuplicatesConfig` in `src/config.rs`; floor range check beside the dup-threshold check in `validate_merged_values` (`src/main.rs`). Scenarios: _An invalid confidence floor is rejected before any analysis_. Tests: unit (defaults, aliases, unknown key rejected, NaN rejected) + acceptance.
-- [x] **T2 — Verdict model, response decoding and the confidence partition.** Creates `src/duplicates/triage/` (`mod.rs` declaring `verdict`, `request`, `cache`, `client`, each a stub file) and `pub mod triage;` in `src/duplicates/mod.rs`. `verdict.rs`: `Kind` (four options, wire names ↔ kebab labels), `WorthExtracting` level, divergence Noul, confidence; decoding a `/v1/systemone` answer; `Verdict::assessment(floor) -> Assessment::{Kind, Uncertain}`. Scenarios: none end-to-end (foundation). Tests: unit (decode a canned response; missing answer or out-of-range value is an error) + property (the floor is a partition — every verdict is exactly one of Kind or Uncertain; raising the floor never turns Uncertain into Kind).
+- [x] **T2 — Verdict model, response decoding and the confidence partition.** Creates `src/duplicates/triage/` (`mod.rs` declaring `verdict`, `request`, `cache`, `client`, each a stub file) and `pub mod triage;` in `src/duplicates/mod.rs`. `verdict.rs`: `Kind` (four options, wire names ↔ kebab labels), `WorthExtracting` level, divergence Noul, confidence; decoding a `/v1/systemone` answer; `Verdict::assessment(floor) -> Assessment::{Kind, Uncertain}`. Scenarios: none end-to-end (foundation). Tests: unit (decode a canned response; missing answer or out-of-range value is an error) + property (the floor is a partition: every verdict is exactly one of Kind or Uncertain; raising the floor never turns Uncertain into Kind).
 - [x] **T3 — Request state from a pair's spans.** Needs: T2. `triage/request.rs`: re-read each side's `start_line..=end_line` from disk, build the state `{function_a, function_b, structural_similarity}`, the three questions, and `QUESTION_SET_VERSION`. Scenarios: none end-to-end. Tests: unit (question ids, types and option names match what `verdict.rs` decodes) + property (for any file and line range, the body in the state is exactly those lines and nothing else).
 - [x] **T4 — Content-keyed verdict cache.** Needs: T2. `triage/cache.rs` under `target/cargo-crap/triage/`; key = FNV-1a over both bodies, model id and `QUESTION_SET_VERSION` (make the `FnvHasher` in `src/duplicates/fingerprint.rs` `pub(crate)` rather than write a second one). Scenarios: none end-to-end. Tests: unit (a missing or corrupt entry is a miss, never an error) + property (key stable across calls; key differs when either body, the model or the version differs; write-then-read returns the verdict).
 - [x] **T5 — Recording TypeSafe stub for tests.** `tests/support/typesafe_stub.rs`: std-only `TcpListener` server on `127.0.0.1:0`, scripted per request (answer / fail with status / drop connection), recording each request's body and headers. Adds `mod support;` and the empty `Spec 30` section with its per-task headings to `tests/acceptance.rs`. No new dev-dependency. Scenarios: none. Tests: the stub's own self-tests.
-- [x] **T6 — HTTP client, retries and the all-or-nothing batch.** Needs: T2, T3, T5. `triage/client.rs` (sync client, `ureq` with rustls as an optional dependency enabled by the `triage` Cargo feature, off by default — only `client.rs` and `triage::run` are gated, since the rest uses no network; key from `TYPESAFE_API_KEY`, base URL from `TYPESAFE_BASE_URL`, default `https://api.typesafe.ai`, 10 s timeout) and `triage::run(pairs, settings) -> Result<Vec<Verdict>, TriageError>` in `triage/mod.rs`, pairs requested in parallel with `rayon`. Bounded retries on connect errors, 429 and 5xx; none on other 4xx. Any pair failing fails the batch. Scenarios: none end-to-end. Tests: unit (retry classification) + integration in `tests/triage_client.rs` against the stub (success decodes; 5xx then success is retried; persistent failure errs; one of four failing errs the batch; missing key errs naming `TYPESAFE_API_KEY` with zero requests made). Also makes the gates cover both builds: `just dev` and CI test with the feature on and off, and coverage, the CRAP gate and mutation testing run with `--all-features`.
-- [x] **T7 — Human triage line.** Needs: T2. `RenderOptions` gains `triage: Option<&[Assessment]>` in `src/report.rs` (struct and `render_duplicates` only); `src/report/duplicates.rs` prints `  triage: <kind>, <worth-extracting> (conf 0.91)` or `  triage: uncertain (conf 0.31)` under each pair. Scenarios: none end-to-end. Tests: unit (both line shapes) + property (pair identity — deleting the triage lines from a triaged rendering yields the untriaged rendering byte for byte).
-- [x] **T8 — Wire triage into the run.** Needs: T1, T6, T7. `src/main.rs`: `DupSettings` resolves the triage settings; after `duplicate_pairs` (so the non-carrying-format early return still wins), call `triage::run`, map verdicts through the configured floor, pass the assessments to rendering. In this task an error from `triage::run` still aborts the run — T9 turns it into a warning. Scenarios: _Triage is off by default_, _An enabled run annotates every pair it reports_, _A verdict below the confidence floor is reported as uncertain_, _No pairs means no requests_, _A request carries exactly the pair under judgment_, _Triage never runs for a format that cannot carry duplicates_, _A build without the triage feature says how to get it_ (without the feature, an enabled triage prints the one warning). Tests: acceptance, against the stub.
-- [x] **T9 — Degrade to the untriaged report on any failure.** Needs: T8. `src/main.rs` triage call site: an `Err` becomes one stderr warning naming the cause and `None` assessments; exit code untouched. Scenarios: _A missing API key degrades to the untriaged report_, _An unreachable API degrades to the untriaged report_, _One failed pair discards the whole triage_. Tests: acceptance + property (degradation identity — for any failure injected by the stub, stdout is byte-identical to the same run with triage disabled, and the exit code matches).
-- [x] **T10 — Cache in the run.** Needs: T4, T8. `triage::run` in `triage/mod.rs` consults the cache before requesting and stores each verdict it receives — including on a run that is later discarded, so a retry only pays for the pair that failed. Scenarios: _A second run over unchanged code asks nothing_, _Editing a function body invalidates that pair's cached verdict_. Tests: acceptance (request counts read from the stub).
+- [x] **T6 — HTTP client, retries and the all-or-nothing batch.** Needs: T2, T3, T5. `triage/client.rs` (sync client, `ureq` with rustls as an optional dependency enabled by the `triage` Cargo feature, off by default, with only `client.rs` and `triage::run` gated, since the rest uses no network; key from `TYPESAFE_API_KEY`, base URL from `TYPESAFE_BASE_URL`, default `https://api.typesafe.ai`, 10 s timeout) and `triage::run(pairs, settings) -> Result<Vec<Verdict>, TriageError>` in `triage/mod.rs`, pairs requested in parallel with `rayon`. Bounded retries on connect errors, 429 and 5xx; none on other 4xx. Any pair failing fails the batch. Scenarios: none end-to-end. Tests: unit (retry classification) + integration in `tests/triage_client.rs` against the stub (success decodes; 5xx then success is retried; persistent failure errs; one of four failing errs the batch; missing key errs naming `TYPESAFE_API_KEY` with zero requests made). Also makes the gates cover both builds: `just dev` and CI test with the feature on and off, and coverage, the CRAP gate and mutation testing run with `--all-features`.
+- [x] **T7 — Human triage line.** Needs: T2. `RenderOptions` gains `triage: Option<&[Assessment]>` in `src/report.rs` (struct and `render_duplicates` only); `src/report/duplicates.rs` prints `  triage: <kind>, <worth-extracting> (conf 0.91)` or `  triage: uncertain (conf 0.31)` under each pair. Scenarios: none end-to-end. Tests: unit (both line shapes) + property (pair identity: deleting the triage lines from a triaged rendering yields the untriaged rendering byte for byte).
+- [x] **T8 — Wire triage into the run.** Needs: T1, T6, T7. `src/main.rs`: `DupSettings` resolves the triage settings; after `duplicate_pairs` (so the non-carrying-format early return still wins), call `triage::run`, map verdicts through the configured floor, pass the assessments to rendering. In this task an error from `triage::run` still aborts the run. T9 turns it into a warning. Scenarios: _Triage is off by default_, _An enabled run annotates every pair it reports_, _A verdict below the confidence floor is reported as uncertain_, _No pairs means no requests_, _A request carries exactly the pair under judgment_, _Triage never runs for a format that cannot carry duplicates_, _A build without the triage feature says how to get it_ (without the feature, an enabled triage prints the one warning). Tests: acceptance, against the stub.
+- [x] **T9 — Degrade to the untriaged report on any failure.** Needs: T8. `src/main.rs` triage call site: an `Err` becomes one stderr warning naming the cause and `None` assessments; exit code untouched. Scenarios: _A missing API key degrades to the untriaged report_, _An unreachable API degrades to the untriaged report_, _One failed pair discards the whole triage_. Tests: acceptance + property (degradation identity: for any failure injected by the stub, stdout is byte-identical to the same run with triage disabled, and the exit code matches).
+- [x] **T10 — Cache in the run.** Needs: T4, T8. `triage::run` in `triage/mod.rs` consults the cache before requesting and stores each verdict it receives, including on a run that is later discarded, so a retry only pays for the pair that failed. Scenarios: _A second run over unchanged code asks nothing_, _Editing a function body invalidates that pair's cached verdict_. Tests: acceptance (request counts read from the stub).
 - [x] **T11 — Kind labels end to end, and a live judgment check.** Needs: T8. Offline: acceptance tests that the stub's `shared_shape_only` and `same_logic` answers render as `shared-shape-only` and `same-logic`. Live: `#[ignore]` tests over fixtures copied from the Context table (`tests/fixtures/triage/`) that call the real API, plus a `triage-live` recipe in the `Justfile` under its own heading, run by hand with `TYPESAFE_API_KEY` set. Scenarios: _Two functions sharing only an idiom are named as such_, _The same logic written twice is named as such_. Tests: acceptance (offline) + ignored live tests.
 - [x] **T12 — The JSON triage object.** Needs: T8. `DuplicateJson` gains `triage` (`skip_serializing_if = "Option::is_none"`, so untriaged output is unchanged) in `src/report/json.rs`; the two `Format::Json` dispatch lines in `src/report.rs` pass the assessments; `schemas/report-v1.json` and `schemas/delta-v2.json` describe the optional object. Scenarios: _The JSON envelope carries the verdict beside the pair_. Tests: unit (serialize both shapes) + acceptance (validated against both schemas with `jsonschema`).
 
@@ -294,18 +294,19 @@ lines.
 src/duplicates/compare.rs ──▶ Vec<DuplicatePair>        (unchanged, spec 29)
                                       │
                                       ▼
-                        src/duplicates/triage.rs        (new, opt-in)
-                        ├── spans.rs-worth of body re-reading
+                        src/duplicates/triage/          (new, opt-in)
+                        ├── request: re-read both bodies, build the questions
                         ├── cache: content hash ──▶ Verdict
                         ├── client: POST /v1/systemone
-                        └── Vec<Option<Verdict>>, or None for the whole run
+                        ├── verdict: decode, then floor ──▶ Assessment
+                        └── Option<Vec<Assessment>>: every pair, or None
                                       │
                                       ▼
               src/report/duplicates.rs   (triage line under each pair)
               src/report/json.rs         (triage object on each entry)
 ```
 
-`DuplicatePair` carries locations, not fingerprints — by design (spec 29).
+`DuplicatePair` carries locations, not fingerprints, by design (spec 29).
 The triage pass re-reads each side's span from disk using the `Location`
 already on the pair. Pair ordering is canonical by construction
 (`ordered_pair`), so the two sides reach the model in one order only.
@@ -319,17 +320,17 @@ see one another's answers.
 State: `{ function_a: {name, location, source}, function_b: {...},
 structural_similarity: <f64> }`.
 
-- `duplication_kind` — **Choice** over `same_logic`, `shared_shape_only`,
+- `duplication_kind`: **Choice** over `same_logic`, `shared_shape_only`,
   `structural_obligation`, `parameterisable`. Each option carries a rubric
   sentence. This is the question the Jaccard number cannot answer.
-- `worth_extracting` — **Score** over four ordered levels, from "leave it"
+- `worth_extracting`: **Score** over four ordered levels, from "leave it"
   to "should be one function".
-- `divergence_risk` — **Noul**: would a bug fixed in one side likely be
+- `divergence_risk`: **Noul**, would a bug fixed in one side likely be
   missed in the other?
 
 The human line renders kind, worth-extracting and the Choice's confidence;
 JSON carries all three answers. Below the confidence floor the line reports
-`uncertain` and asserts no kind — the model saying "I don't know" is a
+`uncertain` and asserts no kind. The model saying "I don't know" is a
 result, not a failure.
 
 ### Configuration
@@ -348,7 +349,7 @@ the flag surface is already wide, and this is a project decision.
 
 ### Cache
 
-`target/cargo-crap/triage/` — already gitignored, cleaned by `cargo clean`,
+`target/cargo-crap/triage/`: already gitignored, cleaned by `cargo clean`,
 machine-local. One entry per pair, keyed by a hash of both function bodies,
 the model id and a question-set version constant. Bumping the constant when
 the questions change is what stops a stale verdict outliving the question
@@ -357,14 +358,14 @@ that produced it.
 ### Errors
 
 Bounded retries on transient failures, then the whole triage is discarded
-and a warning names the cause. `Option<Vec<Verdict>>` rather than
-`Vec<Option<Verdict>>` at the render boundary makes all-or-nothing a type,
+and a warning names the cause. `Option<Vec<Assessment>>` rather than
+`Vec<Option<Assessment>>` at the render boundary makes all-or-nothing a type,
 not a convention.
 
 ### Invariants worth a property test
 
 - **Pair identity.** For any pair list and any verdict assignment, the
-  rendered pairs — their order, locations and scores — are identical to the
+  rendered pairs (their order, locations and scores) are identical to the
   untriaged rendering. Triage only adds lines.
 - **Degradation identity.** For any failure at any stage, the rendered
   output is byte-identical to the same run with triage disabled.

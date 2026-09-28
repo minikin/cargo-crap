@@ -1,4 +1,4 @@
-# Spec 18 — Baseline entries are filtered through current-run exclusions before delta
+# Spec 18: Baseline entries are filtered through current-run exclusions before delta
 
 **Status:** Implemented
 **Effort:** Small
@@ -7,13 +7,13 @@
 ## Context
 
 `compute_delta` treats every baseline function with no current-side pair as
-`removed`. That is correct when the code was deleted — and wrong when the
-current run simply *stopped analyzing* the file. The delta engine cannot
+`removed`. That is correct when the code was deleted, and wrong when the
+current run *stopped analyzing* the file. The delta engine cannot
 tell the difference today, so the two cases render identically.
 
 Spec 14 makes this acute. Baselines written before the default exclusions
 contain every function in `tests/`, `benches/`, and `examples/`. The first
-delta run after upgrading dumps all of them into `removed` at once — a wall
+delta run after upgrading dumps all of them into `removed` at once: a wall
 of one-time noise in PR comments, the same misleading-breakdown problem that
 motivated spec 13 ("60 new + 59 removed" for a pure refactor). The same
 thing happens, at smaller scale, whenever a user adds an `--exclude` or an
@@ -23,7 +23,7 @@ It is worse than cosmetic. Unpaired baseline entries participate in the
 spec-13 pass-2 name matcher: a baseline `tests/common.rs:setup_fixture`
 whose name is unique on both sides can pair with an unrelated brand-new
 `src/` function of the same name and report a phantom move
-(`Moved`, `previous_file = tests/common.rs`) — or worse, a phantom
+(`Moved`, `previous_file = tests/common.rs`), or, worse, a phantom
 `Regressed` if the scores differ.
 
 ### Rule
@@ -37,11 +37,11 @@ run's own *identity-based* filters would have dropped:
 3. `--allow` / `allow` patterns, both path-shaped and name-shaped, applied
    the same way `apply_filters` applies them to current entries.
 
-A filtered baseline entry simply does not exist for delta purposes: it
+A filtered baseline entry does not exist for delta purposes: it
 appears in no bucket (`removed` included), no breakdown count, and is not a
 pass-2 pairing candidate.
 
-The filter is unconditional — no flag, no config key. The worst case is a
+The filter is unconditional: no flag, no config key. The worst case is a
 genuinely deleted function inside an excluded directory not being reported
 as removed, which is consistent: the tool does not report on excluded paths
 in any other context either.
@@ -52,7 +52,7 @@ in any other context either.
   not identity. Applying them to the baseline would mask genuine changes
   (e.g. a function that improved from CRAP 50 to 2 must not have its
   baseline entry dropped by `--min 5`). The asymmetry noise they can cause
-  in `removed` is pre-existing and accepted; it is out of scope here.
+  in `removed` is pre-existing and accepted. It is out of scope here.
 - No change to `compute_delta`'s matching algorithm itself (spec 13 stands).
 
 ---
@@ -161,15 +161,15 @@ And   crates/foo/src/lib.rs entries are compared normally
 - **Helper:** a pure `filter_baseline(entries, exclude_set, allow_sets)`
   in `src/delta.rs` keeps the logic testable next to the delta tests.
 - **Glob reuse:** build the sets with the existing `build_exclude_set` /
-  `build_allow_set` / `build_path_allow_set` machinery — no new matching
+  `build_allow_set` / `build_path_allow_set` machinery, with no new matching
   semantics.
 - **Path normalization:** convert `\` to `/` before matching (same
   normalization as `path_key`) so cross-platform baselines behave.
 - **Workspace roots:** exclude globs are root-relative (spec 14). For each
   baseline path, strip the longest matching workspace-member directory
-  prefix before matching — the same longest-match rule
-  `assign_crate_names` already uses — so `crates/foo/tests/it.rs` is tested
+  prefix before matching, the same longest-match rule
+  `assign_crate_names` already uses, so `crates/foo/tests/it.rs` is tested
   as `tests/it.rs` against `tests/**`. In single-crate mode the analyzed
   root is the prefix.
-- **Counts:** filtered entries must not be counted anywhere — not in
+- **Counts:** filtered entries must not be counted anywhere: not in
   `removed`, not in any renderer breakdown, not in `regression_count`.

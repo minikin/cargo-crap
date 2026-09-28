@@ -1,4 +1,4 @@
-# Spec 06 — File-pattern suppressions in --allow
+# Spec 06: File-pattern suppressions in --allow
 
 **Status:** Implemented  
 **Effort:** Medium  
@@ -6,10 +6,10 @@
 
 ## Context
 
-`--allow` currently only matches function names. To suppress generated code or
-test helpers without excluding them from complexity analysis entirely (which
-`--exclude` does at walk time), users need to match by file path. Today they must
-use `--exclude` which also skips the files from CRAP scoring entirely.
+`--allow` currently only matches function names. The only way to suppress
+generated code or test helpers today is `--exclude`, which skips the files at
+walk time and so drops them from complexity analysis too. Matching by file path
+needs to suppress the output rows while still analyzing the file.
 
 ---
 

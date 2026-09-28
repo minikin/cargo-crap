@@ -1,10 +1,10 @@
 //! The HTTP client for the `TypeSafe` evaluation endpoint.
 //!
-//! Blocking, one request per pair. Transient failures — a connection that
-//! failed or dropped, a 429, any 5xx (the API's own 529 "overloaded"
-//! included) — are retried a bounded number of times with a doubling
-//! back-off; any other 4xx is final, since the same request will be refused
-//! the same way.
+//! Blocking, one request per pair. A connection that failed or dropped, a
+//! 429 and any 5xx (the API's own 529 "overloaded" included) count as
+//! transient and are retried a bounded number of times with a doubling
+//! back-off. Any other 4xx is final: the same request will be refused the
+//! same way.
 
 use crate::duplicates::triage::cache;
 use crate::duplicates::triage::verdict::DecodeError;
@@ -13,7 +13,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Where the API key is read from — the only place it is read from.
+/// The only place the API key is read from.
 pub const API_KEY_VAR: &str = "TYPESAFE_API_KEY";
 /// Overrides the API's base URL (tests point it at a local stub).
 pub const BASE_URL_VAR: &str = "TYPESAFE_BASE_URL";
@@ -66,11 +66,11 @@ impl Settings {
 
     /// Settings for `model` in the project rooted at `project_root`, with
     /// `TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL` and `CARGO_TARGET_DIR` read
-    /// through `lookup` — so tests can supply an environment without mutating
+    /// through `lookup`, so tests can supply an environment without mutating
     /// the process's. An empty value counts as unset. Verdicts are cached in
-    /// the project's target directory — `CARGO_TARGET_DIR` when set, as for
-    /// cargo, else `target/` beside the configuration — so `cargo clean`
-    /// sweeps them, wherever the command was run from.
+    /// the project's target directory (`CARGO_TARGET_DIR` when set, as for
+    /// cargo, else `target/` beside the configuration), so `cargo clean`
+    /// sweeps them wherever the command was run from.
     #[must_use]
     pub fn from_lookup(
         model: &str,
@@ -306,8 +306,8 @@ fn failed_status(
     }
 }
 
-/// A failed attempt: worth another try — after what the API asked for, if it
-/// asked — or not.
+/// A failed attempt, worth another try or not. A transient one carries what
+/// the API asked to wait, when it asked.
 enum Failure {
     Transient {
         error: TriageError,

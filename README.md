@@ -5,35 +5,29 @@
 [![docs.rs](https://img.shields.io/badge/docs.rs-000000?style=for-the-badge&logo=docsdotrs&logoColor=white)](https://docs.rs/cargo-crap/0.5.0/cargo_crap/)
 [![CRAP](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fminikin%2Fcargo-crap%2Fbadges%2Fcrap-badge.json&style=for-the-badge)](https://github.com/minikin/cargo-crap/actions/workflows/ci.yml)
 
-> [!TIP]
-> For more context on the motivation behind this crate, read:
-> [cargo-crap: Finding Untested Complexity in AI-Generated Rust Code](https://minikin.me/blog/cargo-crap) or watch [
-Your AI Code Might Be CRAP! (Here's How To Fix It)](https://www.youtube.com/watch?v=XuMR1pgc6pc).
-
 Compute the **CRAP** (Change Risk Anti-Patterns) metric for Rust projects.
 
-CRAP combines cyclomatic complexity and test coverage into a single number
-that is high when code is both hard to understand and poorly tested — i.e.
-where bugs love to hide. The metric was introduced by Savoia & Evans in
-2007 and was originally implemented for Java (Crap4j) and .NET (NDepend).
-`cargo-crap` brings it to the Rust ecosystem.
+CRAP combines cyclomatic complexity and test coverage into one number that is
+high when code is both hard to understand and poorly tested. Savoia and Evans
+introduced the metric in 2007, with implementations for Java (Crap4j) and .NET
+(NDepend). `cargo-crap` is the Rust one.
+
+Background: the blog post
+[cargo-crap: Finding Untested Complexity in AI-Generated Rust Code](https://minikin.me/blog/cargo-crap)
+and the talk [Your AI Code Might Be CRAP! (Here's How To Fix It)](https://www.youtube.com/watch?v=XuMR1pgc6pc).
 
 ```text
 CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)
 ```
 
-A few properties worth internalizing before you use the output:
+Properties of the formula:
 
-- A trivial function (CC=1, 100% covered) scores exactly 1.0. That's the
-  lower bound.
+- A trivial function (CC=1, 100% covered) scores exactly 1.0, the lower bound.
 - At 100% coverage the quadratic term collapses and **CRAP equals CC**.
-  When you see matching values in those two columns, that function is
-  fully covered — tests are capping the damage, but the complexity itself
-  remains. It's a good sign, not a bug.
-- Above CC ≈ 30 no amount of coverage keeps you under the default
-  threshold of 30. That's not a bug in the formula — it's the formula
-  saying "this function is too big to certify as clean, regardless of
-  tests."
+  Matching values in those two columns mean the function is fully covered.
+  Tests cap the damage, but the complexity itself remains.
+- Above CC ≈ 30 no amount of coverage keeps a function under the default
+  threshold of 30, since at full coverage the score is CC itself.
 
 ## Install
 
@@ -107,50 +101,109 @@ Example output:
 ╞═══╪═══════╪════╪═══════════════════╪══════════╪═══════════════╡
 │ ✗ ┆ 156.0 ┆ 12 ┆ ░░░░░░░░░░   0.0% ┆ crappy   ┆ src/lib.rs:24 │
 ├╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ ▲ ┆   6.7 ┆  4 ┆ ████░░░░░░  44.4% ┆ moderate ┆ src/lib.rs:12 │
+│ ✓ ┆   6.7 ┆  4 ┆ ████░░░░░░  44.4% ┆ moderate ┆ src/lib.rs:12 │
 ├╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
 │ ✓ ┆   1.0 ┆  1 ┆ ██████████ 100.0% ┆ trivial  ┆ src/lib.rs:8  │
 └───┴───────┴────┴───────────────────┴──────────┴───────────────┘
 ✗ 1/3 function(s) exceed CRAP threshold 30.
 ```
 
+`✗` marks a score above `--threshold`, `▲` a score above a third of it, and
+`✓` everything else.
+
 ## Flags
 
-| Flag                                                             | Default       | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ---------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--lcov <FILE>`                                                  | —             | LCOV file from `cargo llvm-cov` or `cargo tarpaulin`. **Omitting it is not a coverage-free run**: every function is scored as if it had 0% coverage, so CRAP collapses to `CC² + CC` and the whole table reads red. That is useful for a first look at the complexity distribution — it is not a CRAP run.                                                                                                                                                                            |
-| `--path <DIR>`                                                   | `.`           | Root to walk for `.rs` files (respects `.gitignore`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `--threshold <N>`                                                | `30`          | Score above which a function is flagged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `--min <SCORE>`                                                  | —             | Hide entries below this score.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `--top <N>`                                                      | —             | Show only the N worst offenders.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `--sort {crap,file}`                                             | `crap`        | Final ordering of entries. `crap` sorts by score descending (best for reading top-down). `file` sorts by `(file, function, line)` ascending — stable across score changes, so a committed JSON baseline produces minimal diffs. `--top` always selects the N highest-CRAP functions first, then `--sort` reorders them. Applies to every format.                                                                                                                                                                                                                                                                      |
-| `--missing {pessimistic,optimistic,skip}`                        | `pessimistic` | How to score a function with no coverage data.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `--exclude <GLOB>`                                               | —             | Skip files matching this pattern (repeatable). `**` crosses directories. Appends to the default exclusions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `--no-default-excludes`                                          | off           | Disable the built-in default exclusions (`tests/**`, `benches/**`, `examples/**`, matched relative to each analyzed root). By default these standard Cargo target directories are skipped — integration tests exist to cover production code, and benches/examples are not executed during a coverage run, so they only add 0%-coverage noise.                                                                                                                                                                                                                                                                        |
-| `--allow <GLOB>`                                                 | —             | Suppress matching functions (repeatable). An entry containing `/` or `**` is a path glob and matches the file the function is in (e.g. `src/generated/**`); otherwise it matches the function name and `*` crosses `::` (e.g. `Foo::*`). Path globs analyze the file but hide its functions — distinct from `--exclude`, which skips files at walk time.                                                                                                                                                                                                                                                              |
-| `--duplicates`                                                    | off           | Also report candidate duplicate functions — functions whose normalized structure is close enough to be worth review. A second analysis over the same AST; off by default because it costs time on a large tree. Needs no `--lcov`.                                                                                                                                                                                                          |
-| `--dup-threshold <SCORE>`                                        | `0.82`        | Similarity at or above which a pair is reported, in `0.0..=1.0`. Named apart from `--threshold`, which is the CRAP score threshold.                                                                                                                                                                                                                                                                                                          |
-| `--format {human,json,github,markdown,pr-comment,sarif,shields}` | `human`       | Output format. `json` emits a versioned envelope (see [JSON output schema](#json-output-schema) below). `github` emits `::warning` annotations. `markdown` emits a GFM table (exhaustive). `pr-comment` is the opinionated PR-bot variant: hides unchanged rows, caps each section, collapses non-critical info into `<details>` blocks. `sarif` emits SARIF 2.1.0 JSON for upload to GitHub Code Scanning, VS Code, and other static-analysis tooling (see [SARIF output](#sarif-output) below). `shields` emits Shields.io endpoint-badge JSON for a README badge (see [Shields.io badge](#shieldsio-badge) below). |
-| `--summary`                                                      | off           | Print only aggregate stats (total, crappy count, worst offender) — no per-function table. In `--workspace` mode this becomes the per-crate summary plus the aggregate line. `json` and `github` remain machine-readable and are unaffected.                                                                                                                                                                                                                                                                                                                                                                             |
-| `--workspace`                                                    | off           | Analyze all Cargo workspace members (discovered via `cargo metadata`). Ignores `--path`. Adds a *Per-crate summary* table to human and markdown output, and a `crate` field to JSON entries.                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `-p, --package <NAME>`                                           | —             | Analyze only the named workspace member(s); repeatable, cargo-style (`-p core -p api`). One invocation, one LCOV parse, one report, one gate decision over exactly the selected members — ideal for changed-file CI that already knows which packages a PR touches. Unknown names fail before analysis (exit 2). Ignores `--path`; conflicts with `--workspace`. A selected member's walk never descends into another member's nested root.                                                                                                                                                                            |
-| `--fail-above`                                                   | off           | Exit 1 if any function exceeds `--threshold`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `--baseline <FILE>`                                              | —             | JSON from a previous `--format json` run. Enables delta mode (shows Δ column). Functions that moved between files (same name, body unchanged) are detected and reported as `Moved` rather than as separate New + Removed entries; renderers show `← <previous_file>` next to the new location. Baseline entries that the current run's `--exclude`/`--allow`/default exclusions would drop are filtered out before comparison, so changing the exclusion set does not flood the report with phantom `removed` entries.                                                                                                |
-| `--fail-regression`                                              | off           | Exit 1 if any function's score increased since `--baseline`. `Moved` (pure relocation, no score change) is not a regression.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `--show-unchanged`                                               | off           | In `--baseline` mode, also list `Unchanged` rows in the human and markdown tables. By default only changed functions (`Regressed`/`Improved`/`New`/`Moved`) are shown; when everything is unchanged the table is replaced with `No changes since baseline.`. The summary line always counts every entry. Requires `--baseline`. Does not affect `json` (always exhaustive) or `pr-comment` (keeps its own row policy).                                                                                                                                                                                                |
-| `--epsilon <VALUE>`                                              | `0.01`        | Tolerance for the regression detector. Score deltas with absolute value at or below this count as `Unchanged`. Set to `0.0` to flag every increase, or higher to tolerate noisy coverage. Must be non-negative.                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `--jobs <N>`                                                     | host CPUs     | Cap parallel source-file analysis at `N` threads. Useful in memory-constrained CI/Docker environments. Must be a positive integer.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `--output <FILE>`                                                | —             | Write output to FILE instead of stdout (useful for saving JSON baselines).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `--repo-url <URL>`                                               | —             | Base URL of the source-hosting repo (e.g. `https://github.com/owner/repo`). With `--commit-ref`, makes Function and Location cells in `markdown` / `pr-comment` output clickable links to the source. Defaults from `GITHUB_SERVER_URL` + `GITHUB_REPOSITORY` inside GitHub Actions.                                                                                                                                                                                                                                                                                                              |
-| `--commit-ref <REF>`                                             | —             | Commit SHA or branch to deep-link into. Defaults from `GITHUB_SHA` when set. No effect unless `--repo-url` is also set.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Flag                                                             | Default       | Purpose                                                              |
+| ---------------------------------------------------------------- | ------------- | -------------------------------------------------------------------- |
+| `--lcov <FILE>`                                                  | none          | LCOV file from `cargo llvm-cov` or `cargo tarpaulin`.                |
+| `--path <DIR>`                                                   | `.`           | Root to walk for `.rs` files (respects `.gitignore`).                |
+| `--threshold <N>`                                                | `30`          | Score above which a function is flagged.                             |
+| `--min <SCORE>`                                                  | none          | Hide entries below this score.                                       |
+| `--top <N>`                                                      | none          | Show only the N worst offenders.                                     |
+| `--sort {crap,file}`                                             | `crap`        | Final ordering of entries.                                           |
+| `--missing {pessimistic,optimistic,skip}`                        | `pessimistic` | How to score a function with no coverage data.                       |
+| `--exclude <GLOB>`                                               | none          | Skip files matching this pattern (repeatable).                       |
+| `--no-default-excludes`                                          | off           | Analyze `tests/**`, `benches/**` and `examples/**` as well.          |
+| `--allow <GLOB>`                                                 | none          | Hide matching functions from the report (repeatable).                |
+| `--duplicates`                                                   | off           | Also report candidate duplicate functions.                           |
+| `--dup-threshold <SCORE>`                                        | `0.82`        | Similarity at or above which a duplicate pair is reported.           |
+| `--format {human,json,github,markdown,pr-comment,sarif,shields}` | `human`       | Output format.                                                       |
+| `--summary`                                                      | off           | Print aggregate stats instead of the per-function table.             |
+| `--workspace`                                                    | off           | Analyze every Cargo workspace member.                                |
+| `-p, --package <NAME>`                                           | none          | Analyze only the named workspace member(s), repeatable.              |
+| `--fail-above`                                                   | off           | Exit 1 if any function exceeds `--threshold`.                        |
+| `--baseline <FILE>`                                              | none          | JSON from a previous `--format json` run; turns on delta mode.       |
+| `--fail-regression`                                              | off           | Exit 1 if any function's score increased since `--baseline`.         |
+| `--show-unchanged`                                               | off           | Also list `Unchanged` rows in `--baseline` mode.                     |
+| `--epsilon <VALUE>`                                              | `0.01`        | Tolerance of the regression detector.                                |
+| `--jobs <N>`                                                     | host CPUs     | Cap parallel source-file analysis at N threads.                      |
+| `--output <FILE>`                                                | none          | Write output to FILE instead of stdout.                              |
+| `--repo-url <URL>`                                               | none          | Repo base URL for clickable source links.                            |
+| `--commit-ref <REF>`                                             | none          | Commit SHA or branch those links point at.                           |
 
-Colour in the `human` and `--summary` formats is automatic: it is enabled only when writing to a terminal, and never into an `--output` file or a pipe. Set `NO_COLOR=1` to disable colour unconditionally, or `FORCE_COLOR=1` to force it on (e.g. for `| less -R`); `NO_COLOR` wins when both are set.
+### Notes on flags
+
+`--format` picks one of seven renderers:
+
+- `human`: the coloured Unicode table shown above.
+- `json`: a versioned envelope, described under
+  [JSON output schema](#json-output-schema).
+- `github`: `::warning` annotations for a GitHub Actions log.
+- `markdown`: an exhaustive GFM table.
+- `pr-comment`: the opinionated PR-bot variant, which hides unchanged rows,
+  caps each section and collapses non-critical information into `<details>`
+  blocks.
+- `sarif`: SARIF 2.1.0 for GitHub Code Scanning, VS Code and other
+  static-analysis tooling. See [SARIF output](#sarif-output).
+- `shields`: Shields.io endpoint-badge JSON for a README badge. See
+  [Shields.io badge](#shieldsio-badge).
+
+`--exclude` and `--allow` hide code at different stages. `--exclude` skips
+files at walk time, so they are never parsed, and `**` crosses directory
+boundaries. `--allow` analyzes the file and drops matching functions from the
+report. An `--allow` entry containing `/` or `**` is a path glob matched
+against the file a function lives in (`src/generated/**`); anything else
+matches the function name, where `*` crosses `::` (`Foo::*`). Both flags are
+repeatable, and `--exclude` appends to the default exclusions instead of
+replacing them.
+
+`--sort crap` sorts by score descending, which reads best top-down. `--sort
+file` sorts by `(file, function, line)` ascending, which is stable across
+score changes, so a committed JSON baseline produces minimal diffs. `--top`
+always selects the N highest-CRAP functions first, and `--sort` then reorders
+what survived. The ordering applies to every format.
+
+`--summary` replaces the per-function table with the total, the crappy count
+and the worst offender. Under `--workspace` or `-p`/`--package` it prints
+the per-crate summary above that aggregate line. `json` and `github` stay machine-readable and are
+unaffected.
+
+`--workspace` walks every member found by `cargo metadata`, ignores `--path`,
+and adds a *Per-crate summary* table to human and markdown output plus a
+`crate` field to JSON entries. `-p`/`--package` does the same for named
+members only, cargo-style (`-p core -p api`). It ignores `--path` too, and
+conflicts with `--workspace`. One invocation parses the LCOV once and
+produces one report and one gate decision over exactly the selected members,
+which is what changed-file CI wants when it already knows which packages a PR
+touched. Unknown names fail before any analysis with exit code 2, and a
+selected member's walk never descends into another member's nested root.
+
+`--jobs` caps the source-file analysis pool, which matters in
+memory-constrained CI and Docker environments. Without it, rayon sizes the
+pool from the host. A `--jobs` of zero, a negative `--epsilon` and a
+`--dup-threshold` outside `0.0..=1.0` are all rejected before analysis starts,
+with exit code 2.
+
+Colour in the `human` and `--summary` formats is automatic, enabled only when
+writing to a terminal and never into an `--output` file or a pipe. Set
+`NO_COLOR=1` to disable colour unconditionally, or `FORCE_COLOR=1` to force it
+on (e.g. for `| less -R`). `NO_COLOR` wins when both are set.
 
 ### JSON output schema
 
 `--format json` produces a versioned envelope with a `$schema` URL pointing
-at the published JSON Schema. Consumers can validate output offline or
-generate types directly from the schema.
+at the published JSON Schema, so consumers can validate output offline or
+generate types from the schema.
 
 | Variant                    | Schema                                                                                                       |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------ |
@@ -170,12 +223,13 @@ generate types directly from the schema.
       "cyclomatic": 4.0,
       "coverage": 75.0,        // null when no coverage data was found
       "crap": 5.5625,
-      "crate": "my-crate",     // present only with --workspace
+      "crate": "my-crate",     // present only with --workspace or -p
       "uncovered": [           // uncovered line ranges; omitted when empty
         { "start": 15, "end": 16 }
       ]
     }
-  ]
+  ],
+  "try_weight": 0.5       // present only when try-weight is not the default 1.0
 }
 
 // cargo crap --format json --baseline baseline.json
@@ -187,7 +241,7 @@ generate types directly from the schema.
 }
 ```
 
-`--baseline` only reads files in this envelope shape; bare-array baselines
+`--baseline` only reads files in this envelope shape. Bare-array baselines
 from older runs must be regenerated.
 
 Both envelopes also carry an optional `diagnostics` object whenever `--lcov`
@@ -197,7 +251,7 @@ run describe different scopes (the classic cause of a delta full of
 unrelated 0%-coverage entries), a warning with the same numbers is printed
 to stderr before the report, and CI wrappers can gate on the JSON counts.
 
-On `--duplicates` runs both envelopes grow a `duplicates` array — one object
+On `--duplicates` runs both envelopes grow a `duplicates` array, one object
 per candidate pair, in the same order as the human section:
 
 ```jsonc
@@ -209,20 +263,20 @@ per candidate pair, in the same order as the human section:
     "first_end_line": 33,
     "second_file": "src/report/pr_comment.rs",
     "second_function": "write_pr_comment_delta_headline",
-    "second_start_line": 275,
-    "second_end_line": 286,
+    "second_start_line": 276,
+    "second_end_line": 287,
     "score": 0.92          // Jaccard similarity, in [0, 1]
   }
 ]
 ```
 
-The key is absent — not empty — when detection was not requested, so "not
+The key is absent, not empty, when detection was not requested, so "not
 asked" stays distinguishable from "asked, found nothing".
 
 ### SARIF output
 
 `--format sarif` emits a [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
-JSON document — the format consumed by GitHub Code Scanning, VS Code,
+JSON document, the format consumed by GitHub Code Scanning, VS Code,
 rust-analyzer, and most static-analysis tooling.
 
 - Each crappy function (entry above `--threshold`) becomes one
@@ -231,7 +285,7 @@ rust-analyzer, and most static-analysis tooling.
 - Functions below the threshold are not included.
 - An empty result set still produces a valid SARIF document with the
   full `runs[0].tool.driver` envelope.
-- `--baseline` is rejected with `--format sarif`; SARIF describes
+- `--baseline` is rejected with `--format sarif`, since SARIF describes
   findings, not deltas. Use `--format json` for delta output.
 
 ### Shields.io badge
@@ -245,47 +299,54 @@ normal badge image:
 ![CRAP](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/owner/repo/main/crap-badge.json)
 ```
 
-The label embeds the *effective* threshold — `CRAP > 30` by default, or
-whatever `--threshold` was given (`CRAP > 15` in this repo's own run) — so the badge reads
-as a complete statement. The message is `passing` (brightgreen) when no
-function exceeds `--threshold`, `N crappy` in yellow for 1–5 offenders,
-and red for 6 or more. `--baseline` is silently ignored — the badge
-always reflects absolute current scores. See [Badge generation](#badge-generation) for a
-CI recipe.
+The label embeds the *effective* threshold: `CRAP > 30` by default, or
+whatever `--threshold` was given (`CRAP > 15` in this repo's own run), so the
+badge reads as a complete statement. The message is `passing` (brightgreen)
+when no function exceeds `--threshold`, `N crappy` in yellow for 1–5
+offenders, and red for 6 or more. `--baseline` is silently ignored, since the
+badge always reflects absolute current scores. See [Badge generation](#badge-generation)
+for a CI recipe.
 
 ## Finding duplicates
 
 `--duplicates` answers a different question from the CRAP table: *is this
 already implemented somewhere else in this codebase?* Copy-pasted logic is
-invisible to CRAP — two identical 40-line functions each score exactly what
-one of them would.
+invisible to CRAP, since two identical 40-line functions each score exactly
+what one of them would. The pass needs no `--lcov`, and it is off by default
+because it is a second walk over the same AST and costs time on a large tree.
 
 ```bash
 cargo crap --path src --duplicates
 ```
 
+The section prints after the CRAP table. With two pairs it looks like this:
+
 ```
 2 duplicate candidates:
 
 DUPLICATE score=1.00
-  src/report/types.rs:167-178  write_abs_gfm_header
-  src/report/types.rs:182-193  write_delta_gfm_header
+  src/report/types.rs:181-192  write_abs_gfm_header
+  src/report/types.rs:196-207  write_delta_gfm_header
 DUPLICATE score=0.92
   src/report/markdown.rs:18-33  write_markdown_absolute_heading
-  src/report/pr_comment.rs:275-286  write_pr_comment_delta_headline
+  src/report/pr_comment.rs:276-287  write_pr_comment_delta_headline
 ```
 
+Only `--format human` and `--format json` carry duplicates. Any other format
+prints a warning and skips the pass, triage included.
+
 How it works: every function is parsed with `syn`, normalized into a
-structural tree, and fingerprinted — one fingerprint per subtree. Two
+structural tree, and fingerprinted, one fingerprint per subtree. Two
 functions are compared by Jaccard similarity over their fingerprint sets
-(`|A ∩ B| / |A ∪ B|`), and pairs scoring at or above the threshold are
-reported.
+(`|A ∩ B| / |A ∪ B|`), and pairs scoring at or above `--dup-threshold` (0.82
+by default, anywhere in `0.0..=1.0`) are reported. That flag is named apart
+from `--threshold`, which is the CRAP score threshold.
 
 Normalization **drops** what a function is called and what values it
-mentions — function and method names, parameter and local names, field and
+mentions: function and method names, parameter and local names, field and
 path names, literal values. It **keeps** structure: control flow, statement
 order, receiver shape, type structure, and operators. `x + y` and `x * y`
-are different shapes; `xs`/`items` and `1`/`0` are not:
+are different shapes; `xs` and `items`, `1` and `0`, are not:
 
 ```rust
 fn alpha(xs: &[i32]) -> Vec<i32> {          fn beta(items: &[i32]) -> Vec<i32> {
@@ -301,11 +362,11 @@ fn alpha(xs: &[i32]) -> Vec<i32> {          fn beta(items: &[i32]) -> Vec<i32> {
 
 These score **1.00**.
 
-The tool does not decide whether duplication should be removed — two
-functions scoring 1.00 may be a bug waiting to happen or two unrelated trait
-impls that share a shape. It names the candidate; you judge it.
+The tool does not decide whether duplication should be removed. Two functions
+scoring 1.00 may be a bug waiting to happen, or two unrelated trait impls that
+share a shape.
 
-Three things worth knowing:
+Limits of the comparison:
 
 - **Test code is not compared.** `#[test]` functions and `#[cfg(test)]`
   modules are skipped, the same way the complexity pass skips them. Test
@@ -318,47 +379,43 @@ Three things worth knowing:
   so every `println!`/`vec!` is one node. Two different macro invocations
   look identical to this analysis.
 
-`--format json` carries the pairs in a `duplicates` array inside the usual
-envelope; the key is absent entirely when detection was not requested, so
-"not asked" is distinguishable from "asked, found nothing".
-
 ### Triage (optional)
 
 Structural similarity cannot tell *the same logic written twice* from *two
-unrelated functions that share a Rust idiom* — two functions that are each a
+unrelated functions that share a Rust idiom*. Two functions that are each a
 run of `writeln!` calls score as high as a real copy-paste. Triage asks a
 [TypeSafe](https://docs.typesafe.ai) System One model three narrow questions
 about each reported pair and prints the answers beside it:
 
 ```
 DUPLICATE score=1.00
-  src/report/pr_comment.rs:120-148  write_pr_comment_improved_section
-  src/report/pr_comment.rs:150-178  write_pr_comment_moved_section
+  src/report/pr_comment.rs:332-358  write_pr_comment_improved_section
+  src/report/pr_comment.rs:363-385  write_pr_comment_moved_section
   triage: same-logic, should-be-one (conf 0.84)
 ```
 
 The kind is one of `same-logic`, `shared-shape-only`,
-`structural-obligation` or `parameterisable`; the second word says whether
+`structural-obligation` or `parameterisable`. The second word says whether
 the pair is worth merging (`leave-it`, `optional`, `worthwhile`,
 `should-be-one`). Below the confidence floor the line says
 `triage: uncertain (conf 0.31)` and names no kind. With `--format json` each
-pair carries the same verdict as a `triage` object — its kind,
+pair carries the same verdict as a `triage` object: its kind,
 worth-extracting level and score, divergence risk and confidence, or only
-`"kind": "uncertain"` and the confidence below the floor — and the key is
+`"kind": "uncertain"` and the confidence when below the floor. The key is
 absent when triage did not run.
 
 It is opt-in twice over, because it sends each pair's two function bodies to
 a third-party API:
 
-1. **Build it in.** The HTTP client is behind a Cargo feature, off by
-   default — a plain install compiles no network code at all:
+1. **Build it in.** The HTTP client sits behind a Cargo feature that is off
+   by default. A plain install compiles no network code at all:
 
    ```bash
    cargo install cargo-crap --features triage
    ```
 
 2. **Switch it on** in `.cargo-crap.toml` (there is no flag), and put the key
-   in the environment — it is never read from the config file:
+   in the environment. It is never read from the config file:
 
    ```toml
    [duplicates.triage]
@@ -373,18 +430,23 @@ a third-party API:
 Triage only annotates: every pair still prints in the same order with the
 same score, and the exit code never depends on it. Without a key, a network
 or a working API, the run prints the untriaged section and one warning
-saying why. Verdicts are cached under `target/cargo-crap/triage/`, keyed by
-both function bodies, so an unchanged pair is never asked about twice.
+saying why.
+
+Verdicts are cached in `cargo-crap/triage/` under the target directory:
+`CARGO_TARGET_DIR` when it is set, otherwise `target/` beside
+`.cargo-crap.toml`. The cache is keyed by both function bodies, so an
+unchanged pair is never asked about twice, and `cargo clean` removes it.
+`TYPESAFE_BASE_URL` points the client at another API host (the default is
+`https://api.typesafe.ai`).
 
 ## Configuration file
 
 Most flags can be set persistently in `.cargo-crap.toml` at the project root
-(or any parent directory — the tool walks up until it finds one). CLI flags
-always take precedence. The per-run selectors have no config key —
-`--path`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`,
-`--baseline`, `--no-default-excludes`, `--repo-url` and `--commit-ref` are
-flags only. `uncovered-hints` and `try-weight` are the mirror case: config
-only, no flag.
+or any parent directory. The tool walks up until it finds one. CLI flags
+always take precedence. The per-run selectors are flags only: `--path`,
+`--lcov`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`,
+`--baseline`, `--no-default-excludes`, `--repo-url` and `--commit-ref`.
+`uncovered-hints` and `try-weight` go the other way, config only, no flag.
 
 ```toml
 # .cargo-crap.toml
@@ -435,9 +497,7 @@ All keys are optional. Unknown keys are rejected to catch typos.
 
 Every multi-word key above accepts both the kebab-case house spelling and
 its snake_case alias (`show-unchanged` / `show_unchanged`), except
-`fail-above`, `fail-regression` and `try-weight`, which are kebab-case
-only. Where a key and
-its flag are not spelled the same, the mapping is:
+`fail-above`, `fail-regression` and `try-weight`, which are kebab-case only.
 
 | Flag                  | Config key             |
 | --------------------- | ---------------------- |
@@ -459,15 +519,14 @@ its flag are not spelled the same, the mapping is:
 | *(no flag)*           | `duplicates.triage.*`  |
 | *(no flag)*           | `uncovered-hints`      |
 | *(no flag)*           | `try-weight`           |
-| *(no key)*            | `--path`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`, `--baseline`, `--no-default-excludes`, `--repo-url`, `--commit-ref` |
+| *(no key)*            | `--path`, `--lcov`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`, `--baseline`, `--no-default-excludes`, `--repo-url`, `--commit-ref` |
 
-`default-excludes` is the one key with no direct flag equivalent: it
-*replaces* the built-in default list, where `--no-default-excludes`
-empties it.
+`default-excludes` has no flag that does the same job, since it *replaces*
+the built-in default list where `--no-default-excludes` empties it.
 
 ## Design
 
-The tool has seven orthogonal modules. Each is testable in isolation; the
+The tool has seven orthogonal modules. Each is testable in isolation, and the
 join between them has its own integration test.
 
 ```
@@ -509,9 +568,9 @@ This is where silent failures happen. Complexity analysis produces
 absolute paths (whatever was passed to the walker). LCOV files contain
 whatever the coverage tool decided to write:
 
-1. Absolute paths — `/home/alice/project/src/foo.rs`
-2. Workspace-relative paths — `src/foo.rs`
-3. Crate-relative paths in a workspace — `crates/core/src/foo.rs`
+1. Absolute paths: `/home/alice/project/src/foo.rs`
+2. Workspace-relative paths: `src/foo.rs`
+3. Crate-relative paths in a workspace: `crates/core/src/foo.rs`
 4. Paths with `./` or `../` components
 
 A naïve `HashMap<PathBuf, _>` lookup silently returns `None` for 100% of
@@ -519,12 +578,12 @@ files when the two don't agree, and every function reports as 0% covered.
 `cargo-crap` handles this with a two-level index:
 
 - Absolute coverage paths → direct canonical-path hash lookup.
-- Relative coverage paths → suffix match on path components (not bytes —
-  `/foo/bar.rs` must not match `oofoo/bar.rs`).
+- Relative coverage paths → suffix match on path components, not bytes:
+  `/foo/bar.rs` must not match `oofoo/bar.rs`.
 
 Ambiguous inputs resolve deterministically (spec 26): when several
 relative keys suffix-match one file (`src/lib.rs` vs
-`vendor/dep/src/lib.rs`), the longest — most specific — suffix wins, and
+`vendor/dep/src/lib.rs`), the longest and most specific suffix wins, and
 different spellings of the same file (symlinked roots, `lcov -a`-merged
 legs, `./`-prefixed variants) merge their line data instead of racing on
 map order.
@@ -537,37 +596,36 @@ pins this.
 
 ### What gets a score, and what counts as complexity
 
-Two things surprise people the first time their numbers do not match
-another tool.
-
 **Test code is never scored.** A function carrying `#[test]` and every
 item inside a `#[cfg(test)] mod` is skipped by the complexity pass, so it
-never reaches the table. (Only that exact spelling — `#[cfg(not(test))]`
+never reaches the table. (Only that exact spelling: `#[cfg(not(test))]`
 and `#[cfg(any(test, …))]` are left alone.) On top of that, `tests/**`,
-`benches/**` and `examples/**` are excluded at walk time; pass
-`--no-default-excludes` to get them back. So "my test helpers are
-missing" is the tool working as intended, not a path-matching failure.
+`benches/**` and `examples/**` are excluded at walk time, matched relative to
+each analyzed root. Integration tests exist to cover production code, and
+benches and examples are not executed during a coverage run, so all three
+would only add 0%-coverage noise. Pass `--no-default-excludes` to analyze them
+like any other source. Missing test helpers are that filter working, not a
+path-matching failure.
 
 **Cyclomatic complexity starts at 1 and adds one for each of:** `if`
 (including every `else if`), `for`, `while`, `loop`, **every** `match`
-arm, each `&&` and `||`, and each `?`. Two consequences worth knowing:
+arm, each `&&` and `||`, and each `?`.
 
-- A three-arm `match` adds 3, giving CC 4 — textbook McCabe counts N−1
+- A three-arm `match` adds 3, giving CC 4. Textbook McCabe counts N−1
   branch points and would say 3. Scores are internally consistent and
-  comparable across runs of this tool; they are not comparable to
-  another tool's numbers.
+  comparable across runs of this tool, not against another tool's numbers.
 - `?` counts as a decision point, so an idiomatic `Result` chain scores
   higher than its branching suggests. Set `try-weight` in
   `.cargo-crap.toml` to change that: `0.0` makes `?` free, a fraction
   discounts it, and a fractional CC is shown to one decimal.
 
-Closures and items nested inside a function body (a local `fn`, `impl`,
-`mod`, …) are *not* folded into the enclosing function — each is its own
+Closures and items nested inside a function body (a local `fn`, `impl` or
+`mod`) are *not* folded into the enclosing function. Each is its own
 scope, and a closure's branches belong to the closure.
 
 ### The `--missing` policy
 
-Some functions have complexity data but no coverage data — the coverage
+Some functions have complexity data but no coverage data: the coverage
 tool didn't instrument them, or they were excluded via `#[cfg(test)]`, or
 the coverage run was scoped to a subset of the workspace. Three policies:
 
@@ -581,8 +639,8 @@ the coverage run was scoped to a subset of the workspace. Three policies:
 
 ### Exit codes
 
-The exit code distinguishes a finished CRAP verdict from a broken run,
-so wrappers never need file-size or log-parsing heuristics:
+The exit code distinguishes a finished CRAP verdict from a broken run, so a
+wrapper needs no file-size or log-parsing heuristics:
 
 | Code | Meaning                                                                                        |
 |------|------------------------------------------------------------------------------------------------|
@@ -599,9 +657,21 @@ so wrappers never need file-size or log-parsing heuristics:
 
 ### Regression gate (recommended for teams)
 
-Save a baseline on `main`, then fail on any PR that makes a score go up.
-This works regardless of the absolute threshold and catches regressions as
-they are introduced, not weeks later.
+Save a baseline on `main`, then fail on any PR that makes a score go up. It
+works regardless of the absolute threshold and catches a regression when it
+is introduced.
+
+`--baseline` puts the report in delta mode and adds a Δ column. A function
+that moved between files with its body unchanged is reported as `Moved`
+rather than as a New plus a Removed entry, and the renderers print
+`← <previous_file>` next to its new location. `--fail-regression` does not
+count a pure relocation as a regression. Baseline entries that the current
+run's `--exclude`, `--allow` or default exclusions would drop are filtered out
+before the comparison, so changing the exclusion set between runs does not
+flood the removed list. `--epsilon` decides how much movement counts as
+noise. Score deltas with absolute value at or below it (0.01 by default) are
+reported `Unchanged`. Set it to `0.0` to flag every increase, or higher when coverage
+numbers wobble between runs.
 
 ```yaml
 # On main branch — upload baseline as a CI artifact
@@ -623,24 +693,22 @@ they are introduced, not weeks later.
 - run: cargo crap --lcov lcov.info --baseline baseline/baseline.json --fail-regression
 ```
 
-Two flags make this workflow nicer:
+A baseline can also be committed to git instead of uploaded as an artifact.
+Add `--sort file` when generating it so entries are ordered by
+`(file, function, line)` rather than by score. The order then stays put
+across runs, and a code change touches only the affected entry's fields:
 
-- **Commit the baseline to git instead of uploading it as an artifact.**
-  Add `--sort file` when generating it so entries are ordered by
-  `(file, function, line)` rather than by score. The order then stays put
-  across runs, so a code change touches only the affected entry's fields —
-  minimal, reviewable diffs:
+```bash
+cargo crap --lcov lcov.info --format json --sort file --output crap_baseline.json
+```
 
-  ```bash
-  cargo crap --lcov lcov.info --format json --sort file --output crap_baseline.json
-  ```
-
-- **The comparison output is changed-only by default.** In `--baseline`
-  mode the human and markdown tables list just the functions that
-  `Regressed` / `Improved` / are `New` / `Moved`; when nothing changed you
-  get `No changes since baseline.`. The summary line still counts every
-  function. Pass `--show-unchanged` for the full exhaustive table. (JSON
-  stays exhaustive either way, so machine consumers are unaffected.)
+In `--baseline` mode the human and markdown tables list only the functions
+that changed (`Regressed`, `Improved`, `New`, `Moved`), so pass
+`--show-unchanged` when you want the full table. When nothing changed at all
+the table is replaced with `No changes since baseline.`, while the summary
+line still counts every entry. JSON stays exhaustive either way, and
+`pr-comment` keeps its own row policy. Both `--show-unchanged` and
+`--fail-regression` error out when `--baseline` is missing.
 
 ### GitHub Code Scanning (SARIF)
 
@@ -685,21 +753,27 @@ it back so the README embed stays current:
     git push
 ```
 
-This repository does it differently, and the badge at the top of this file
-points at that: `ci.yml` uploads `crap-badge.json` as an artifact and a
-separate `badge` job pushes it to a dedicated `badges` branch, so the
-default branch never carries a generated file. See
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) if you want that
-shape instead.
+The badge at the top of this file comes from a different shape: `ci.yml`
+uploads `crap-badge.json` as an artifact and a separate `badge` job pushes it
+to a dedicated `badges` branch, so the default branch never carries a
+generated file. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml) if
+you want that instead.
 
 ### PR comment bot
 
 `--format pr-comment` produces a sticky comment that surfaces regressions
-and new functions in the primary table and tucks improvements / removed
-functions / above-threshold hot-spots into collapsed `<details>` blocks.
+and new functions in the primary table and tucks improvements, removed
+functions and above-threshold hot-spots into collapsed `<details>` blocks.
 A hidden marker (`<!-- cargo-crap-report -->`) lets the script update an
 existing comment instead of posting duplicates. The job needs
 `pull-requests: write`.
+
+`--repo-url` and `--commit-ref` turn the Function and Location cells of
+`markdown` and `pr-comment` output into links to the source. Inside GitHub
+Actions both default from the environment (`GITHUB_SERVER_URL` plus
+`GITHUB_REPOSITORY`, and `GITHUB_SHA`), so the steps below need neither.
+Elsewhere, pass a base URL such as `https://github.com/owner/repo`.
+`--commit-ref` alone does nothing without it.
 
 ```yaml
 self_score:
@@ -745,21 +819,21 @@ self_score:
 
 ## Troubleshooting
 
-**Every function shows `—` or 0% coverage.** Either no `--lcov` was
-passed (see the flag table — that run scores everything as uncovered by
-design), or the LCOV file and the analyzed tree describe different
-scopes. `cargo-crap` detects the second case and prints analyzed / LCOV /
-matched file counts to stderr before the report, with examples of files
-present on only one side; the same numbers are in the `diagnostics`
-object of both JSON envelopes, so CI can gate on them. The usual cause is
-a coverage run scoped to one crate and an analysis scoped to the
-workspace, or vice versa.
+**Every function shows `—` or 0% coverage.** One cause is a missing `--lcov`.
+Every function is then scored as if it had 0% coverage, CRAP collapses to
+`CC² + CC` and the whole table reads red, which is a look at the complexity
+distribution rather than a CRAP run. The other cause is an LCOV file and an
+analyzed tree that describe different scopes, usually a coverage run scoped
+to one crate against an analysis scoped to the workspace, or the reverse.
+`cargo-crap` detects that case and prints analyzed / LCOV / matched file
+counts to stderr before the report, with examples of files present on only
+one side.
 
-**My test helpers are not listed.** They are skipped on purpose — see
+**My test helpers are not listed.** They are skipped on purpose. See
 [What gets a score](#what-gets-a-score-and-what-counts-as-complexity).
 
 **CC is higher than another tool reports.** Every `match` arm and every
-`?` counts; the same section explains why.
+`?` counts, and the same section explains why.
 
 **`--baseline` reports functions as `removed` that clearly still exist.**
 Baseline entries are filtered through the current run's exclusions before
@@ -770,10 +844,10 @@ the scope, or regenerate the baseline once.
 ## Prior art and references
 
 - [Savoia, A. & Evans, B. (2007). *The CRAP Metric.*](https://www.artima.com/weblogs/viewpost.jsp?thread=210575)
-- [Crap4j](http://www.crap4j.org/) — the original Java implementation.
-- [dry4go](https://github.com/unclebob/dry4go) — the Go duplicate detector whose
-  normalize/fingerprint/Jaccard approach `--duplicates` follows.
+- [Crap4j](http://www.crap4j.org/), the original Java implementation.
+- [dry4go](https://github.com/unclebob/dry4go), the Go duplicate detector
+  whose normalize, fingerprint and Jaccard approach `--duplicates` follows.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. See the [LICENSE](LICENSE) file.

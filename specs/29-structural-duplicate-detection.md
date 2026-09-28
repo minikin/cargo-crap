@@ -1,4 +1,4 @@
-# Spec 29 — Structural duplicate detection
+# Spec 29: Structural duplicate detection
 
 **Status:** Implemented
 **Effort:** Large
@@ -8,8 +8,8 @@
 
 cargo-crap answers one question today: which functions are risky, by CRAP
 score. It already parses every Rust function with `syn` and knows each
-function's file, name and line range — but it says nothing about whether two
-of those functions are the *same function written twice*.
+function's file, name and line range. It says nothing about whether two of
+those functions are the *same function written twice*.
 
 Copy-pasted logic is a distinct kind of risk from an untested complex
 function, and it is invisible to the CRAP metric: two identical 40-line
@@ -19,7 +19,7 @@ answer here.
 
 This spec adds a second analysis over the AST cargo-crap already walks:
 **structural duplicate detection**. The algorithm is the one used by
-[unclebob/dry4go](https://github.com/unclebob/dry4go) — normalize the AST,
+[unclebob/dry4go](https://github.com/unclebob/dry4go): normalize the AST,
 fingerprint every node, compare fingerprint sets with Jaccard similarity,
 report pairs at or above a threshold. dry4go analyzes Go; this analyzes Rust,
 which is cargo-crap's subject.
@@ -363,11 +363,11 @@ And   the document as a whole is valid JSON
 ## Tasks
 
 Each task lists its scenarios, the test types that pin it (unit /
-property / acceptance), and — when it depends on earlier tasks — a
+property / acceptance), and, when it depends on earlier tasks, a
 `Needs:` naming them.
 
 - [x] **T1 — Extract functions and normalize their AST.** Scenarios: _Renamed identifiers do not change the score; Differing literal values do not change the score; Differing field and path names do not change the score; Literal kind is structural; Methods with different receiver names normalize together; Receiver shape is structural; Operators are structural; Comparison operators are distinguished from each other; Loop kinds are distinguished_. Tests: unit + property. New files `src/duplicates/mod.rs`, `src/duplicates/extract.rs`, `src/duplicates/normalize.rs`; adds one `mod duplicates;` line to `src/lib.rs`. Properties: α-renaming invariance, literal-value invariance, operator sensitivity. Each scenario is observable here as equality or inequality of the normalized tree, which is what makes the score 1.0 or not downstream.
-- [x] **T2 — Fingerprint every normalized subtree.** Needs: T1. Scenarios: _Nested control flow is preserved; Statement order is structural_. Tests: unit + property. New file `src/duplicates/fingerprint.rs`. Properties: equal subtrees yield equal fingerprints, the set always contains the whole-function fingerprint, and fingerprinting is deterministic across processes — the last one is what forbids `DefaultHasher`.
+- [x] **T2 — Fingerprint every normalized subtree.** Needs: T1. Scenarios: _Nested control flow is preserved; Statement order is structural_. Tests: unit + property. New file `src/duplicates/fingerprint.rs`. Properties: equal subtrees yield equal fingerprints, the set always contains the whole-function fingerprint, and fingerprinting is deterministic across processes, which is what forbids `DefaultHasher`.
 - [x] **T3 — Jaccard similarity and unordered pair generation.** Needs: T2. Scenarios: _Two functions differing only in names and literals are exact structural duplicates; Identical functions are reported; Partially similar functions score between the extremes; Unrelated functions fall below the default threshold; The threshold is inclusive; Raising the threshold filters pairs out; A function is never reported against itself; Each pair is reported once_. Tests: unit + property. New file `src/duplicates/compare.rs`. Properties: score in `[0.0, 1.0]`, reflexivity is exactly 1.0, exact symmetry, at most `n·(n−1)/2` pairs with no orientation repeated.
 - [x] **T4 — Deterministic ordering and the human duplicates report.** Needs: T3. Scenarios: _Output ordering is deterministic; Line ranges locate each side of the pair; An empty result says so_. Tests: unit + acceptance. New file `src/report/duplicates.rs`; adds one `mod duplicates;` line and one `render_duplicates` arm to `src/report.rs`, under its own heading rather than at the end of the dispatcher.
 - [x] **T5 — CLI and config surface.** Needs: T3. Scenarios: _The default threshold is 0.82; Duplicate detection runs without coverage data; Detection is off unless asked for; An out-of-range threshold is rejected_. Tests: unit + acceptance. Adds `--duplicates` and `--dup-threshold` to `src/main.rs` (appended to the existing `Args` struct, after the last flag) and a `duplicates` table to `src/config.rs` (its own struct, appended after `Config`). Parses and validates the `duplicates.min-nodes` key; the filtering behavior it gates has no scenario yet and is the subject of a proposed amendment.
@@ -407,14 +407,14 @@ existing file walk (respects --exclude / default excludes)
 
 ### Key types
 
-- `NormNode` — a strongly typed normalized tree. One variant per structural
+- `NormNode`: a strongly typed normalized tree. One variant per structural
   Rust construct, carrying only structure: `Binary(BinOp, Box<NormNode>,
   Box<NormNode>)`, `If { cond, then, else_ }`, `For { pat, iter, body }`,
   `Match { scrutinee, arms }`, `Call { callee, args }`, `MethodCall { recv,
   args }`, `Field(recv)`, `Index`, `Range`, `Closure`, `Ref { mutable }`,
-  `Unary(UnOp, _)`, `Try(_)`, `Await(_)`, `Macro`, `Ident`, `Lit(LitKind)`, …
-  Names never appear; operators always do.
-- `Fingerprint(u64)` — a deterministic hash of a normalized subtree. Must not
+  `Unary(UnOp, _)`, `Try(_)`, `Await(_)`, `Macro`, `Ident`, `Lit(LitKind)`
+  and so on. Names never appear; operators always do.
+- `Fingerprint(u64)`: a deterministic hash of a normalized subtree. Must not
   use `RandomState`: `std::collections::hash_map::DefaultHasher` is seeded
   per-process and would make output non-reproducible across runs. A fixed
   FNV-1a or a fixed-key `SipHasher` keyed on a constant, chosen for
@@ -424,18 +424,18 @@ existing file walk (respects --exclude / default excludes)
 
 ### Invariants worth a property test
 
-- **Jaccard bounds** — the score is always in `[0.0, 1.0]`.
-- **Reflexivity** — a function compared with itself scores exactly 1.0.
-- **Symmetry** — `jaccard(a, b) == jaccard(b, a)` exactly, not within epsilon.
-- **Renaming invariance** — for a generated function, applying a consistent
+- **Jaccard bounds.** The score is always in `[0.0, 1.0]`.
+- **Reflexivity.** A function compared with itself scores exactly 1.0.
+- **Symmetry.** `jaccard(a, b) == jaccard(b, a)` exactly, not within epsilon.
+- **Renaming invariance.** For a generated function, applying a consistent
   α-renaming of every binding leaves the fingerprint set unchanged.
-- **Literal-value invariance** — replacing every integer literal with a
+- **Literal-value invariance.** Replacing every integer literal with a
   different integer leaves the fingerprint set unchanged.
-- **Operator sensitivity** — replacing one binary operator with a different
+- **Operator sensitivity.** Replacing one binary operator with a different
   one changes the fingerprint set.
-- **Determinism** — normalizing and fingerprinting the same source twice
-  yields the same set; the report over the same input is byte-identical.
-- **Pair uniqueness** — for `n` functions the comparison yields at most
+- **Determinism.** Normalizing and fingerprinting the same source twice
+  yields the same set, and the report over the same input is byte-identical.
+- **Pair uniqueness.** For `n` functions the comparison yields at most
   `n·(n−1)/2` pairs, and no pair repeats in either orientation.
 
 ### Ordering
@@ -450,16 +450,15 @@ duplicates impossible by construction rather than by a filter.
 
 Comparison is `O(n²)` in functions and `O(|A|+|B|)` per pair. The fingerprint
 sets are `BTreeSet<u64>`, so intersection is a linear merge, and pairs are
-independent — the existing rayon pool parallelizes the comparison sweep.
+independent, so the existing rayon pool parallelizes the comparison sweep.
 
 ### Decisions
 
 These four shape the feature. Each was raised as an open question at the spec
-stage and approved as recommended; a fifth — that test code is out of scope,
-matching the complexity pass — was found while implementing T6 and approved
-as an amendment, together with the two scenarios that pin `min-nodes` and the
-JSON envelope; the rationale is kept because it is the
-reason each one is what it is.
+stage and approved as recommended. A fifth (test code is out of scope,
+matching the complexity pass) was found while implementing T6 and approved as
+an amendment, together with the two scenarios that pin `min-nodes` and the
+JSON envelope.
 
 **1. How the analysis is requested.** It costs real time on a large tree, so
 it must be off by default. The house preference is config over new flags, and
@@ -467,7 +466,7 @@ it must be off by default. The house preference is config over new flags, and
 for duplicates" is a different question from "score this tree", asked per run
 rather than per project.
 _Decision:_ a `--duplicates` CLI flag **and** a `duplicates.enabled`
-config key, the flag winning — matching how `threshold` and `fail_above`
+config key, the flag winning, matching how `threshold` and `fail_above`
 already work.
 
 **2. What the similarity threshold is called.** `--threshold` is the CRAP
@@ -481,15 +480,14 @@ looking at output).
 
 **3. Whether trivial functions are compared at all.** Nothing in the
 algorithm stops `fn x(&self) -> i32 { self.a }` and `fn y(&self) -> i32 {
-self.b }` from scoring 1.0 — they *are* structurally identical. On a real
+self.b }` from scoring 1.0. They *are* structurally identical. On a real
 codebase every accessor pair, every one-line `new`, and every trivial `Debug`
 impl reports as a duplicate, and the signal drowns.
 _Decision:_ a `duplicates.min-nodes` config key with a default around
 20 normalized nodes, below which a function is not compared; `0` restores the
 faithful-to-dry4go behavior. **This is scope the original prompt did not
-ask for** — it is included because the alternative is a feature whose default
-output is mostly noise. `duplicates.min-nodes = 0` restores the faithful
-behavior for anyone who wants it.
+ask for**, included because the alternative is a feature whose default output
+is mostly noise.
 
 **4. Where the pairs are printed.** A pair is not a row in the per-function
 CRAP table.
@@ -508,11 +506,11 @@ untouched in this spec.
   two invocations of different macros with different arguments are
   structurally identical to this tool. Improving this needs macro expansion
   and is its own spec.
-- **Detecting duplication below function granularity** — a repeated block
+- **Detecting duplication below function granularity.** A repeated block
   inside two otherwise different functions is not reported as a pair.
 - **Sub-quadratic scaling** (MinHash, LSH, inverted fingerprint index).
 - **Type-aware or semantic equivalence.** Two functions that compute the
   same result by different structures are not duplicates here.
 - **New output formats.** Which existing formats grow a duplicates section is
-  settled by the decisions below; SARIF, Shields and GitHub annotations
+  settled by the decisions above; SARIF, Shields and GitHub annotations
   are out of scope either way.

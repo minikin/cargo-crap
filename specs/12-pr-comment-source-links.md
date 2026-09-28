@@ -1,4 +1,4 @@
-# Spec 12 — Clickable source links in PR-comment / markdown output
+# Spec 12: Clickable source links in PR-comment / markdown output
 
 **Status:** Implemented
 **Effort:** Small
@@ -13,7 +13,7 @@ its `file:line` as plain code spans:
 | ✓ | 2.0 | NEW | 1 | — | `compile_schema` | `:160` |
 ```
 
-Reviewers cannot jump from the comment to the source — they have to copy the
+Reviewers cannot jump from the comment to the source. They have to copy the
 function name, open the repo, and search. When the longest-common-prefix
 strips the file path away (single-file or single-entry runs), the Location
 cell collapses to bare `:160`, which is even less useful.
@@ -26,7 +26,7 @@ Location string in markdown links pointing at the file/line on GitHub:
 | ✓ | 2.0 | NEW | 1 | — | [`compile_schema`](https://github.com/owner/repo/blob/<sha>/src/schema.rs#L160) | [`src/schema.rs:160`](https://github.com/owner/repo/blob/<sha>/src/schema.rs#L160) |
 ```
 
-Behaviour is unchanged when the flags are absent — local runs with no GitHub
+Behaviour is unchanged when the flags are absent. Local runs with no GitHub
 context still produce the same output as today.
 
 ---
@@ -216,7 +216,7 @@ Plumb `Option<&SourceLinks>` through:
 - The internal `write_pr_comment_row`, `write_pr_comment_abs_row`,
   `write_markdown_entries_table`, `write_delta_entries_table` helpers
 - `write_pr_comment_improved_section`, `write_pr_comment_hot_spots_section`
-- **NOT** `write_pr_comment_removed_section` — those functions no longer
+- **NOT** `write_pr_comment_removed_section`: those functions no longer
   exist at the linked ref.
 
 Cell rendering helper:
@@ -235,8 +235,7 @@ Apply to both the backtick-wrapped Function name and the backtick-wrapped
 
 ### Path used in the URL
 
-The display rule and the URL rule use **different** prefixes — this is the
-whole point.
+The display rule and the URL rule deliberately use **different** prefixes.
 
 - **Display** keeps using `compute_render_prefix`: longest common
   path-component prefix across rendered rows, falling back to CWD when LCP
@@ -249,7 +248,7 @@ whole point.
 
 The two MUST stay decoupled. A rendered set that happens to live entirely
 under `src/` will shrink the visible Location to `report.rs:64`, but the
-URL must remain `<repo-url>/blob/<ref>/src/report.rs#L64` — sharing the LCP
+URL must remain `<repo-url>/blob/<ref>/src/report.rs#L64`. Sharing the LCP
 between display and URL would silently ship 404s.
 
 If `link_path` returns `None` (path absolute and not under CWD), the row
@@ -270,15 +269,15 @@ In the **Generate PR comment** step add:
 ```
 
 `pull_request.head.sha` is preferred over `github.sha` (which on
-`pull_request` events is the merge-commit SHA — a synthetic ref users can't
+`pull_request` events is the merge-commit SHA, a synthetic ref users can't
 browse).
 
 ### Why links on both Function and Location
 
-Function cell carries the most semantically clickable text; Location is what
+The Function cell carries the name a reviewer reaches for. Location is what
 review eyes already track for "where is this?". Two link targets to the same
-URL is cheap (markdown-link characters) and removes any "click the name vs.
-click the path" friction.
+URL cost a few markdown characters and remove the "click the name or click
+the path" hesitation.
 
 ### Constants
 

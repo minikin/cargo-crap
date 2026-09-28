@@ -1,4 +1,4 @@
-# Spec 08 — Tunable --epsilon for regression detection
+# Spec 08: Tunable --epsilon for regression detection
 
 **Status:** Implemented  
 **Effort:** Low  
@@ -8,7 +8,7 @@
 
 The regression epsilon (currently hardcoded at `0.01` in `delta.rs:24`) controls
 how much a CRAP score must increase before it counts as a regression. Teams with
-noisy coverage (e.g. flaky integration tests) need a larger tolerance; strict
+noisy coverage (e.g. flaky integration tests) need a larger tolerance. Strict
 teams may want `0.0`.
 
 ---

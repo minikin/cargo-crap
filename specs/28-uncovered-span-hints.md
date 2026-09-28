@@ -1,4 +1,4 @@
-# Spec 28 — Uncovered-span hints
+# Spec 28: Uncovered-span hints
 
 **Status:** Implemented
 **Effort:** Medium
@@ -8,12 +8,12 @@
 
 The report says *which* functions are crappy but not *why they stay
 crappy*: a `CRAP 87` row gives no clue where the missing tests should
-aim. The data to answer that already flows through the merge layer —
-`coverage_in_span` intersects the function's AST span with the LCOV `DA`
-records — but the per-line detail is collapsed into a single percentage
-and thrown away.
+aim. The data to answer that already flows through the merge layer,
+where `coverage_in_span` intersects the function's AST span with the
+LCOV `DA` records. The per-line detail is then collapsed into a single
+percentage and thrown away.
 
-This spec keeps it: each entry gains a list of **uncovered ranges** —
+This spec keeps it: each entry gains a list of **uncovered ranges**,
 maximal runs of instrumented-but-never-hit lines inside the function's
 span. Rendered compactly (`142–158, 171, 180–184`), they turn the
 report from a scoreboard into a to-do list: the reader knows exactly
@@ -22,19 +22,19 @@ report on the side.
 
 Two definitions anchor everything below:
 
-- **Uncovered line** — a line inside `[start_line..=end_line]` that has
+- **Uncovered line**: a line inside `[start_line..=end_line]` that has
   a `DA` record with 0 hits. Lines *without* a `DA` record (comments,
   braces, blank lines, non-executable code) are neither covered nor
   uncovered; they are invisible to this feature.
-- **Uncovered range** — a maximal inclusive run of uncovered lines.
+- **Uncovered range**: a maximal inclusive run of uncovered lines.
   Only a *covered* instrumented line (hits > 0) breaks a range;
   non-instrumented lines in between are coalesced over. Range endpoints
-  are always uncovered instrumented lines — a range never starts or
+  are always uncovered instrumented lines. A range never starts or
   ends on non-instrumented padding.
 
 Per house style, no new CLI flag: human-readable rendering is gated by
-a config key. The JSON format always carries the data — it is the
-machine format, and the field is additive.
+a config key. The JSON format always carries the data, since it is the
+machine format and the field is additive.
 
 ---
 
@@ -180,24 +180,24 @@ the `default-excludes` precedent. Default off.
 - A shared formatter in `report/types.rs` (`uncovered_display`):
   en-dash ranges, comma-separated, cap 3 + `+N more`, bare number for
   single-line ranges.
-- **human** — extra `Uncovered` column when the key is on. If/when
+- **human**: extra `Uncovered` column when the key is on. If/when
   spec 20's width-aware layout lands, this column should join it as
   lowest priority (first to drop when the terminal is narrow).
-- **markdown / pr-comment** — extra column in their tables, same
+- **markdown / pr-comment**: extra column in their tables, same
   formatter.
-- **json** — field always present when non-empty (see scenario); the
+- **json**: field always present when non-empty (see scenario); the
   envelope version already mirrors the crate version, so consumers see
   the addition with the release bump. Update the spec-03 schema.
-- **github / sarif / shields / summary** — unchanged.
+- **github / sarif / shields / summary**: unchanged.
 
 ### Non-goals
 
-- No SARIF `relatedLocations` for uncovered regions — a natural
+- No SARIF `relatedLocations` for uncovered regions: a natural
   follow-up, but out of scope here.
-- No hit-count detail (`0/3 branch legs`) — LCOV `BRDA` records and
+- No hit-count detail (`0/3 branch legs`). LCOV `BRDA` records and
   branch-aware scoring are a separate feature.
 - No threshold gating of hints: every *displayed* row renders its
   ranges when the key is on. Which rows are displayed remains the job
   of `--threshold` / `--min` / `--top` / caps, unchanged.
-- No change to scoring, matching, or delta semantics — the field is
+- No change to scoring, matching, or delta semantics. The field is
   payload, never key.

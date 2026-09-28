@@ -1,4 +1,4 @@
-# Spec 11 — Automatic PR comment with CRAP summary
+# Spec 11: Automatic PR comment with CRAP summary
 
 **Status:** Implemented
 **Effort:** Medium
@@ -6,19 +6,19 @@
 
 ## Context
 
-When a developer opens a PR, they have to manually inspect CI logs to understand
-whether CRAP scores regressed. A sticky comment posted (and updated) by cargo-crap
-on every PR makes the delta immediately visible without opening any logs.
+When a developer opens a PR, the only way to see whether CRAP scores regressed is
+to dig through the CI logs. A sticky comment posted (and updated) by cargo-crap on
+every PR puts the delta in the PR itself.
 
 The PR comment has different constraints than a full markdown report:
 - GitHub caps comment bodies at 65,536 characters.
 - Reviewers (often on mobile) need to answer "did this PR make things worse?" in
   one screen, not scroll through every function in the codebase.
-- Unchanged functions — typically the bulk of any non-trivial codebase — are
+- Unchanged functions, typically the bulk of any non-trivial codebase, are
   pure noise in a delta view.
 
-Therefore the comment is produced by a dedicated `--format pr-comment` renderer
-that is *opinionated* about which rows to surface. `--format markdown` continues
+The comment is produced by a dedicated `--format pr-comment` renderer that is
+*opinionated* about which rows to surface. `--format markdown` continues
 to emit the exhaustive table for use as an artifact, docs page, or piped input.
 
 The plumbing pieces:
@@ -219,7 +219,7 @@ And   no row cap is applied
 - New entry points: `render_pr_comment(entries, threshold, out)` and
   `render_delta_pr_comment(report, threshold, out)`.
 - The existing `render_markdown` / `render_delta_markdown` functions are
-  unchanged in behaviour — they keep emitting the exhaustive report.
+  unchanged in behaviour: they keep emitting the exhaustive report.
 
 ### PR-comment renderer rules
 
@@ -230,10 +230,10 @@ And   no row cap is applied
 - Primary table: Regressed rows (sorted by `|Δ|` desc) followed by New rows
   (sorted by CRAP desc). Capped at `MAX_ROWS_PER_SECTION = 25`.
 - `<details>` blocks (in this order, omitted when empty):
-  1. `↓ N improved` — Improved entries sorted by `|Δ|` desc.
-  2. `🔥 Top hot spots above threshold` — Unchanged entries with CRAP >
+  1. `↓ N improved`: Improved entries sorted by `|Δ|` desc.
+  2. `🔥 Top hot spots above threshold`: Unchanged entries with CRAP >
      threshold, sorted by CRAP desc.
-  3. `— N removed` — Removed entries sorted by baseline CRAP desc.
+  3. `— N removed`: Removed entries sorted by baseline CRAP desc.
 - Each capped section ends with `_…and N more, see CI artifact for the full report._`
   when truncated.
 - Unchanged-and-below-threshold entries are never rendered.

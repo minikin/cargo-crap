@@ -1,4 +1,4 @@
-# Spec 04 — --jobs N flag for parallel analysis
+# Spec 04: --jobs N flag for parallel analysis
 
 **Status:** Implemented  
 **Effort:** Low  
@@ -7,8 +7,8 @@
 ## Context
 
 `analyze_tree` uses the default rayon global thread pool with no way to cap it.
-In memory-constrained CI/Docker environments this can cause OOM kills or resource
-contention. `--jobs N` lets operators bound the parallelism explicitly.
+In memory-constrained CI and Docker environments this can cause OOM kills or
+resource contention. `--jobs N` lets operators bound the parallelism explicitly.
 
 ---
 

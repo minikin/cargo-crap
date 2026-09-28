@@ -13,7 +13,7 @@ pub const WORTH_QUESTION: &str = "worth_extracting";
 /// miss the other.
 pub const DIVERGENCE_QUESTION: &str = "divergence_risk";
 
-/// What kind of duplication a pair is — the question the similarity score
+/// What kind of duplication a pair is: the question the similarity score
 /// cannot answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -21,7 +21,7 @@ pub enum Kind {
     SameLogic,
     /// Nothing in common but a Rust idiom or a sequence of similar calls.
     SharedShapeOnly,
-    /// A shape imposed from outside — a trait, a macro, a visitor.
+    /// A shape imposed from outside: a trait, a macro, a visitor.
     StructuralObligation,
     /// The same logic up to a value or a type that could be a parameter.
     Parameterisable,
@@ -107,7 +107,7 @@ impl WorthExtracting {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Verdict {
     pub kind: Kind,
-    /// The kind Choice's confidence, `0.0..=1.0` — what the floor compares.
+    /// The kind Choice's confidence, `0.0..=1.0`. What the floor compares.
     pub confidence: f64,
     pub worth_extracting: WorthExtracting,
     /// Probability that a fix to one side would be missed in the other.
@@ -182,8 +182,8 @@ impl fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
-/// Values the server computes can land a hair past a bound; within this of
-/// one they are float noise, clamped to it rather than rejected — one
+/// Values the server computes can land a hair past a bound. Within this of
+/// one they are float noise, clamped to it rather than rejected: one
 /// rejected pair discards the whole run's triage.
 const TOLERANCE: f64 = 1e-9;
 
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn an_answer_of_the_wrong_type_is_an_error_naming_both_types() {
         // The message names the question, the type it needed and the type
-        // that came back — the three facts a mismatched question set needs.
+        // that came back: the three facts a mismatched question set needs.
         let cases = [
             (
                 response(DIVERGENCE, WORTH, DIVERGENCE),
@@ -542,8 +542,8 @@ mod tests {
     }
 
     proptest! {
-        /// Every verdict either asserts its kind or is uncertain — decided by
-        /// the confidence against the floor, and nothing else.
+        /// Every verdict either asserts its kind or is uncertain, decided by
+        /// the confidence against the floor and nothing else.
         #[test]
         fn the_floor_is_a_partition(verdict in verdicts(), floor in 0.0..=1.0f64) {
             match verdict.assessment(floor) {

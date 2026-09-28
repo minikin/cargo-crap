@@ -95,7 +95,7 @@ pub(crate) fn fractional_cc_sample() -> Vec<CrapEntry> {
 }
 
 /// [`fractional_cc_sample`] as a delta report in which both entries
-/// regressed by 10 — the one status every delta renderer shows.
+/// regressed by 10, the one status every delta renderer shows.
 pub(crate) fn fractional_cc_delta() -> DeltaReport {
     DeltaReport {
         entries: fractional_cc_sample()

@@ -1,27 +1,27 @@
 //! Compute the **CRAP** (Change Risk Anti-Patterns) metric for Rust projects.
 //!
-//! The score combines cyclomatic complexity and test coverage into a single
-//! number that is high when code is both hard to understand *and* poorly
-//! tested — the conditions where bugs love to hide.
+//! The score combines cyclomatic complexity and test coverage into one
+//! number. It is high when code is both hard to understand *and* poorly
+//! tested.
 //!
 //! ```text
 //! CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)
 //! ```
 //!
-//! A few properties worth knowing before you use the numbers:
+//! Consequences of the formula:
 //!
-//! - A trivial function (CC = 1, 100% covered) always scores **1.0** — the
-//!   lower bound.
-//! - At 100% coverage the quadratic term collapses: **CRAP equals CC**. When
-//!   both columns match, the function is fully covered. Tests are capping the
-//!   damage, but the complexity itself remains.
-//! - Above CC ≈ 30, no amount of coverage keeps the score under the default
-//!   threshold of 30. The formula refuses to certify a monster method as
-//!   clean just because it happens to be tested.
+//! - A trivial function (CC = 1, 100% covered) scores **1.0**, the lower
+//!   bound.
+//! - At 100% coverage the quadratic term drops out and **CRAP equals CC**, so
+//!   matching columns mean a fully covered function. The tests cap the risk;
+//!   the complexity is still there.
+//! - Above CC ≈ 30 no amount of coverage keeps the score under the default
+//!   threshold of 30, since at full coverage the score is CC itself. Being
+//!   tested does not make a very large function clean.
 //!
 //! # Quick start
 //!
-//! The simplest use case is computing the CRAP score for a single function:
+//! Scoring a single function:
 //!
 //! ```rust
 //! use cargo_crap::score::crap;
@@ -35,15 +35,15 @@
 //! // Savoia & Evans worked example: CC=6, 0% → 6² × 1³ + 6 = 42.0
 //! assert_eq!(crap(6.0, 0.0), 42.0);
 //!
-//! // CC=12, untested → 12² + 12 = 156 — well past the threshold of 30.
+//! // CC=12, untested → 12² + 12 = 156, well past the threshold of 30.
 //! assert_eq!(crap(12.0, 0.0), 156.0);
 //! ```
 //!
-//! # Full pipeline — embedding in a custom tool
+//! # Embedding the full pipeline
 //!
-//! The library exposes the same pipeline that the `cargo crap` CLI uses.
-//! You can drive it programmatically to embed CRAP gating into a custom CI
-//! tool, an editor plugin, or an automated refactoring advisor.
+//! The library exposes the pipeline the `cargo crap` CLI runs, for putting
+//! CRAP gating into a custom CI tool, an editor plugin or a refactoring
+//! advisor.
 //!
 //! ```no_run
 //! use cargo_crap::{
@@ -76,8 +76,8 @@
 //!
 //! # Threshold gate
 //!
-//! To exit non-zero when any function exceeds a threshold — the standard CI
-//! gate pattern — check the entries yourself:
+//! The usual CI gate exits non-zero when any function exceeds a threshold.
+//! Check the entries yourself:
 //!
 //! ```no_run
 //! use cargo_crap::{
@@ -107,9 +107,8 @@
 //!
 //! # Baseline comparison (delta mode)
 //!
-//! To detect regressions relative to a saved baseline — the recommended
-//! approach for teams — use [`delta::compute_delta`] after loading a previous
-//! run's JSON output:
+//! Teams usually gate on regressions against a saved baseline instead. Load a
+//! previous run's JSON output and pass it to [`delta::compute_delta`]:
 //!
 //! ```no_run
 //! use cargo_crap::{
@@ -148,7 +147,7 @@
 //! | [`coverage`] | LCOV parser. Produces `(file, line) → hit-count` maps. |
 //! | [`merge`] | Joins complexity with coverage. Handles all path-matching cases. |
 //! | [`delta`] | Baseline comparison. Computes per-function deltas and regression counts. |
-//! | [`duplicates`] | Structural duplicate detection: normalize each function's AST, fingerprint its subtrees, compare pairs by Jaccard similarity. |
+//! | [`duplicates`] | Structural duplicate detection: normalize each function's AST, fingerprint its subtrees, compare pairs by Jaccard similarity. Optional triage of the pairs by a `TypeSafe` model lives in `duplicates::triage` (the HTTP client needs the `triage` feature). |
 //! | [`report`] | Renders `Vec<CrapEntry>` or `DeltaReport` as a human table, JSON, GitHub annotations, Markdown, a PR comment, SARIF, or a Shields.io badge. |
 //! | [`config`] | Loads `.cargo-crap.toml` by walking up from CWD. |
 

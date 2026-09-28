@@ -1,4 +1,4 @@
-# Spec 09 — cargo expand integration (--expanded)
+# Spec 09: cargo expand integration (--expanded)
 
 **Status:** Pending  
 **Effort:** High  
@@ -7,8 +7,8 @@
 ## Context
 
 `syn` parses the source as-written. Proc-macro generated code (derive handlers,
-builder patterns, `thiserror` impls) is invisible — their complexity is simply
-not counted. `--expanded` runs `cargo expand` first and analyzes the expanded
+builder patterns, `thiserror` impls) is invisible: its complexity is not
+counted. `--expanded` runs `cargo expand` first and analyzes the expanded
 output, giving accurate CC for macro-heavy codebases.
 
 ---

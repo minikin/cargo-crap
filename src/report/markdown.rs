@@ -542,8 +542,6 @@ mod tests {
         assert!(s.contains("| 7–9 |"), "delta range cell:\n{s}");
     }
 
-    // --- fractional CC display ----------------------------------------------
-
     #[test]
     fn fractional_cc_renders_with_one_decimal_integral_cc_as_today() {
         let mut buf = Vec::new();

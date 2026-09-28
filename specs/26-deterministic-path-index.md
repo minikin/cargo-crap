@@ -1,4 +1,4 @@
-# Spec 26 — Deterministic path resolution in the merge index
+# Spec 26: Deterministic path resolution in the merge index
 
 **Status:** Implemented (issue #62)
 **Effort:** Medium
@@ -10,9 +10,9 @@
 places (issue #62, found during a whole-source review):
 
 1. **Slow path (relative keys).** `lookup` returns the *first*
-   `by_relative` entry whose components suffix-match the query — and that
-   order is inherited from `HashMap` iteration, i.e. effectively random
-   per process. With an LCOV containing both `src/lib.rs` and
+   `by_relative` entry whose components suffix-match the query, and that
+   order is inherited from `HashMap` iteration, which is random per process in
+   practice. With an LCOV containing both `src/lib.rs` and
    `vendor/dep/src/lib.rs`, a query for `/repo/vendor/dep/src/lib.rs`
    matches **both**, and which coverage data wins differs between runs on
    byte-identical inputs.
@@ -21,7 +21,7 @@ places (issue #62, found during a whole-source review):
    the same real file (symlinked checkout roots, merged multi-leg
    `lcov -a` runs) collide on the canonical key with last-write-wins.
    When the aliases carry *different* hit data, one leg's coverage is
-   silently dropped — and which leg survives is hash-order-dependent.
+   silently dropped, and which leg survives is hash-order-dependent.
    (The spec-24 diagnostics already recognize such aliases so they don't
    show as strays; the data-selection nondeterminism remained.)
 
@@ -29,16 +29,16 @@ For a CI gating tool, identical inputs must produce identical scores.
 This spec makes both resolutions deterministic, following the precedent
 set elsewhere in the codebase:
 
-- **Most-specific-match preference** — the slow path prefers the
+- **Most-specific-match preference.** The slow path prefers the
   *longest* matching suffix, mirroring spec 25's deepest-prefix member
   attribution and spec 21's longest-common-suffix pairing.
 - **No tie heuristics needed.** If two relative keys both suffix-match
   one query, either one is strictly longer (longest wins) or they have
-  identical components (`src/lib.rs` vs `./src/lib.rs`) — different
+  identical components (`src/lib.rs` vs `./src/lib.rs`): different
   spellings of the *same logical file*, which are merged, not chosen
   between. Unlike spec 21 there is no "decline on tie" arm because a
   genuine tie between distinct files is impossible.
-- **Merge, don't drop** — canonical-key collisions on the fast path sum
+- **Merge, don't drop.** Canonical-key collisions on the fast path sum
   per-line hit counts, matching `lcov -a` aggregation semantics. Since
   addition is commutative, the result is independent of iteration order.
 
@@ -159,27 +159,27 @@ allocation-free.
 The slow path scans all suffix-matching candidates and picks the one
 with the most components. After build-time dedup, that maximum is
 unique by construction (two distinct entries of equal component count
-cannot both suffix-match one query), so no tie-break arm exists — a
+cannot both suffix-match one query), so no tie-break arm exists. A
 debug assertion may pin this invariant.
 
 ### Diagnostics interplay (spec 24)
 
 `lookup` consumption must credit *every* raw spelling behind a merged
 entry, not just a representative. This subsumes the current
-`aliases_used` re-canonicalization dance for the fast path — aliases
-are now known at build time — but the spec-24 observable behaviour is
+`aliases_used` re-canonicalization dance for the fast path, since
+aliases are now known at build time. The spec-24 observable behaviour is
 unchanged: aliases of consumed keys never appear in `lcov_only`, and
 relative keys are still never canonicalized to discover aliasing.
 
 ### Non-goals
 
-- No new CLI flags or config keys — resolution is always deterministic;
-  there is nothing to configure.
+- No new CLI flags or config keys: resolution is always deterministic,
+  so there is nothing to configure.
 - No change to the delta layer: spec 21's mutual-unique-best matching
   and tie-declining are a different problem (pairing *entries across
   runs*, where genuine ties between distinct functions exist).
 - No warning on ambiguity. Longest-suffix preference is the correct
-  binding, and merged aliases are the correct data — neither is a
+  binding, and merged aliases are the correct data. Neither is a
   user error worth stderr noise. Scope mismatches remain spec 24's job.
 - Duplicate `SF` records with the *same spelling* in one LCOV file are
   the parser's concern (`src/coverage.rs`), not the index's.

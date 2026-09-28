@@ -36,15 +36,15 @@ use verdict::Verdict;
 /// pair in the pairs' order.
 ///
 /// All or nothing: a report where some pairs carry a verdict and others do
-/// not invites reading the absence as a verdict, so one pair failing — after
-/// its retries — fails the run. No pairs means no requests, even without a
+/// not invites reading the absence as a verdict, so one pair failing (after
+/// its retries) fails the run. No pairs means no requests, even without a
 /// key.
 ///
 /// A pair whose two bodies were judged before, by the same model and
 /// question set, is answered from the cache. Every fresh verdict is cached
-/// as soon as it arrives — even in a run that later fails — so a retry pays
-/// only for the pairs that were not answered. A cache that cannot be written
-/// costs one warning and nothing else.
+/// as soon as it arrives, including in a run that later fails, so a retry
+/// pays only for the pairs that were not answered. A cache that cannot be
+/// written costs one warning and nothing else.
 ///
 /// # Errors
 ///
@@ -95,9 +95,8 @@ const REQUEST_THREADS: usize = 8;
 
 #[cfg(feature = "triage")]
 impl Run<'_> {
-    /// One pair: from the cache when its bodies were judged before;
-    /// otherwise build the request from the source on disk, send it, decode
-    /// the answer and cache it.
+    /// One pair: answered from the cache when its bodies were judged before,
+    /// otherwise asked from the source on disk and cached.
     fn judge(
         &self,
         pair: &DuplicatePair,

@@ -2,7 +2,7 @@
 //!
 //! - [`Grade`]: three-tier severity classification driving icon/colour.
 //! - [`coverage_bar`]: 10-block ASCII bar for human tables.
-//! - [`cc_display`]: CC text — integral as today, fractional to one decimal.
+//! - [`cc_display`]: CC text, integral or fractional to one decimal.
 //! - [`delta_display`]: Δ-column text for delta rows.
 //! - [`uncovered_display`]: capped Uncovered-column text.
 
@@ -272,8 +272,6 @@ pub(crate) fn format_location_with_prev(
 mod tests {
     use super::*;
     use proptest::prelude::*;
-
-    // --- cc_display ---
 
     #[test]
     fn cc_display_shows_integral_cc_without_a_decimal_point() {

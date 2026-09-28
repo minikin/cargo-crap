@@ -1,4 +1,4 @@
-# Spec 16 — Changed-only output in baseline mode
+# Spec 16: Changed-only output in baseline mode
 
 **Status:** Implemented
 **Effort:** Small
@@ -8,28 +8,28 @@
 
 [Issue #23](https://github.com/minikin/cargo-crap/issues/23): when
 `--baseline` is combined with `--format human` (or `--format markdown`),
-the delta table includes every row — `Unchanged` entries included. On a
+the delta table includes every row, `Unchanged` entries included. On a
 large crate this buries the handful of rows the user actually cares about
 under hundreds of no-op lines.
 
 The delta engine already classifies every entry
 (`Regressed / Improved / New / Unchanged / Moved`), so this is purely a
 rendering concern. Per the discussion on the issue, changed-only becomes
-the **default** behaviour whenever `--baseline` is supplied; a new
+the **default** behaviour whenever `--baseline` is supplied. A new
 `--show-unchanged` flag restores the exhaustive table.
 
 Scope is deliberately limited to the human and markdown renderers:
 
-- **json** stays exhaustive — it is a machine format and consumers filter
+- **json** stays exhaustive: it is a machine format and consumers filter
   on `status` themselves. Dropping rows would be a breaking schema change
   for no benefit.
-- **github** already emits `::warning` annotations only for regressions;
-  nothing to hide.
-- **pr-comment** already hides `Unchanged` rows by design (spec 11);
+- **github** already emits `::warning` annotations only for regressions, so
+  there is nothing to hide.
+- **pr-comment** already hides `Unchanged` rows by design (spec 11), and
   `--show-unchanged` does not affect it.
 
 The breakdown line (`↑ N regressed · ↓ N improved · …`) keeps counting
-*all* entries regardless of the flag — hiding rows must not change the
+*all* entries regardless of the flag. Hiding rows must not change the
 aggregate numbers.
 
 ---
@@ -137,13 +137,13 @@ Then  the exit code is non-zero (regression detection operates on the
 ## Implementation Notes
 
 - Filter inside the renderers (or via a shared helper in
-  `report/types.rs`), **not** upstream in `main.rs` — the full
+  `report/types.rs`), **not** upstream in `main.rs`. The full
   `DeltaReport` must reach `render_delta` so JSON stays exhaustive and
   summary counts stay correct.
 - Thread the flag through the dispatcher: `render_delta(report, threshold,
   links, show_unchanged, out)`. Only `human` and `markdown` consult it.
 - `write_delta_summary` (human) and `write_markdown_delta_stats`
-  (markdown) keep computing counts from `report.entries` — untouched.
+  (markdown) keep computing counts from `report.entries` and are untouched.
 - Config: `show_unchanged: Option<bool>` in `Config`, default false; CLI
   flag wins, consistent with existing precedence rules.
 - This changes default output for existing `--baseline` users. Acceptable

@@ -1,4 +1,4 @@
-# Spec 10 — Incremental analysis cache
+# Spec 10: Incremental analysis cache
 
 **Status:** Pending
 **Effort:** High
@@ -17,12 +17,12 @@ its path, with no cross-file state. So caching at file granularity is sound.
 ## Scope and invariants
 
 - **Complexity only.** The cache stores per-file `Vec<FunctionComplexity>`.
-  Coverage/LCOV data is never cached — it is cheap and changes every run.
+  Coverage data from LCOV is never cached. It is cheap and changes every run.
 - **Filters apply after the cache.** Cached results are unfiltered, keyed by
   canonicalized absolute path. `--exclude`, `--allow`, and default-excludes
   select a subset *after* the cache is consulted, so changing the filter set
   between runs never corrupts the cache. (Excluded files are never parsed, so
-  they are simply absent from the cache — acceptable.)
+  they are absent from the cache. That is fine.)
 - **Output order is preserved.** Merged cached + freshly-parsed results are
   assembled in directory-walk order, identical to a full uncached run.
 - **Freshness key (hybrid).** Each entry stores `(len, mtime, content_hash)`.
@@ -32,8 +32,8 @@ its path, with no cross-file state. So caching at file granularity is sound.
   re-parse.
 - **Versioned.** The cache file carries a cache-format version that includes
   the complexity-algorithm version. A version mismatch is treated exactly like
-  a corrupt cache: ignored and rebuilt. This prevents a stale cache from a
-  previous `cargo-crap` release from producing wrong scores.
+  a corrupt cache: ignored and rebuilt. A cache left by an earlier
+  `cargo-crap` release cannot produce wrong scores.
 - **Location.** `<target>/cargo-crap/cache.json`, where `<target>` is
   `CARGO_TARGET_DIR` if set, else `target/` under the nearest ancestor
   `Cargo.toml`. Living under `target/` means it is already git-ignored.

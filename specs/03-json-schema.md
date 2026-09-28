@@ -1,4 +1,4 @@
-# Spec 03 — Published JSON Schema
+# Spec 03: Published JSON Schema
 
 **Status:** Implemented  
 **Effort:** Low  

@@ -128,8 +128,8 @@ pub struct Config {
     /// What each `?` operator adds to a function's cyclomatic complexity.
     /// Defaults to [`DEFAULT_TRY_WEIGHT`], the classical cyclomatic count; every
     /// other decision point keeps its fixed cost. Must lie in
-    /// `0.0..=`[`MAX_TRY_WEIGHT`] when set. Config-only — there is deliberately no CLI
-    /// flag, so a weight cannot change between runs unnoticed.
+    /// `0.0..=`[`MAX_TRY_WEIGHT`] when set. Config-only: there is deliberately
+    /// no CLI flag, so a weight cannot change between runs unnoticed.
     pub try_weight: Option<f64>,
 
     /// Settings for structural duplicate detection. Its own table so the
@@ -162,9 +162,9 @@ pub struct DuplicatesConfig {
 
 /// The `[duplicates.triage]` table. Turning triage on sends each reported
 /// pair's two function bodies to a third-party API, so it is off unless
-/// switched on here — there is deliberately no flag. The API key is read
-/// from `TYPESAFE_API_KEY` and never from this file; an `api-key` entry is
-/// an unknown key, rejected like any other.
+/// switched on here. There is deliberately no flag. The API key is read from
+/// `TYPESAFE_API_KEY` and never from this file; an `api-key` entry is an
+/// unknown key, rejected like any other.
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct TriageConfig {
@@ -200,7 +200,7 @@ pub const DEFAULT_DUP_MIN_NODES: usize = 20;
 pub const DEFAULT_TRY_WEIGHT: f64 = 1.0;
 
 /// The heaviest `?` weight accepted. Far above any sensible audit weight,
-/// and low enough that CC and CRAP stay finite for any real function — an
+/// and low enough that CC and CRAP stay finite for any real function. An
 /// overflowed score serializes as `null` and compares false against the
 /// threshold, so it would pass the gate.
 pub const MAX_TRY_WEIGHT: f64 = 100.0;
@@ -473,8 +473,8 @@ allow = ["Foo::*"]
 
     #[test]
     fn an_unknown_triage_key_is_rejected() {
-        // Notably the API key: it is read from the environment only, and a
-        // config that tries to carry one is a typo or a leak, never honoured.
+        // The API key above all: it is read from the environment only, and
+        // a config that carries one is a typo or a leak, never honoured.
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path(), "[duplicates.triage]\napi-key = \"secret\"\n");
         let err = load(dir.path()).unwrap_err();
