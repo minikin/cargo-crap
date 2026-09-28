@@ -64,6 +64,13 @@ in the same order, with the same score. Triage only adds a line.
   content, so an unchanged tree costs nothing after the first run.
 - **Only `human` and `json` carry duplicates at all** (spec 29). Triage
   inherits that restriction rather than widening it.
+- **The network client is a build-time opt-in.** Triage's HTTP client lives
+  behind a Cargo feature, `triage`, off by default: a plain
+  `cargo install cargo-crap` compiles no HTTP client and no TLS stack, and
+  `cargo install cargo-crap --features triage` opts in. The
+  `[duplicates.triage]` table parses in every build; a build without the
+  feature that finds triage enabled prints one warning naming the feature and
+  produces the spec-29 output.
 
 ### Rejected alternatives
 
@@ -233,6 +240,17 @@ Then  each duplicates entry carries a triage object with its kind,
 And   a run with triage disabled emits the same entries with no triage key
 ```
 
+### Scenario: A build without the triage feature says how to get it
+
+```
+Given a cargo-crap built without the `triage` feature
+And   a .cargo-crap.toml that enables triage
+When  cargo-crap runs with duplicate detection
+Then  the duplicates section is byte-identical to the spec-29 output
+And   stderr carries one warning naming the `triage` feature
+And   no network request is made
+```
+
 ### Scenario: An invalid confidence floor is rejected before any analysis
 
 ```
@@ -258,9 +276,9 @@ lines.
 - [x] **T3 — Request state from a pair's spans.** Needs: T2. `triage/request.rs`: re-read each side's `start_line..=end_line` from disk, build the state `{function_a, function_b, structural_similarity}`, the three questions, and `QUESTION_SET_VERSION`. Scenarios: none end-to-end. Tests: unit (question ids, types and option names match what `verdict.rs` decodes) + property (for any file and line range, the body in the state is exactly those lines and nothing else).
 - [x] **T4 — Content-keyed verdict cache.** Needs: T2. `triage/cache.rs` under `target/cargo-crap/triage/`; key = FNV-1a over both bodies, model id and `QUESTION_SET_VERSION` (make the `FnvHasher` in `src/duplicates/fingerprint.rs` `pub(crate)` rather than write a second one). Scenarios: none end-to-end. Tests: unit (a missing or corrupt entry is a miss, never an error) + property (key stable across calls; key differs when either body, the model or the version differs; write-then-read returns the verdict).
 - [x] **T5 — Recording TypeSafe stub for tests.** `tests/support/typesafe_stub.rs`: std-only `TcpListener` server on `127.0.0.1:0`, scripted per request (answer / fail with status / drop connection), recording each request's body and headers. Adds `mod support;` and the empty `Spec 30` section with its per-task headings to `tests/acceptance.rs`. No new dev-dependency. Scenarios: none. Tests: the stub's own self-tests.
-- [ ] **T6 — HTTP client, retries and the all-or-nothing batch.** Needs: T2, T3, T5. `triage/client.rs` (sync client, `ureq` with rustls in `Cargo.toml`; key from `TYPESAFE_API_KEY`, base URL from `TYPESAFE_BASE_URL`, default `https://api.typesafe.ai`, 10 s timeout) and `triage::run(pairs, settings) -> Result<Vec<Verdict>, TriageError>` in `triage/mod.rs`, pairs requested in parallel with `rayon`. Bounded retries on connect errors, 429 and 5xx; none on other 4xx. Any pair failing fails the batch. Scenarios: none end-to-end. Tests: unit (retry classification) + integration in `tests/triage_client.rs` against the stub (success decodes; 5xx then success is retried; persistent failure errs; one of four failing errs the batch; missing key errs naming `TYPESAFE_API_KEY` with zero requests made).
+- [ ] **T6 — HTTP client, retries and the all-or-nothing batch.** Needs: T2, T3, T5. `triage/client.rs` (sync client, `ureq` with rustls as an optional dependency enabled by the `triage` Cargo feature, off by default — only `client.rs` and `triage::run` are gated, since the rest uses no network; key from `TYPESAFE_API_KEY`, base URL from `TYPESAFE_BASE_URL`, default `https://api.typesafe.ai`, 10 s timeout) and `triage::run(pairs, settings) -> Result<Vec<Verdict>, TriageError>` in `triage/mod.rs`, pairs requested in parallel with `rayon`. Bounded retries on connect errors, 429 and 5xx; none on other 4xx. Any pair failing fails the batch. Scenarios: none end-to-end. Tests: unit (retry classification) + integration in `tests/triage_client.rs` against the stub (success decodes; 5xx then success is retried; persistent failure errs; one of four failing errs the batch; missing key errs naming `TYPESAFE_API_KEY` with zero requests made). Also makes the gates cover both builds: `just dev` and CI test with the feature on and off, and coverage, the CRAP gate and mutation testing run with `--all-features`.
 - [x] **T7 — Human triage line.** Needs: T2. `RenderOptions` gains `triage: Option<&[Assessment]>` in `src/report.rs` (struct and `render_duplicates` only); `src/report/duplicates.rs` prints `  triage: <kind>, <worth-extracting> (conf 0.91)` or `  triage: uncertain (conf 0.31)` under each pair. Scenarios: none end-to-end. Tests: unit (both line shapes) + property (pair identity — deleting the triage lines from a triaged rendering yields the untriaged rendering byte for byte).
-- [ ] **T8 — Wire triage into the run.** Needs: T1, T6, T7. `src/main.rs`: `DupSettings` resolves the triage settings; after `duplicate_pairs` (so the non-carrying-format early return still wins), call `triage::run`, map verdicts through the configured floor, pass the assessments to rendering. In this task an error from `triage::run` still aborts the run — T9 turns it into a warning. Scenarios: _Triage is off by default_, _An enabled run annotates every pair it reports_, _A verdict below the confidence floor is reported as uncertain_, _No pairs means no requests_, _A request carries exactly the pair under judgment_, _Triage never runs for a format that cannot carry duplicates_. Tests: acceptance, against the stub.
+- [ ] **T8 — Wire triage into the run.** Needs: T1, T6, T7. `src/main.rs`: `DupSettings` resolves the triage settings; after `duplicate_pairs` (so the non-carrying-format early return still wins), call `triage::run`, map verdicts through the configured floor, pass the assessments to rendering. In this task an error from `triage::run` still aborts the run — T9 turns it into a warning. Scenarios: _Triage is off by default_, _An enabled run annotates every pair it reports_, _A verdict below the confidence floor is reported as uncertain_, _No pairs means no requests_, _A request carries exactly the pair under judgment_, _Triage never runs for a format that cannot carry duplicates_, _A build without the triage feature says how to get it_ (without the feature, an enabled triage prints the one warning). Tests: acceptance, against the stub.
 - [ ] **T9 — Degrade to the untriaged report on any failure.** Needs: T8. `src/main.rs` triage call site: an `Err` becomes one stderr warning naming the cause and `None` assessments; exit code untouched. Scenarios: _A missing API key degrades to the untriaged report_, _An unreachable API degrades to the untriaged report_, _One failed pair discards the whole triage_. Tests: acceptance + property (degradation identity — for any failure injected by the stub, stdout is byte-identical to the same run with triage disabled, and the exit code matches).
 - [ ] **T10 — Cache in the run.** Needs: T4, T8. `triage::run` in `triage/mod.rs` consults the cache before requesting and stores each verdict it receives — including on a run that is later discarded, so a retry only pays for the pair that failed. Scenarios: _A second run over unchanged code asks nothing_, _Editing a function body invalidates that pair's cached verdict_. Tests: acceptance (request counts read from the stub).
 - [ ] **T11 — Kind labels end to end, and a live judgment check.** Needs: T8. Offline: acceptance tests that the stub's `shared_shape_only` and `same_logic` answers render as `shared-shape-only` and `same-logic`. Live: `#[ignore]` tests over fixtures copied from the Context table (`tests/fixtures/triage/`) that call the real API, plus a `triage-live` recipe in the `Justfile` under its own heading, run by hand with `TYPESAFE_API_KEY` set. Scenarios: _Two functions sharing only an idiom are named as such_, _The same logic written twice is named as such_. Tests: acceptance (offline) + ignored live tests.
