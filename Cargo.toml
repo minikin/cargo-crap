@@ -13,6 +13,7 @@ readme = "README.md"
 exclude = [
     "CLAUDE.md",
     "Justfile",
+    "docs/",
     "clippy.toml",
     "rustfmt.toml",
     "rust-toolchain.toml",
