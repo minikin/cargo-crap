@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+Two opt-in additions: a configurable weight for the `?` operator (spec 27)
+and model triage of duplicate pairs (spec 30). Library consumers who build
+`RenderOptions` with an exhaustive struct literal, or call
+`report::duplicates::render`, need a small change; see Changed.
+
+### Added
+
+- **Configurable `?` weight** (spec 27). The `try-weight` key in
+  `.cargo-crap.toml` sets what each `?` adds to cyclomatic complexity.
+  `1.0`, the default, keeps classical McCabe, `0.0` makes error propagation
+  free, and a fraction discounts it. Values from 0 to 100 are accepted and
+  anything else exits 2. A fractional CC is shown to one decimal. JSON
+  output records a non-default weight as `try_weight`, and a `--baseline`
+  recorded under a different weight prints a warning, since its deltas
+  then measure the weight change rather than code changes. There is no
+  flag for it.
+- **Duplicate-pair triage** (spec 30). With `[duplicates.triage] enabled =
+  true` and `TYPESAFE_API_KEY` in the environment, each pair that
+  `--duplicates` reports goes to a TypeSafe model. It answers what kind of
+  duplication the pair is, whether it is worth extracting, and whether a
+  fix to one side would be missed in the other. The answer prints under
+  the pair, and JSON carries it as a `triage` object. A verdict below
+  `confidence-floor` (default 0.5) prints as uncertain. Triage never
+  filters, reorders or rescores a pair and never changes the exit code:
+  any failure prints one warning and the untriaged report. Verdicts are
+  cached under the target directory, so an unchanged pair is not asked
+  about again. The HTTP client sits behind a new `triage` Cargo feature,
+  off by default: `cargo install cargo-crap --features triage`.
+
+### Changed
+
+- **BREAKING (library API):** `RenderOptions` gained `try_weight: f64` and
+  `triage: Option<&[Assessment]>`, and `report::duplicates::render` takes
+  the triage assessments as a new second argument. Code that builds
+  `RenderOptions` with an exhaustive struct literal must add the fields or
+  spread `..Default::default()`.
+- `complexity` gained `analyze_file_weighted` and `analyze_tree_weighted`.
+  `analyze_file` and `analyze_tree` keep their signatures and count `?` at
+  weight 1.0.
+- `Config` gained `try_weight`, and `DuplicatesConfig` gained a `triage`
+  table (`TriageConfig`).
+- The published JSON schemas gained the optional `try_weight` and
+  duplicate `triage` fields (`report-v1.json`, `delta-v2.json`). Existing
+  documents stay valid. Validators pinned to a cached copy must refresh
+  it, since both schemas set `additionalProperties: false`.
+
+### Internal
+
+- `just dev`, CI and the mutation gate build and test with the `triage`
+  feature both off and on.
+
+
 ## [0.5.0] - 2026-09-05
 
 Two new analyses land in this release: per-function uncovered line ranges
@@ -527,6 +581,7 @@ output points at v2.
 
 <!-- Version links -->
 
+[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.5.0...HEAD
 [0.5.0]: https://github.com/minikin/cargo-crap/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/minikin/cargo-crap/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/minikin/cargo-crap/compare/v0.4.1...v0.4.2
