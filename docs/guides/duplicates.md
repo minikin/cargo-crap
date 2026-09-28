@@ -70,64 +70,10 @@ Limits of the comparison:
   so every `println!`/`vec!` is one node. Two different macro invocations
   look identical to this analysis.
 
-## Triage (optional)
 
-*Since 0.6.0.*
+## Triage
 
-Structural similarity cannot tell *the same logic written twice* from *two
-unrelated functions that share a Rust idiom*. Two functions that are each a
-run of `writeln!` calls score as high as a real copy-paste. Triage asks a
-[TypeSafe](https://docs.typesafe.ai) System One model three narrow questions
-about each reported pair and prints the answers beside it:
-
-```
-DUPLICATE score=1.00
-  src/report/pr_comment.rs:332-358  write_pr_comment_improved_section
-  src/report/pr_comment.rs:363-385  write_pr_comment_moved_section
-  triage: same-logic, should-be-one (conf 0.84)
-```
-
-The kind is one of `same-logic`, `shared-shape-only`,
-`structural-obligation` or `parameterisable`. The second word says whether
-the pair is worth merging (`leave-it`, `optional`, `worthwhile`,
-`should-be-one`). Below the confidence floor the line says
-`triage: uncertain (conf 0.31)` and names no kind. With `--format json` each
-pair carries the same verdict as a `triage` object: its kind,
-worth-extracting level and score, divergence risk and confidence, or only
-`"kind": "uncertain"` and the confidence when below the floor. The key is
-absent when triage did not run.
-
-It is opt-in twice over, because it sends each pair's two function bodies to
-a third-party API:
-
-1. **Build it in.** The HTTP client sits behind a Cargo feature that is off
-   by default. A plain install compiles no network code at all:
-
-   ```bash
-   cargo install cargo-crap --features triage
-   ```
-
-2. **Switch it on** in `.cargo-crap.toml` (there is no flag), and put the key
-   in the environment. It is never read from the config file:
-
-   ```toml
-   [duplicates.triage]
-   enabled = true
-   ```
-
-   ```bash
-   export TYPESAFE_API_KEY=...
-   cargo crap --path src --duplicates
-   ```
-
-Triage only annotates: every pair still prints in the same order with the
-same score, and the exit code never depends on it. Without a key, a network
-or a working API, the run prints the untriaged section and one warning
-saying why.
-
-Verdicts are cached in `cargo-crap/triage/` under the target directory:
-`CARGO_TARGET_DIR` when it is set, otherwise `target/` beside
-`.cargo-crap.toml`. The cache is keyed by both function bodies, so an
-unchanged pair is never asked about twice, and `cargo clean` removes it.
-`TYPESAFE_BASE_URL` points the client at another API host (the default is
-`https://api.typesafe.ai`).
+Since 0.6.0 a TypeSafe model can judge each reported pair: what kind of
+duplication it is, whether it is worth merging, and whether a fix to one side
+would be missed in the other. See
+[Triaging duplicates with TypeSafe](triage.md).

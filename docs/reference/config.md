@@ -46,7 +46,7 @@ enabled   = false   # same as passing --duplicates
 threshold = 0.82    # similarity at or above which a pair is reported
 min-nodes = 20      # skip functions smaller than this; 0 compares everything
 # Since 0.6.0. Triage each reported pair with a TypeSafe model (needs the
-# `triage` build feature and TYPESAFE_API_KEY; see "Triage (optional)").
+# `triage` build feature and TYPESAFE_API_KEY; see docs/guides/triage.md).
 [duplicates.triage]
 enabled          = false
 model            = "jev-latest"
@@ -85,5 +85,5 @@ its snake_case alias (`show-unchanged` / `show_unchanged`), except
 the built-in default list where `--no-default-excludes` empties it.
 
 See [The `--missing` policy](cli.md#the---missing-policy) for the three
-`missing` values, and [Triage (optional)](../guides/duplicates.md#triage-optional)
+`missing` values, and [Triaging duplicates with TypeSafe](../guides/triage.md)
 for `[duplicates.triage]`.

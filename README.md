@@ -133,15 +133,46 @@ trip it, so add `--fail-above` once the old offenders are gone.
 Code Scanning, and the [PR comment bot](docs/guides/pr-comment.md) posts the
 delta as a pull-request comment.
 
-## More
+## Duplicates, triaged by TypeSafe
+
+*Since 0.6.0.*
+
+`--duplicates` lists pairs of functions with the same structure, and it needs
+no coverage. Structure alone cannot tell the same logic written twice from
+two functions that only share a Rust idiom. With triage on, a
+[TypeSafe](https://docs.typesafe.ai) model answers three questions about each
+pair: what kind of duplication it is, whether it is worth merging, and
+whether a fix to one side would be missed in the other. The kind and the
+verdict on merging print under the pair, and `--format json` carries all
+three answers. Two pairs from a real run, both high on structure:
+
+```text
+DUPLICATE score=1.00
+  ./src/lib.rs:19-28  order_total
+  ./src/lib.rs:31-40  quote_total
+  triage: same-logic, should-be-one (conf 1.00)
+DUPLICATE score=0.84
+  ./src/lib.rs:65-76  write_receipt
+  ./src/lib.rs:79-90  write_shipping_label
+  triage: shared-shape-only, leave-it (conf 0.56)
+```
+
+Triage sends both function bodies to TypeSafe, so it is off twice over: build
+with `cargo install cargo-crap --features triage`, then set
+`[duplicates.triage] enabled = true` in `.cargo-crap.toml` and put
+`TYPESAFE_API_KEY` in the environment. It never changes a score, the order of
+the pairs or the exit code. [Triaging duplicates with TypeSafe](docs/guides/triage.md)
+has the details.
+
+## Documentation
 
 - Guides: [integrating with CI](docs/guides/ci.md),
   [regression gate](docs/guides/regression-gate.md),
   [PR comment bot](docs/guides/pr-comment.md),
   [workspaces and changed-package CI](docs/guides/workspaces.md),
   [Shields.io badge](docs/guides/badge.md).
-- [Finding duplicates](docs/guides/duplicates.md): `--duplicates` lists pairs
-  of functions with the same structure. It needs no coverage.
+- [Finding duplicates](docs/guides/duplicates.md) and
+  [triaging them with TypeSafe](docs/guides/triage.md).
 - Reference: [command line](docs/reference/cli.md),
   [configuration file](docs/reference/config.md),
   [output formats](docs/reference/output-formats.md),
