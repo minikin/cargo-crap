@@ -49,6 +49,7 @@ cargo llvm-cov --lcov --output-path lcov.info
 cargo crap --lcov lcov.info
 ```
 
+<!-- output: --lcov lcov.info -->
 ```text
 ┌───┬───────┬────┬───────────────────┬──────────┬─────────────────┐
 │   ┆  CRAP ┆ CC ┆ Coverage          ┆ Function ┆ Location        │
