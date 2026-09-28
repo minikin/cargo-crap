@@ -1,0 +1,78 @@
+name: Bug report
+description: cargo-crap gave a wrong score, a wrong exit code, or failed to run
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most wrong scores come from a coverage file and a source tree that
+        describe different code. cargo-crap prints analyzed, LCOV and matched
+        file counts to stderr when they disagree; please paste that output.
+
+  - type: input
+    id: version
+    attributes:
+      label: cargo-crap version
+      description: Output of `cargo crap --version`
+      placeholder: cargo-crap 0.5.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact `cargo crap` command, and the command that produced the LCOV file
+      render: shell
+      placeholder: |
+        cargo llvm-cov --workspace --lcov --output-path lcov.info
+        cargo crap --workspace --lcov lcov.info --fail-above
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: stdout and stderr. Trim the table to the rows that are wrong.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: The score, coverage, exit code or row you expected, and why
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: .cargo-crap.toml
+      description: If the project has one
+      render: toml
+
+  - type: input
+    id: coverage-tool
+    attributes:
+      label: Coverage tool and version
+      placeholder: cargo-llvm-cov 0.6.16
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [Linux, macOS, Windows, other]
+    validations:
+      required: true
+
+  - type: input
+    id: layout
+    attributes:
+      label: Project layout
+      description: Single crate or workspace, and roughly how many members
+      placeholder: workspace, 12 members

@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest a change in what cargo-crap reports or how it runs
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every feature starts as a spec written from the problem, so describe
+        the problem first and the flag or key second. New settings go in
+        `.cargo-crap.toml` by default rather than a new flag.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were trying to do, and where cargo-crap got in the way
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: The behaviour you would like. An example of the output or the config helps.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today
+      description: Workarounds, scripts or other tools you use instead
+
+  - type: input
+    id: version
+    attributes:
+      label: cargo-crap version
+      description: Output of `cargo crap --version`
+      placeholder: cargo-crap 0.5.0
