@@ -45,8 +45,9 @@ use std::time::Duration;
 struct Cli {
     /// Path to an LCOV coverage file (e.g. from `cargo llvm-cov --lcov --output-path lcov.info`).
     ///
-    /// If omitted, every function is scored as if it had 0% coverage — useful
-    /// for a first look at complexity distribution but not a real CRAP run.
+    /// If omitted, every function is scored as if it had 0% coverage. That is
+    /// useful for a first look at complexity distribution but is not a real
+    /// CRAP run.
     #[arg(long, value_name = "FILE")]
     lcov: Option<PathBuf>,
 
@@ -65,7 +66,7 @@ struct Cli {
     /// `cargo metadata`. Repeatable, cargo-style: `-p core -p api`.
     ///
     /// One invocation, one LCOV parse, one report, one gate decision over
-    /// exactly the selected members (spec 25). Unknown names fail before
+    /// exactly the selected members. Unknown names fail before
     /// analysis; duplicates are deduplicated; `--path` is ignored.
     /// Conflicts with `--workspace`, which already means "all members".
     #[arg(
@@ -78,7 +79,7 @@ struct Cli {
 
     /// Glob patterns for files to skip (relative to `--path`).
     /// Use `**` to cross directory boundaries. May be repeated.
-    /// Appends to the default exclusions — see `--no-default-excludes`.
+    /// Appends to the default exclusions (see `--no-default-excludes`).
     ///
     /// Examples: `--exclude 'src/generated/**'`  `--exclude '**/build.rs'`
     #[arg(long, value_name = "GLOB")]
@@ -113,7 +114,7 @@ struct Cli {
     format: FormatArg,
 
     /// Print only aggregate statistics (total analyzed, crappy count, worst
-    /// offender) — no per-function table. Compatible with all `--format` values
+    /// offender) instead of the per-function table. Compatible with all `--format` values
     /// except `json` and `github` (which are unaffected).
     #[arg(long)]
     summary: bool,
@@ -128,8 +129,7 @@ struct Cli {
     /// An entry containing `/` or `**` is treated as a path glob and matches
     /// the file in which the function is defined; otherwise it matches the
     /// function name. Path globs analyze the file but hide its functions
-    /// from the report — distinct from `--exclude`, which skips files at
-    /// walk time.
+    /// from the report, unlike `--exclude`, which skips files at walk time.
     ///
     /// Examples: `--allow 'Foo::*'`  `--allow 'generated_*'`
     ///           `--allow 'src/generated/**'`  `--allow 'tests/**'`
@@ -153,8 +153,8 @@ struct Cli {
     show_unchanged: bool,
 
     /// Final ordering of report entries. `crap` (default) sorts by CRAP score
-    /// descending; `file` sorts by `(file, function, line)` ascending — stable
-    /// across score changes, ideal for committed JSON baselines. `--top` always
+    /// descending; `file` sorts by `(file, function, line)` ascending, which is
+    /// stable across score changes and suits committed JSON baselines. `--top` always
     /// selects the N highest-CRAP functions first, then `--sort` reorders them.
     /// Falls back to `.cargo-crap.toml` → `crap`.
     #[arg(long, value_enum)]
@@ -192,8 +192,8 @@ struct Cli {
     commit_ref: Option<String>,
 
     /// Also report candidate duplicate functions: functions whose normalized
-    /// structure is close enough to be worth a look. Off by default — it is a
-    /// second analysis over the same AST, and it costs time on a large tree.
+    /// structure is close enough to be worth a look. Off by default, since it
+    /// is a second analysis over the same AST and costs time on a large tree.
     #[arg(long)]
     duplicates: bool,
 
@@ -240,12 +240,12 @@ impl From<SortArg> for SortOrder {
 enum FormatArg {
     Human,
     Json,
-    /// GitHub Actions workflow commands — one `::warning` per crappy function.
+    /// GitHub Actions workflow commands: one `::warning` per crappy function.
     Github,
-    /// GitHub-Flavored Markdown table — exhaustive, no row caps. Use this for
-    /// archived artifacts and docs pages.
+    /// GitHub-Flavored Markdown table, exhaustive, with no row caps. Use this
+    /// for archived artifacts and docs pages.
     Markdown,
-    /// Opinionated PR-comment markdown — hides unchanged rows, caps each
+    /// Opinionated PR-comment markdown: hides unchanged rows, caps each
     /// section, collapses non-critical info into `<details>` blocks. Designed
     /// for the GitHub PR comment use case where readability beats completeness.
     PrComment,
@@ -253,7 +253,7 @@ enum FormatArg {
     /// other static-analysis tools. Each crappy function becomes one
     /// warning-level result. Incompatible with `--baseline`.
     Sarif,
-    /// Shields.io endpoint-badge JSON — counts functions above `--threshold`.
+    /// Shields.io endpoint-badge JSON counting the functions above `--threshold`.
     /// Serve the file at a stable URL and embed it in a README via
     /// `https://img.shields.io/endpoint?url=…`. `--baseline` is ignored.
     Shields,
