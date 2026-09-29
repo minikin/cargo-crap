@@ -10,22 +10,7 @@ about each reported pair and prints the answers beside it. On
 [a small shop backend](../../examples/triage-demo) with three look-alike
 pairs, a real run prints:
 
-```text
-3 duplicate candidates:
-
-DUPLICATE score=1.00
-  ./src/lib.rs:19-28  order_total
-  ./src/lib.rs:31-40  quote_total
-  triage: same-logic, should-be-one (conf 1.00)
-DUPLICATE score=1.00
-  ./src/lib.rs:43-51  shipped_weight
-  ./src/lib.rs:54-62  shipped_volume
-  triage: parameterisable, worthwhile (conf 0.88)
-DUPLICATE score=0.84
-  ./src/lib.rs:65-76  write_receipt
-  ./src/lib.rs:79-90  write_shipping_label
-  triage: shared-shape-only, leave-it (conf 0.56)
-```
+<img width="729" alt="cargo crap --summary on the triage demo. order_total and quote_total: same-logic, should-be-one, in bold red. shipped_weight and shipped_volume: parameterisable, worthwhile, in yellow. write_receipt and write_shipping_label: shared-shape-only, leave-it, dimmed." src="../assets/triage-demo-output.png">
 
 The first pair is one routine pasted and renamed. The second differs only in
 the field it adds up. The last pair scores 0.84 on structure because both are

@@ -145,22 +145,15 @@ two functions that only share a Rust idiom. With triage on, a
 pair: what kind of duplication it is, whether it is worth merging, and
 whether a fix to one side would be missed in the other. The kind and the
 verdict on merging print under the pair, and `--format json` carries all
-three answers. Two pairs from a real run, both high on structure:
+three answers. A real run over the three pairs of the triage demo, all high
+on structure:
 
-```text
-DUPLICATE score=1.00
-  ./src/lib.rs:19-28  order_total
-  ./src/lib.rs:31-40  quote_total
-  triage: same-logic, should-be-one (conf 1.00)
-DUPLICATE score=0.84
-  ./src/lib.rs:65-76  write_receipt
-  ./src/lib.rs:79-90  write_shipping_label
-  triage: shared-shape-only, leave-it (conf 0.56)
-```
+<img width="729" alt="cargo crap --summary on the triage demo. order_total and quote_total: same-logic, should-be-one, in bold red. shipped_weight and shipped_volume: parameterisable, worthwhile, in yellow. write_receipt and write_shipping_label: shared-shape-only, leave-it, dimmed." src="docs/assets/triage-demo-output.png">
 
-By structure alone both pairs sit near the top of the list and look equally
-urgent. Triage says to merge the first and leave the second, so you know
-which pairs are worth your time before you open them.
+By structure alone the three pairs look equally urgent. Triage says to merge
+the first, give the second a parameter and leave the third, and on a colour
+terminal the verdict is red, yellow or dim to match. You know which pairs are
+worth your time before you open them.
 
 Triage sends both function bodies to TypeSafe, so it stays off until
 `.cargo-crap.toml` sets `[duplicates.triage] enabled = true` and
