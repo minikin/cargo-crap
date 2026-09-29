@@ -24,16 +24,16 @@ measurable. Among the candidates that come back:
 
 | Pair | Score | What it is |
 | --- | --- | --- |
-| `write_pr_comment_improved_section` / `write_pr_comment_moved_section` | 1.00 | The same function, written twice. Worth consolidating. |
+| `write_pr_comment_improved_section` / `write_pr_comment_moved_section` | 1.00 | One routine over a different bucket and summary line. Worth consolidating, with a parameter. |
 | `norm_pat` / `norm_type` | 1.00 | Two five-line dispatchers. Real, but consolidating them buys nothing. |
 | `visit_item_fn` / `visit_impl_item_fn` | 1.00 | Shape imposed by `syn`'s `Visit` trait. Cannot be shared away. |
-| `write_markdown_absolute_heading` / `write_pr_comment_abs_headline` | 0.92 | A run of `writeln!` calls, twice. Nothing in common but the idiom. |
-| `write_summary` / `write_markdown_delta_heading` | 0.84 | Same. |
+| `write_markdown_absolute_heading` / `write_pr_comment_abs_headline` | 0.92 | The same function written twice, strings included. Only the parameter order differs. |
+| `write_summary` / `write_markdown_delta_heading` | 0.84 | Two zero-or-warning headings over different counts. Related, but a merge buys little. |
 
-Roughly half the list is the last family: two functions that are each a
-sequence of writes. No threshold separates it from the first row, because
-the two are structurally indistinguishable. Only *meaning* tells them
-apart. Raising the threshold loses the genuine 0.83–0.92 findings; lowering
+Roughly half the list is one family: functions that are each a short
+sequence of writes. Some of them are exact copies and some only share the
+shape, and no threshold separates the two, because they are structurally
+indistinguishable. Only *meaning* tells them apart. Raising the threshold loses the genuine 0.83–0.92 findings; lowering
 it drowns the report. The knob has no setting that answers the question.
 
 This spec adds an **opt-in, advisory triage layer** over the pairs spec 29
@@ -281,7 +281,7 @@ lines.
 - [x] **T8 — Wire triage into the run.** Needs: T1, T6, T7. `src/main.rs`: `DupSettings` resolves the triage settings; after `duplicate_pairs` (so the non-carrying-format early return still wins), call `triage::run`, map verdicts through the configured floor, pass the assessments to rendering. In this task an error from `triage::run` still aborts the run. T9 turns it into a warning. Scenarios: _Triage is off by default_, _An enabled run annotates every pair it reports_, _A verdict below the confidence floor is reported as uncertain_, _No pairs means no requests_, _A request carries exactly the pair under judgment_, _Triage never runs for a format that cannot carry duplicates_, _A build without the triage feature says how to get it_ (without the feature, an enabled triage prints the one warning). Tests: acceptance, against the stub.
 - [x] **T9 — Degrade to the untriaged report on any failure.** Needs: T8. `src/main.rs` triage call site: an `Err` becomes one stderr warning naming the cause and `None` assessments; exit code untouched. Scenarios: _A missing API key degrades to the untriaged report_, _An unreachable API degrades to the untriaged report_, _One failed pair discards the whole triage_. Tests: acceptance + property (degradation identity: for any failure injected by the stub, stdout is byte-identical to the same run with triage disabled, and the exit code matches).
 - [x] **T10 — Cache in the run.** Needs: T4, T8. `triage::run` in `triage/mod.rs` consults the cache before requesting and stores each verdict it receives, including on a run that is later discarded, so a retry only pays for the pair that failed. Scenarios: _A second run over unchanged code asks nothing_, _Editing a function body invalidates that pair's cached verdict_. Tests: acceptance (request counts read from the stub).
-- [x] **T11 — Kind labels end to end, and a live judgment check.** Needs: T8. Offline: acceptance tests that the stub's `shared_shape_only` and `same_logic` answers render as `shared-shape-only` and `same-logic`. Live: `#[ignore]` tests over fixtures copied from the Context table (`tests/fixtures/triage/`) that call the real API, plus a `triage-live` recipe in the `Justfile` under its own heading, run by hand with `TYPESAFE_API_KEY` set. Scenarios: _Two functions sharing only an idiom are named as such_, _The same logic written twice is named as such_. Tests: acceptance (offline) + ignored live tests.
+- [x] **T11 — Kind labels end to end, and a live judgment check.** Needs: T8. Offline: acceptance tests that the stub's `shared_shape_only` and `same_logic` answers render as `shared-shape-only` and `same-logic`. Live: `#[ignore]` tests that call the real API on two fixtures in `tests/fixtures/triage/`: the exact-copy heading pair from the Context table, which must come back `same-logic`, and an invoice header and an HTTP request head that only share a run of `writeln!` calls, which must not be marked for merging (`uncertain`, `leave-it` or `optional`). The model's confidence on idiom-only pairs sits near the floor (0.44 to 0.62 over four pairs on 2026-09-29), so the live check asserts the verdict a reader acts on rather than the kind. Plus a `triage-live` recipe in the `Justfile` under its own heading, run by hand with `TYPESAFE_API_KEY` set. Scenarios: _Two functions sharing only an idiom are named as such_, _The same logic written twice is named as such_. Tests: acceptance (offline) + ignored live tests.
 - [x] **T12 — The JSON triage object.** Needs: T8. `DuplicateJson` gains `triage` (`skip_serializing_if = "Option::is_none"`, so untriaged output is unchanged) in `src/report/json.rs`; the two `Format::Json` dispatch lines in `src/report.rs` pass the assessments; `schemas/report-v1.json` and `schemas/delta-v2.json` describe the optional object. Scenarios: _The JSON envelope carries the verdict beside the pair_. Tests: unit (serialize both shapes) + acceptance (validated against both schemas with `jsonschema`).
 
 ---

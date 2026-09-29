@@ -1488,8 +1488,8 @@ fn two_functions_sharing_only_an_idiom_are_named_as_such() {
     use fixtures::triage_fixture;
     use support::typesafe_stub::{Reply, TypesafeStub};
     // Given two functions whose bodies are each an unrelated run of writeln!
-    // calls, copied from this repository's report writers
-    // And their similarity clears the duplicates threshold (0.92, checked below)
+    // calls: an invoice header and an HTTP request head
+    // And their similarity clears the duplicates threshold (1.00, checked below)
     let dir = triage_fixture("shared_shape");
     // And triage is enabled with a reachable API
     let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("shared_shape_only", 0.9))]);
@@ -1497,7 +1497,7 @@ fn two_functions_sharing_only_an_idiom_are_named_as_such() {
     let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("1 duplicate candidate:"), "{stdout}");
-    assert!(stdout.contains("DUPLICATE score=0.92"), "{stdout}");
+    assert!(stdout.contains("DUPLICATE score=1.00"), "{stdout}");
     // Then the pair's triage line reports the kind shared-shape-only
     assert!(
         stdout.contains("\n  triage: shared-shape-only, "),
@@ -1511,7 +1511,8 @@ fn the_same_logic_written_twice_is_named_as_such() {
     use fixtures::triage_fixture;
     use support::typesafe_stub::{Reply, TypesafeStub};
     // Given two functions that compute the same result from the same inputs,
-    // differing only in names and literals, copied from this repository
+    // copied from this repository: the same body, only the parameter order
+    // differs
     let dir = triage_fixture("same_logic");
     // And triage is enabled with a reachable API
     let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
@@ -1519,7 +1520,7 @@ fn the_same_logic_written_twice_is_named_as_such() {
     let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("1 duplicate candidate:"), "{stdout}");
-    assert!(stdout.contains("DUPLICATE score=1.00"), "{stdout}");
+    assert!(stdout.contains("DUPLICATE score=0.92"), "{stdout}");
     // Then the pair's triage line reports the kind same-logic
     assert!(stdout.contains("\n  triage: same-logic, "), "{stdout}");
 }

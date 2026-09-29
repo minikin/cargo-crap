@@ -1,10 +1,10 @@
-//! Fixture (spec 30, T11): an unrelated run of writeln! calls, copied
-//! from src/report/pr_comment.rs. Parsed, never compiled.
+//! Fixture: one half of the same function written twice, copied from
+//! src/report/markdown.rs. Parsed, never compiled.
 
-fn write_pr_comment_abs_headline(
-    out: &mut dyn Write,
+fn write_markdown_absolute_heading(
     crappy: usize,
     threshold: f64,
+    out: &mut dyn Write,
 ) -> Result<()> {
     if crappy == 0 {
         writeln!(out, "## ✅ No CRAP threshold violations")?;
