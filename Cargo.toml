@@ -12,8 +12,15 @@ documentation = "https://docs.rs/cargo-crap"
 readme = "README.md"
 exclude = [
     "CLAUDE.md",
+    "KEELER.md",
     "Justfile",
+    ".cargo-mutants.toml",
+    ".claude/",
+    ".github/",
+    ".idea/",
     "docs/",
+    "reviews/",
+    "specs/",
     "tests/",
     "clippy.toml",
     "rustfmt.toml",

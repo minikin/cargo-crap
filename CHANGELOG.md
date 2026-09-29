@@ -64,7 +64,9 @@ and model triage of duplicate pairs (spec 30). Library consumers who build
   stays out of it too. The integration tests need fixture workspaces and
   doc pages that Cargo does not package, so they failed when run from the
   published crate. They stay in the repository and CI, and the unit and
-  doc tests still ship.
+  doc tests still ship. The package also leaves out the specs, review
+  records, CI workflows and editor and agent settings, none of which the
+  build needs.
 
 ### Documentation
 
