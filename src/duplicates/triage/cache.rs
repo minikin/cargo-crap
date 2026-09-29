@@ -251,6 +251,53 @@ mod tests {
         );
     }
 
+    // TEMPORARY, removed before merge: reproduces the Windows read race on CI
+    // and names the error each failed read or write got.
+    #[test]
+    fn temporary_windows_read_race_diagnosis() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cache = Cache::new(dir.path());
+        cache.put(key(), &verdict()).expect("writable");
+        let path = dir.path().join(key().file_name());
+        let failures = std::sync::Mutex::new(Vec::new());
+        let describe =
+            |what: &str, e: &io::Error| format!("{what} {:?} raw={:?}", e.kind(), e.raw_os_error());
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..3000 {
+                        if let Err(e) = cache.put(key(), &verdict()) {
+                            failures.lock().expect("lock").push(describe("put", &e));
+                        }
+                    }
+                });
+            }
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..6000 {
+                        match std::fs::read_to_string(&path) {
+                            Ok(raw) if serde_json::from_str::<Entry>(&raw).is_err() => {
+                                failures.lock().expect("lock").push(format!("torn {raw:?}"));
+                            },
+                            Ok(_) => {},
+                            Err(e) => failures.lock().expect("lock").push(describe("read", &e)),
+                        }
+                    }
+                });
+            }
+        });
+        let failures = failures.into_inner().expect("lock");
+        let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+        for failure in &failures {
+            *counts.entry(failure).or_default() += 1;
+        }
+        assert!(
+            failures.is_empty(),
+            "{} failures in 12000 writes and 24000 reads: {counts:?}",
+            failures.len()
+        );
+    }
+
     #[test]
     fn an_unwritable_cache_is_an_error_not_a_panic() {
         let dir = tempfile::tempdir().expect("temp dir");
