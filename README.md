@@ -161,12 +161,14 @@ By structure alone both pairs sit near the top of the list and look equally
 urgent. Triage says to merge the first and leave the second, so you know
 which pairs are worth your time before you open them.
 
-Triage sends both function bodies to TypeSafe, so it is off twice over: build
-with `cargo install cargo-crap --features triage`, then set
-`[duplicates.triage] enabled = true` in `.cargo-crap.toml` and put
-`TYPESAFE_API_KEY` in the environment. It never changes a score, the order of
-the pairs or the exit code. [Triaging duplicates with TypeSafe](docs/guides/triage.md)
-has the details.
+Triage sends both function bodies to TypeSafe, so it stays off until
+`.cargo-crap.toml` sets `[duplicates.triage] enabled = true` and
+`TYPESAFE_API_KEY` is in the environment. The release binaries (`cargo binstall`
+and the downloads) include it. From source, install with
+`cargo install cargo-crap --features triage`. It never changes a score, the
+order of the pairs or the exit code.
+[Triaging duplicates with TypeSafe](docs/guides/triage.md) has the details,
+and [the triage demo](examples/triage-demo) has three pairs to try it on.
 
 ## Documentation
 

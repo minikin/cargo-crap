@@ -6,8 +6,9 @@ Structural similarity cannot tell *the same logic written twice* from *two
 unrelated functions that share a Rust idiom*. Two functions that are each a
 run of `writeln!` calls score as high as a real copy-paste. Triage asks a
 [TypeSafe](https://docs.typesafe.ai) System One model three narrow questions
-about each reported pair and prints the answers beside it. On a small shop
-backend with three look-alike pairs, a real run prints:
+about each reported pair and prints the answers beside it. On
+[a small shop backend](../../examples/triage-demo) with three look-alike
+pairs, a real run prints:
 
 ```text
 3 duplicate candidates:
@@ -77,8 +78,10 @@ is absent when triage did not run. For the first pair above:
 It is opt-in twice over, because it sends each pair's two function bodies to
 a third-party API:
 
-1. **Build it in.** The HTTP client sits behind a Cargo feature that is off
-   by default. A plain install compiles no network code at all:
+1. **Build it in.** The HTTP client sits behind the `triage` Cargo feature.
+   The release binaries, from `cargo binstall` or the release downloads, are
+   built with it and do nothing with it until step 2. A source install leaves
+   it out and compiles no network code at all unless you ask for it:
 
    ```bash
    cargo install cargo-crap --features triage

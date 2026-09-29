@@ -36,4 +36,4 @@ body:
     attributes:
       label: cargo-crap version
       description: Output of `cargo crap --version`
-      placeholder: cargo-crap 0.5.0
+      placeholder: cargo-crap 0.6.0

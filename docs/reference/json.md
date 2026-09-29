@@ -13,7 +13,7 @@ generate types from the schema.
 // cargo crap --format json
 {
   "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
-  "version": "0.5.0",     // the cargo-crap version that produced the report
+  "version": "0.6.0",     // the cargo-crap version that produced the report
   "entries": [
     {
       "file": "src/lib.rs",
@@ -34,7 +34,7 @@ generate types from the schema.
 // cargo crap --format json --baseline baseline.json
 {
   "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json",
-  "version": "0.5.0",     // the cargo-crap version that produced the report
+  "version": "0.6.0",     // the cargo-crap version that produced the report
   "entries": [ /* DeltaEntry — current + baseline_crap + delta + status (+ optional previous_file when moved) */ ],
   "removed": [ /* RemovedEntry — function, file, baseline_crap */ ]
 }

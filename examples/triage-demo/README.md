@@ -1,7 +1,7 @@
 # Triage demo
 
 A small shop backend with three pairs of look-alike functions, for trying
-[duplicate triage](../../docs/guides/duplicates.md). Structural similarity scores
+[duplicate triage](../../docs/guides/triage.md). Structural similarity scores
 every pair high. Each was written to be a different kind of duplication:
 
 | Pair                                     | Written as                                              |
@@ -15,11 +15,12 @@ Triage asks a [TypeSafe](https://docs.typesafe.ai) model to tell these apart.
 
 ## Run it
 
-Triage needs a cargo-crap built with the `triage` feature (0.6.0 or later)
-and a TypeSafe API key:
+Triage needs cargo-crap 0.6.0 or later with the `triage` feature, and a
+TypeSafe API key. The release binaries include the feature. From source,
+add it when installing:
 
 ```bash
-cargo install cargo-crap --features triage
+cargo binstall cargo-crap    # or: cargo install cargo-crap --features triage
 export TYPESAFE_API_KEY=...
 cd examples/triage-demo
 cargo crap --summary
