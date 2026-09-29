@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.6.1] - 2026-09-29
+
+A documentation fix for the README as crates.io shows it.
+
+### Fixed
+
+- The README's link buttons for the blog posts and the talk showed as
+  broken images on crates.io for readers whose system is in dark mode.
+  crates.io points a README's `<img src>` at GitHub but leaves
+  `<source srcset>` alone, so the dark versions pointed at crates.io
+  itself. They now use full GitHub URLs.
+
+
 ## [0.6.0] - 2026-09-29
 
 Two opt-in additions: a configurable weight for the `?` operator (spec 27)
@@ -614,7 +627,8 @@ output points at v2.
 
 <!-- Version links -->
 
-[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/minikin/cargo-crap/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/minikin/cargo-crap/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/minikin/cargo-crap/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/minikin/cargo-crap/compare/v0.4.2...v0.4.3
