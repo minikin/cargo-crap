@@ -806,10 +806,20 @@ fn triage_answer(
     kind: &str,
     confidence: f64,
 ) -> String {
+    triage_answer_worth(kind, confidence, 2.0)
+}
+
+/// [`triage_answer`] with the worth-extracting score chosen: `0.0` is
+/// leave-it, `1.0` optional, `2.0` worthwhile, `3.0` should-be-one.
+fn triage_answer_worth(
+    kind: &str,
+    confidence: f64,
+    worth: f64,
+) -> String {
     format!(
         r#"{{"model":"jev-1.13.0","answers":{{
             "duplication_kind":{{"type":"choice","choice":"{kind}","confidence":{confidence}}},
-            "worth_extracting":{{"type":"score","score":2.0,"confidence":0.8}},
+            "worth_extracting":{{"type":"score","score":{worth:.1},"confidence":0.8}},
             "divergence_risk":{{"type":"noul","noul":0.6}}}},"usage":{{}}}}"#
     )
 }
@@ -877,10 +887,25 @@ fn run_with_config(
     stub: &support::typesafe_stub::TypesafeStub,
     extra: &[&str],
 ) -> std::process::Output {
+    run_with_env(dir, config, stub, extra, &[])
+}
+
+/// [`run_with_config`] with extra environment variables. `NO_COLOR` and
+/// `FORCE_COLOR` are cleared first, so only `env` decides the colour.
+fn run_with_env(
+    dir: &Path,
+    config: &str,
+    stub: &support::typesafe_stub::TypesafeStub,
+    extra: &[&str],
+    env: &[(&str, &str)],
+) -> std::process::Output {
     write(dir, ".cargo-crap.toml", config);
     crap()
         .timeout(TRIAGE_RUN_LIMIT)
         .current_dir(dir)
+        .env_remove("NO_COLOR")
+        .env_remove("FORCE_COLOR")
+        .envs(env.iter().copied())
         .env("CARGO_TARGET_DIR", dir.join("target"))
         .env("TYPESAFE_API_KEY", "test-key")
         .env("TYPESAFE_BASE_URL", stub.base_url())
@@ -1497,6 +1522,161 @@ fn the_same_logic_written_twice_is_named_as_such() {
     assert!(stdout.contains("DUPLICATE score=1.00"), "{stdout}");
     // Then the pair's triage line reports the kind same-logic
     assert!(stdout.contains("\n  triage: same-logic, "), "{stdout}");
+}
+
+// ---- Triage verdict colours ----
+
+/// The first triage line of a human run over [`three_pairs_tree`] whose API
+/// gives `answer` for every pair, under the environment `env`.
+#[cfg(feature = "triage")]
+fn triage_line_under(
+    answer: &str,
+    env: &[(&str, &str)],
+) -> String {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    let dir = three_pairs_tree();
+    let stub = TypesafeStub::scripted(vec![Reply::json(answer)]);
+    let out = run_with_env(dir.path(), TRIAGE_ON, &stub, &[], env);
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    stdout
+        .lines()
+        .find(|line| line.starts_with("  triage: "))
+        .unwrap_or_else(|| panic!("no triage line:\n{stdout}"))
+        .to_owned()
+}
+
+/// Every escape sequence in `line` as `(start, end, parameters)`, byte
+/// offsets included.
+#[cfg(feature = "triage")]
+fn escapes(line: &str) -> Vec<(usize, usize, String)> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(start) = line[from..].find("\u{1b}[").map(|i| from + i) {
+        let end = start + line[start..].find('m').expect("an escape ends in m") + 1;
+        found.push((start, end, line[start + 2..end - 1].to_owned()));
+        from = end;
+    }
+    found
+}
+
+/// The SGR parameters `line` sets, the reset (`0`) left out.
+#[cfg(feature = "triage")]
+fn sgr_params(line: &str) -> std::collections::BTreeSet<String> {
+    escapes(line)
+        .iter()
+        .flat_map(|(_, _, params)| params.split(';').map(str::to_owned).collect::<Vec<_>>())
+        .filter(|param| param != "0")
+        .collect()
+}
+
+/// `line` with every escape sequence removed.
+#[cfg(feature = "triage")]
+fn strip_escapes(line: &str) -> String {
+    let mut plain = String::new();
+    let mut at = 0;
+    for (start, end, _) in escapes(line) {
+        plain.push_str(&line[at..start]);
+        at = end;
+    }
+    plain.push_str(&line[at..]);
+    plain
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn each_verdict_is_coloured_by_what_it_asks_of_the_reader() {
+    /// One answer from the API, and the triage line it should give.
+    struct Case {
+        kind: &'static str,
+        confidence: f64,
+        worth: f64,
+        /// The SGR parameters the verdict is styled with.
+        params: &'static [&'static str],
+        /// The line after `triage: `, colour removed.
+        text: &'static str,
+    }
+    let case = |kind, confidence, worth, params, text| Case {
+        kind,
+        confidence,
+        worth,
+        params,
+        text,
+    };
+    let cases = [
+        case(
+            "same_logic",
+            0.9,
+            3.0,
+            &["1", "31"],
+            "same-logic, should-be-one (conf 0.90)",
+        ),
+        case(
+            "parameterisable",
+            0.9,
+            2.0,
+            &["33"],
+            "parameterisable, worthwhile (conf 0.90)",
+        ),
+        case(
+            "parameterisable",
+            0.9,
+            1.0,
+            &[],
+            "parameterisable, optional (conf 0.90)",
+        ),
+        case(
+            "shared_shape_only",
+            0.9,
+            0.0,
+            &["2"],
+            "shared-shape-only, leave-it (conf 0.90)",
+        ),
+        case("same_logic", 0.3, 3.0, &["2"], "uncertain (conf 0.30)"),
+    ];
+    for Case {
+        kind,
+        confidence,
+        worth,
+        params,
+        text,
+    } in cases
+    {
+        // Given a pair the API judges this way
+        let answer = triage_answer_worth(kind, confidence, worth);
+        // When the human report is written to a colour terminal
+        let line = triage_line_under(&answer, &[("FORCE_COLOR", "1")]);
+        // Then the verdict carries the colour of what it asks for
+        let expected: std::collections::BTreeSet<String> =
+            params.iter().map(|p| (*p).to_owned()).collect();
+        assert_eq!(sgr_params(&line), expected, "{text}: {line:?}");
+        // And the text is unchanged once the colour is taken away
+        assert_eq!(
+            strip_escapes(&line),
+            format!("  triage: {text}"),
+            "{line:?}"
+        );
+        // And only the verdict is coloured: the label and the confidence
+        // stay plain
+        if !params.is_empty() {
+            assert!(line.starts_with("  triage: \u{1b}["), "{line:?}");
+            let conf = text.rfind(" (conf").expect("a confidence");
+            assert!(
+                line.ends_with(&format!("\u{1b}[0m{}", &text[conf..])),
+                "{line:?}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_triage_line_without_colour_has_no_escape_codes() {
+    // Given a pair the API judges should-be-one
+    let answer = triage_answer_worth("same_logic", 0.9, 3.0);
+    // When the human report is written with NO_COLOR set
+    let line = triage_line_under(&answer, &[("NO_COLOR", "1")]);
+    // Then the triage line is plain text
+    assert_eq!(line, "  triage: same-logic, should-be-one (conf 0.90)");
 }
 
 // ---- Spec 30 · T12 ----

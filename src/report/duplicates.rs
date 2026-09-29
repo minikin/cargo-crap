@@ -3,7 +3,9 @@
 use std::io::Write;
 
 use anyhow::Result;
+use owo_colors::Style;
 
+use super::types::styled;
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
 use crate::duplicates::triage::verdict::Assessment;
@@ -76,14 +78,36 @@ fn write_pair(
 /// is printed either way.
 fn triage_line(assessment: &Assessment) -> String {
     match assessment {
-        Assessment::Kind(verdict) => format!(
-            "{}, {} (conf {:.2})",
-            verdict.kind.label(),
-            verdict.worth_extracting.label(),
-            verdict.confidence
+        Assessment::Kind(verdict) => {
+            let worth = verdict.worth_extracting.label();
+            let text = format!("{}, {worth}", verdict.kind.label());
+            format!(
+                "{} (conf {:.2})",
+                emphasis(&text, worth),
+                verdict.confidence
+            )
+        },
+        Assessment::Uncertain { confidence } => format!(
+            "{} (conf {confidence:.2})",
+            styled("uncertain", Style::new().dimmed())
         ),
-        Assessment::Uncertain { confidence } => format!("uncertain (conf {confidence:.2})"),
     }
+}
+
+/// The verdict, coloured on a colour terminal by what it asks of the
+/// reader: bold red to merge, yellow for a parameter's worth, dim to leave
+/// alone. `optional` stays plain.
+fn emphasis(
+    text: &str,
+    worth: &str,
+) -> String {
+    let style = match worth {
+        "should-be-one" => Style::new().bold().red(),
+        "worthwhile" => Style::new().yellow(),
+        "leave-it" => Style::new().dimmed(),
+        _ => return text.to_owned(),
+    };
+    styled(text, style)
 }
 
 /// One side of a pair: where it is, then what it is called.

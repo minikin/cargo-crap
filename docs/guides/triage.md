@@ -57,7 +57,10 @@ The kind is one of `same-logic`, `shared-shape-only`,
 `structural-obligation` or `parameterisable`. The second word says whether
 the pair is worth merging (`leave-it`, `optional`, `worthwhile`,
 `should-be-one`). Below the confidence floor (`confidence-floor`, 0.5 by
-default) the line says `triage: uncertain` and names no kind. With
+default) the line says `triage: uncertain` and names no kind. On a colour
+terminal the verdict is coloured by what it asks of you: bold red for
+`should-be-one`, yellow for `worthwhile`, dim for `leave-it` and
+`uncertain`. `NO_COLOR`, pipes and `--output` files get plain text. With
 `--format json` each pair carries the same verdict as a `triage` object: its
 kind, worth-extracting level and score, divergence risk and confidence, or
 only `"kind": "uncertain"` and the confidence when below the floor. The key
