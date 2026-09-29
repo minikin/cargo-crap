@@ -32,7 +32,9 @@ and model triage of duplicate pairs (spec 30). Library consumers who build
   `--duplicates` reports goes to a TypeSafe model. It answers what kind of
   duplication the pair is, whether it is worth extracting, and whether a
   fix to one side would be missed in the other. The answer prints under
-  the pair, and JSON carries it as a `triage` object. A verdict below
+  the pair, coloured on a terminal by the merge verdict (bold red for
+  should-be-one, yellow for worthwhile, dim for leave-it and uncertain),
+  and JSON carries it as a `triage` object. A verdict below
   `confidence-floor` (default 0.5) prints as uncertain. Triage never
   filters, reorders or rescores a pair and never changes the exit code:
   any failure prints one warning and the untriaged report. Verdicts are
