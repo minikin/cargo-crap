@@ -6,9 +6,20 @@
 [![CRAP](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fminikin%2Fcargo-crap%2Fbadges%2Fcrap-badge.json&style=for-the-badge)](docs/guides/badge.md)
 
 
-Background: the blog post
-[cargo-crap: Finding Untested Complexity in AI-Generated Rust Code](https://minikin.me/blog/cargo-crap)
-and the video [Your AI Code Might Be CRAP! (Here's How To Fix It)](https://www.youtube.com/watch?v=XuMR1pgc6pc).
+<p>
+  <a href="https://minikin.me/blog/cargo-crap"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/link-blog-untested-complexity-dark.svg">
+    <img alt="Blog post: cargo-crap: Finding Untested Complexity in AI-Generated Rust Code" src="docs/assets/link-blog-untested-complexity.svg">
+  </picture></a>
+  <a href="https://minikin.me/blog/cargo-crap-triage"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/link-blog-triaging-duplicates-dark.svg">
+    <img alt="Blog post: cargo-crap: Triaging Duplicates with TypeSafe" src="docs/assets/link-blog-triaging-duplicates.svg">
+  </picture></a>
+  <a href="https://www.youtube.com/watch?v=XuMR1pgc6pc"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/link-talk-youtube-dark.svg">
+    <img alt="Talk on YouTube: Your AI Code Might Be CRAP! (Here's How To Fix It)" src="docs/assets/link-talk-youtube.svg">
+  </picture></a>
+</p>
 
 cargo-crap finds the Rust functions that are both complex and untested: the
 ones where a change is most likely to break something without a test
