@@ -45,11 +45,11 @@ jobs:
 
       - name: Build (native)
         if: ${{ !matrix.use_cross }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --features triage --target ${{ matrix.target }}
 
       - name: Build (cross)
         if: ${{ matrix.use_cross == true }}
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --release --features triage --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'

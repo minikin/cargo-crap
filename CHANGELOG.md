@@ -8,10 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.6.0] - 2026-09-29
+
 Two opt-in additions: a configurable weight for the `?` operator (spec 27)
 and model triage of duplicate pairs (spec 30). Library consumers who build
 `RenderOptions` with an exhaustive struct literal, or call
-`report::duplicates::render`, need a small change; see Changed.
+`report::duplicates::render`, need a small change (see Changed).
 
 ### Added
 
@@ -35,7 +38,9 @@ and model triage of duplicate pairs (spec 30). Library consumers who build
   any failure prints one warning and the untriaged report. Verdicts are
   cached under the target directory, so an unchanged pair is not asked
   about again. The HTTP client sits behind a new `triage` Cargo feature,
-  off by default: `cargo install cargo-crap --features triage`.
+  off by default for source installs (`cargo install cargo-crap --features
+  triage`). The release binaries are built with it, and it does nothing
+  until the config and the key turn it on.
 
 ### Changed
 
@@ -53,11 +58,35 @@ and model triage of duplicate pairs (spec 30). Library consumers who build
   duplicate `triage` fields (`report-v1.json`, `delta-v2.json`). Existing
   documents stay valid. Validators pinned to a cached copy must refresh
   it, since both schemas set `additionalProperties: false`.
+- The `--help` text is reworded in places. No flag, default or behaviour
+  changed.
+- The crate package no longer ships `tests/`, and the new `docs/` folder
+  stays out of it too. The integration tests need fixture workspaces and
+  doc pages that Cargo does not package, so they failed when run from the
+  published crate. They stay in the repository and CI, and the unit and
+  doc tests still ship.
+
+### Documentation
+
+- The README keeps what a first-time reader needs: what the tool finds,
+  install, a quick start with real output, how to read the report, one
+  complete CI workflow, and triage. The reference moved into `docs/`,
+  grouped as guides, reference and explanation, with a `SUMMARY.md` that
+  mdBook can build.
+- A new guide, *Triaging duplicates with TypeSafe*, and a demo project in
+  `examples/triage-demo` with three pairs and a real triaged run.
+- Claims that disagreed with the code are fixed: the example table's status
+  symbol, what `-p` adds, the triage cache location and environment, and
+  `default-excludes`.
+- CONTRIBUTING is rewritten as a guide for a first pull request, and issue
+  forms replace GitHub's default templates.
 
 ### Internal
 
 - `just dev`, CI and the mutation gate build and test with the `triage`
   feature both off and on.
+- `tests/docs.rs` fails when the flags table, the configuration reference
+  or a marked sample output drifts from the code.
 
 
 ## [0.5.0] - 2026-09-05
@@ -581,7 +610,8 @@ output points at v2.
 
 <!-- Version links -->
 
-[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/minikin/cargo-crap/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/minikin/cargo-crap/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/minikin/cargo-crap/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/minikin/cargo-crap/compare/v0.4.1...v0.4.2
