@@ -18,9 +18,16 @@ use std::hash::Hasher;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// Numbers the temporary files [`Cache::put`] writes before renaming them.
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+/// How many times [`read_retrying`] tries a read that is denied access.
+const READ_ATTEMPTS: u32 = 5;
+
+/// The pause between those tries.
+const RETRY_DELAY: Duration = Duration::from_millis(2);
 
 /// Where the cache lives under a Cargo target directory.
 #[must_use]
@@ -89,7 +96,8 @@ impl Cache {
         &self,
         key: CacheKey,
     ) -> Option<Verdict> {
-        let raw = std::fs::read_to_string(self.dir.join(key.file_name())).ok()?;
+        let path = self.dir.join(key.file_name());
+        let raw = read_retrying(|| std::fs::read_to_string(&path)).ok()?;
         serde_json::from_str::<Entry>(&raw).ok()?.verdict()
     }
 
@@ -122,6 +130,24 @@ impl Cache {
                 let _ = std::fs::remove_file(&temp);
             })
     }
+}
+
+/// `read`'s result, tried again while it is denied access.
+///
+/// On Windows a read that lands while [`Cache::put`] replaces the entry is
+/// denied access for a moment, while the old file is being deleted. Without
+/// the retry that read would count as a miss and ask the API again. Any other
+/// error, a missing entry included, returns at once.
+fn read_retrying(mut read: impl FnMut() -> io::Result<String>) -> io::Result<String> {
+    for _ in 1..READ_ATTEMPTS {
+        match read() {
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                std::thread::sleep(RETRY_DELAY);
+            },
+            result => return result,
+        }
+    }
+    read()
 }
 
 /// A verdict as stored on disk, checked like an API answer on the way back.
@@ -201,6 +227,56 @@ mod tests {
             std::fs::write(&entry, corrupt).expect("write entry");
             assert_eq!(cache.get(key()), None, "treated as a miss: {corrupt:?}");
         }
+    }
+
+    /// A reader that fails with `errors` in turn, then reads `"entry"`, and
+    /// counts its calls.
+    fn scripted_read(
+        errors: Vec<io::ErrorKind>
+    ) -> (
+        impl FnMut() -> io::Result<String>,
+        std::rc::Rc<std::cell::Cell<usize>>,
+    ) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counter = std::rc::Rc::clone(&calls);
+        let read = move || {
+            let n = counter.get();
+            counter.set(n + 1);
+            errors.get(n).map_or_else(
+                || Ok("entry".to_owned()),
+                |&kind| Err(io::Error::from(kind)),
+            )
+        };
+        (read, calls)
+    }
+
+    #[test]
+    fn a_read_denied_access_while_the_entry_is_replaced_is_tried_again() {
+        // Windows denies a read that lands while the entry is being replaced.
+        let (read, calls) = scripted_read(vec![io::ErrorKind::PermissionDenied; 2]);
+        assert_eq!(read_retrying(read).expect("the third try reads"), "entry");
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn a_missing_entry_is_not_tried_again() {
+        // A miss is the common case on a first run, so it costs one read.
+        let (read, calls) = scripted_read(vec![io::ErrorKind::NotFound]);
+        assert_eq!(
+            read_retrying(read).expect_err("missing").kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn a_read_still_denied_after_the_last_try_is_a_miss() {
+        let (read, calls) = scripted_read(vec![io::ErrorKind::PermissionDenied; 99]);
+        assert_eq!(
+            read_retrying(read).expect_err("still denied").kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(calls.get(), READ_ATTEMPTS as usize);
     }
 
     #[test]
