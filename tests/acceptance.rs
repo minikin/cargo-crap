@@ -2015,3 +2015,159 @@ fn top_or_min_in_config_disables_the_implicit_cap() {
     // And no hidden-count footer is printed
     assert!(!stdout.contains("more below threshold"), "{stdout}");
 }
+
+// ---- Human-format display cap · T3 ----
+
+/// Replace every `.rs` file in `dir` with `functions`, keeping anything else
+/// (the recorded baseline) in place.
+fn rewrite_tree(
+    dir: &Path,
+    functions: &[(String, String, usize)],
+) {
+    for file in fs::read_dir(dir).expect("read dir") {
+        let path = file.expect("dir entry").path();
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            fs::remove_file(path).expect("remove source");
+        }
+    }
+    let fresh = tree_of(functions);
+    for file in fs::read_dir(fresh.path()).expect("read dir") {
+        let path = file.expect("dir entry").path();
+        fs::copy(&path, dir.join(path.file_name().expect("file name"))).expect("copy source");
+    }
+}
+
+/// Run the human delta report from `dir` against the baseline at `baseline`.
+fn delta_human(
+    dir: &Path,
+    baseline: &str,
+    extra: &[&str],
+) -> String {
+    let args = [
+        &[
+            "--format",
+            "human",
+            "--threshold",
+            "1000",
+            "--baseline",
+            baseline,
+        ][..],
+        extra,
+    ]
+    .concat();
+    run_in(dir, &args).0
+}
+
+/// Record a baseline of `before` at threshold 1000, then swap in `after`.
+fn baseline_then(
+    before: &[(String, String, usize)],
+    after: &[(String, String, usize)],
+) -> (TempDir, String) {
+    let dir = tree_of(before);
+    let path = dir.path().to_str().expect("utf-8");
+    let recorded = json_run(dir.path(), &["--path", path, "--threshold", "1000"]);
+    let baseline = dir.path().join("baseline.json");
+    fs::write(&baseline, recorded.to_string()).expect("write baseline");
+    rewrite_tree(dir.path(), after);
+    let baseline = baseline.to_str().expect("utf-8").to_owned();
+    (dir, baseline)
+}
+
+#[test]
+fn regressed_rows_are_exempt_from_the_cap_in_delta_mode() {
+    // Given a baseline where 15 below-threshold functions have regressed
+    // (complexity 1 to 2, CRAP 2 to 6)
+    // And   30 other below-threshold functions are New or Improved
+    let mut before = named("hot_reg", 15, 1);
+    before.extend(named("cold_imp", 15, 2));
+    let mut after = named("hot_reg", 15, 2);
+    after.extend(named("cold_imp", 15, 1));
+    after.extend(named("cold_new", 15, 1));
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --format human --baseline baseline.json`
+    let stdout = delta_human(dir.path(), &baseline, &[]);
+    let rows = shown_rows(&stdout);
+    // Then all 15 regressed rows are shown
+    let regressed = rows.iter().filter(|r| r.starts_with("hot_reg")).count();
+    assert_eq!(regressed, 15, "{stdout}");
+    // And exactly 10 of the other below-threshold rows are shown
+    assert_eq!(rows.len() - regressed, 10, "{stdout}");
+    // And a footer reports "20 more below threshold"
+    assert!(stdout.contains("20 more below threshold"), "{stdout}");
+    // And the delta summary line still counts every entry
+    assert!(
+        stdout.contains("↑ 15 regressed") && stdout.contains("↓ 15 improved"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("★ 15 new"), "{stdout}");
+}
+
+#[test]
+fn new_and_moved_rows_below_the_threshold_count_toward_the_cap() {
+    // Given a baseline against which 40 below-threshold functions moved file
+    // And   no function regressed
+    let before: Vec<_> = named("cold", 40, 1);
+    let after: Vec<_> = before
+        .iter()
+        .map(|(_, name, cc)| ("moved.rs".to_owned(), name.clone(), *cc))
+        .collect();
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --format human --baseline baseline.json`
+    let stdout = delta_human(dir.path(), &baseline, &[]);
+    // Then the table contains exactly 10 rows
+    assert_eq!(shown_rows(&stdout).len(), 10, "{stdout}");
+    // And a footer reports "30 more below threshold"
+    assert!(stdout.contains("30 more below threshold"), "{stdout}");
+    assert!(stdout.contains("↔ 40 moved"), "{stdout}");
+}
+
+#[test]
+fn show_unchanged_disables_the_implicit_cap() {
+    // Given a baseline against which 140 below-threshold functions are unchanged
+    let functions = ten_hot_and_130_cold();
+    let (dir, baseline) = baseline_then(&functions, &functions);
+    // When I run `cargo crap --format human --baseline baseline.json --show-unchanged`
+    let stdout = delta_human(dir.path(), &baseline, &["--show-unchanged"]);
+    // Then the table contains all 140 rows
+    assert_eq!(shown_rows(&stdout).len(), 140, "{stdout}");
+    // And no hidden-count footer is printed
+    assert!(!stdout.contains("more below threshold"), "{stdout}");
+}
+
+#[test]
+fn the_removed_list_is_not_capped() {
+    // Given a baseline with 25 functions that no longer exist
+    let mut before = named("gone", 25, 1);
+    before.extend(named("cold", 3, 1));
+    let (dir, baseline) = baseline_then(&before, &named("cold", 3, 1));
+    // When I run `cargo crap --format human --baseline baseline.json`
+    let stdout = delta_human(dir.path(), &baseline, &[]);
+    // Then all 25 appear under "Removed since baseline"
+    let removed = stdout
+        .split("Removed since baseline:")
+        .nth(1)
+        .expect("a Removed section");
+    let listed = removed.lines().filter(|l| l.contains("gone_")).count();
+    assert_eq!(listed, 25, "{stdout}");
+}
+
+#[test]
+fn the_delta_footer_suggests_show_unchanged_instead_of_top() {
+    // Given a baseline against which 40 below-threshold functions moved file
+    let before: Vec<_> = named("cold", 40, 1);
+    let after: Vec<_> = before
+        .iter()
+        .map(|(_, name, cc)| ("moved.rs".to_owned(), name.clone(), *cc))
+        .collect();
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --format human --baseline baseline.json`
+    let stdout = delta_human(dir.path(), &baseline, &[]);
+    // Then the footer reads "· 30 more below threshold — use --show-unchanged,
+    // --min 0, or --format markdown to see them."
+    assert!(
+        stdout.contains(
+            "· 30 more below threshold — use --show-unchanged, --min 0, or --format markdown to see them."
+        ),
+        "{stdout}"
+    );
+}

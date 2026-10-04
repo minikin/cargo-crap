@@ -206,6 +206,7 @@ pub fn render_delta(
             threshold,
             opts.show_unchanged,
             opts.uncovered_hints,
+            opts.sliced,
             out,
         ),
         Format::GitHub => github::render_delta_github(report, threshold, out),

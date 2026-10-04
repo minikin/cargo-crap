@@ -46,18 +46,29 @@ fn write_capped_table(
     sliced: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let capped = cap_rows(
-        entries,
-        |e| sliced || Severity::classify(e.crap, threshold) == Severity::Crappy,
-        |a, b| {
-            b.crap
-                .total_cmp(&a.crap)
-                .then_with(|| file_order_key(a).cmp(&file_order_key(b)))
-        },
-    );
+    let capped = cap_rows(entries, |e| sliced || is_failure(e, threshold), by_rank);
     let table = build_table(&capped.kept, threshold, uncovered_hints);
     writeln!(out, "{table}")?;
-    write_hidden_footer(out, capped.hidden)
+    write_hidden_footer(out, capped.hidden, ABSOLUTE_ESCAPES)
+}
+
+/// Whether the exit gate counts this entry as a failure.
+fn is_failure(
+    entry: &CrapEntry,
+    threshold: f64,
+) -> bool {
+    Severity::classify(entry.crap, threshold) == Severity::Crappy
+}
+
+/// Highest score first, ties in (file, function, line) order: a total order,
+/// so the rows the cap keeps do not depend on the display order.
+fn by_rank(
+    a: &CrapEntry,
+    b: &CrapEntry,
+) -> Ordering {
+    b.crap
+        .total_cmp(&a.crap)
+        .then_with(|| file_order_key(a).cmp(&file_order_key(b)))
 }
 
 /// Below-threshold rows the human table shows when no slice was asked for.
@@ -96,15 +107,24 @@ fn cap_rows<T>(
     }
 }
 
+/// The ways to see the rows the absolute table's cap left out.
+const ABSOLUTE_ESCAPES: &str = "--top, --min 0, or --format markdown";
+
+/// The ways to see the rows the delta table's cap left out. Not `--top`: it
+/// cuts the current entries before the baseline comparison, so the functions
+/// it cuts would be reported as removed.
+const DELTA_ESCAPES: &str = "--show-unchanged, --min 0, or --format markdown";
+
 /// Say how many below-threshold rows the cap left out, and how to see them.
 fn write_hidden_footer(
     out: &mut dyn Write,
     hidden: usize,
+    escapes: &str,
 ) -> Result<()> {
     if hidden > 0 {
         writeln!(
             out,
-            "· {hidden} more below threshold — use --top, --min 0, or --format markdown to see them."
+            "· {hidden} more below threshold — use {escapes} to see them."
         )?;
     }
     Ok(())
@@ -197,6 +217,7 @@ pub(crate) fn render_delta_human(
     threshold: f64,
     show_unchanged: bool,
     uncovered_hints: bool,
+    sliced: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     if report.entries.is_empty() && report.removed.is_empty() {
@@ -207,7 +228,15 @@ pub(crate) fn render_delta_human(
     // Unchanged rows are hidden by default (spec 16); the summary line below
     // still counts every entry.
     let visible = visible_delta_entries(&report.entries, show_unchanged);
-    write_delta_body(report, &visible, threshold, uncovered_hints, out)?;
+    write_delta_body(
+        report,
+        &visible,
+        threshold,
+        uncovered_hints,
+        show_unchanged,
+        sliced,
+        out,
+    )?;
     write_delta_summary(out, report)
 }
 
@@ -218,19 +247,54 @@ fn write_delta_body(
     visible: &[&DeltaEntry],
     threshold: f64,
     uncovered_hints: bool,
+    show_unchanged: bool,
+    sliced: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     if visible.is_empty() && report.removed.is_empty() {
         return writeln!(out, "No changes since baseline.").map_err(Into::into);
     }
     if !visible.is_empty() {
-        let table = build_delta_table(visible, threshold, uncovered_hints);
-        writeln!(out, "{table}")?;
+        write_capped_delta_table(
+            visible,
+            threshold,
+            uncovered_hints,
+            show_unchanged,
+            sliced,
+            out,
+        )?;
     }
     if !report.removed.is_empty() {
         write_removed_section(report, out)?;
     }
     Ok(())
+}
+
+/// Draw every regressed row, every row above the threshold and the
+/// [`HOT_SPOTS`] worst of the rest, then say how many rows were left out.
+/// `--show-unchanged` and a `top` / `min` slice each ask for every row.
+fn write_capped_delta_table(
+    visible: &[&DeltaEntry],
+    threshold: f64,
+    uncovered_hints: bool,
+    show_unchanged: bool,
+    sliced: bool,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let capped = cap_rows(
+        visible,
+        |de| {
+            show_unchanged
+                || sliced
+                || de.status == DeltaStatus::Regressed
+                || is_failure(&de.current, threshold)
+        },
+        |a, b| by_rank(&a.current, &b.current),
+    );
+    let kept: Vec<&DeltaEntry> = capped.kept.into_iter().copied().collect();
+    let table = build_delta_table(&kept, threshold, uncovered_hints);
+    writeln!(out, "{table}")?;
+    write_hidden_footer(out, capped.hidden, DELTA_ESCAPES)
 }
 
 /// Write the "Removed since baseline" list.
@@ -601,7 +665,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, false, &mut buf).unwrap();
+        render_delta_human(&report, 30.0, false, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("↔ 1 moved"),
@@ -653,7 +717,7 @@ mod tests {
     #[test]
     fn delta_human_hides_unchanged_rows_by_default() {
         let mut buf = Vec::new();
-        render_delta_human(&mixed_report(), 30.0, false, false, &mut buf).unwrap();
+        render_delta_human(&mixed_report(), 30.0, false, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("reg"), "regressed row must appear:\n{s}");
         assert!(s.contains("imp"), "improved row must appear:\n{s}");
@@ -669,7 +733,7 @@ mod tests {
     #[test]
     fn delta_human_show_unchanged_restores_full_table() {
         let mut buf = Vec::new();
-        render_delta_human(&mixed_report(), 30.0, true, false, &mut buf).unwrap();
+        render_delta_human(&mixed_report(), 30.0, true, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         for f in ["reg", "imp", "u1", "u2", "u3"] {
             assert!(s.contains(f), "{f} must appear with --show-unchanged:\n{s}");
@@ -686,7 +750,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, false, &mut buf).unwrap();
+        render_delta_human(&report, 30.0, false, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("No changes since baseline."),
@@ -712,7 +776,7 @@ mod tests {
             }],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, false, &mut buf).unwrap();
+        render_delta_human(&report, 30.0, false, false, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("Removed since baseline:") && s.contains("gone"),
@@ -783,7 +847,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, true, &mut buf).unwrap();
+        render_delta_human(&report, 30.0, false, true, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("Uncovered"), "delta header column:\n{s}");
         assert!(s.contains("7–9"), "delta range cell:\n{s}");
@@ -958,6 +1022,107 @@ mod tests {
         assert_eq!(shown, expected);
     }
 
+    /// One delta entry per `(score, status)`, named `f<i>` after its position.
+    fn delta_scoring(rows: &[(f64, DeltaStatus)]) -> DeltaReport {
+        let entries = rows
+            .iter()
+            .enumerate()
+            .map(|(i, &(crap, status))| DeltaEntry {
+                current: entry(None, &format!("f{i}"), crap),
+                baseline_crap: Some(crap),
+                delta: Some(0.0),
+                status,
+                previous_file: None,
+            })
+            .collect();
+        DeltaReport {
+            entries,
+            removed: vec![],
+        }
+    }
+
+    fn human_delta(
+        report: &DeltaReport,
+        opts: &RenderOptions,
+    ) -> String {
+        let mut buf = Vec::new();
+        super::super::render_delta(report, opts, &mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn delta_regressed_rows_are_never_capped() {
+        let mut rows = vec![(1.0, DeltaStatus::Regressed); 12];
+        rows.extend([(1.0, DeltaStatus::Improved); 12]);
+        let out = human_delta(&delta_scoring(&rows), &opts(30.0, Format::Human));
+        assert_eq!(drawn(&out).len(), 22, "{out}");
+        assert!(out.contains("· 2 more below threshold"), "{out}");
+    }
+
+    #[test]
+    fn delta_rows_above_the_threshold_are_all_drawn() {
+        let mut rows = vec![(50.0, DeltaStatus::Improved); 12];
+        rows.extend([(1.0, DeltaStatus::New); 12]);
+        let out = human_delta(&delta_scoring(&rows), &opts(30.0, Format::Human));
+        assert_eq!(drawn(&out).len(), 22, "{out}");
+        assert!(out.contains("· 2 more below threshold"), "{out}");
+    }
+
+    #[test]
+    fn delta_show_unchanged_draws_every_row() {
+        let report = delta_scoring(&[(1.0, DeltaStatus::Unchanged); 12]);
+        let opts = RenderOptions {
+            threshold: 30.0,
+            show_unchanged: true,
+            ..RenderOptions::default()
+        };
+        let out = human_delta(&report, &opts);
+        assert_eq!(drawn(&out).len(), 12, "{out}");
+        assert!(!out.contains("more below threshold"), "{out}");
+    }
+
+    #[test]
+    fn delta_requested_slice_draws_every_row() {
+        let report = delta_scoring(&[(1.0, DeltaStatus::Improved); 12]);
+        let opts = RenderOptions {
+            threshold: 30.0,
+            sliced: true,
+            ..RenderOptions::default()
+        };
+        let out = human_delta(&report, &opts);
+        assert_eq!(drawn(&out).len(), 12, "{out}");
+        assert!(!out.contains("more below threshold"), "{out}");
+    }
+
+    #[test]
+    fn delta_footer_sits_between_the_table_and_the_removed_list() {
+        let mut report = delta_scoring(&[(1.0, DeltaStatus::New); 11]);
+        report.removed.push(crate::delta::RemovedEntry {
+            function: "gone".into(),
+            file: PathBuf::from("src/a.rs"),
+            baseline_crap: 1.0,
+        });
+        let out = human_delta(&report, &opts(30.0, Format::Human));
+        let table_end = out.rfind('┘').expect("table");
+        let footer = out
+            .find("· 1 more below threshold — use --show-unchanged, --min 0, or --format markdown to see them.\n")
+            .expect("footer");
+        let removed = out.find("Removed since baseline").expect("removed list");
+        assert!(table_end < footer && footer < removed, "{out}");
+    }
+
+    #[test]
+    fn delta_equal_scores_keep_the_rows_first_in_file_order() {
+        let mut report = delta_scoring(&[(1.0, DeltaStatus::New); 12]);
+        report.entries.reverse();
+        let mut shown = drawn(&human_delta(&report, &opts(30.0, Format::Human)));
+        shown.sort();
+        let mut expected: Vec<String> = (0..12).map(|i| format!("f{i}")).collect();
+        expected.sort();
+        expected.truncate(HOT_SPOTS);
+        assert_eq!(shown, expected);
+    }
+
     /// A sink that accepts everything except the footer line.
     struct RefusesFooter(Vec<u8>);
 
@@ -1012,6 +1177,16 @@ mod tests {
         })
     }
 
+    #[test]
+    fn a_delta_footer_that_cannot_be_written_is_an_error() {
+        let mut sink = RefusesFooter(Vec::new());
+        let report = delta_scoring(&[(1.0, DeltaStatus::New); 11]);
+        let result = super::super::render_delta(&report, &opts(30.0, Format::Human), &mut sink);
+        assert!(result.is_err(), "the write failure must surface");
+        let written = String::from_utf8(sink.0).unwrap();
+        assert!(!written.contains("regressed"), "{written}");
+    }
+
     proptest::proptest! {
         /// With a total order, the same rows survive the cap whatever order
         /// they arrive in.
@@ -1027,6 +1202,42 @@ mod tests {
                 ids
             };
             proptest::prop_assert_eq!(kept(&rows), kept(&shuffled));
+        }
+
+        /// The delta table draws every regressed row and every row above the
+        /// threshold, plus at most the `HOT_SPOTS` best of the rest, and its
+        /// footer counts exactly the rows it left out.
+        #[test]
+        fn the_delta_cap_keeps_regressions_and_failures(
+            rows in proptest::collection::vec(
+                (
+                    0.0..60.0f64,
+                    proptest::sample::select(vec![
+                        DeltaStatus::Regressed,
+                        DeltaStatus::Improved,
+                        DeltaStatus::New,
+                        DeltaStatus::Moved,
+                    ]),
+                ),
+                1..30,
+            )
+        ) {
+            let out = human_delta(&delta_scoring(&rows), &opts(30.0, Format::Human));
+            let shown = drawn(&out);
+            let pinned: Vec<String> = rows
+                .iter()
+                .enumerate()
+                .filter(|(_, (crap, status))| *status == DeltaStatus::Regressed || *crap > 30.0)
+                .map(|(i, _)| format!("f{i}"))
+                .collect();
+            for name in &pinned {
+                proptest::prop_assert!(shown.contains(name), "{} missing:\n{}", name, out);
+            }
+            let others = rows.len() - pinned.len();
+            proptest::prop_assert_eq!(shown.len(), pinned.len() + others.min(HOT_SPOTS));
+            let hidden = others.saturating_sub(HOT_SPOTS);
+            let footer = format!("· {hidden} more below threshold");
+            proptest::prop_assert_eq!(out.contains(&footer), hidden > 0, "{}", out);
         }
 
         /// The cap keeps an order-preserving subsequence: every pinned row,
