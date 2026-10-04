@@ -97,10 +97,14 @@ struct Cli {
     threshold: Option<f64>,
 
     /// Only print functions with a CRAP score at or above this cutoff.
+    /// Also shows every row of the human table, which otherwise lists only
+    /// the 10 worst functions below the threshold.
     #[arg(long, value_name = "SCORE")]
     min: Option<f64>,
 
-    /// Limit the report to the top N crappiest functions.
+    /// Limit the report to the top N crappiest functions. Also shows every
+    /// row of the human table, which otherwise lists only the 10 worst
+    /// functions below the threshold.
     #[arg(long, value_name = "N")]
     top: Option<usize>,
 

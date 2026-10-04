@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `--format human` lists every function above the threshold but only the
+  10 highest-scoring below it, then one line counting the rest. `--top` or
+  `--min` (on the command line or in config) shows exactly that slice
+  instead. With `--baseline`, regressed functions are always listed and
+  `--show-unchanged` turns the cap off. The summary line, the exit code and
+  every other format still count every function. See
+  [The human table's cap](docs/reference/output-formats.md#the-human-tables-cap).
 - **BREAKING (library API):** `RenderOptions` gained `sliced: bool`, set
   when the user asked for `top` or `min`. Code that builds `RenderOptions`
   with an exhaustive struct literal must add the field or spread

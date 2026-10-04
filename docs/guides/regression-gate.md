@@ -47,7 +47,11 @@ cargo crap --lcov lcov.info --format json --sort file --output crap_baseline.jso
 
 In `--baseline` mode the human and markdown tables list only the functions
 that changed (`Regressed`, `Improved`, `New`, `Moved`), so pass
-`--show-unchanged` when you want the full table. When nothing changed at all
+`--show-unchanged` when you want the full table. The human table also caps
+the changed rows below the threshold at the 10 worst, though it always lists
+every regression (see
+[The human table's cap](../reference/output-formats.md#the-human-tables-cap)).
+When nothing changed at all
 the table is replaced with `No changes since baseline.`, while the summary
 line still counts every entry. JSON stays exhaustive either way, and
 `pr-comment` keeps its own row policy. Both `--show-unchanged` and
