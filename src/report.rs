@@ -128,12 +128,17 @@ pub struct RenderOptions<'a> {
     /// each verdict beside its pair, and by [`render_duplicates`], which
     /// prints the human triage lines; no other format carries it.
     pub triage: Option<&'a [Assessment]>,
+    /// The user asked for a slice of the entries with `top` or `min`, on the
+    /// command line or in config. The human table then draws every entry it
+    /// is given instead of capping the rows below the threshold. Only the
+    /// human renderer reads it.
+    pub sliced: bool,
 }
 
 impl Default for RenderOptions<'_> {
     /// CLI defaults: threshold 30, human format, no links, no
     /// diagnostics, changed-only delta rows, no uncovered hints, no
-    /// duplicates, the classical `?` weight.
+    /// duplicates, the classical `?` weight, a capped human table.
     fn default() -> Self {
         Self {
             threshold: crate::score::DEFAULT_THRESHOLD,
@@ -145,6 +150,7 @@ impl Default for RenderOptions<'_> {
             duplicates: None,
             try_weight: crate::config::DEFAULT_TRY_WEIGHT,
             triage: None,
+            sliced: false,
         }
     }
 }
@@ -162,7 +168,9 @@ pub fn render(
     let threshold = opts.threshold;
     match opts.format {
         Format::Json => json::render_json(entries, opts, out),
-        Format::Human => human::render_human(entries, threshold, opts.uncovered_hints, out),
+        Format::Human => {
+            human::render_human(entries, threshold, opts.uncovered_hints, opts.sliced, out)
+        },
         Format::GitHub => github::render_github(entries, threshold, out),
         Format::Markdown => {
             markdown::render_markdown(entries, threshold, opts.links, opts.uncovered_hints, out)

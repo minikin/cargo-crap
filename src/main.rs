@@ -991,6 +991,15 @@ fn resolve_bool(
     cli_flag || config_value.unwrap_or(false)
 }
 
+/// Whether the user asked for a slice of the entries with `top` or `min`,
+/// which turns off the human table's cap. Keeps the `||` out of `run`.
+fn is_sliced(
+    min: Option<f64>,
+    top: Option<usize>,
+) -> bool {
+    min.is_some() || top.is_some()
+}
+
 /// Bail when `flag` is set but `--baseline` is absent. Keeps the per-flag
 /// `&& baseline.is_none()` checks out of [`validate_args`].
 fn require_baseline(
@@ -1556,12 +1565,8 @@ fn run() -> Result<ExitCode> {
     warn_scope_mismatch(diagnostics.as_ref());
     let mut entries = merge_result.entries;
     assign_crate_names(&mut entries, &members);
-    apply_filters(
-        &mut entries,
-        &effective_allow,
-        cli.min.or(config.min),
-        cli.top.or(config.top),
-    )?;
+    let (min, top) = (cli.min.or(config.min), cli.top.or(config.top));
+    apply_filters(&mut entries, &effective_allow, min, top)?;
     // Apply the user-requested ordering after --top has selected by CRAP (spec 17).
     sort_entries(&mut entries, sort_order);
 
@@ -1592,6 +1597,7 @@ fn run() -> Result<ExitCode> {
             duplicates: dups.pairs.as_deref(),
             try_weight,
             triage: dups.triage.as_deref(),
+            sliced: is_sliced(min, top),
         },
         epsilon,
         summary: cli.summary,
@@ -2068,6 +2074,14 @@ mod tests {
         // Kills: From<SortArg> collapsing to Default::default() (always Crap).
         assert_eq!(SortOrder::from(SortArg::Crap), SortOrder::Crap);
         assert_eq!(SortOrder::from(SortArg::File), SortOrder::File);
+    }
+
+    #[test]
+    fn a_top_or_min_value_is_a_requested_slice() {
+        assert!(!is_sliced(None, None));
+        assert!(is_sliced(Some(5.0), None));
+        assert!(is_sliced(None, Some(50)));
+        assert!(is_sliced(Some(5.0), Some(50)));
     }
 
     #[test]

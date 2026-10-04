@@ -19,6 +19,7 @@ pub(crate) fn render_human(
     entries: &[CrapEntry],
     threshold: f64,
     uncovered_hints: bool,
+    sliced: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     if entries.is_empty() {
@@ -26,7 +27,7 @@ pub(crate) fn render_human(
         return Ok(());
     }
     write_per_crate_human(entries, threshold, out)?;
-    write_capped_table(entries, threshold, uncovered_hints, out)?;
+    write_capped_table(entries, threshold, uncovered_hints, sliced, out)?;
     write_summary(
         out,
         super::crappy_count(entries, threshold),
@@ -36,16 +37,18 @@ pub(crate) fn render_human(
 }
 
 /// Draw every row above the threshold and the [`HOT_SPOTS`] worst below it,
-/// then say how many rows were left out.
+/// then say how many rows were left out. A `sliced` run already holds just
+/// the rows the user asked for, so every row is drawn.
 fn write_capped_table(
     entries: &[CrapEntry],
     threshold: f64,
     uncovered_hints: bool,
+    sliced: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
     let capped = cap_rows(
         entries,
-        |e| Severity::classify(e.crap, threshold) == Severity::Crappy,
+        |e| sliced || Severity::classify(e.crap, threshold) == Severity::Crappy,
         |a, b| {
             b.crap
                 .total_cmp(&a.crap)
@@ -101,7 +104,7 @@ fn write_hidden_footer(
     if hidden > 0 {
         writeln!(
             out,
-            "· {hidden} more below threshold — use --top, --min, or --format markdown for the full list."
+            "· {hidden} more below threshold — use --top, --min 0, or --format markdown to see them."
         )?;
     }
     Ok(())
@@ -371,7 +374,7 @@ fn write_delta_summary(
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{opts, sample};
-    use super::super::{Format, render};
+    use super::super::{Format, RenderOptions, render};
     use super::*;
     use std::path::PathBuf;
 
@@ -731,6 +734,7 @@ mod tests {
             &super::super::test_support::sample_with_uncovered(),
             30.0,
             true,
+            false,
             &mut buf,
         )
         .unwrap();
@@ -747,6 +751,7 @@ mod tests {
             &super::super::test_support::sample_with_uncovered(),
             30.0,
             false,
+            false,
             &mut buf,
         )
         .unwrap();
@@ -761,6 +766,7 @@ mod tests {
         render_human(
             &super::super::test_support::sample(),
             30.0,
+            false,
             false,
             &mut without,
         )
@@ -853,11 +859,25 @@ mod tests {
     }
 
     #[test]
+    fn a_requested_slice_draws_every_row() {
+        let opts = RenderOptions {
+            threshold: 30.0,
+            sliced: true,
+            ..RenderOptions::default()
+        };
+        let mut buf = Vec::new();
+        render(&scoring(&[1.0; 12]), &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(drawn(&out).len(), 12, "{out}");
+        assert!(!out.contains("more below threshold"), "{out}");
+    }
+
+    #[test]
     fn hidden_rows_are_reported_in_one_footer_line() {
         let out = human(&scoring(&[1.0; 12]), 30.0);
         assert!(
             out.contains(
-                "· 2 more below threshold — use --top, --min, or --format markdown for the full list.\n"
+                "· 2 more below threshold — use --top, --min 0, or --format markdown to see them.\n"
             ),
             "{out}"
         );

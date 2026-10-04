@@ -1966,3 +1966,52 @@ fn the_exit_code_is_unaffected_by_the_cap() {
     assert_eq!(human, json);
     assert_ne!(human, Some(0), "23 functions exceed the threshold");
 }
+
+// ---- Human-format display cap · T2 ----
+
+#[test]
+fn explicit_top_disables_the_implicit_cap() {
+    // Given a project with 140 functions, none above the threshold
+    let dir = tree_of(&ten_hot_and_130_cold());
+    // When I run `cargo crap --format human --top 50`
+    let (stdout, _) = run_in(
+        dir.path(),
+        &["--format", "human", "--threshold", "1000", "--top", "50"],
+    );
+    // Then the table contains exactly 50 rows
+    assert_eq!(shown_rows(&stdout).len(), 50, "{stdout}");
+    // And no hidden-count footer is printed
+    assert!(!stdout.contains("more below threshold"), "{stdout}");
+}
+
+#[test]
+fn explicit_min_disables_the_implicit_cap() {
+    // Given a project with 140 functions, 40 of them with CRAP of at least 5
+    // (complexity 2 scores 6, complexity 1 scores 2)
+    let mut functions = named("hot", 40, 2);
+    functions.extend(named("cold", 100, 1));
+    let dir = tree_of(&functions);
+    // When I run `cargo crap --format human --min 5`
+    let (stdout, _) = run_in(
+        dir.path(),
+        &["--format", "human", "--threshold", "1000", "--min", "5"],
+    );
+    // Then the table contains exactly 40 rows
+    assert_eq!(shown_rows(&stdout).len(), 40, "{stdout}");
+    // And no hidden-count footer is printed
+    assert!(!stdout.contains("more below threshold"), "{stdout}");
+}
+
+#[test]
+fn top_or_min_in_config_disables_the_implicit_cap() {
+    // Given a project with 140 functions, none above the threshold
+    let dir = tree_of(&ten_hot_and_130_cold());
+    // And a .cargo-crap.toml containing `top = 50`
+    write(dir.path(), ".cargo-crap.toml", "top = 50\n");
+    // When I run `cargo crap --format human`
+    let (stdout, _) = run_in(dir.path(), &["--format", "human", "--threshold", "1000"]);
+    // Then the table contains exactly 50 rows
+    assert_eq!(shown_rows(&stdout).len(), 50, "{stdout}");
+    // And no hidden-count footer is printed
+    assert!(!stdout.contains("more below threshold"), "{stdout}");
+}

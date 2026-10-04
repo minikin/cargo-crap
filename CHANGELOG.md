@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (library API):** `RenderOptions` gained `sliced: bool`, set
+  when the user asked for `top` or `min`. Code that builds `RenderOptions`
+  with an exhaustive struct literal must add the field or spread
+  `..Default::default()`.
+
+### Fixed
+
+- On Windows, a duplicate-triage cache read that landed while another run
+  was replacing the same entry was denied access and counted as a miss, so
+  the pair was sent to the model again. A read denied access is now retried
+  up to five times, 2 ms apart (#102).
+
 
 ## [0.6.1] - 2026-09-29
 
