@@ -2,6 +2,7 @@
 //!
 //! Spec 29 — Structural duplicate detection.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -1737,4 +1738,231 @@ fn the_json_envelope_carries_the_verdict_beside_the_pair() {
     let delta: serde_json::Value = serde_json::from_slice(&delta.stdout).expect("JSON");
     assert_matches_schema("schemas/delta-v2.json", &delta);
     assert_eq!(delta["duplicates"][0]["triage"]["kind"], "same-logic");
+}
+
+// --- Human-format display cap ---------------------------------------------
+//
+// Each task fills only its own heading, so parallel branches never touch the
+// same lines.
+
+/// A Rust function whose cyclomatic complexity is exactly `cc`. Without
+/// coverage data every function is 0% covered, so its CRAP score is
+/// `cc² + cc`: 1 → 2, 3 → 12, 5 → 30, 11 → 132.
+fn function_with_cc(
+    name: &str,
+    cc: usize,
+) -> String {
+    let mut body = format!("fn {name}(x: i32) -> i32 {{\n    let mut y = x;\n");
+    for i in 1..cc {
+        write!(body, "    if x > {i} {{\n        y += 1;\n    }}\n").expect("write to a String");
+    }
+    body.push_str("    y\n}\n");
+    body
+}
+
+/// A tree holding `(file, function, cc)` triples, grouped into their files.
+fn tree_of(functions: &[(String, String, usize)]) -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    let mut files: std::collections::BTreeMap<&str, String> = std::collections::BTreeMap::new();
+    for (file, name, cc) in functions {
+        files
+            .entry(file.as_str())
+            .or_default()
+            .push_str(&function_with_cc(name, *cc));
+    }
+    for (file, body) in &files {
+        write(dir.path(), file, body);
+    }
+    dir
+}
+
+/// `count` functions in `lib.rs` named `<prefix>_<n>`, each with complexity `cc`.
+fn named(
+    prefix: &str,
+    count: usize,
+    cc: usize,
+) -> Vec<(String, String, usize)> {
+    (0..count)
+        .map(|n| ("lib.rs".to_owned(), format!("{prefix}_{n:03}"), cc))
+        .collect()
+}
+
+/// Ten functions that outscore every `cold` one (CRAP 6 to 132) and 130
+/// trivial ones (CRAP 2): a passing run's worth of mostly-noise rows.
+fn ten_hot_and_130_cold() -> Vec<(String, String, usize)> {
+    let mut functions: Vec<_> = (0..10)
+        .map(|n| ("lib.rs".to_owned(), format!("hot_{n:03}"), n + 2))
+        .collect();
+    functions.extend(named("cold", 130, 1));
+    functions
+}
+
+/// Run from `dir` (so no stray config applies) over `dir`, returning stdout
+/// and the exit code.
+fn run_in(
+    dir: &Path,
+    args: &[&str],
+) -> (String, Option<i32>) {
+    let out = crap()
+        .current_dir(dir)
+        .args(["--path", dir.to_str().expect("utf-8")])
+        .args(args)
+        .output()
+        .expect("binary runs");
+    (
+        String::from_utf8(out.stdout).expect("utf-8"),
+        out.status.code(),
+    )
+}
+
+/// The function names the human table shows, in row order. Every generated
+/// name carries one of the prefixes below, and no file name does.
+fn shown_rows(stdout: &str) -> Vec<String> {
+    const PREFIXES: [&str; 4] = ["hot_", "cold_", "fail_", "edge_"];
+    stdout
+        .lines()
+        .filter(|line| line.contains('│'))
+        .flat_map(|line| {
+            line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|token| PREFIXES.iter().any(|p| token.starts_with(p)))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+// ---- Human-format display cap · T1 ----
+
+#[test]
+fn passing_run_shows_only_the_10_worst_hot_spots() {
+    // Given a project with 140 functions, none above the threshold
+    let dir = tree_of(&ten_hot_and_130_cold());
+    // When I run `cargo crap --format human`
+    let (stdout, _) = run_in(dir.path(), &["--format", "human", "--threshold", "1000"]);
+    // Then the table contains exactly 10 rows
+    let rows = shown_rows(&stdout);
+    assert_eq!(rows.len(), 10, "{stdout}");
+    // And they are the 10 functions with the highest CRAP scores
+    assert!(rows.iter().all(|r| r.starts_with("hot_")), "{stdout}");
+    // And a footer reports "130 more below threshold"
+    assert!(stdout.contains("130 more below threshold"), "{stdout}");
+    // And the summary line still reports all 140 analyzed functions
+    assert!(stdout.contains("140 function(s) analyzed"), "{stdout}");
+}
+
+#[test]
+fn above_threshold_entries_are_never_hidden() {
+    // Given a project with 23 functions above the threshold and 200 below
+    let mut functions = named("fail", 23, 5);
+    functions.extend(named("cold", 200, 1));
+    let dir = tree_of(&functions);
+    // When I run `cargo crap --format human`
+    let (stdout, _) = run_in(dir.path(), &["--format", "human", "--threshold", "25"]);
+    let rows = shown_rows(&stdout);
+    // Then all 23 above-threshold rows are shown
+    let failing = rows.iter().filter(|r| r.starts_with("fail_")).count();
+    assert_eq!(failing, 23, "{stdout}");
+    // And exactly 10 below-threshold hot-spot rows follow them
+    assert_eq!(rows.len(), 33, "{stdout}");
+    assert!(
+        rows[23..].iter().all(|r| r.starts_with("cold_")),
+        "{stdout}"
+    );
+    // And a footer reports "190 more below threshold"
+    assert!(stdout.contains("190 more below threshold"), "{stdout}");
+}
+
+#[test]
+fn a_score_equal_to_the_threshold_counts_as_below_it() {
+    // Given a project with 12 functions, one scoring exactly the threshold
+    // (complexity 3, CRAP 12) and 11 below it
+    let mut functions = named("edge", 1, 3);
+    functions.extend(named("cold", 11, 1));
+    let dir = tree_of(&functions);
+    // When I run `cargo crap --format human`
+    let (stdout, _) = run_in(dir.path(), &["--format", "human", "--threshold", "12"]);
+    // Then the table contains exactly 10 rows
+    assert_eq!(shown_rows(&stdout).len(), 10, "{stdout}");
+    // And a footer reports "2 more below threshold"
+    assert!(stdout.contains("2 more below threshold"), "{stdout}");
+}
+
+#[test]
+fn ten_or_fewer_below_threshold_entries_means_no_footer() {
+    // Given a project with 8 functions, none above the threshold
+    let dir = tree_of(&named("cold", 8, 1));
+    // When I run `cargo crap --format human`
+    let (stdout, _) = run_in(dir.path(), &["--format", "human", "--threshold", "1000"]);
+    // Then all 8 rows are shown
+    assert_eq!(shown_rows(&stdout).len(), 8, "{stdout}");
+    // And no hidden-count footer is printed
+    assert!(!stdout.contains("more below threshold"), "{stdout}");
+}
+
+#[test]
+fn hot_spots_are_chosen_by_score_and_shown_in_the_requested_order() {
+    // Given a project with 140 functions, none above the threshold, where
+    // file order runs opposite to score order: f00.rs holds the lowest-scoring
+    // hot spot and f09.rs the highest
+    let mut functions = Vec::new();
+    for n in 0..10 {
+        let file = format!("f{n:02}.rs");
+        functions.push((file.clone(), format!("hot_{n:03}"), n + 2));
+        for c in 0..13 {
+            functions.push((file.clone(), format!("cold_{n:02}_{c:02}"), 1));
+        }
+    }
+    let dir = tree_of(&functions);
+    // When I run `cargo crap --format human --sort file`
+    let (stdout, _) = run_in(
+        dir.path(),
+        &["--format", "human", "--threshold", "1000", "--sort", "file"],
+    );
+    // Then the table contains the 10 functions with the highest CRAP scores
+    // And those rows appear in (file, function, line) order
+    let expected: Vec<String> = (0..10).map(|n| format!("hot_{n:03}")).collect();
+    assert_eq!(shown_rows(&stdout), expected, "{stdout}");
+}
+
+#[test]
+fn other_formats_are_unaffected() {
+    // Given a project with 140 functions, none above the threshold
+    let dir = tree_of(&ten_hot_and_130_cold());
+    let names: Vec<String> = ten_hot_and_130_cold()
+        .into_iter()
+        .map(|(_, name, _)| name)
+        .collect();
+    // When I run `cargo crap` with `--format json`, markdown, github, sarif or pr-comment
+    let (json, _) = run_in(dir.path(), &["--format", "json", "--threshold", "1000"]);
+    // Then the json and markdown output contains all 140 entries
+    let doc: serde_json::Value = serde_json::from_str(&json).expect("one JSON document");
+    assert_eq!(doc["entries"].as_array().map(Vec::len), Some(140));
+    let (markdown, _) = run_in(dir.path(), &["--format", "markdown", "--threshold", "1000"]);
+    for name in &names {
+        assert!(
+            markdown.contains(name.as_str()),
+            "{name} missing: {markdown}"
+        );
+    }
+    // And the github, sarif and pr-comment output is unchanged: none of them
+    // carries the human footer
+    for format in ["github", "sarif", "pr-comment"] {
+        let (out, _) = run_in(dir.path(), &["--format", format, "--threshold", "1000"]);
+        assert!(!out.contains("more below threshold"), "{format}: {out}");
+    }
+}
+
+#[test]
+fn the_exit_code_is_unaffected_by_the_cap() {
+    // Given a project with 23 functions above the threshold and 200 below
+    let mut functions = named("fail", 23, 5);
+    functions.extend(named("cold", 200, 1));
+    let dir = tree_of(&functions);
+    // When I run `cargo crap --format human --fail-above`
+    let gate = ["--threshold", "25", "--fail-above"];
+    let (_, human) = run_in(dir.path(), &[&["--format", "human"][..], &gate].concat());
+    // Then the exit code is the same as with `--format json --fail-above`
+    let (_, json) = run_in(dir.path(), &[&["--format", "json"][..], &gate].concat());
+    assert_eq!(human, json);
+    assert_ne!(human, Some(0), "23 functions exceed the threshold");
 }
