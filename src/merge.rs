@@ -430,10 +430,6 @@ fn path_has_suffix(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::float_cmp,
-    reason = "coverage % is computed from integer line counts; exact equality is the right comparison"
-)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
@@ -1082,7 +1078,7 @@ mod tests {
         cov_map.insert(PathBuf::from("src/other.rs"), cov_with(&[(10, 0)]));
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
         assert_eq!(result.entries[0].coverage, None);
-        assert!(result.entries[0].uncovered.is_empty());
+        assert_eq!(result.entries[0].uncovered, []);
     }
 
     #[test]
@@ -1092,7 +1088,7 @@ mod tests {
         // pre-field output (kills dropping serde(default) / skip_serializing_if).
         let old_json = r#"{"file":"a.rs","function":"f","line":1,"cyclomatic":1.0,"coverage":null,"crap":1.0}"#;
         let e: CrapEntry = serde_json::from_str(old_json).expect("pre-field baseline loads");
-        assert!(e.uncovered.is_empty());
+        assert_eq!(e.uncovered, []);
         let ser = serde_json::to_string(&e).expect("serialize");
         assert!(
             !ser.contains("uncovered"),

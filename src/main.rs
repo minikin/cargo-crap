@@ -1691,7 +1691,7 @@ mod tests {
             count: 0,
             examples: Vec::new(),
         };
-        assert!(stray_lines("label", &s).is_empty());
+        assert_eq!(stray_lines("label", &s), Vec::<String>::new());
     }
 
     #[test]
@@ -2174,13 +2174,13 @@ mod tests {
     #[test]
     fn effective_excludes_empty_config_list_disables_defaults() {
         let out = effective_excludes(false, Some(vec![]), vec![], vec![]);
-        assert!(out.is_empty());
+        assert_eq!(out, Vec::<String>::new());
     }
 
     #[test]
     fn effective_excludes_flag_overrides_config_replacement() {
         let out = effective_excludes(true, Some(strs(&["tests/**"])), vec![], vec![]);
-        assert!(out.is_empty());
+        assert_eq!(out, Vec::<String>::new());
     }
 
     #[test]

@@ -257,8 +257,8 @@ mod tests {
         assert!(cfg.threshold.is_none());
         assert!(cfg.fail_above.is_none());
         assert!(cfg.missing.is_none());
-        assert!(cfg.exclude.is_empty());
-        assert!(cfg.allow.is_empty());
+        assert_eq!(cfg.exclude, Vec::<String>::new());
+        assert_eq!(cfg.allow, Vec::<String>::new());
     }
 
     #[test]
