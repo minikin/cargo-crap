@@ -58,12 +58,13 @@ This spec applies to `--format human` only. All other formats are unchanged.
 - `--show-unchanged` (or `show_unchanged = true` in config) asks for the
   full delta table, so it disables the implicit cap, as `top` and `min` do.
 - The "Removed since baseline" list is not capped.
-- The footer names the delta escape hatches instead of `--top`. `--top`
-  cuts the current entries before they are compared with the baseline, so
-  the functions it cuts would be reported as removed:
+- The footer also names `--show-unchanged`, which turns the delta cap
+  off. (It named `--show-unchanged` instead of `--top` until spec 31, when
+  `--top` still cut the run before the comparison and so reported the
+  functions it cut as removed.)
 
   ```
-  · 30 more below threshold — use --show-unchanged, --min 0, or --format markdown to see them.
+  · 30 more below threshold — use --top, --min 0, --show-unchanged, or --format markdown to see them.
   ```
 
 ---
@@ -168,12 +169,12 @@ Then  the table contains exactly 10 rows
 And   a footer reports "30 more below threshold"
 ```
 
-### Scenario: The delta footer suggests --show-unchanged instead of --top
+### Scenario: The delta footer also suggests --show-unchanged
 
 ```
 Given a baseline against which 40 below-threshold functions moved file
 When  I run `cargo crap --format human --baseline baseline.json`
-Then  the footer reads "· 30 more below threshold — use --show-unchanged, --min 0, or --format markdown to see them."
+Then  the footer reads "· 30 more below threshold — use --top, --min 0, --show-unchanged, or --format markdown to see them."
 ```
 
 ### Scenario: --show-unchanged disables the implicit cap
@@ -223,7 +224,7 @@ one test per scenario, named after it.
 
 - [x] **T1 — Cap the absolute human table to the failures plus 10 hot spots, with the hidden-count footer.** A pure selection helper in `src/report/human.rs` keeps every row above the threshold (`Severity::classify`) and the 10 highest-scoring rows below it, in input order, and returns the hidden count. `render_human` draws the kept rows and prints the footer when the count is non-zero. The cap is always on in this task. Scenarios: _Passing run shows only the 10 worst hot spots; Above-threshold entries are never hidden; A score equal to the threshold counts as below it; Ten or fewer below-threshold entries means no footer; Hot spots are chosen by score and shown in the requested order; Other formats are unaffected; The exit code is unaffected by the cap_. Tests: unit (footer text, threshold boundary) + property (kept rows are an order-preserving subsequence of the input, every above-threshold row is kept, at most 10 others are kept, kept + hidden equals the input length) + acceptance.
 - [x] **T2 — A top or min value, from the CLI or config, turns the cap off.** One flag on `RenderOptions`, set in `src/main.rs` from `cli.top.or(config.top)` and `cli.min.or(config.min)`, and read by `render_human`. Needs: T1. Scenarios: _Explicit --top disables the implicit cap; Explicit --min disables the implicit cap; top or min in config disables the implicit cap_. Tests: unit + acceptance.
-- [x] **T3 — Cap the delta human table: Regressed exempt, New and Moved capped, --show-unchanged turns it off.** Applies the T1 helper to the rows `visible_delta_entries` returns, with `Regressed` rows kept and not counted, and skips the cap when the T2 flag or `show_unchanged` is set. The Removed list and delta summary stay uncapped. Needs: T1, T2. Scenarios: _Regressed rows are exempt from the cap in delta mode; New and Moved rows below the threshold count toward the cap; The delta footer suggests --show-unchanged instead of --top; --show-unchanged disables the implicit cap; The Removed list is not capped_. Tests: unit + property (the T1 invariants, plus every Regressed row is kept) + acceptance.
+- [x] **T3 — Cap the delta human table: Regressed exempt, New and Moved capped, --show-unchanged turns it off.** Applies the T1 helper to the rows `visible_delta_entries` returns, with `Regressed` rows kept and not counted, and skips the cap when the T2 flag or `show_unchanged` is set. The Removed list and delta summary stay uncapped. Needs: T1, T2. Scenarios: _Regressed rows are exempt from the cap in delta mode; New and Moved rows below the threshold count toward the cap; The delta footer also suggests --show-unchanged; --show-unchanged disables the implicit cap; The Removed list is not capped_. Tests: unit + property (the T1 invariants, plus every Regressed row is kept) + acceptance.
 
 ---
 

@@ -31,10 +31,8 @@ and ends with one line counting the rest:
 - `--top` or `--min`, on the command line or in `.cargo-crap.toml`, turns
   the cap off: the table shows exactly the slice you asked for.
 - With `--baseline`, every regressed function is listed whatever its score,
-  and the Removed list is never capped. `--show-unchanged` turns the cap off,
-  and the line suggests it instead of `--top`, because `--top` trims the
-  current run before the comparison and the trimmed functions would show
-  as removed.
+  and the Removed list is never capped. `--show-unchanged` turns the cap off
+  too, and the line names it beside `--top`.
 - Ties in score are broken by file, function and line, so `--sort file`
   shows the same rows as the default order.
 - The summary line, the per-crate rollup, the exit code and every other

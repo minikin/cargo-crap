@@ -69,6 +69,33 @@ pub struct RemovedEntry {
     pub baseline_crap: f64,
 }
 
+/// How many compared functions fall in each [`DeltaStatus`], and how many
+/// baseline functions are gone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeltaCounts {
+    pub regressed: usize,
+    pub improved: usize,
+    pub new: usize,
+    pub moved: usize,
+    pub unchanged: usize,
+    pub removed: usize,
+}
+
+impl DeltaCounts {
+    /// Nothing was compared: no current function and nothing removed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Something differs from the baseline: a regression, an improvement,
+    /// a new or moved function, or a removal.
+    #[must_use]
+    pub fn has_changes(&self) -> bool {
+        self.regressed + self.improved + self.new + self.moved + self.removed > 0
+    }
+}
+
 /// The full comparison result.
 #[derive(Debug)]
 pub struct DeltaReport {
@@ -102,6 +129,48 @@ impl DeltaReport {
                     .sort_by(|a, b| removed_key(a).cmp(&removed_key(b)));
             },
         }
+    }
+
+    /// Tally the rows by status, plus the removals. Taken before
+    /// [`restrict_to`](Self::restrict_to), it describes the whole comparison.
+    #[must_use]
+    pub fn counts(&self) -> DeltaCounts {
+        let mut counts = DeltaCounts {
+            removed: self.removed.len(),
+            ..DeltaCounts::default()
+        };
+        for entry in &self.entries {
+            let slot = match entry.status {
+                DeltaStatus::Regressed => &mut counts.regressed,
+                DeltaStatus::Improved => &mut counts.improved,
+                DeltaStatus::New => &mut counts.new,
+                DeltaStatus::Moved => &mut counts.moved,
+                DeltaStatus::Unchanged => &mut counts.unchanged,
+            };
+            *slot += 1;
+        }
+        counts
+    }
+
+    /// Keep only the rows for the functions in `shown`, matched by file,
+    /// function and line. `removed` stays whole: a function `--top` or
+    /// `--min` left out still exists, so it never counts as removed, and a
+    /// function that is gone is reported whatever the cut.
+    pub fn restrict_to(
+        &mut self,
+        shown: &[CrapEntry],
+    ) {
+        let keys: HashSet<(&Path, &str, usize)> = shown
+            .iter()
+            .map(|e| (e.file.as_path(), e.function.as_str(), e.line))
+            .collect();
+        self.entries.retain(|e| {
+            keys.contains(&(
+                e.current.file.as_path(),
+                e.current.function.as_str(),
+                e.current.line,
+            ))
+        });
     }
 
     /// Number of functions whose CRAP score increased since the baseline.
@@ -480,7 +549,7 @@ pub fn compute_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn entry(
         function: &str,
@@ -1285,5 +1354,170 @@ mod tests {
         let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
         assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
         assert!(report.removed.is_empty());
+    }
+
+    fn names(report: &DeltaReport) -> (Vec<&str>, Vec<&str>) {
+        (
+            report
+                .entries
+                .iter()
+                .map(|e| e.current.function.as_str())
+                .collect(),
+            report.removed.iter().map(|r| r.function.as_str()).collect(),
+        )
+    }
+
+    #[test]
+    fn restrict_to_keeps_the_shown_rows_and_every_removal() {
+        let current = vec![entry("a", 9.0), entry("b", 5.0), entry("c", 1.0)];
+        let mut baseline = current.clone();
+        baseline.push(entry("gone", 3.0));
+        let mut report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        report.restrict_to(&current[..1]);
+        assert_eq!(names(&report), (vec!["a"], vec!["gone"]));
+    }
+
+    #[test]
+    fn restrict_to_matches_rows_by_file_function_and_line() {
+        let current = vec![
+            entry_in("src/a.rs", "run", 9.0),
+            entry_in("src/b.rs", "run", 5.0),
+        ];
+        let mut report = compute_delta(&current, &current, DEFAULT_EPSILON);
+        let mut other_line = current[0].clone();
+        other_line.line = 2;
+        report.restrict_to(&[current[1].clone(), other_line]);
+        let kept: Vec<&Path> = report
+            .entries
+            .iter()
+            .map(|e| e.current.file.as_path())
+            .collect();
+        assert_eq!(kept, [Path::new("src/b.rs")]);
+    }
+
+    /// A current run and a baseline over a small pool of names in one file,
+    /// so pairs, regressions and removals are all common, plus a mask that
+    /// picks which current functions are shown.
+    fn runs_and_a_mask()
+    -> impl proptest::strategy::Strategy<Value = (Vec<CrapEntry>, Vec<CrapEntry>, Vec<bool>)> {
+        use proptest::prelude::*;
+        let run = || {
+            proptest::collection::btree_map(0u8..10, 0.0..60.0f64, 0..10).prop_map(|scores| {
+                scores
+                    .into_iter()
+                    .map(|(name, crap)| entry(&format!("f{name}"), crap))
+                    .collect::<Vec<_>>()
+            })
+        };
+        (run(), run()).prop_flat_map(|(current, baseline)| {
+            let mask = proptest::collection::vec(any::<bool>(), current.len());
+            (Just(current), Just(baseline), mask)
+        })
+    }
+
+    #[test]
+    fn has_changes_counts_every_kind_of_change_but_not_unchanged() {
+        let one = |set: fn(&mut DeltaCounts)| {
+            let mut counts = DeltaCounts::default();
+            set(&mut counts);
+            counts
+        };
+        assert!(!DeltaCounts::default().has_changes());
+        assert!(!one(|c| c.unchanged = 3).has_changes());
+        assert!(one(|c| c.regressed = 1).has_changes());
+        assert!(one(|c| c.improved = 1).has_changes());
+        assert!(one(|c| c.new = 1).has_changes());
+        assert!(one(|c| c.moved = 1).has_changes());
+        assert!(one(|c| c.removed = 1).has_changes());
+        let all = DeltaCounts {
+            regressed: 1,
+            improved: 1,
+            new: 1,
+            moved: 1,
+            unchanged: 1,
+            removed: 1,
+        };
+        assert!(all.has_changes());
+        assert!(!all.is_empty());
+        assert!(DeltaCounts::default().is_empty());
+        assert!(!one(|c| c.unchanged = 1).is_empty());
+    }
+
+    #[test]
+    fn counts_tally_every_status_and_every_removal() {
+        let current = vec![
+            entry_in("src/a.rs", "up", 9.0),
+            entry_in("src/a.rs", "down", 1.0),
+            entry_in("src/a.rs", "fresh", 2.0),
+            entry_in("src/a.rs", "same", 3.0),
+            entry_in("src/b.rs", "moved", 4.0),
+        ];
+        let baseline = vec![
+            entry_in("src/a.rs", "up", 5.0),
+            entry_in("src/a.rs", "down", 8.0),
+            entry_in("src/a.rs", "same", 3.0),
+            entry_in("src/c.rs", "moved", 4.0),
+            entry_in("src/a.rs", "gone", 1.0),
+        ];
+        let counts = compute_delta(&current, &baseline, DEFAULT_EPSILON).counts();
+        assert_eq!(
+            counts,
+            DeltaCounts {
+                regressed: 1,
+                improved: 1,
+                new: 1,
+                moved: 1,
+                unchanged: 1,
+                removed: 1,
+            }
+        );
+    }
+
+    proptest::proptest! {
+        /// Restricting the rows to any subset of the current run keeps the
+        /// removed list the whole comparison found, keeps exactly the shown
+        /// rows, and every removed function is absent from the current run.
+        #[test]
+        fn restricting_rows_keeps_every_removal(
+            (current, baseline, mask) in runs_and_a_mask()
+        ) {
+            let full = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+            let shown: Vec<CrapEntry> = current
+                .iter()
+                .zip(&mask)
+                .filter(|(_, keep)| **keep)
+                .map(|(e, _)| e.clone())
+                .collect();
+            let mut sliced = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+            sliced.restrict_to(&shown);
+
+            let (_, full_removed) = names(&full);
+            let (kept, removed) = names(&sliced);
+            proptest::prop_assert_eq!(removed, full_removed);
+            let mut kept = kept;
+            kept.sort_unstable();
+            let mut expected: Vec<&str> = shown.iter().map(|e| e.function.as_str()).collect();
+            expected.sort_unstable();
+            proptest::prop_assert_eq!(kept, expected);
+            for gone in &sliced.removed {
+                proptest::prop_assert!(current.iter().all(|e| e.function != gone.function));
+            }
+        }
+
+        /// The counts account for every compared function and every removal,
+        /// and agree with `regression_count`.
+        #[test]
+        fn counts_account_for_every_entry_and_removal(
+            (current, baseline, _mask) in runs_and_a_mask()
+        ) {
+            let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+            let c = report.counts();
+            proptest::prop_assert_eq!(
+                c.regressed + c.improved + c.new + c.moved + c.unchanged,
+                report.entries.len()
+            );
+            proptest::prop_assert_eq!(c.removed, report.removed.len());
+            proptest::prop_assert_eq!(c.regressed, report.regression_count());
+        }
     }
 }

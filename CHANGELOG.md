@@ -17,13 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--show-unchanged` turns the cap off. The summary line, the exit code and
   every other format still count every function. See
   [The human table's cap](docs/reference/output-formats.md#the-human-tables-cap).
+- With `--baseline`, `--top` and `--min` (or `top` / `min` in config) choose
+  only which rows are shown. The comparison covers every function, so the
+  summary line and `--fail-regression` count changes outside the rows
+  shown, and a run can now fail on a regression that `--top` leaves out.
 - **BREAKING (library API):** `RenderOptions` gained `sliced: bool`, set
-  when the user asked for `top` or `min`. Code that builds `RenderOptions`
-  with an exhaustive struct literal must add the field or spread
-  `..Default::default()`.
+  when the user asked for `top` or `min`, and `delta_counts:
+  Option<DeltaCounts>`, the whole comparison's counts when the rows were
+  sliced. Code that builds `RenderOptions` with an exhaustive struct literal
+  must add the fields or spread `..Default::default()`. `DeltaReport` gained
+  `counts` and `restrict_to`, and `report::render_delta_counts` prints a
+  `DeltaCounts`.
 
 ### Fixed
 
+- With `--baseline`, `--top` and `--min` cut the run before comparing it,
+  so every function they left out was listed under "Removed since
+  baseline" although it still existed. Removed now lists only functions
+  that are gone.
 - On Windows, a duplicate-triage cache read that landed while another run
   was replacing the same entry was denied access and counted as a miss, so
   the pair was sent to the model again. A read denied access is now retried

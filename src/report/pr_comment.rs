@@ -14,7 +14,7 @@ use super::types::{
     write_delta_gfm_header,
 };
 use super::write_pr_comment_marker;
-use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus, RemovedEntry};
+use crate::delta::{DeltaCounts, DeltaEntry, DeltaReport, DeltaStatus, RemovedEntry};
 use crate::merge::CrapEntry;
 use anyhow::Result;
 use std::io::Write;
@@ -288,18 +288,19 @@ fn write_pr_comment_delta_headline(
 
 fn write_pr_comment_breakdown(
     out: &mut dyn Write,
-    b: &DeltaBuckets,
-    unchanged: usize,
+    counts: &DeltaCounts,
 ) -> Result<()> {
+    let DeltaCounts {
+        regressed,
+        improved,
+        new,
+        moved,
+        unchanged,
+        removed,
+    } = *counts;
     writeln!(
         out,
-        "↑ {} regressed · ★ {} new · ↔ {} moved · ↓ {} improved · {} unchanged · — {} removed",
-        b.regressed.len(),
-        b.new_entries.len(),
-        b.moved.len(),
-        b.improved.len(),
-        unchanged,
-        b.removed.len(),
+        "↑ {regressed} regressed · ★ {new} new · ↔ {moved} moved · ↓ {improved} improved · {unchanged} unchanged · — {removed} removed",
     )?;
     Ok(())
 }
@@ -440,14 +441,6 @@ fn write_pr_comment_removed_section(
     Ok(())
 }
 
-fn unchanged_count(report: &DeltaReport) -> usize {
-    report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Unchanged)
-        .count()
-}
-
 // ─── Top-level renderers ────────────────────────────────────────────────────
 
 pub(crate) fn render_delta_pr_comment(
@@ -455,17 +448,18 @@ pub(crate) fn render_delta_pr_comment(
     threshold: f64,
     links: Option<&SourceLinks>,
     uncovered_hints: bool,
+    counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
     write_pr_comment_marker(out)?;
-    if report.entries.is_empty() && report.removed.is_empty() {
+    if counts.is_empty() {
         writeln!(out, "_No functions found._")?;
         return Ok(());
     }
     let buckets = DeltaBuckets::from_report(report, threshold);
     let prefix = buckets.common_prefix();
-    write_pr_comment_delta_headline(out, buckets.regressed.len())?;
-    write_pr_comment_breakdown(out, &buckets, unchanged_count(report))?;
+    write_pr_comment_delta_headline(out, counts.regressed)?;
+    write_pr_comment_breakdown(out, counts)?;
     write_pr_comment_primary(out, &buckets, threshold, &prefix, links, uncovered_hints)?;
     write_pr_comment_secondary_sections(out, &buckets, threshold, &prefix, links, uncovered_hints)
 }
@@ -589,7 +583,7 @@ mod tests {
 
     fn render_delta_pr_to_string(report: &DeltaReport) -> String {
         let mut buf = Vec::new();
-        render_delta_pr_comment(report, 30.0, None, false, &mut buf).unwrap();
+        render_delta_pr_comment(report, 30.0, None, false, &report.counts(), &mut buf).unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -598,7 +592,8 @@ mod tests {
         links: &SourceLinks,
     ) -> String {
         let mut buf = Vec::new();
-        render_delta_pr_comment(report, 30.0, Some(links), false, &mut buf).unwrap();
+        render_delta_pr_comment(report, 30.0, Some(links), false, &report.counts(), &mut buf)
+            .unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -1546,7 +1541,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_pr_comment(&report, 30.0, None, true, &mut buf).unwrap();
+        render_delta_pr_comment(&report, 30.0, None, true, &report.counts(), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("| | CRAP | Δ | CC | Cov % | Function | Location | Uncovered |"),
