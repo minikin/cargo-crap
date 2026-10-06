@@ -2853,3 +2853,63 @@ fn other_formats_ignore_the_width() {
         assert_eq!(run(Some("40")), run(None), "{format}");
     }
 }
+
+// ---- Width-aware human table · T3 ----
+
+#[test]
+fn the_uncovered_column_shortens_before_anything_else() {
+    // Given uncovered-hints = true in .cargo-crap.toml
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), ".cargo-crap.toml", "uncovered-hints = true\n");
+    // And a function whose uncovered ranges are too long for the width:
+    // after 1000 blank lines, every other line of its body is missed
+    let mut source = "\n".repeat(1000);
+    source.push_str("fn spans_many_lines_of_code_here(x: i32) -> i32 {\n    let mut y = x;\n");
+    source.push_str(&"    y += 1;\n".repeat(60));
+    source.push_str("    y\n}\n");
+    write(dir.path(), "lib.rs", &source);
+    let file = dir
+        .path()
+        .join("lib.rs")
+        .canonicalize()
+        .expect("canonical path");
+    let lcov = (1001..=1064).fold(String::new(), |mut lcov, line| {
+        writeln!(lcov, "DA:{line},{}", line % 2).expect("write to a String");
+        lcov
+    });
+    write(
+        dir.path(),
+        "lcov.info",
+        &format!("SF:{}\n{lcov}end_of_record\n", file.display()),
+    );
+    // When I run `cargo crap --format human` with an output 100 columns wide,
+    // from the project so Locations are short and nothing else needs cutting
+    let out = crap()
+        .current_dir(dir.path())
+        .env("COLUMNS", "100")
+        .args(["--path", ".", "--lcov", "lcov.info"])
+        .args(["--format", "human", "--threshold", "1000"])
+        .output()
+        .expect("binary runs");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    // Then no table line exceeds 100 columns
+    assert!(widest_table_line(&stdout) <= 100, "{stdout}");
+    // And the Uncovered cell ends with "…"
+    assert_eq!(column(&stdout, "Uncovered").len(), 1, "{stdout}");
+    assert!(column(&stdout, "Uncovered")[0].ends_with('…'), "{stdout}");
+    // And Function and Location are whole: Uncovered gave way first
+    assert_eq!(
+        column(&stdout, "Function"),
+        ["spans_many_lines_of_code_here"],
+        "{stdout}"
+    );
+    assert_eq!(column(&stdout, "Location"), ["./lib.rs:1001"], "{stdout}");
+    // And the Coverage column still shows the 10-cell bar
+    for cell in column(&stdout, "Coverage") {
+        assert_eq!(
+            cell.chars().filter(|c| matches!(c, '█' | '░')).count(),
+            10,
+            "{stdout}"
+        );
+    }
+}

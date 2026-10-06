@@ -2,8 +2,8 @@
 //! Used both for the absolute report and the delta report (with a Δ column).
 
 use super::layout::{
-    Budgets, Cut, FUNCTION_HEADER, LOCATION_HEADER, Tier, can_fit, column_width, fit, table_width,
-    tier,
+    Budgets, Cut, FUNCTION_HEADER, LOCATION_HEADER, Tier, UNCOVERED_HEADER, can_fit, column_width,
+    fit, table_width, tier,
 };
 use super::per_crate::write_per_crate_human;
 use super::types::{
@@ -180,7 +180,7 @@ fn absolute_headers(
         Some("Coverage"),
         Some(FUNCTION_HEADER),
         Some(LOCATION_HEADER),
-        uncovered_hints.then_some("Uncovered"),
+        shows_uncovered(uncovered_hints, tier).then_some(UNCOVERED_HEADER),
     ]
     .into_iter()
     .flatten()
@@ -224,17 +224,44 @@ fn absolute_layout(
     };
     let functions: Vec<&str> = entries.iter().map(|e| e.function.as_str()).collect();
     let locations: Vec<&str> = locations.iter().map(String::as_str).collect();
+    let uncovered_cells: Vec<String> = entries
+        .iter()
+        .map(|e| uncovered_display(&e.uncovered))
+        .collect();
+    let uncovered_cells: Vec<&str> = uncovered_cells.iter().map(String::as_str).collect();
+    let uncovered =
+        |t: Tier| shows_uncovered(uncovered_hints, t).then_some(uncovered_cells.as_slice());
     let room = |t: Tier| width.saturating_sub(fixed_width(entries, uncovered_hints, t));
-    let narrowest = Tier { bar: 0, cc: false };
-    let steps = [allowed, Tier { bar: 0, ..allowed }, narrowest];
+    let narrowest = Tier {
+        bar: 0,
+        cc: false,
+        uncovered: false,
+    };
+    let no_bar = Tier { bar: 0, ..allowed };
+    let no_uncovered = Tier {
+        uncovered: false,
+        ..no_bar
+    };
+    let steps = [allowed, no_bar, no_uncovered, narrowest];
     let chosen = steps
         .into_iter()
-        .find(|&t| can_fit(room(t), &functions, &locations))
+        .find(|&t| can_fit(room(t), uncovered(t), &functions, &locations))
         .unwrap_or(narrowest);
-    (chosen, fit(room(chosen), &functions, &locations))
+    let budgets = fit(room(chosen), uncovered(chosen), &functions, &locations);
+    (chosen, budgets)
 }
 
-/// The width of the absolute table without its Function and Location text:
+/// The Uncovered column shows when the hints are on and the tier keeps it.
+/// It goes before CC, or with it.
+fn shows_uncovered(
+    uncovered_hints: bool,
+    tier: Tier,
+) -> bool {
+    uncovered_hints && tier.uncovered
+}
+
+/// The width of the absolute table without its Uncovered, Function and
+/// Location text:
 /// the fixed columns' text, plus every column's padding and borders.
 fn fixed_width(
     entries: &[&CrapEntry],
@@ -256,7 +283,7 @@ fn fixed_width(
             "Coverage",
             mapped(&|e| coverage_cell(e.coverage, tier.bar)),
         )),
-        uncovered_hints.then(|| text("Uncovered", mapped(&|e| uncovered_display(&e.uncovered)))),
+        shows_uncovered(uncovered_hints, tier).then_some(0),
         Some(0),
         Some(0),
     ];
@@ -282,7 +309,10 @@ fn build_row(
     row.push(Cell::new(coverage_cell(entry.coverage, tier.bar)));
     row.push(Cell::new(Cut::End.apply(&entry.function, budgets.function)));
     row.push(Cell::new(Cut::Location.apply(location, budgets.location)));
-    row.extend(uncovered_hints.then(|| Cell::new(uncovered_display(&entry.uncovered))));
+    row.extend(shows_uncovered(uncovered_hints, tier).then(|| {
+        let text = uncovered_display(&entry.uncovered);
+        Cell::new(Cut::End.apply(&text, budgets.uncovered))
+    }));
     row
 }
 
@@ -495,6 +525,7 @@ mod tests {
     use super::super::test_support::{opts, sample};
     use super::super::{Format, RenderOptions, render};
     use super::*;
+    use crate::coverage::LineRange;
     use std::path::PathBuf;
 
     fn entry(
@@ -1306,6 +1337,33 @@ mod tests {
         assert!(widest_line(&table) <= 85, "{text}");
         assert!(text.contains("┆ CC ┆"), "{text}");
         assert!(!text.contains(['█', '░']), "{text}");
+    }
+
+    #[test]
+    fn the_uncovered_column_goes_with_cc() {
+        let mut entry = located("run", "src/lib.rs", 9.0);
+        entry.uncovered = vec![LineRange { start: 3, end: 4 }];
+        let refs = [&entry];
+        let wide = build_table(&refs, 30.0, true, Some(80)).to_string();
+        assert!(wide.contains("Uncovered"), "{wide}");
+        let narrow = build_table(&refs, 30.0, true, Some(50)).to_string();
+        assert!(!narrow.contains("Uncovered"), "{narrow}");
+        assert!(!narrow.contains("┆ CC ┆"), "{narrow}");
+    }
+
+    #[test]
+    fn the_uncovered_column_goes_before_cc() {
+        // At 70 columns: with Uncovered (floor 9), Function (8) and Location
+        // ("…/abcdefgh.rs:380", 17) need 34 of the 33 left; without
+        // Uncovered they fit, so CC stays.
+        let mut entry = located("run", "src/abcdefgh.rs", 9.0);
+        entry.uncovered = vec![LineRange { start: 3, end: 4 }];
+        let refs = [&entry];
+        let table = build_table(&refs, 30.0, true, Some(70));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 70, "{text}");
+        assert!(text.contains("┆ CC ┆"), "{text}");
+        assert!(!text.contains("Uncovered"), "{text}");
     }
 
     proptest::proptest! {
