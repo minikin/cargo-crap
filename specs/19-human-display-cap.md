@@ -1,6 +1,6 @@
 # Spec 19: Human-format display cap
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/report/human.rs`
 
