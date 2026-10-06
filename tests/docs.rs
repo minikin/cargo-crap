@@ -23,8 +23,12 @@ fn read(relative: &str) -> String {
     fs::read_to_string(repo_path(relative)).unwrap_or_else(|e| panic!("reading {relative}: {e}"))
 }
 
+/// The binary, with `COLUMNS` cleared so the caller's shell cannot narrow
+/// the sample output under test.
 fn cmd() -> Command {
-    Command::cargo_bin("cargo-crap").expect("binary must be built")
+    let mut cmd = Command::cargo_bin("cargo-crap").expect("binary must be built");
+    cmd.env_remove("COLUMNS");
+    cmd
 }
 
 /// One option as `--help` prints it.

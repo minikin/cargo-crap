@@ -52,8 +52,12 @@ fn write(
     fs::write(root.join(name), body).expect("write fixture");
 }
 
+/// The binary, with `COLUMNS` cleared so the caller's shell cannot narrow
+/// the human table under test. A test that wants a width sets it again.
 fn crap() -> Command {
-    Command::cargo_bin("cargo-crap").expect("binary builds")
+    let mut cmd = Command::cargo_bin("cargo-crap").expect("binary builds");
+    cmd.env_remove("COLUMNS");
+    cmd
 }
 
 #[test]
@@ -2618,4 +2622,234 @@ fn piped_output_without_columns_is_not_limited() {
         "{stdout}"
     );
     assert!(!stdout.contains('…'), "{stdout}");
+}
+
+// ---- Width-aware human table · T2 ----
+
+/// A project whose functions live in `src/report/pr_comment.rs` under the
+/// temp dir, with long names, so a narrow output has to shorten them.
+fn wide_project() -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    let report = dir.path().join("src/report");
+    fs::create_dir_all(&report).expect("create dirs");
+    let body: String = (0..12)
+        .map(|k| {
+            function_with_cc(
+                &format!("write_pr_comment_hot_spots_section_{k:02}"),
+                k % 4 + 1,
+            )
+        })
+        .collect();
+    write(&report, "pr_comment.rs", &body);
+    dir
+}
+
+/// Run `--format human` (plus `extra`) with `COLUMNS` set to `columns`.
+fn human_at(
+    dir: &Path,
+    columns: &str,
+    extra: &[&str],
+) -> String {
+    let out = crap()
+        .current_dir(dir)
+        .env("COLUMNS", columns)
+        .args(["--path", dir.to_str().expect("utf-8")])
+        .args(["--format", "human", "--threshold", "1000"])
+        .args(extra)
+        .output()
+        .expect("binary runs");
+    String::from_utf8(out.stdout).expect("utf-8")
+}
+
+/// The lines that draw a table: borders and rows.
+fn table_lines(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter(|line| line.starts_with(['┌', '│', '╞', '├', '└']))
+        .collect()
+}
+
+fn widest_table_line(stdout: &str) -> usize {
+    table_lines(stdout)
+        .iter()
+        .map(|line| unicode_width::UnicodeWidthStr::width(*line))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The trimmed cells of a table line.
+fn cells(line: &str) -> Vec<&str> {
+    line.trim_matches('│').split('┆').map(str::trim).collect()
+}
+
+/// The header cells of the first table on the page.
+fn header(stdout: &str) -> Vec<String> {
+    table_lines(stdout)
+        .iter()
+        .find(|line| line.starts_with('│'))
+        .map(|line| cells(line).into_iter().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// The cells of the column named `name`, one per row of the main table.
+fn column(
+    stdout: &str,
+    name: &str,
+) -> Vec<String> {
+    let names = header(stdout);
+    let index = names
+        .iter()
+        .position(|n| n == name)
+        .expect("column present");
+    table_lines(stdout)
+        .iter()
+        .filter(|line| line.starts_with('│'))
+        .skip(1)
+        .map(|line| cells(line)[index].to_owned())
+        .collect()
+}
+
+#[test]
+fn a_wide_output_renders_the_full_layout() {
+    // Given an output 120 columns wide
+    let dir = wide_project();
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "120", &[]);
+    // Then the table shows the grade, CRAP, CC, Coverage (10-cell bar),
+    // Function and Location columns
+    assert_eq!(
+        header(&stdout),
+        ["", "CRAP", "CC", "Coverage", "Function", "Location"],
+        "{stdout}"
+    );
+    for cell in column(&stdout, "Coverage") {
+        assert_eq!(
+            cell.chars().filter(|c| matches!(c, '█' | '░')).count(),
+            10,
+            "{stdout}"
+        );
+    }
+    // And no table line exceeds 120 columns
+    assert!(widest_table_line(&stdout) <= 120, "{stdout}");
+}
+
+#[test]
+fn eighty_columns_fit_without_wrapping() {
+    // Given an output 80 columns wide
+    // And   a project containing the path src/report/pr_comment.rs
+    let dir = wide_project();
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "80", &[]);
+    // Then no table line exceeds 80 columns
+    assert!(widest_table_line(&stdout) <= 80, "{stdout}");
+    // And the Location cell ends with "pr_comment.rs:" followed by the line number
+    for cell in column(&stdout, "Location") {
+        let line = cell.rsplit_once("pr_comment.rs:").map(|(_, line)| line);
+        assert!(
+            line.is_some_and(|l| l.parse::<u32>().is_ok()),
+            "{cell}:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn seventy_columns_drop_the_coverage_bar() {
+    // Given an output 70 columns wide
+    let dir = wide_project();
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "70", &[]);
+    // Then no table line exceeds 70 columns
+    assert!(widest_table_line(&stdout) <= 70, "{stdout}");
+    // And the Coverage column shows the percentage without a bar
+    for cell in column(&stdout, "Coverage") {
+        assert!(cell.ends_with('%') || cell == "—", "{cell}:\n{stdout}");
+        assert!(!cell.contains(['█', '░']), "{cell}:\n{stdout}");
+    }
+}
+
+#[test]
+fn fifty_columns_drop_the_cc_column() {
+    // Given an output 50 columns wide, and file names short enough for the
+    // table's narrowest form to fit it
+    let dir = tree_of(&named("write_pr_comment_section", 12, 2));
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "50", &[]);
+    // Then no table line exceeds 50 columns
+    assert!(widest_table_line(&stdout) <= 50, "{stdout}");
+    // And the table has no CC column
+    // And the CRAP, Function and Location columns are present
+    assert_eq!(
+        header(&stdout),
+        ["", "CRAP", "Coverage", "Function", "Location"],
+        "{stdout}"
+    );
+}
+
+#[test]
+fn below_the_narrowest_form_the_table_stops_shrinking() {
+    // Given an output 20 columns wide
+    let dir = wide_project();
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "20", &[]);
+    // Then the table has no CC column and no coverage bar
+    assert!(!header(&stdout).contains(&"CC".to_owned()), "{stdout}");
+    assert!(!stdout.contains(['█', '░']), "{stdout}");
+    // And every Location ends with its file and line
+    for cell in column(&stdout, "Location") {
+        assert!(
+            cell.starts_with('…') && cell.contains("pr_comment.rs:"),
+            "{cell}"
+        );
+    }
+    // And every Function cell is at most 8 columns wide
+    for cell in column(&stdout, "Function") {
+        assert!(
+            unicode_width::UnicodeWidthStr::width(cell.as_str()) <= 8,
+            "{cell}"
+        );
+    }
+}
+
+#[test]
+fn lines_around_the_tables_are_not_shortened() {
+    // Given an output 50 columns wide
+    // And   a project with more than 10 functions below the threshold
+    let dir = wide_project();
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "50", &[]);
+    // Then the hidden-rows footer and the summary line are printed in full
+    assert!(
+        stdout.contains(
+            "· 2 more below threshold — use --top, --min 0, or --format markdown to see them."
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("12 function(s) analyzed; none exceed CRAP threshold 1000."),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn other_formats_ignore_the_width() {
+    // Given any output width
+    let dir = wide_project();
+    // When I run `cargo crap --format markdown` (or json, github, sarif, pr-comment)
+    for format in ["markdown", "json", "github", "sarif", "pr-comment"] {
+        let run = |columns: Option<&str>| {
+            let mut cmd = crap();
+            cmd.current_dir(dir.path()).env_remove("COLUMNS");
+            if let Some(columns) = columns {
+                cmd.env("COLUMNS", columns);
+            }
+            let out = cmd
+                .args(["--path", dir.path().to_str().expect("utf-8")])
+                .args(["--format", format, "--threshold", "5"])
+                .output()
+                .expect("binary runs");
+            String::from_utf8(out.stdout).expect("utf-8")
+        };
+        // Then the output is identical regardless of the width
+        assert_eq!(run(Some("40")), run(None), "{format}");
+    }
 }

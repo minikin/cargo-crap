@@ -39,18 +39,29 @@ today, and a path cut from the left can no longer be grepped by directory.
 
 ## Degradation ladder
 
-One layout is chosen per table from the available width, before any row
-is built, so every row agrees on it. Each step keeps everything the steps
-above it kept, and the table fits at every width from the floor up.
+One layout is chosen per table, before any row is built, so every row
+agrees on it. The width decides the coverage bar and the CC column:
 
-| Available width | Layout                                                                   |
-| --------------- | ------------------------------------------------------------------------ |
-| no limit, ≥ 100 | Full layout as today (10-cell coverage bar)                              |
-| any             | The Uncovered column (uncovered hints) is shortened first, with `…`      |
-| 80 – 99         | Coverage bar shrinks to 5 cells; Location loses its start                |
-| 60 – 79         | Bar dropped (percent kept); long Function names lose their end           |
-| < 60            | CC column dropped, and the Uncovered column with it                      |
-| < 40            | Laid out as at 40 columns; lines may wrap                                |
+| Available width | Columns                                            |
+| --------------- | -------------------------------------------------- |
+| no limit, ≥ 100 | Full layout as today (10-cell coverage bar)        |
+| 80 – 99         | Coverage bar shrinks to 5 cells                    |
+| 60 – 79         | Bar dropped (percent kept)                         |
+| < 60            | CC column dropped, and the Uncovered column with it |
+
+The table above gives the most a width allows. When Location and
+Function cannot fit even at their floors, the table steps down further,
+first dropping the bar, then CC.
+
+Text is then shortened only as far as the table needs to fit, in this
+order: the Uncovered column (uncovered hints), then Location down to
+`…/<file>:<line>`, then Function down to the 8 columns of its header.
+
+The narrowest form is no CC, no bar, every Location at `…/<file>:<line>`
+and every Function name at 8 columns. At any width at least as wide as
+that form, the table fits. Below it the table keeps the narrowest form and
+its lines may wrap: a long file name can always outgrow a narrow output,
+because the `<file>:<line>` suffix is never cut.
 
 - Location truncation keeps the tail: `…/pr_comment.rs:380`. The
   `<file>.rs:<line>` suffix always survives so the output stays clickable
@@ -110,12 +121,14 @@ And   the table has no CC column
 And   the CRAP, Function and Location columns are present
 ```
 
-### Scenario: Below 40 columns the table stops shrinking
+### Scenario: Below the narrowest form the table stops shrinking
 
 ```
 Given an output 20 columns wide
 When  I run `cargo crap --format human`
-Then  the table is laid out as at 40 columns
+Then  the table has no CC column and no coverage bar
+And   every Location ends with its file and line
+And   every Function cell is at most 8 columns wide
 ```
 
 ### Scenario: The Uncovered column shortens before anything else
@@ -187,7 +200,7 @@ human table · T<n> ----` heading per task, one test per scenario, named
 after it.
 
 - [x] **T1 — Measure the available width, and shorten text by display columns.** A pure width rule (terminal → its width; otherwise a positive `$COLUMNS`, else no limit) and the two shortening helpers in `report/types.rs`: keep the tail of a Location so `<file>:<line>` survives, and cut the end of a name with `…`. Scenarios: _Piped output without $COLUMNS is not limited_. Tests: unit (each width case, including an unparseable or zero `$COLUMNS`) + property (a shortened value never exceeds its budget, a value that fits comes back unchanged, the Location suffix survives) + acceptance.
-- [ ] **T2 — Lay the absolute table out from the width ladder.** A pure column plan from the width (full, 5-cell bar, no bar, no CC, the 40 floor) that `build_table` follows; the footer and summary lines stay untouched. Needs: T1. Scenarios: _A wide output renders the full layout; 80 columns fit without wrapping; 70 columns drop the coverage bar; 50 columns drop the CC column; Below 40 columns the table stops shrinking; Lines around the tables are not shortened; Other formats are unaffected_. Tests: unit (the plan at each step) + property (no table line wider than the width at or above the floor; narrowing never brings back a dropped column) + acceptance.
+- [x] **T2 — Lay the absolute table out from the width ladder.** A pure column plan from the width (full, 5-cell bar, no bar, no CC) plus shortening Location, then Function, as far as the table needs to fit, which `build_table` follows; the footer and summary lines stay untouched. Needs: T1. Scenarios: _A wide output renders the full layout; 80 columns fit without wrapping; 70 columns drop the coverage bar; 50 columns drop the CC column; Below the narrowest form the table stops shrinking; Lines around the tables are not shortened; Other formats are unaffected_. Tests: unit (the plan at each step) + property (no table line wider than the width whenever the narrowest form fits; narrowing never brings back a dropped column) + acceptance.
 - [ ] **T3 — The Uncovered column shortens first, and goes with CC.** Needs: T2. Scenarios: _The Uncovered column shortens before anything else_. Tests: unit + acceptance.
 - [ ] **T4 — The delta table follows the ladder, keeping Δ and a moved row's current location.** Needs: T3. Scenarios: _The delta table keeps Δ and the current location of a moved row_. Tests: unit (the moved-row Location at each step) + acceptance.
 - [ ] **T5 — The per-crate table fits by shortening crate names.** Needs: T1. Scenarios: _The per-crate table fits_. Tests: unit + acceptance.
@@ -218,7 +231,7 @@ after it.
   screenshots of real terminal runs at the same widths stay a manual
   review step at the end of each layout task, because pixels differ
   between machines.
-- Properties worth pinning: for any width at or above the floor and any
+- Properties worth pinning: for any width the narrowest form fits and any
   rows, no table line is wider than the width; the Location suffix
   `<file>:<line>` survives; a value that already fits comes back unchanged;
   narrowing the width never brings back a dropped column.

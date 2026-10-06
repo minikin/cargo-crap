@@ -29,6 +29,7 @@ pub mod duplicates;
 mod github;
 mod human;
 mod json;
+mod layout;
 mod links;
 mod markdown;
 mod per_crate;
@@ -45,7 +46,7 @@ mod test_support;
 pub use json::{DELTA_SCHEMA_URL, Envelope, REPORT_SCHEMA_URL, SCHEMA_VERSION};
 pub use links::SourceLinks;
 pub use summary::{render_delta_counts, render_delta_summary, render_summary};
-pub use types::set_color_enabled;
+pub use types::{output_width, set_color_enabled};
 
 /// Output format for the report.
 #[derive(Debug, Clone, Copy)]
@@ -138,6 +139,10 @@ pub struct RenderOptions<'a> {
     /// pr-comment count lines describe every compared function. `None`
     /// counts the report's own rows.
     pub delta_counts: Option<DeltaCounts>,
+    /// The width the human tables may use, in terminal columns, or `None`
+    /// for no limit (see [`output_width`]). Only the human renderer reads
+    /// it.
+    pub width: Option<usize>,
 }
 
 impl Default for RenderOptions<'_> {
@@ -157,6 +162,7 @@ impl Default for RenderOptions<'_> {
             triage: None,
             sliced: false,
             delta_counts: None,
+            width: None,
         }
     }
 }
@@ -174,9 +180,14 @@ pub fn render(
     let threshold = opts.threshold;
     match opts.format {
         Format::Json => json::render_json(entries, opts, out),
-        Format::Human => {
-            human::render_human(entries, threshold, opts.uncovered_hints, opts.sliced, out)
-        },
+        Format::Human => human::render_human(
+            entries,
+            threshold,
+            opts.uncovered_hints,
+            opts.sliced,
+            opts.width,
+            out,
+        ),
         Format::GitHub => github::render_github(entries, threshold, out),
         Format::Markdown => {
             markdown::render_markdown(entries, threshold, opts.links, opts.uncovered_hints, out)

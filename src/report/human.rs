@@ -1,10 +1,14 @@
 //! `--format human` — coloured comfy-table output for terminal consumption.
 //! Used both for the absolute report and the delta report (with a Δ column).
 
+use super::layout::{
+    Budgets, Cut, FUNCTION_HEADER, LOCATION_HEADER, Tier, can_fit, column_width, fit, table_width,
+    tier,
+};
 use super::per_crate::write_per_crate_human;
 use super::types::{
-    Grade, apply_table_styling, cc_display, coverage_bar, delta_display, no_change_message, styled,
-    uncovered_display, visible_delta_entries,
+    Grade, apply_table_styling, cc_display, coverage_bar, coverage_cell, delta_display,
+    no_change_message, styled, uncovered_display, visible_delta_entries,
 };
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaReport, DeltaStatus};
 use crate::merge::{CrapEntry, file_order_key};
@@ -20,6 +24,7 @@ pub(crate) fn render_human(
     threshold: f64,
     uncovered_hints: bool,
     sliced: bool,
+    width: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
     if entries.is_empty() {
@@ -27,7 +32,7 @@ pub(crate) fn render_human(
         return Ok(());
     }
     write_per_crate_human(entries, threshold, out)?;
-    write_capped_table(entries, threshold, uncovered_hints, sliced, out)?;
+    write_capped_table(entries, threshold, uncovered_hints, sliced, width, out)?;
     write_summary(
         out,
         super::crappy_count(entries, threshold),
@@ -44,10 +49,11 @@ fn write_capped_table(
     threshold: f64,
     uncovered_hints: bool,
     sliced: bool,
+    width: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let capped = cap_rows(entries, |e| sliced || is_failure(e, threshold), by_rank);
-    let table = build_table(&capped.kept, threshold, uncovered_hints);
+    let table = build_table(&capped.kept, threshold, uncovered_hints, width);
     writeln!(out, "{table}")?;
     write_hidden_footer(out, capped.hidden, ABSOLUTE_ESCAPES)
 }
@@ -128,56 +134,154 @@ fn write_hidden_footer(
     Ok(())
 }
 
-/// Build the full comfy-table for a slice of entries.
+/// Build the comfy-table for a slice of entries, laid out for `width`: the
+/// width decides the bar and the CC column, and Location, then Function,
+/// are cut only as far as the table needs to fit.
 fn build_table(
     entries: &[&CrapEntry],
     threshold: f64,
     uncovered_hints: bool,
+    width: Option<usize>,
 ) -> Table {
+    let locations: Vec<String> = entries.iter().map(|e| location_text(e)).collect();
+    let (tier, budgets) = absolute_layout(entries, &locations, uncovered_hints, width);
+    let headers = absolute_headers(tier, uncovered_hints);
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
     apply_table_styling(&mut table);
-    let mut header = vec![
-        Cell::new("").add_attribute(Attribute::Bold),
-        Cell::new("CRAP").add_attribute(Attribute::Bold),
-        Cell::new("CC").add_attribute(Attribute::Bold),
-        Cell::new("Coverage").add_attribute(Attribute::Bold),
-        Cell::new("Function").add_attribute(Attribute::Bold),
-        Cell::new("Location").add_attribute(Attribute::Bold),
-    ];
-    header.extend(uncovered_hints.then(|| Cell::new("Uncovered").add_attribute(Attribute::Bold)));
-    table.set_header(header);
-    // Numeric columns read more naturally when right-aligned.
-    table
-        .column_mut(1)
-        .unwrap()
-        .set_cell_alignment(CellAlignment::Right);
-    table
-        .column_mut(2)
-        .unwrap()
-        .set_cell_alignment(CellAlignment::Right);
-    for entry in entries.iter().copied() {
-        table.add_row(build_row(entry, threshold, uncovered_hints));
+    table.set_header(
+        headers
+            .iter()
+            .map(|h| Cell::new(h).add_attribute(Attribute::Bold)),
+    );
+    right_align(&mut table, &headers);
+    for (entry, location) in entries.iter().copied().zip(&locations) {
+        table.add_row(build_row(
+            entry,
+            location,
+            threshold,
+            uncovered_hints,
+            tier,
+            budgets,
+        ));
     }
     table
+}
+
+/// The absolute table's headers for a tier: CC only when the width allows it.
+fn absolute_headers(
+    tier: Tier,
+    uncovered_hints: bool,
+) -> Vec<&'static str> {
+    [
+        Some(""),
+        Some("CRAP"),
+        tier.cc.then_some("CC"),
+        Some("Coverage"),
+        Some(FUNCTION_HEADER),
+        Some(LOCATION_HEADER),
+        uncovered_hints.then_some("Uncovered"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Numeric columns read more naturally when right-aligned.
+fn right_align(
+    table: &mut Table,
+    headers: &[&str],
+) {
+    for (index, _) in headers
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| matches!(**h, "CRAP" | "CC" | "Δ"))
+    {
+        if let Some(column) = table.column_mut(index) {
+            column.set_cell_alignment(CellAlignment::Right);
+        }
+    }
+}
+
+/// `<file>:<line>` as the Location column shows it, before any cut.
+fn location_text(entry: &CrapEntry) -> String {
+    format!("{}:{}", entry.file.display(), entry.line)
+}
+
+/// The columns and cuts that fit the absolute table into `width`. The tier
+/// the width allows comes first. When Location and Function cannot fit it
+/// even at their floors, the bar goes, then CC, so the table fits whenever
+/// its narrowest form does. Without a limit nothing changes.
+fn absolute_layout(
+    entries: &[&CrapEntry],
+    locations: &[String],
+    uncovered_hints: bool,
+    width: Option<usize>,
+) -> (Tier, Budgets) {
+    let allowed = tier(width);
+    let Some(width) = width else {
+        return (allowed, Budgets::default());
+    };
+    let functions: Vec<&str> = entries.iter().map(|e| e.function.as_str()).collect();
+    let locations: Vec<&str> = locations.iter().map(String::as_str).collect();
+    let room = |t: Tier| width.saturating_sub(fixed_width(entries, uncovered_hints, t));
+    let narrowest = Tier { bar: 0, cc: false };
+    let steps = [allowed, Tier { bar: 0, ..allowed }, narrowest];
+    let chosen = steps
+        .into_iter()
+        .find(|&t| can_fit(room(t), &functions, &locations))
+        .unwrap_or(narrowest);
+    (chosen, fit(room(chosen), &functions, &locations))
+}
+
+/// The width of the absolute table without its Function and Location text:
+/// the fixed columns' text, plus every column's padding and borders.
+fn fixed_width(
+    entries: &[&CrapEntry],
+    uncovered_hints: bool,
+    tier: Tier,
+) -> usize {
+    let text = |header: &str, cells: Vec<String>| {
+        let cells: Vec<&str> = cells.iter().map(String::as_str).collect();
+        column_width(header, &cells, None, Cut::End)
+    };
+    let mapped =
+        |f: &dyn Fn(&CrapEntry) -> String| entries.iter().map(|e| f(e)).collect::<Vec<_>>();
+    let columns = [
+        Some(1),
+        Some(text("CRAP", mapped(&|e| format!("{:.1}", e.crap)))),
+        tier.cc
+            .then(|| text("CC", mapped(&|e| cc_display(e.cyclomatic)))),
+        Some(text(
+            "Coverage",
+            mapped(&|e| coverage_cell(e.coverage, tier.bar)),
+        )),
+        uncovered_hints.then(|| text("Uncovered", mapped(&|e| uncovered_display(&e.uncovered)))),
+        Some(0),
+        Some(0),
+    ];
+    table_width(&columns.into_iter().flatten().collect::<Vec<_>>())
 }
 
 /// Build one table row for a single entry.
 fn build_row(
     entry: &CrapEntry,
+    location: &str,
     threshold: f64,
     uncovered_hints: bool,
+    tier: Tier,
+    budgets: Budgets,
 ) -> Vec<Cell> {
     let grade = Grade::of(entry.crap, threshold);
     let color = grade.color();
     let mut row = vec![
         Cell::new(grade.icon()).fg(color),
         Cell::new(format!("{:.1}", entry.crap)).fg(color),
-        Cell::new(cc_display(entry.cyclomatic)),
-        Cell::new(coverage_bar(entry.coverage)),
-        Cell::new(&entry.function),
-        Cell::new(format!("{}:{}", entry.file.display(), entry.line)),
     ];
+    row.extend(tier.cc.then(|| Cell::new(cc_display(entry.cyclomatic))));
+    row.push(Cell::new(coverage_cell(entry.coverage, tier.bar)));
+    row.push(Cell::new(Cut::End.apply(&entry.function, budgets.function)));
+    row.push(Cell::new(Cut::Location.apply(location, budgets.location)));
     row.extend(uncovered_hints.then(|| Cell::new(uncovered_display(&entry.uncovered))));
     row
 }
@@ -795,6 +899,7 @@ mod tests {
             30.0,
             true,
             false,
+            None,
             &mut buf,
         )
         .unwrap();
@@ -812,6 +917,7 @@ mod tests {
             30.0,
             false,
             false,
+            None,
             &mut buf,
         )
         .unwrap();
@@ -828,6 +934,7 @@ mod tests {
             30.0,
             false,
             false,
+            None,
             &mut without,
         )
         .unwrap();
@@ -1126,6 +1233,111 @@ mod tests {
         expected.sort();
         expected.truncate(HOT_SPOTS);
         assert_eq!(shown, expected);
+    }
+
+    /// The widest line of a rendered table, in display columns.
+    fn widest_line(table: &comfy_table::Table) -> usize {
+        table
+            .to_string()
+            .lines()
+            .map(unicode_width::UnicodeWidthStr::width)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn located(
+        function: &str,
+        file: &str,
+        crap: f64,
+    ) -> CrapEntry {
+        CrapEntry {
+            file: PathBuf::from(file),
+            function: function.into(),
+            line: 380,
+            cyclomatic: 3.0,
+            coverage: Some(42.0),
+            crap,
+            crate_name: None,
+            uncovered: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn no_width_keeps_today_s_table() {
+        let entries = [located(
+            "write_pr_comment_hot_spots",
+            "src/report/pr_comment.rs",
+            9.0,
+        )];
+        let refs: Vec<&CrapEntry> = entries.iter().collect();
+        let unlimited = build_table(&refs, 30.0, false, None).to_string();
+        assert!(
+            unlimited.contains("write_pr_comment_hot_spots"),
+            "{unlimited}"
+        );
+        assert!(
+            unlimited.contains("src/report/pr_comment.rs:380"),
+            "{unlimited}"
+        );
+        assert!(unlimited.contains("████░░░░░░  42.0%"), "{unlimited}");
+    }
+
+    #[test]
+    fn a_narrow_width_shortens_location_first() {
+        let entries = [located("run", "src/report/pr_comment.rs", 9.0)];
+        let refs: Vec<&CrapEntry> = entries.iter().collect();
+        let table = build_table(&refs, 30.0, false, Some(60));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 60, "{text}");
+        assert!(text.contains("…/pr_comment.rs:380"), "{text}");
+        assert!(text.contains("┆ run "), "{text}");
+    }
+
+    #[test]
+    fn a_bar_that_does_not_fit_goes_before_cc() {
+        // At 85 columns the tier allows a 5-cell bar and CC. With the bar,
+        // Location's floor ("…/<32 chars>.rs:380") does not fit; without it,
+        // it does, so CC stays.
+        let file = format!("src/{}.rs", "a".repeat(32));
+        let entries = [located("run", &file, 9.0)];
+        let refs: Vec<&CrapEntry> = entries.iter().collect();
+        let table = build_table(&refs, 30.0, false, Some(85));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 85, "{text}");
+        assert!(text.contains("┆ CC ┆"), "{text}");
+        assert!(!text.contains(['█', '░']), "{text}");
+    }
+
+    proptest::proptest! {
+        /// Whenever the width is at least the table's narrowest form, no
+        /// line of the rendered table is wider than the width.
+        #[test]
+        fn the_table_fits_whenever_its_narrowest_form_does(
+            rows in proptest::collection::vec(
+                (
+                    "[a-z_:]{1,40}",
+                    proptest::collection::vec("[a-z_]{1,12}", 0..5),
+                    "[a-z_]{1,14}",
+                    0.0..500.0f64,
+                ),
+                1..8,
+            ),
+            width in 0usize..160,
+        ) {
+            let entries: Vec<CrapEntry> = rows
+                .iter()
+                .map(|(function, dirs, file, crap)| {
+                    let path: String = dirs.iter().flat_map(|d| [d.as_str(), "/"]).collect();
+                    located(function, &format!("{path}{file}.rs"), *crap)
+                })
+                .collect();
+            let refs: Vec<&CrapEntry> = entries.iter().collect();
+            let narrowest = widest_line(&build_table(&refs, 30.0, false, Some(0)));
+            let table = build_table(&refs, 30.0, false, Some(width));
+            if width >= narrowest {
+                proptest::prop_assert!(widest_line(&table) <= width, "{}", table);
+            }
+        }
     }
 
     /// A sink that accepts everything except the footer line.

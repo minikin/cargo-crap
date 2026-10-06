@@ -12,6 +12,7 @@ use crate::coverage::LineRange;
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
 use comfy_table::Color;
 use std::borrow::Cow;
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 use unicode_width::UnicodeWidthStr;
 
@@ -99,15 +100,27 @@ impl Grade {
 ///
 /// `None` (no coverage data) renders as an empty bar and a dash.
 pub(crate) fn coverage_bar(pct: Option<f64>) -> String {
-    match pct {
-        None => format!("{:░<10}    —", ""),
-        Some(p) => {
-            let filled = ((p / 100.0) * 10.0).round() as usize;
-            let filled = filled.min(10);
+    coverage_cell(pct, 10)
+}
+
+/// Render a coverage value as a `cells`-block bar followed by the numeric
+/// percentage, or the percentage alone when `cells` is 0. `None` (no
+/// coverage data) renders as an empty bar and a dash.
+pub(crate) fn coverage_cell(
+    pct: Option<f64>,
+    cells: usize,
+) -> String {
+    match (pct, cells) {
+        (None, 0) => "—".to_owned(),
+        (Some(p), 0) => format!("{p:>5.1}%"),
+        (None, cells) => format!("{}    —", "░".repeat(cells)),
+        (Some(p), cells) => {
+            let filled = ((p / 100.0) * cells as f64).round() as usize;
+            let filled = filled.min(cells);
             format!(
                 "{}{} {:>5.1}%",
                 "█".repeat(filled),
-                "░".repeat(10 - filled),
+                "░".repeat(cells - filled),
                 p
             )
         },
@@ -227,24 +240,33 @@ pub(crate) fn visible_delta_entries(
 }
 
 /// The width the human tables may use, in terminal columns, or `None` for
-/// no limit. A terminal's own width wins. Without one (any output that is
-/// not a terminal, or a terminal that reports no positive width) a
-/// positive `$COLUMNS` applies, and otherwise there is no limit, so full
-/// paths reach `grep` and logs.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the width-aware table layout that calls it is spec 20's next task"
+/// no limit. A terminal's own width wins when the report goes to stdout
+/// (`writes_to_stdout`) and stdout is one. Without it a positive
+/// `$COLUMNS` applies, and otherwise there is no limit, so full paths reach
+/// `grep` and logs.
+#[must_use]
+pub fn output_width(writes_to_stdout: bool) -> Option<usize> {
+    let columns = std::env::var("COLUMNS").ok();
+    available_width(
+        writes_to_stdout,
+        std::io::stdout().is_terminal(),
+        comfy_table::Table::new().width(),
+        columns.as_deref(),
     )
-)]
+}
+
+/// The width rule behind [`output_width`], with the terminal probe and
+/// `$COLUMNS` passed in. The terminal's width counts only when the report
+/// goes to stdout and stdout is a terminal reporting a positive width.
+/// Otherwise a positive `$COLUMNS` applies, else `None`.
 pub(crate) fn available_width(
-    is_terminal: bool,
+    writes_to_stdout: bool,
+    stdout_is_terminal: bool,
     terminal_width: Option<u16>,
     columns: Option<&str>,
 ) -> Option<usize> {
     let terminal = terminal_width
-        .filter(|_| is_terminal)
+        .filter(|_| writes_to_stdout && stdout_is_terminal)
         .map(usize::from)
         .filter(|&width| width > 0);
     terminal.or_else(|| {
@@ -257,13 +279,6 @@ pub(crate) fn available_width(
 /// Cut the end of `text` so it fits `budget` columns, marking the cut with
 /// `…`. Text that already fits comes back unchanged, and a budget of 0
 /// leaves nothing, not even the mark.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the width-aware table layout that calls it is spec 20's next task"
-    )
-)]
 pub(crate) fn shorten_end(
     text: &str,
     budget: usize,
@@ -289,13 +304,6 @@ pub(crate) fn shorten_end(
 /// marking the cut with `…`. It cuts only at a path separator, so the file
 /// and line always survive, even past the budget. A location that fits, or
 /// has no directory to drop, comes back unchanged.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the width-aware table layout that calls it is spec 20's next task"
-    )
-)]
 pub(crate) fn shorten_location(
     location: &str,
     budget: usize,
@@ -602,29 +610,43 @@ mod tests {
         assert_eq!(uncovered_cell_suffix(true, &[]), "  |");
     }
 
+    #[test]
+    fn a_coverage_cell_without_a_bar_keeps_its_decimal_points_aligned() {
+        assert_eq!(coverage_cell(Some(7.5), 0), "  7.5%");
+        assert_eq!(coverage_cell(Some(100.0), 0), "100.0%");
+        assert_eq!(coverage_cell(None, 0), "—");
+    }
+
     // --- width ---------------------------------------------------------------
 
     #[test]
     fn a_terminal_uses_its_own_width_over_columns() {
-        assert_eq!(available_width(true, Some(90), Some("40")), Some(90));
+        assert_eq!(available_width(true, true, Some(90), Some("40")), Some(90));
     }
 
     #[test]
     fn a_terminal_without_a_width_falls_back_to_columns() {
-        assert_eq!(available_width(true, None, Some("40")), Some(40));
-        assert_eq!(available_width(true, Some(0), Some("40")), Some(40));
-        assert_eq!(available_width(true, Some(0), None), None);
-        assert_eq!(available_width(true, None, None), None);
+        assert_eq!(available_width(true, true, None, Some("40")), Some(40));
+        assert_eq!(available_width(true, true, Some(0), Some("40")), Some(40));
+        assert_eq!(available_width(true, true, Some(0), None), None);
+        assert_eq!(available_width(true, true, None, None), None);
+    }
+
+    #[test]
+    fn a_report_written_elsewhere_ignores_the_terminal() {
+        // `--output <file>` from a terminal: the file has no width of its own.
+        assert_eq!(available_width(false, true, Some(90), Some("40")), Some(40));
+        assert_eq!(available_width(false, true, Some(90), None), None);
     }
 
     #[test]
     fn other_output_uses_a_positive_columns_or_no_limit() {
-        assert_eq!(available_width(false, Some(90), Some("40")), Some(40));
-        assert_eq!(available_width(false, None, Some(" 80 ")), Some(80));
-        assert_eq!(available_width(false, None, None), None);
-        assert_eq!(available_width(false, None, Some("0")), None);
-        assert_eq!(available_width(false, None, Some("-5")), None);
-        assert_eq!(available_width(false, None, Some("wide")), None);
+        assert_eq!(available_width(true, false, Some(90), Some("40")), Some(40));
+        assert_eq!(available_width(true, false, None, Some(" 80 ")), Some(80));
+        assert_eq!(available_width(true, false, None, None), None);
+        assert_eq!(available_width(true, false, None, Some("0")), None);
+        assert_eq!(available_width(true, false, None, Some("-5")), None);
+        assert_eq!(available_width(true, false, None, Some("wide")), None);
     }
 
     #[test]
