@@ -144,7 +144,7 @@ Then  the summary reports "3 regressed"
 ```
 Given a baseline recorded from a tree of 15 functions, all of which regressed since
 When  I run `cargo crap --baseline baseline.json --top 5` in each format
-Then  human, markdown, pr-comment, github and sarif show only the 5 highest-scoring functions as rows
+Then  human, markdown, pr-comment and github show only the 5 highest-scoring functions as rows
 And   the shields badge counts crappy functions among those 5
 ```
 
@@ -178,7 +178,7 @@ slices after the baseline · T<n> ----` heading per task, one test per
 scenario, named after it.
 
 - [x] **T1 — Compare the whole run, and let the slice choose the rows in human, markdown and JSON.** `src/main.rs` keeps the entries from before `top` / `min`, builds the delta from them and passes the slice to the renderers. The human and markdown tables and the JSON envelope's `entries` show only sliced rows. `removed` is the full list. Scenarios: _--top does not report the functions it cut as removed; --min does not report the functions it cut as removed; A function that really is gone is still reported under --top; --min does not hide a removal; The rows still follow the slice; top or min in config behaves like the flag; Without top or min the report is unchanged_. Tests: unit (the slice's row keys) + property (`removed` equals the unsliced run's, and every removed function is absent from the current run) + acceptance.
-- [ ] **T2 — Rows in pr-comment, GitHub, SARIF and the badge follow the slice.** Each of these renderers picks its rows from the sliced set T1 provides. Needs: T1. Scenarios: _Every format shows the same rows_. Tests: unit per renderer + acceptance.
+- [x] **T2 — Rows in pr-comment, GitHub and the badge follow the slice.** Each of these renderers picks its rows from the sliced set T1 provides. Needs: T1. Scenarios: _Every format shows the same rows_. Tests: unit per renderer + acceptance.
 - [ ] **T3 — Count lines and --fail-regression count the whole comparison.** The gate reads the full report's regression count, and the human, markdown, pr-comment and `--summary` count lines read every entry. Needs: T1, T2. Scenarios: _An improvement below the cutoff is counted, not removed; A move below the cut is not reported as removed; --fail-regression sees a regression outside the slice; The delta summary line counts the whole comparison_. Tests: property (the regression count equals the unsliced run's) + acceptance.
 
 ---
@@ -191,12 +191,13 @@ scenario, named after it.
 - The human and markdown renderers already separate counting from
   showing for `Unchanged` rows: `visible_delta_entries` picks the rows,
   while the count lines read every entry. The slice becomes one more
-  condition there. pr-comment, JSON, GitHub and SARIF pick their rows
+  condition there. pr-comment, JSON and GitHub pick their rows
   from `report.entries` directly, so each needs the same condition, while
   the count lines (human, markdown, pr-comment, `--summary`) keep reading
   every entry.
-- The JSON envelope's `entries`, GitHub annotations and SARIF results
-  carry the shown rows. `removed` is the full list in every format.
+- The JSON envelope's `entries` and the GitHub annotations carry the shown
+  rows. `removed` is the full list in every format. SARIF rejects
+  `--baseline`, so it has no delta rows.
 - The Shields badge counts crappy functions among the shown rows, as it
   does without a baseline, in line with `--fail-above` below.
 - Identify a sliced row by `(file, function, line)`. The slice is cut

@@ -2346,3 +2346,52 @@ fn without_top_or_min_the_report_is_unchanged() {
     assert!(stdout.contains("↑ 1 regressed"), "{stdout}");
     assert_eq!(removed_names(&stdout), ["gone_000"], "{stdout}");
 }
+
+// ---- Score slices after the baseline · T2 ----
+
+/// Every distinct `cold_<nn>` name in `output`, sorted.
+fn cold_names(output: &str) -> Vec<String> {
+    let mut names: Vec<String> = output
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|token| token.starts_with("cold_"))
+        .map(str::to_owned)
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+#[test]
+fn every_format_shows_the_same_rows() {
+    // Given a baseline recorded from a tree of 15 functions, all of which
+    // regressed since
+    let (dir, baseline) = baseline_then(&fifteen_ranked(0), &fifteen_ranked(1));
+    // When I run `cargo crap --baseline baseline.json --top 5` in each format,
+    // at a threshold every function exceeds
+    let run = |format: &str| {
+        run_in(
+            dir.path(),
+            &[
+                "--threshold",
+                "5",
+                "--baseline",
+                &baseline,
+                "--top",
+                "5",
+                "--format",
+                format,
+            ],
+        )
+        .0
+    };
+    // Then human, markdown, pr-comment and github show only the 5
+    // highest-scoring functions as rows
+    let top_five = ["cold_10", "cold_11", "cold_12", "cold_13", "cold_14"];
+    for format in ["human", "markdown", "pr-comment", "github"] {
+        let out = run(format);
+        assert_eq!(cold_names(&out), top_five, "{format}:\n{out}");
+    }
+    // And the shields badge counts crappy functions among those 5
+    let badge: serde_json::Value = serde_json::from_str(&run("shields")).expect("badge JSON");
+    assert_eq!(badge["message"], "5 crappy", "{badge}");
+}
