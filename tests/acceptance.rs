@@ -2913,3 +2913,28 @@ fn the_uncovered_column_shortens_before_anything_else() {
         );
     }
 }
+
+// ---- Width-aware human table · T4 ----
+
+#[test]
+fn the_delta_table_keeps_delta_and_the_current_location_of_a_moved_row() {
+    // Given a baseline against which a function moved from a long path to b.rs
+    let before = [(
+        "a_rather_long_previous_module_name.rs".to_owned(),
+        "moved_fn".to_owned(),
+        1,
+    )];
+    let after = [("b.rs".to_owned(), "moved_fn".to_owned(), 1)];
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --format human --baseline baseline.json` with an
+    // output 50 columns wide
+    let stdout = human_at(dir.path(), "50", &["--baseline", &baseline]);
+    // Then no table line exceeds 50 columns
+    assert!(widest_table_line(&stdout) <= 50, "{stdout}");
+    // And the table has a Δ column
+    assert!(header(&stdout).contains(&"Δ".to_owned()), "{stdout}");
+    // And the moved row's Location ends with "b.rs:" followed by the line number
+    let location = column(&stdout, "Location");
+    let line = location[0].rsplit_once("b.rs:").map(|(_, line)| line);
+    assert!(line.is_some_and(|l| l.parse::<u32>().is_ok()), "{stdout}");
+}

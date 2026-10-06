@@ -1,7 +1,7 @@
 //! Shared rendering primitives — used by every renderer that draws rows.
 //!
 //! - [`Grade`]: three-tier severity classification driving icon/colour.
-//! - [`coverage_bar`]: 10-block ASCII bar for human tables.
+//! - [`coverage_cell`]: coverage bar and percentage for human tables.
 //! - [`cc_display`]: CC text, integral or fractional to one decimal.
 //! - [`delta_display`]: Δ-column text for delta rows.
 //! - [`uncovered_display`]: capped Uncovered-column text.
@@ -94,13 +94,6 @@ impl Grade {
             Self::Crappy => Color::Red,
         }
     }
-}
-
-/// Render a coverage value as a 10-block bar followed by the numeric percentage.
-///
-/// `None` (no coverage data) renders as an empty bar and a dash.
-pub(crate) fn coverage_bar(pct: Option<f64>) -> String {
-    coverage_cell(pct, 10)
 }
 
 /// Render a coverage value as a `cells`-block bar followed by the numeric
@@ -303,8 +296,29 @@ pub(crate) fn shorten_end(
 /// Cut the start of a `<path>:<line>` location so it fits `budget` columns,
 /// marking the cut with `…`. It cuts only at a path separator, so the file
 /// and line always survive, even past the budget. A location that fits, or
-/// has no directory to drop, comes back unchanged.
+/// has no directory to drop, comes back unchanged. A moved row's
+/// ` ← <previous file>` tail is kept as it is: only the current location
+/// before it is cut.
 pub(crate) fn shorten_location(
+    location: &str,
+    budget: usize,
+) -> Cow<'_, str> {
+    if location.width() <= budget {
+        return Cow::Borrowed(location);
+    }
+    let Some(arrow) = location.find(MOVED_ARROW) else {
+        return shorten_path(location, budget);
+    };
+    let (current, tail) = location.split_at(arrow);
+    let current = shorten_path(current, budget.saturating_sub(tail.width()));
+    Cow::Owned(format!("{current}{tail}"))
+}
+
+/// What separates a moved row's current location from its previous file.
+pub(crate) const MOVED_ARROW: &str = " ← ";
+
+/// [`shorten_location`] for a bare `<path>:<line>`.
+fn shorten_path(
     location: &str,
     budget: usize,
 ) -> Cow<'_, str> {
@@ -449,7 +463,7 @@ mod tests {
     #[test]
     fn coverage_bar_is_all_empty_for_zero_percent() {
         // Kills: filled = pct * 10 replaced with 10 - pct * 10, or always 0.
-        let bar = coverage_bar(Some(0.0));
+        let bar = coverage_cell(Some(0.0), 10);
         assert!(
             bar.starts_with("░░░░░░░░░░"),
             "0% must start with 10 empty blocks, got: {bar}"
@@ -460,7 +474,7 @@ mod tests {
     #[test]
     fn coverage_bar_is_all_full_for_100_percent() {
         // Kills: filled = pct * 10 replaced with 0, or empty/full swapped.
-        let bar = coverage_bar(Some(100.0));
+        let bar = coverage_cell(Some(100.0), 10);
         assert!(
             bar.starts_with("██████████"),
             "100% must start with 10 full blocks, got: {bar}"
@@ -471,7 +485,7 @@ mod tests {
     #[test]
     fn coverage_bar_is_half_full_for_50_percent() {
         // Kills: rounding errors that shift the boundary, filled/empty swap.
-        let bar = coverage_bar(Some(50.0));
+        let bar = coverage_cell(Some(50.0), 10);
         assert!(
             bar.starts_with("█████░░░░░"),
             "50% must have 5 full then 5 empty blocks, got: {bar}"
@@ -481,7 +495,7 @@ mod tests {
     #[test]
     fn coverage_bar_none_is_all_empty_with_dash() {
         // Already exercised indirectly, but this pins the direct function contract.
-        let bar = coverage_bar(None);
+        let bar = coverage_cell(None, 10);
         assert!(
             bar.contains("░░░░░░░░░░"),
             "None must render with all-empty bar, got: {bar}"
@@ -684,6 +698,19 @@ mod tests {
         assert_eq!(
             shorten_location(r"src\report\pr_comment.rs:380", 20),
             r"…\pr_comment.rs:380"
+        );
+    }
+
+    #[test]
+    fn shorten_location_never_cuts_into_a_moved_row_s_previous_file() {
+        // The budget left for "src/report/b.rs:12" is 26 - 15 = 11.
+        assert_eq!(
+            shorten_location("src/report/b.rs:12 ← src/old/c.rs", 26),
+            "…/b.rs:12 ← src/old/c.rs"
+        );
+        assert_eq!(
+            shorten_location("src/b.rs:12 ← old.rs", 40),
+            "src/b.rs:12 ← old.rs"
         );
     }
 

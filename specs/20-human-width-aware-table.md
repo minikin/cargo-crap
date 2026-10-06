@@ -68,8 +68,11 @@ because the `<file>:<line>` suffix is never cut.
   `<file>.rs:<line>` suffix always survives so the output stays clickable
   and the line findable.
 - A moved row's Location reads `<file>:<line> ← <previous file>`. The
-  current `<file>:<line>` is what survives: the previous file shrinks to
-  its file name first, and below 80 columns the `← …` part is dropped.
+  current `<file>:<line>` is what survives. The previous file shows whole
+  only when that costs nothing (no column dropped, no Location cut), and
+  otherwise as its file name. The `← …` part is dropped below 80 columns,
+  or when keeping even the file name would cut a Function name or drop a
+  column that dropping it keeps.
 - The grade marker, CRAP, Function and the `<file>:<line>` suffix are never
   dropped. The delta table's Δ column counts as part of the numeric block
   and is never dropped either.
@@ -203,7 +206,7 @@ after it.
 - [x] **T1 — Measure the available width, and shorten text by display columns.** A pure width rule (terminal → its width; otherwise a positive `$COLUMNS`, else no limit) and the two shortening helpers in `report/types.rs`: keep the tail of a Location so `<file>:<line>` survives, and cut the end of a name with `…`. Scenarios: _Piped output without $COLUMNS is not limited_. Tests: unit (each width case, including an unparseable or zero `$COLUMNS`) + property (a shortened value never exceeds its budget, a value that fits comes back unchanged, the Location suffix survives) + acceptance.
 - [x] **T2 — Lay the absolute table out from the width ladder.** A pure column plan from the width (full, 5-cell bar, no bar, no CC) plus shortening Location, then Function, as far as the table needs to fit, which `build_table` follows; the footer and summary lines stay untouched. Needs: T1. Scenarios: _A wide output renders the full layout; 80 columns fit without wrapping; 70 columns drop the coverage bar; 50 columns drop the CC column; Below the narrowest form the table stops shrinking; Lines around the tables are not shortened; Other formats are unaffected_. Tests: unit (the plan at each step) + property (no table line wider than the width whenever the narrowest form fits; narrowing never brings back a dropped column) + acceptance.
 - [x] **T3 — The Uncovered column shortens first, and goes before or with CC.** Needs: T2. Scenarios: _The Uncovered column shortens before anything else_. Tests: unit + acceptance.
-- [ ] **T4 — The delta table follows the ladder, keeping Δ and a moved row's current location.** Needs: T3. Scenarios: _The delta table keeps Δ and the current location of a moved row_. Tests: unit (the moved-row Location at each step) + acceptance.
+- [x] **T4 — The delta table follows the ladder, keeping Δ and a moved row's current location.** Needs: T3. Scenarios: _The delta table keeps Δ and the current location of a moved row_. Tests: unit (the moved-row Location at each step) + acceptance.
 - [ ] **T5 — The per-crate table fits by shortening crate names.** Needs: T1. Scenarios: _The per-crate table fits_. Tests: unit + acceptance.
 - [ ] **T6 — Snapshot the human tables at fixed widths.** `insta` snapshots of a fixed fixture rendered at 120, 100, 80, 70, 50 and 30 columns: the absolute table, the delta table with a moved row, the Uncovered column and the per-crate table, so any later layout change shows up as a readable diff. Needs: T4, T5. Scenarios: _none (test suite)_. Tests: snapshot.
 

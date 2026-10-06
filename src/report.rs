@@ -219,15 +219,7 @@ pub fn render_delta(
     let counts = opts.delta_counts.unwrap_or_else(|| report.counts());
     match opts.format {
         Format::Json => json::render_delta_json(report, opts, out),
-        Format::Human => human::render_delta_human(
-            report,
-            threshold,
-            opts.show_unchanged,
-            opts.uncovered_hints,
-            opts.sliced,
-            &counts,
-            out,
-        ),
+        Format::Human => human::render_delta_human(report, opts, &counts, out),
         Format::GitHub => github::render_delta_github(report, threshold, out),
         Format::Markdown => markdown::render_delta_markdown(
             report,
