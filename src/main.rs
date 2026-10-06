@@ -690,8 +690,6 @@ fn assign_crate_names(
 fn apply_filters(
     entries: &mut Vec<cargo_crap::merge::CrapEntry>,
     allow_patterns: &[String],
-    min: Option<f64>,
-    top: Option<usize>,
 ) -> Result<()> {
     if !allow_patterns.is_empty() {
         let (path_pats, name_pats): (Vec<&str>, Vec<&str>) = allow_patterns
@@ -704,13 +702,23 @@ fn apply_filters(
             !name_set.is_match(&e.function) && !path_set_matches_suffix(&path_set, &e.file)
         });
     }
-    if let Some(min) = min {
-        entries.retain(|e| e.crap >= min);
-    }
-    if let Some(top) = top {
-        entries.truncate(top);
-    }
     Ok(())
+}
+
+/// The rows `min` and `top` select: scores at or above the cutoff, then the
+/// N highest. `entries` must be in descending CRAP order, as `merge` leaves
+/// them.
+fn slice_of(
+    entries: &[cargo_crap::merge::CrapEntry],
+    min: Option<f64>,
+    top: Option<usize>,
+) -> Vec<cargo_crap::merge::CrapEntry> {
+    entries
+        .iter()
+        .filter(|e| min.is_none_or(|cutoff| e.crap >= cutoff))
+        .take(top.unwrap_or(usize::MAX))
+        .cloned()
+        .collect()
 }
 
 /// Drops baseline entries that the current run's identity-based filters
@@ -1378,16 +1386,20 @@ fn triage_assessments(
 /// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
 ///
 /// `baseline` arrives pre-loaded and pre-filtered (see [`BaselineFilter`]) so
-/// this stays a pure render dispatcher.
+/// this stays a pure render dispatcher. `entries` are the rows to show, and
+/// `compared` is the whole run the baseline is compared against, so a
+/// function `top` or `min` left out is never reported as removed.
 fn do_render(
     entries: &[cargo_crap::merge::CrapEntry],
+    compared: &[cargo_crap::merge::CrapEntry],
     baseline: Option<&[cargo_crap::merge::CrapEntry]>,
     opts: &RenderOpts,
     out: &mut dyn Write,
 ) -> Result<(bool, bool)> {
     let summary = effective_summary(opts.summary, opts.render.format);
     let outcome = if let Some(baseline_data) = baseline {
-        let mut report = compute_delta(entries, baseline_data, opts.epsilon);
+        let mut report = compute_delta(compared, baseline_data, opts.epsilon);
+        report.restrict_to(entries);
         report.sort(opts.sort);
         let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
         let has_regression = report.regression_count() > 0;
@@ -1570,9 +1582,11 @@ fn run() -> Result<ExitCode> {
     let mut entries = merge_result.entries;
     assign_crate_names(&mut entries, &members);
     let (min, top) = (cli.min.or(config.min), cli.top.or(config.top));
-    apply_filters(&mut entries, &effective_allow, min, top)?;
-    // Apply the user-requested ordering after --top has selected by CRAP (spec 17).
-    sort_entries(&mut entries, sort_order);
+    apply_filters(&mut entries, &effective_allow)?;
+    // `entries` stays whole for the baseline comparison. `shown` holds the
+    // rows `min` and `top` select, ordered after `top` has picked by CRAP.
+    let mut shown = slice_of(&entries, min, top);
+    sort_entries(&mut shown, sort_order);
 
     // --- Baseline (loaded here, filtered per specs 18 + 25) ---
     let baseline_data = load_filtered_baseline(
@@ -1607,8 +1621,13 @@ fn run() -> Result<ExitCode> {
         summary: cli.summary,
         sort: sort_order,
     };
-    let (has_crappy, has_regression) =
-        do_render(&entries, baseline_data.as_deref(), &opts, out_box.as_mut())?;
+    let (has_crappy, has_regression) = do_render(
+        &shown,
+        &entries,
+        baseline_data.as_deref(),
+        &opts,
+        out_box.as_mut(),
+    )?;
     // The flush must precede the gate decision: a write failure (e.g.
     // ENOSPC) is a tool error (exit 2), never a gate verdict over a
     // truncated report (#47, spec 23).
@@ -2078,6 +2097,37 @@ mod tests {
         // Kills: From<SortArg> collapsing to Default::default() (always Crap).
         assert_eq!(SortOrder::from(SortArg::Crap), SortOrder::Crap);
         assert_eq!(SortOrder::from(SortArg::File), SortOrder::File);
+    }
+
+    #[test]
+    fn the_slice_keeps_scores_at_the_cutoff_then_the_top_n() {
+        let entries: Vec<cargo_crap::merge::CrapEntry> = [9.0, 7.0, 5.0, 3.0]
+            .iter()
+            .enumerate()
+            .map(|(i, &crap)| cargo_crap::merge::CrapEntry {
+                file: PathBuf::from("src/lib.rs"),
+                function: format!("f{i}"),
+                line: i + 1,
+                cyclomatic: 1.0,
+                coverage: Some(0.0),
+                crap,
+                crate_name: None,
+                uncovered: Vec::new(),
+            })
+            .collect();
+        let names = |v: Vec<cargo_crap::merge::CrapEntry>| -> Vec<String> {
+            v.into_iter().map(|e| e.function).collect()
+        };
+        assert_eq!(
+            names(slice_of(&entries, None, None)),
+            ["f0", "f1", "f2", "f3"]
+        );
+        assert_eq!(
+            names(slice_of(&entries, Some(5.0), None)),
+            ["f0", "f1", "f2"]
+        );
+        assert_eq!(names(slice_of(&entries, None, Some(2))), ["f0", "f1"]);
+        assert_eq!(names(slice_of(&entries, Some(8.0), Some(2))), ["f0"]);
     }
 
     #[test]

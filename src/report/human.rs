@@ -110,10 +110,8 @@ fn cap_rows<T>(
 /// The ways to see the rows the absolute table's cap left out.
 const ABSOLUTE_ESCAPES: &str = "--top, --min 0, or --format markdown";
 
-/// The ways to see the rows the delta table's cap left out. Not `--top`: it
-/// cuts the current entries before the baseline comparison, so the functions
-/// it cuts would be reported as removed.
-const DELTA_ESCAPES: &str = "--show-unchanged, --min 0, or --format markdown";
+/// The ways to see the rows the delta table's cap left out.
+const DELTA_ESCAPES: &str = "--top, --min 0, --show-unchanged, or --format markdown";
 
 /// Say how many below-threshold rows the cap left out, and how to see them.
 fn write_hidden_footer(
@@ -1105,7 +1103,7 @@ mod tests {
         let out = human_delta(&report, &opts(30.0, Format::Human));
         let table_end = out.rfind('┘').expect("table");
         let footer = out
-            .find("· 1 more below threshold — use --show-unchanged, --min 0, or --format markdown to see them.\n")
+            .find("· 1 more below threshold — use --top, --min 0, --show-unchanged, or --format markdown to see them.\n")
             .expect("footer");
         let removed = out.find("Removed since baseline").expect("removed list");
         assert!(table_end < footer && footer < removed, "{out}");

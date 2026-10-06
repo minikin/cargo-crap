@@ -2152,7 +2152,7 @@ fn the_removed_list_is_not_capped() {
 }
 
 #[test]
-fn the_delta_footer_suggests_show_unchanged_instead_of_top() {
+fn the_delta_footer_also_suggests_show_unchanged() {
     // Given a baseline against which 40 below-threshold functions moved file
     let before: Vec<_> = named("cold", 40, 1);
     let after: Vec<_> = before
@@ -2162,12 +2162,187 @@ fn the_delta_footer_suggests_show_unchanged_instead_of_top() {
     let (dir, baseline) = baseline_then(&before, &after);
     // When I run `cargo crap --format human --baseline baseline.json`
     let stdout = delta_human(dir.path(), &baseline, &[]);
-    // Then the footer reads "· 30 more below threshold — use --show-unchanged,
-    // --min 0, or --format markdown to see them."
+    // Then the footer reads "· 30 more below threshold — use --top, --min 0,
+    // --show-unchanged, or --format markdown to see them."
     assert!(
         stdout.contains(
-            "· 30 more below threshold — use --show-unchanged, --min 0, or --format markdown to see them."
+            "· 30 more below threshold — use --top, --min 0, --show-unchanged, or --format markdown to see them."
         ),
         "{stdout}"
     );
+}
+
+// --- Score slices after the baseline ----------------------------------------
+//
+// Each task fills only its own heading, so parallel branches never touch the
+// same lines.
+
+/// Fifteen functions in `lib.rs`, `cold_00` to `cold_14`, where `cold_<k>`
+/// has complexity `k + 1 + shift`, so every score is distinct and
+/// `cold_14` ranks first.
+fn fifteen_ranked(shift: usize) -> Vec<(String, String, usize)> {
+    (0..15)
+        .map(|k| ("lib.rs".to_owned(), format!("cold_{k:02}"), k + 1 + shift))
+        .collect()
+}
+
+/// The function names listed under "Removed since baseline", in order.
+fn removed_names(stdout: &str) -> Vec<String> {
+    stdout
+        .split("Removed since baseline:")
+        .nth(1)
+        .map(|section| {
+            section
+                .lines()
+                .skip(1)
+                .take_while(|line| line.starts_with("  "))
+                .filter_map(|line| line.split_whitespace().nth(1).map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ---- Score slices after the baseline · T1 ----
+
+#[test]
+fn top_does_not_report_the_functions_it_cut_as_removed() {
+    // Given a baseline recorded from a tree of 15 functions
+    // And   the same 15 functions still exist, with unchanged scores
+    let (dir, baseline) = baseline_then(&fifteen_ranked(0), &fifteen_ranked(0));
+    // When I run `cargo crap --baseline baseline.json --top 5`
+    let stdout = delta_human(dir.path(), &baseline, &["--top", "5"]);
+    // Then no function is listed under "Removed since baseline"
+    assert_eq!(removed_names(&stdout), Vec::<String>::new(), "{stdout}");
+    // And the delta summary line reports "0 removed"
+    assert!(stdout.contains("— 0 removed"), "{stdout}");
+}
+
+#[test]
+fn min_does_not_report_the_functions_it_cut_as_removed() {
+    // Given a baseline recorded from a tree of 15 functions, 10 of them with
+    // CRAP below 5 (complexity 1 scores 2, complexity 2 scores 6)
+    let mut functions = named("cold", 10, 1);
+    functions.extend(named("hot", 5, 2));
+    // And the same 15 functions still exist, with unchanged scores
+    let (dir, baseline) = baseline_then(&functions, &functions);
+    // When I run `cargo crap --baseline baseline.json --min 5`
+    let stdout = delta_human(dir.path(), &baseline, &["--min", "5"]);
+    // Then no function is listed under "Removed since baseline"
+    assert_eq!(removed_names(&stdout), Vec::<String>::new(), "{stdout}");
+}
+
+#[test]
+fn a_function_that_really_is_gone_is_still_reported_under_top() {
+    // Given a baseline recorded from a tree of 15 functions
+    let before = fifteen_ranked(0);
+    // And one low-scoring function has since been deleted
+    let after: Vec<_> = before
+        .iter()
+        .filter(|(_, name, _)| name != "cold_00")
+        .cloned()
+        .collect();
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --baseline baseline.json --top 5`
+    let stdout = delta_human(dir.path(), &baseline, &["--top", "5"]);
+    // Then exactly that function is listed under "Removed since baseline"
+    assert_eq!(removed_names(&stdout), ["cold_00"], "{stdout}");
+}
+
+#[test]
+fn min_does_not_hide_a_removal() {
+    // Given a baseline in which a function scored CRAP 2
+    let mut before = named("hot", 3, 2);
+    before.extend(named("cold", 1, 1));
+    // And that function has since been deleted
+    let after = named("hot", 3, 2);
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --baseline baseline.json --min 5`
+    let stdout = delta_human(dir.path(), &baseline, &["--min", "5"]);
+    // Then that function is listed under "Removed since baseline"
+    assert_eq!(removed_names(&stdout), ["cold_000"], "{stdout}");
+}
+
+#[test]
+fn the_rows_still_follow_the_slice() {
+    // Given a baseline recorded from a tree of 15 functions, all of which
+    // regressed since
+    let (dir, baseline) = baseline_then(&fifteen_ranked(0), &fifteen_ranked(1));
+    // When I run `cargo crap --baseline baseline.json --top 5 --format json`
+    let path = dir.path().to_str().expect("utf-8");
+    let doc = json_run(
+        dir.path(),
+        &[
+            "--path",
+            path,
+            "--threshold",
+            "1000",
+            "--baseline",
+            &baseline,
+            "--top",
+            "5",
+        ],
+    );
+    // Then the report's entries are the 5 functions with the highest current
+    // CRAP scores
+    let mut names: Vec<&str> = doc["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| e["function"].as_str().expect("function name"))
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["cold_10", "cold_11", "cold_12", "cold_13", "cold_14"]
+    );
+}
+
+#[test]
+fn top_or_min_in_config_behaves_like_the_flag() {
+    // Given a .cargo-crap.toml containing `top = 5`
+    // And   a baseline recorded from the same 15 functions, all still present
+    let (dir, baseline) = baseline_then(&fifteen_ranked(0), &fifteen_ranked(0));
+    write(dir.path(), ".cargo-crap.toml", "top = 5\n");
+    // When I run `cargo crap --baseline baseline.json`
+    let stdout = delta_human(dir.path(), &baseline, &[]);
+    // Then no function is listed under "Removed since baseline"
+    assert_eq!(removed_names(&stdout), Vec::<String>::new(), "{stdout}");
+}
+
+#[test]
+fn without_top_or_min_the_report_is_unchanged() {
+    // Given a baseline and a current tree that differ by one regression, one
+    // new function and one removal
+    let mut before = named("cold", 5, 1);
+    before.extend(named("gone", 1, 1));
+    let mut after = named("cold", 5, 1);
+    after[0].2 = 3;
+    after.extend(named("hot_new", 1, 1));
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --baseline baseline.json` in each format
+    let path = dir.path().to_str().expect("utf-8");
+    let doc = json_run(
+        dir.path(),
+        &[
+            "--path",
+            path,
+            "--threshold",
+            "1000",
+            "--baseline",
+            &baseline,
+        ],
+    );
+    // Then the output is the same as before this change: every current
+    // function is an entry and the one deletion is the one removal
+    assert_eq!(doc["entries"].as_array().map(Vec::len), Some(6), "{doc}");
+    let removed: Vec<&str> = doc["removed"]
+        .as_array()
+        .expect("removed")
+        .iter()
+        .map(|r| r["function"].as_str().expect("function name"))
+        .collect();
+    assert_eq!(removed, ["gone_000"]);
+    let stdout = delta_human(dir.path(), &baseline, &[]);
+    assert!(stdout.contains("↑ 1 regressed"), "{stdout}");
+    assert_eq!(removed_names(&stdout), ["gone_000"], "{stdout}");
 }

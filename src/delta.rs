@@ -104,6 +104,27 @@ impl DeltaReport {
         }
     }
 
+    /// Keep only the rows for the functions in `shown`, matched by file,
+    /// function and line. `removed` stays whole: a function `--top` or
+    /// `--min` left out still exists, so it never counts as removed, and a
+    /// function that is gone is reported whatever the cut.
+    pub fn restrict_to(
+        &mut self,
+        shown: &[CrapEntry],
+    ) {
+        let keys: HashSet<(&Path, &str, usize)> = shown
+            .iter()
+            .map(|e| (e.file.as_path(), e.function.as_str(), e.line))
+            .collect();
+        self.entries.retain(|e| {
+            keys.contains(&(
+                e.current.file.as_path(),
+                e.current.function.as_str(),
+                e.current.line,
+            ))
+        });
+    }
+
     /// Number of functions whose CRAP score increased since the baseline.
     #[must_use]
     pub fn regression_count(&self) -> usize {
@@ -480,7 +501,7 @@ pub fn compute_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn entry(
         function: &str,
@@ -1285,5 +1306,96 @@ mod tests {
         let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
         assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
         assert!(report.removed.is_empty());
+    }
+
+    fn names(report: &DeltaReport) -> (Vec<&str>, Vec<&str>) {
+        (
+            report
+                .entries
+                .iter()
+                .map(|e| e.current.function.as_str())
+                .collect(),
+            report.removed.iter().map(|r| r.function.as_str()).collect(),
+        )
+    }
+
+    #[test]
+    fn restrict_to_keeps_the_shown_rows_and_every_removal() {
+        let current = vec![entry("a", 9.0), entry("b", 5.0), entry("c", 1.0)];
+        let mut baseline = current.clone();
+        baseline.push(entry("gone", 3.0));
+        let mut report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        report.restrict_to(&current[..1]);
+        assert_eq!(names(&report), (vec!["a"], vec!["gone"]));
+    }
+
+    #[test]
+    fn restrict_to_matches_rows_by_file_function_and_line() {
+        let current = vec![
+            entry_in("src/a.rs", "run", 9.0),
+            entry_in("src/b.rs", "run", 5.0),
+        ];
+        let mut report = compute_delta(&current, &current, DEFAULT_EPSILON);
+        let mut other_line = current[0].clone();
+        other_line.line = 2;
+        report.restrict_to(&[current[1].clone(), other_line]);
+        let kept: Vec<&Path> = report
+            .entries
+            .iter()
+            .map(|e| e.current.file.as_path())
+            .collect();
+        assert_eq!(kept, [Path::new("src/b.rs")]);
+    }
+
+    /// A current run and a baseline over a small pool of names in one file,
+    /// so pairs, regressions and removals are all common, plus a mask that
+    /// picks which current functions are shown.
+    fn runs_and_a_mask()
+    -> impl proptest::strategy::Strategy<Value = (Vec<CrapEntry>, Vec<CrapEntry>, Vec<bool>)> {
+        use proptest::prelude::*;
+        let run = || {
+            proptest::collection::btree_map(0u8..10, 0.0..60.0f64, 0..10).prop_map(|scores| {
+                scores
+                    .into_iter()
+                    .map(|(name, crap)| entry(&format!("f{name}"), crap))
+                    .collect::<Vec<_>>()
+            })
+        };
+        (run(), run()).prop_flat_map(|(current, baseline)| {
+            let mask = proptest::collection::vec(any::<bool>(), current.len());
+            (Just(current), Just(baseline), mask)
+        })
+    }
+
+    proptest::proptest! {
+        /// Restricting the rows to any subset of the current run keeps the
+        /// removed list the whole comparison found, keeps exactly the shown
+        /// rows, and every removed function is absent from the current run.
+        #[test]
+        fn restricting_rows_keeps_every_removal(
+            (current, baseline, mask) in runs_and_a_mask()
+        ) {
+            let full = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+            let shown: Vec<CrapEntry> = current
+                .iter()
+                .zip(&mask)
+                .filter(|(_, keep)| **keep)
+                .map(|(e, _)| e.clone())
+                .collect();
+            let mut sliced = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+            sliced.restrict_to(&shown);
+
+            let (_, full_removed) = names(&full);
+            let (kept, removed) = names(&sliced);
+            proptest::prop_assert_eq!(removed, full_removed);
+            let mut kept = kept;
+            kept.sort_unstable();
+            let mut expected: Vec<&str> = shown.iter().map(|e| e.function.as_str()).collect();
+            expected.sort_unstable();
+            proptest::prop_assert_eq!(kept, expected);
+            for gone in &sliced.removed {
+                proptest::prop_assert!(current.iter().all(|e| e.function != gone.function));
+            }
+        }
     }
 }
