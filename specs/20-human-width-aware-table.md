@@ -208,7 +208,7 @@ after it.
 - [x] **T3 — The Uncovered column shortens first, and goes before or with CC.** Needs: T2. Scenarios: _The Uncovered column shortens before anything else_. Tests: unit + acceptance.
 - [x] **T4 — The delta table follows the ladder, keeping Δ and a moved row's current location.** Needs: T3. Scenarios: _The delta table keeps Δ and the current location of a moved row_. Tests: unit (the moved-row Location at each step) + acceptance.
 - [x] **T5 — The per-crate table fits by shortening crate names.** Needs: T1. Scenarios: _The per-crate table fits_. Tests: unit + acceptance.
-- [ ] **T6 — Snapshot the human tables at fixed widths.** `insta` snapshots of a fixed fixture rendered at 120, 100, 80, 70, 50 and 30 columns: the absolute table, the delta table with a moved row, the Uncovered column and the per-crate table, so any later layout change shows up as a readable diff. Needs: T4, T5. Scenarios: _none (test suite)_. Tests: snapshot.
+- [x] **T6 — Snapshot the human tables at fixed widths.** `insta` snapshots of a fixed fixture rendered at 120, 100, 80, 70, 50 and 30 columns: the absolute table, the delta table with a moved row, the Uncovered column and the per-crate table, so any later layout change shows up as a readable diff. Needs: T4, T5. Scenarios: _none (test suite)_. Tests: snapshot.
 
 ---
 
