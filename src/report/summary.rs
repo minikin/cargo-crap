@@ -11,7 +11,9 @@ use anyhow::Result;
 use owo_colors::Style;
 use std::io::Write;
 
-/// Print only aggregate statistics — no per-function table.
+/// Print only aggregate statistics — no per-function table. In workspace
+/// mode the per-crate table leads, fitted to `width` (see
+/// [`output_width`](super::output_width)); `None` leaves it unlimited.
 ///
 /// ```text
 /// Analyzed: 42 · Crappy: 3 (threshold 30) · Worst: crappy (CRAP 156.0)
@@ -19,13 +21,14 @@ use std::io::Write;
 pub fn render_summary(
     entries: &[CrapEntry],
     threshold: f64,
+    width: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
     // Workspace summary mode: lead with the per-crate rollup so the user
     // sees which crate to drill into. The aggregate one-liner still follows
     // for the global view.
     if has_crate_data(entries) {
-        write_per_crate_human(entries, threshold, out)?;
+        write_per_crate_human(entries, threshold, width, out)?;
     }
     let total = entries.len();
     let crappy = super::crappy_count(entries, threshold);
@@ -145,7 +148,7 @@ mod tests {
     fn render_summary_leads_with_per_crate_table_for_workspace() {
         let entries = vec![entry(Some("alpha"), "a1", 1.0)];
         let mut buf = Vec::new();
-        render_summary(&entries, 30.0, &mut buf).unwrap();
+        render_summary(&entries, 30.0, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("Per-crate summary:"));
         // Aggregate one-liner still follows.
@@ -153,10 +156,26 @@ mod tests {
     }
 
     #[test]
+    fn render_summary_fits_the_per_crate_table_to_the_width() {
+        let name = "a_crate_whose_name_runs_on_for_quite_a_while";
+        let entries = vec![entry(Some(name), "a1", 1.0)];
+        let mut buf = Vec::new();
+        render_summary(&entries, 30.0, Some(40), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        let widest = s
+            .lines()
+            .filter(|line| line.starts_with(['┌', '│', '╞', '├', '└']))
+            .map(unicode_width::UnicodeWidthStr::width)
+            .max();
+        assert_eq!(widest, Some(40), "{s}");
+        assert!(!s.contains(name), "{s}");
+    }
+
+    #[test]
     fn render_summary_skips_per_crate_when_not_workspace() {
         let entries = vec![entry(None, "a1", 1.0)];
         let mut buf = Vec::new();
-        render_summary(&entries, 30.0, &mut buf).unwrap();
+        render_summary(&entries, 30.0, None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(!s.contains("Per-crate summary"));
         assert!(s.contains("Analyzed: 1"));
@@ -171,7 +190,7 @@ mod tests {
         let entries = vec![entry(None, "a1", 1.0)];
         let render = |entries: &[CrapEntry]| {
             let mut buf = Vec::new();
-            render_summary(entries, 30.0, &mut buf).unwrap();
+            render_summary(entries, 30.0, None, &mut buf).unwrap();
             String::from_utf8(buf).unwrap()
         };
 

@@ -22,12 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summary line and `--fail-regression` count changes outside the rows
   shown, and a run can now fail on a regression that `--top` leaves out.
 - **BREAKING (library API):** `RenderOptions` gained `sliced: bool`, set
-  when the user asked for `top` or `min`, and `delta_counts:
+  when the user asked for `top` or `min`, `delta_counts:
   Option<DeltaCounts>`, the whole comparison's counts when the rows were
-  sliced. Code that builds `RenderOptions` with an exhaustive struct literal
-  must add the fields or spread `..Default::default()`. `DeltaReport` gained
-  `counts` and `restrict_to`, and `report::render_delta_counts` prints a
-  `DeltaCounts`.
+  sliced, and `width: Option<usize>`, the width the human tables fit (see
+  `report::output_width`). Code that builds `RenderOptions` with an
+  exhaustive struct literal must add the fields or spread
+  `..Default::default()`. `report::render_summary` takes the width as a new
+  third argument. `DeltaReport` gained `counts` and `restrict_to`, and
+  `report::render_delta_counts` prints a `DeltaCounts`.
 
 ### Fixed
 

@@ -2938,3 +2938,59 @@ fn the_delta_table_keeps_delta_and_the_current_location_of_a_moved_row() {
     let line = location[0].rsplit_once("b.rs:").map(|(_, line)| line);
     assert!(line.is_some_and(|l| l.parse::<u32>().is_ok()), "{stdout}");
 }
+
+// ---- Width-aware human table · T5 ----
+
+#[test]
+fn the_per_crate_table_fits() {
+    // Given a workspace with a member crate whose name is 60 characters long
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let name = format!("a_{}", "very_long_member_name_".repeat(3))
+        .chars()
+        .take(60)
+        .collect::<String>();
+    assert_eq!(name.len(), 60);
+    fs::create_dir_all(root.join("crates/long/src")).expect("mkdir");
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/long\"]\nresolver = \"2\"\n",
+    );
+    write(
+        &root.join("crates/long"),
+        "Cargo.toml",
+        &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+    );
+    write(
+        &root.join("crates/long/src"),
+        "lib.rs",
+        &function_with_cc("run", 1),
+    );
+    // When I run `cargo crap --format human --workspace` with an output 50
+    // columns wide
+    let out = crap()
+        .current_dir(root)
+        .env("COLUMNS", "50")
+        .args(["--workspace", "--format", "human", "--threshold", "1000"])
+        .output()
+        .expect("binary runs");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let per_crate: String = stdout
+        .split("Per-crate summary:")
+        .nth(1)
+        .expect("a per-crate table")
+        .lines()
+        .take_while(|line| !line.starts_with('└'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Then no line of the per-crate table exceeds 50 columns
+    assert!(widest_table_line(&per_crate) <= 50, "{stdout}");
+    // And the long crate name ends with "…"
+    let first_row = column(&per_crate, "Crate");
+    assert!(first_row[0].ends_with('…'), "{stdout}");
+    assert!(
+        name.starts_with(first_row[0].trim_end_matches('…')),
+        "{stdout}"
+    );
+}

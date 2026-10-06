@@ -1438,7 +1438,7 @@ fn do_render(
     } else {
         let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
         if summary {
-            render_summary(entries, opts.render.threshold, out)?;
+            render_summary(entries, opts.render.threshold, opts.render.width, out)?;
         } else {
             render(entries, &opts.render, out)?;
         }

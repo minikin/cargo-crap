@@ -32,7 +32,7 @@ pub(crate) fn render_human(
         writeln!(out, "No functions found.")?;
         return Ok(());
     }
-    write_per_crate_human(entries, threshold, out)?;
+    write_per_crate_human(entries, threshold, width, out)?;
     write_capped_table(entries, threshold, uncovered_hints, sliced, width, out)?;
     write_summary(
         out,
