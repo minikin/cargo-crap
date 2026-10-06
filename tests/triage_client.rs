@@ -205,7 +205,7 @@ fn a_missing_key_errs_naming_it_with_zero_requests_made() {
 fn no_pairs_means_no_requests() {
     let stub = TypesafeStub::scripted(vec![Reply::json(&answer("same_logic"))]);
     let verdicts = run_within(Vec::new(), settings(stub.base_url())).expect("nothing to do");
-    assert!(verdicts.is_empty());
+    assert_eq!(verdicts, []);
     assert_eq!(stub.request_count(), 0);
 }
 

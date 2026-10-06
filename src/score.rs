@@ -73,10 +73,6 @@ impl Severity {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::float_cmp,
-    reason = "CRAP formula is deterministic; exact equality is the right comparison"
-)]
 mod tests {
     use super::*;
 
