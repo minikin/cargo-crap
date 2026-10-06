@@ -55,6 +55,8 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 quote = "1"
 syn = { version = "2", features = ["full", "visit", "printing"] }
 toml = { version = "0.8", default-features = false, features = ["parse"] }
+# Display width of table text, the same measure comfy-table lays out by.
+unicode-width = "0.2"
 # TypeSafe triage (spec 30): a small blocking client; rustls, no gzip.
 # Optional: only the `triage` feature compiles a network client in.
 ureq = { version = "3.4", default-features = false, features = ["rustls"], optional = true }

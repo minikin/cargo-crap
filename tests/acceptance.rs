@@ -2579,3 +2579,43 @@ fn changes_outside_the_slice_are_not_called_no_changes() {
         );
     }
 }
+
+// --- Width-aware human table ------------------------------------------------
+//
+// Each task fills only its own heading, so parallel branches never touch the
+// same lines.
+
+// ---- Width-aware human table · T1 ----
+
+#[test]
+fn piped_output_without_columns_is_not_limited() {
+    // Given stdout is a pipe
+    // And   COLUMNS is unset
+    let dir = TempDir::new().expect("temp dir");
+    let deep = dir
+        .path()
+        .join("a_rather_long_module_directory/another_long_directory_name");
+    fs::create_dir_all(&deep).expect("create dirs");
+    write(
+        &deep,
+        "widely_named_source_file.rs",
+        &function_with_cc("cold_00", 1),
+    );
+    // When I run `cargo crap --format human`
+    let out = crap()
+        .current_dir(dir.path())
+        .env_remove("COLUMNS")
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .args(["--format", "human", "--threshold", "1000"])
+        .output()
+        .expect("binary runs");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    // Then the table is laid out as today, with full Locations
+    assert!(
+        stdout.contains(
+            "a_rather_long_module_directory/another_long_directory_name/widely_named_source_file.rs:1"
+        ),
+        "{stdout}"
+    );
+    assert!(!stdout.contains('…'), "{stdout}");
+}

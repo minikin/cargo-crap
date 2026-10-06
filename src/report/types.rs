@@ -5,11 +5,15 @@
 //! - [`cc_display`]: CC text, integral or fractional to one decimal.
 //! - [`delta_display`]: Δ-column text for delta rows.
 //! - [`uncovered_display`]: capped Uncovered-column text.
+//! - [`available_width`], [`shorten_end`], [`shorten_location`]: fitting
+//!   the human tables to the output's width.
 
 use crate::coverage::LineRange;
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
 use comfy_table::Color;
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
+use unicode_width::UnicodeWidthStr;
 
 /// Process-wide colour switch, set once by `main` after inspecting the sink
 /// (`--output`, stdout TTY-ness, `NO_COLOR` / `FORCE_COLOR`). Defaults to
@@ -220,6 +224,95 @@ pub(crate) fn visible_delta_entries(
         .iter()
         .filter(|e| show_unchanged || e.status != DeltaStatus::Unchanged)
         .collect()
+}
+
+/// The width the human tables may use, in terminal columns, or `None` for
+/// no limit. A terminal's own width wins. Without one (any output that is
+/// not a terminal, or a terminal that reports no positive width) a
+/// positive `$COLUMNS` applies, and otherwise there is no limit, so full
+/// paths reach `grep` and logs.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the width-aware table layout that calls it is spec 20's next task"
+    )
+)]
+pub(crate) fn available_width(
+    is_terminal: bool,
+    terminal_width: Option<u16>,
+    columns: Option<&str>,
+) -> Option<usize> {
+    let terminal = terminal_width
+        .filter(|_| is_terminal)
+        .map(usize::from)
+        .filter(|&width| width > 0);
+    terminal.or_else(|| {
+        columns
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|&width| width > 0)
+    })
+}
+
+/// Cut the end of `text` so it fits `budget` columns, marking the cut with
+/// `…`. Text that already fits comes back unchanged, and a budget of 0
+/// leaves nothing, not even the mark.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the width-aware table layout that calls it is spec 20's next task"
+    )
+)]
+pub(crate) fn shorten_end(
+    text: &str,
+    budget: usize,
+) -> Cow<'_, str> {
+    if text.width() <= budget {
+        return Cow::Borrowed(text);
+    }
+    if budget == 0 {
+        return Cow::Borrowed("");
+    }
+    // Widths are measured on whole prefixes: a character's width can
+    // depend on its neighbours, so summing single characters can overshoot.
+    let end = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| text[..i].width() < budget)
+        .last()
+        .unwrap_or(0);
+    Cow::Owned(format!("{}…", &text[..end]))
+}
+
+/// Cut the start of a `<path>:<line>` location so it fits `budget` columns,
+/// marking the cut with `…`. It cuts only at a path separator, so the file
+/// and line always survive, even past the budget. A location that fits, or
+/// has no directory to drop, comes back unchanged.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the width-aware table layout that calls it is spec 20's next task"
+    )
+)]
+pub(crate) fn shorten_location(
+    location: &str,
+    budget: usize,
+) -> Cow<'_, str> {
+    if location.width() <= budget {
+        return Cow::Borrowed(location);
+    }
+    // Separators from the left give tails from the longest to the shortest:
+    // the first that fits wins, and the file itself is the last resort.
+    let mut tails = location
+        .match_indices(['/', '\\'])
+        .map(|(i, _)| &location[i..]);
+    let fitting = tails.clone().find(|tail| tail.width() < budget);
+    let tail = fitting.or_else(|| tails.next_back());
+    tail.map_or(Cow::Borrowed(location), |tail| {
+        Cow::Owned(format!("…{tail}"))
+    })
 }
 
 /// The line a delta table prints when it has no rows to show: either
@@ -507,5 +600,118 @@ mod tests {
             " 1–2 |"
         );
         assert_eq!(uncovered_cell_suffix(true, &[]), "  |");
+    }
+
+    // --- width ---------------------------------------------------------------
+
+    #[test]
+    fn a_terminal_uses_its_own_width_over_columns() {
+        assert_eq!(available_width(true, Some(90), Some("40")), Some(90));
+    }
+
+    #[test]
+    fn a_terminal_without_a_width_falls_back_to_columns() {
+        assert_eq!(available_width(true, None, Some("40")), Some(40));
+        assert_eq!(available_width(true, Some(0), Some("40")), Some(40));
+        assert_eq!(available_width(true, Some(0), None), None);
+        assert_eq!(available_width(true, None, None), None);
+    }
+
+    #[test]
+    fn other_output_uses_a_positive_columns_or_no_limit() {
+        assert_eq!(available_width(false, Some(90), Some("40")), Some(40));
+        assert_eq!(available_width(false, None, Some(" 80 ")), Some(80));
+        assert_eq!(available_width(false, None, None), None);
+        assert_eq!(available_width(false, None, Some("0")), None);
+        assert_eq!(available_width(false, None, Some("-5")), None);
+        assert_eq!(available_width(false, None, Some("wide")), None);
+    }
+
+    #[test]
+    fn shorten_end_keeps_the_start_and_marks_the_cut() {
+        assert_eq!(shorten_end("run", 10), "run");
+        assert_eq!(shorten_end("DeltaBuckets::from_report", 12), "DeltaBucket…");
+        assert_eq!(shorten_end("abc", 1), "…");
+        assert_eq!(shorten_end("abc", 0), "");
+    }
+
+    #[test]
+    fn shorten_end_measures_display_columns() {
+        // Each of these ideographs is two columns wide.
+        assert_eq!(shorten_end("函数名字", 5), "函数…");
+    }
+
+    #[test]
+    fn shorten_location_keeps_the_file_and_line() {
+        assert_eq!(shorten_location("src/main.rs:12", 40), "src/main.rs:12");
+        assert_eq!(
+            shorten_location("src/report/pr_comment.rs:380", 20),
+            "…/pr_comment.rs:380"
+        );
+        assert_eq!(
+            shorten_location("src/report/pr_comment.rs:380", 27),
+            "…/report/pr_comment.rs:380"
+        );
+        // Too narrow even for the file: the file and line still survive.
+        assert_eq!(
+            shorten_location("src/report/pr_comment.rs:380", 5),
+            "…/pr_comment.rs:380"
+        );
+        // Nothing to cut without a directory.
+        assert_eq!(shorten_location("lib.rs:3", 4), "lib.rs:3");
+        assert_eq!(
+            shorten_location(r"src\report\pr_comment.rs:380", 20),
+            r"…\pr_comment.rs:380"
+        );
+    }
+
+    fn path_strategy() -> impl Strategy<Value = String> {
+        (
+            proptest::collection::vec("[a-z_]{1,12}", 0..6),
+            "[a-z_]{1,16}",
+            1u32..100_000,
+        )
+            .prop_map(|(dirs, file, line)| {
+                let mut path = dirs.join("/");
+                if !path.is_empty() {
+                    path.push('/');
+                }
+                format!("{path}{file}.rs:{line}")
+            })
+    }
+
+    proptest! {
+        /// A shortened name fits its budget, keeps the original's start, and
+        /// a name that already fits comes back unchanged.
+        #[test]
+        fn shorten_end_fits_and_keeps_the_start(text in "\\PC{0,40}", budget in 0usize..40) {
+            let short = shorten_end(&text, budget);
+            prop_assert!(UnicodeWidthStr::width(short.as_ref()) <= budget);
+            if UnicodeWidthStr::width(text.as_str()) <= budget {
+                prop_assert_eq!(short.as_ref(), text.as_str());
+            } else if budget == 0 {
+                prop_assert_eq!(short.as_ref(), "");
+            } else {
+                let kept = short.strip_suffix('…').expect("marked");
+                prop_assert!(text.starts_with(kept));
+            }
+        }
+
+        /// A shortened Location keeps its `<file>:<line>` suffix, ends with
+        /// the original's tail, fits the budget whenever the file and line
+        /// can, and comes back unchanged when it already fits.
+        #[test]
+        fn shorten_location_keeps_the_suffix(path in path_strategy(), budget in 1usize..80) {
+            let short = shorten_location(&path, budget);
+            let file = path.rsplit('/').next().expect("a file");
+            prop_assert!(short.ends_with(file));
+            prop_assert!(path.ends_with(short.trim_start_matches('…')));
+            let width = UnicodeWidthStr::width(short.as_ref());
+            if UnicodeWidthStr::width(path.as_str()) <= budget {
+                prop_assert_eq!(short.as_ref(), path.as_str());
+            } else if path.contains('/') && budget > file.len() + 1 {
+                prop_assert!(width <= budget, "{} wider than {}", short, budget);
+            }
+        }
     }
 }
