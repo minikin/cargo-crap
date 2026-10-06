@@ -191,10 +191,6 @@ pub fn parse_lcov(path: &Path) -> Result<HashMap<PathBuf, FileCoverage>> {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::float_cmp,
-    reason = "coverage % is computed from integer line counts; exact equality is the right comparison"
-)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -373,14 +369,14 @@ mod tests {
     #[test]
     fn fully_covered_span_has_no_ranges() {
         let fc = fc_from(&[(10, 1), (11, 2)]);
-        assert!(fc.uncovered_ranges_in_span(10, 20).is_empty());
+        assert_eq!(fc.uncovered_ranges_in_span(10, 20), []);
     }
 
     #[test]
     fn span_with_no_instrumented_lines_has_no_ranges() {
         // Mirrors `coverage_in_span`'s "nothing to cover" stance.
         let fc = fc_from(&[(5, 0), (25, 0)]);
-        assert!(fc.uncovered_ranges_in_span(10, 20).is_empty());
+        assert_eq!(fc.uncovered_ranges_in_span(10, 20), []);
     }
 
     #[test]

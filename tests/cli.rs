@@ -3430,7 +3430,7 @@ fn cross_root_baseline_matches_all_functions() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
     let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     let entries = envelope["entries"].as_array().expect("entries array");
-    assert!(!entries.is_empty());
+    assert_ne!(entries.as_slice(), &[] as &[serde_json::Value]);
     for e in entries {
         assert_eq!(
             e["status"], "unchanged",

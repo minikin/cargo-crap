@@ -306,7 +306,7 @@ mod tests {
         let results = v["runs"][0]["results"]
             .as_array()
             .expect("results array must exist even when empty");
-        assert!(results.is_empty());
+        assert_eq!(results.as_slice(), &[] as &[serde_json::Value]);
     }
 
     #[test]
@@ -314,7 +314,7 @@ mod tests {
         // sample()'s worst entry is 110.0 — a threshold of 200 leaves nothing.
         let v = render_to_value(200.0);
         let results = v["runs"][0]["results"].as_array().expect("results array");
-        assert!(results.is_empty());
+        assert_eq!(results.as_slice(), &[] as &[serde_json::Value]);
     }
 
     #[test]
