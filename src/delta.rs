@@ -69,6 +69,33 @@ pub struct RemovedEntry {
     pub baseline_crap: f64,
 }
 
+/// How many compared functions fall in each [`DeltaStatus`], and how many
+/// baseline functions are gone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeltaCounts {
+    pub regressed: usize,
+    pub improved: usize,
+    pub new: usize,
+    pub moved: usize,
+    pub unchanged: usize,
+    pub removed: usize,
+}
+
+impl DeltaCounts {
+    /// Nothing was compared: no current function and nothing removed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Something differs from the baseline: a regression, an improvement,
+    /// a new or moved function, or a removal.
+    #[must_use]
+    pub fn has_changes(&self) -> bool {
+        self.regressed + self.improved + self.new + self.moved + self.removed > 0
+    }
+}
+
 /// The full comparison result.
 #[derive(Debug)]
 pub struct DeltaReport {
@@ -102,6 +129,27 @@ impl DeltaReport {
                     .sort_by(|a, b| removed_key(a).cmp(&removed_key(b)));
             },
         }
+    }
+
+    /// Tally the rows by status, plus the removals. Taken before
+    /// [`restrict_to`](Self::restrict_to), it describes the whole comparison.
+    #[must_use]
+    pub fn counts(&self) -> DeltaCounts {
+        let mut counts = DeltaCounts {
+            removed: self.removed.len(),
+            ..DeltaCounts::default()
+        };
+        for entry in &self.entries {
+            let slot = match entry.status {
+                DeltaStatus::Regressed => &mut counts.regressed,
+                DeltaStatus::Improved => &mut counts.improved,
+                DeltaStatus::New => &mut counts.new,
+                DeltaStatus::Moved => &mut counts.moved,
+                DeltaStatus::Unchanged => &mut counts.unchanged,
+            };
+            *slot += 1;
+        }
+        counts
     }
 
     /// Keep only the rows for the functions in `shown`, matched by file,
@@ -1367,6 +1415,64 @@ mod tests {
         })
     }
 
+    #[test]
+    fn has_changes_counts_every_kind_of_change_but_not_unchanged() {
+        let one = |set: fn(&mut DeltaCounts)| {
+            let mut counts = DeltaCounts::default();
+            set(&mut counts);
+            counts
+        };
+        assert!(!DeltaCounts::default().has_changes());
+        assert!(!one(|c| c.unchanged = 3).has_changes());
+        assert!(one(|c| c.regressed = 1).has_changes());
+        assert!(one(|c| c.improved = 1).has_changes());
+        assert!(one(|c| c.new = 1).has_changes());
+        assert!(one(|c| c.moved = 1).has_changes());
+        assert!(one(|c| c.removed = 1).has_changes());
+        let all = DeltaCounts {
+            regressed: 1,
+            improved: 1,
+            new: 1,
+            moved: 1,
+            unchanged: 1,
+            removed: 1,
+        };
+        assert!(all.has_changes());
+        assert!(!all.is_empty());
+        assert!(DeltaCounts::default().is_empty());
+        assert!(!one(|c| c.unchanged = 1).is_empty());
+    }
+
+    #[test]
+    fn counts_tally_every_status_and_every_removal() {
+        let current = vec![
+            entry_in("src/a.rs", "up", 9.0),
+            entry_in("src/a.rs", "down", 1.0),
+            entry_in("src/a.rs", "fresh", 2.0),
+            entry_in("src/a.rs", "same", 3.0),
+            entry_in("src/b.rs", "moved", 4.0),
+        ];
+        let baseline = vec![
+            entry_in("src/a.rs", "up", 5.0),
+            entry_in("src/a.rs", "down", 8.0),
+            entry_in("src/a.rs", "same", 3.0),
+            entry_in("src/c.rs", "moved", 4.0),
+            entry_in("src/a.rs", "gone", 1.0),
+        ];
+        let counts = compute_delta(&current, &baseline, DEFAULT_EPSILON).counts();
+        assert_eq!(
+            counts,
+            DeltaCounts {
+                regressed: 1,
+                improved: 1,
+                new: 1,
+                moved: 1,
+                unchanged: 1,
+                removed: 1,
+            }
+        );
+    }
+
     proptest::proptest! {
         /// Restricting the rows to any subset of the current run keeps the
         /// removed list the whole comparison found, keeps exactly the shown
@@ -1396,6 +1502,22 @@ mod tests {
             for gone in &sliced.removed {
                 proptest::prop_assert!(current.iter().all(|e| e.function != gone.function));
             }
+        }
+
+        /// The counts account for every compared function and every removal,
+        /// and agree with `regression_count`.
+        #[test]
+        fn counts_account_for_every_entry_and_removal(
+            (current, baseline, _mask) in runs_and_a_mask()
+        ) {
+            let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+            let c = report.counts();
+            proptest::prop_assert_eq!(
+                c.regressed + c.improved + c.new + c.moved + c.unchanged,
+                report.entries.len()
+            );
+            proptest::prop_assert_eq!(c.removed, report.removed.len());
+            proptest::prop_assert_eq!(c.regressed, report.regression_count());
         }
     }
 }

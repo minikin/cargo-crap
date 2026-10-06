@@ -5,7 +5,7 @@
 
 use super::per_crate::{has_crate_data, write_per_crate_human};
 use super::types::styled;
-use crate::delta::{DeltaReport, DeltaStatus};
+use crate::delta::{DeltaCounts, DeltaReport};
 use crate::merge::CrapEntry;
 use anyhow::Result;
 use owo_colors::Style;
@@ -61,31 +61,27 @@ pub fn render_delta_summary(
     report: &DeltaReport,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let regressed = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Regressed)
-        .count();
-    let improved = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Improved)
-        .count();
-    let new = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::New)
-        .count();
-    let moved = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Moved)
-        .count();
-    let unchanged = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Unchanged)
-        .count();
+    render_delta_counts(&report.counts(), out)
+}
+
+/// Print the one-line delta tally: regressed, improved, new, moved,
+/// unchanged and removed.
+///
+/// # Errors
+///
+/// Returns an error when writing to `out` fails.
+pub fn render_delta_counts(
+    counts: &DeltaCounts,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let DeltaCounts {
+        regressed,
+        improved,
+        new,
+        moved,
+        unchanged,
+        removed,
+    } = *counts;
     writeln!(
         out,
         "{}  {}  {}  {}  {}  {}",
@@ -94,10 +90,7 @@ pub fn render_delta_summary(
         styled(&format!("★ {new} new"), Style::new().yellow()),
         styled(&format!("↔ {moved} moved"), Style::new().cyan()),
         styled(&format!("· {unchanged} unchanged"), Style::new().dimmed()),
-        styled(
-            &format!("— {} removed", report.removed.len()),
-            Style::new().dimmed(),
-        ),
+        styled(&format!("— {removed} removed"), Style::new().dimmed()),
     )?;
     Ok(())
 }
@@ -106,6 +99,30 @@ pub fn render_delta_summary(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn render_delta_counts_prints_every_count() {
+        let counts = crate::delta::DeltaCounts {
+            regressed: 7,
+            improved: 6,
+            new: 5,
+            moved: 4,
+            unchanged: 3,
+            removed: 2,
+        };
+        let mut buf = Vec::new();
+        render_delta_counts(&counts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("↑ 7 regressed")
+                && out.contains("↓ 6 improved")
+                && out.contains("★ 5 new")
+                && out.contains("↔ 4 moved")
+                && out.contains("· 3 unchanged")
+                && out.contains("— 2 removed"),
+            "{out}"
+        );
+    }
 
     fn entry(
         crate_name: Option<&str>,

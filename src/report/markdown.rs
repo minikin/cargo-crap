@@ -6,11 +6,11 @@
 use super::links::{SourceLinks, linkify};
 use super::per_crate::write_per_crate_markdown;
 use super::types::{
-    Grade, cc_display, delta_display, format_location_with_prev, uncovered_cell_suffix,
-    visible_delta_entries, write_abs_gfm_header, write_delta_gfm_header,
+    Grade, cc_display, delta_display, format_location_with_prev, no_change_message,
+    uncovered_cell_suffix, visible_delta_entries, write_abs_gfm_header, write_delta_gfm_header,
 };
 use super::write_pr_comment_marker;
-use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
+use crate::delta::{DeltaCounts, DeltaEntry, DeltaReport};
 use crate::merge::CrapEntry;
 use anyhow::Result;
 use std::io::Write;
@@ -173,39 +173,21 @@ fn write_delta_entries_table(
 }
 
 fn write_markdown_delta_stats(
-    report: &DeltaReport,
+    counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let regressed = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Regressed)
-        .count();
-    let improved = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Improved)
-        .count();
-    let new = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::New)
-        .count();
-    let moved = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Moved)
-        .count();
-    let unchanged = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Unchanged)
-        .count();
+    let DeltaCounts {
+        regressed,
+        improved,
+        new,
+        moved,
+        unchanged,
+        removed,
+    } = *counts;
     writeln!(out)?;
     writeln!(
         out,
-        "↑ {regressed} regressed · ↓ {improved} improved · ★ {new} new · ↔ {moved} moved · · {unchanged} unchanged · — {} removed",
-        report.removed.len(),
+        "↑ {regressed} regressed · ↓ {improved} improved · ★ {new} new · ↔ {moved} moved · · {unchanged} unchanged · — {removed} removed",
     )?;
     Ok(())
 }
@@ -216,19 +198,28 @@ pub(crate) fn render_delta_markdown(
     links: Option<&SourceLinks>,
     show_unchanged: bool,
     uncovered_hints: bool,
+    counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
     write_pr_comment_marker(out)?;
-    if report.entries.is_empty() && report.removed.is_empty() {
+    if counts.is_empty() {
         writeln!(out, "_No functions found._")?;
         return Ok(());
     }
-    write_markdown_delta_heading(report.regression_count(), out)?;
+    write_markdown_delta_heading(counts.regressed, out)?;
     // Unchanged rows are hidden by default (spec 16); the stats line below
     // still counts every entry.
     let visible = visible_delta_entries(&report.entries, show_unchanged);
-    write_markdown_delta_body(report, &visible, threshold, links, uncovered_hints, out)?;
-    write_markdown_delta_stats(report, out)
+    write_markdown_delta_body(
+        report,
+        &visible,
+        threshold,
+        links,
+        uncovered_hints,
+        counts,
+        out,
+    )?;
+    write_markdown_delta_stats(counts, out)
 }
 
 /// Write the table + removed section, or the quiet confirmation when nothing
@@ -239,10 +230,11 @@ fn write_markdown_delta_body(
     threshold: f64,
     links: Option<&SourceLinks>,
     uncovered_hints: bool,
+    counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
     if visible.is_empty() && report.removed.is_empty() {
-        return writeln!(out, "_No changes since baseline._").map_err(Into::into);
+        return writeln!(out, "_{}_", no_change_message(counts)).map_err(Into::into);
     }
     if !visible.is_empty() {
         write_delta_entries_table(visible, threshold, links, uncovered_hints, out)?;
@@ -257,6 +249,7 @@ fn write_markdown_delta_body(
 mod tests {
     use super::super::{Format, RenderOptions, render};
     use super::*;
+    use crate::delta::DeltaStatus;
     use std::path::PathBuf;
 
     #[test]
@@ -323,7 +316,16 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, false, false, &mut buf).unwrap();
+        render_delta_markdown(
+            &report,
+            30.0,
+            None,
+            false,
+            false,
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("↔ 1 moved"),
@@ -380,7 +382,8 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, true, false, &mut buf).unwrap();
+        render_delta_markdown(&report, 30.0, None, true, false, &report.counts(), &mut buf)
+            .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("`src/a.rs:7`"),
@@ -429,7 +432,16 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, false, false, &mut buf).unwrap();
+        render_delta_markdown(
+            &report,
+            30.0,
+            None,
+            false,
+            false,
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("reg"), "regressed row must appear:\n{s}");
         assert!(!s.contains("u1"), "unchanged rows must be hidden:\n{s}");
@@ -450,7 +462,8 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, true, false, &mut buf).unwrap();
+        render_delta_markdown(&report, 30.0, None, true, false, &report.counts(), &mut buf)
+            .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("reg") && s.contains("u1"),
@@ -466,7 +479,16 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, false, false, &mut buf).unwrap();
+        render_delta_markdown(
+            &report,
+            30.0,
+            None,
+            false,
+            false,
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("_No changes since baseline._"),
@@ -533,7 +555,8 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, false, true, &mut buf).unwrap();
+        render_delta_markdown(&report, 30.0, None, false, true, &report.counts(), &mut buf)
+            .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("| | CRAP | Δ | CC | Cov % | Function | Location | Uncovered |"),
@@ -576,5 +599,61 @@ mod tests {
             s.contains("| 60.0 | +10.0 | 3 | 0.0 |"),
             "integral CC:\n{s}"
         );
+    }
+
+    /// A sink that accepts everything except a line naming `refused_row`.
+    struct RefusesRow(Vec<u8>);
+
+    impl Write for RefusesRow {
+        fn write(
+            &mut self,
+            buf: &[u8],
+        ) -> std::io::Result<usize> {
+            if String::from_utf8_lossy(buf).contains("refused_row") {
+                return Err(std::io::Error::other("disk full"));
+            }
+            self.0.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_delta_row_that_cannot_be_written_is_an_error() {
+        let report = DeltaReport {
+            entries: vec![DeltaEntry {
+                current: CrapEntry {
+                    file: PathBuf::from("src/a.rs"),
+                    function: "refused_row".into(),
+                    line: 1,
+                    cyclomatic: 1.0,
+                    coverage: Some(100.0),
+                    crap: 2.0,
+                    crate_name: None,
+                    uncovered: Vec::new(),
+                },
+                baseline_crap: Some(1.0),
+                delta: Some(1.0),
+                status: DeltaStatus::Regressed,
+                previous_file: None,
+            }],
+            removed: vec![],
+        };
+        let mut sink = RefusesRow(Vec::new());
+        let result = render_delta_markdown(
+            &report,
+            30.0,
+            None,
+            false,
+            false,
+            &report.counts(),
+            &mut sink,
+        );
+        assert!(result.is_err(), "the write failure must surface");
+        let written = String::from_utf8(sink.0).unwrap();
+        assert!(!written.contains("regressed ·"), "{written}");
     }
 }

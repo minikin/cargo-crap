@@ -57,4 +57,11 @@ line still counts every entry. JSON stays exhaustive either way, and
 `pr-comment` keeps its own row policy. Both `--show-unchanged` and
 `--fail-regression` error out when `--baseline` is missing.
 
+`--top` and `--min` choose only which rows are shown. The baseline is
+compared with every function, so the Removed list holds only functions
+that are gone, and the summary line and `--fail-regression` count changes
+outside the rows shown. A run with `--top 10 --fail-regression` can fail on
+a regression in the eleventh-worst function. When every change lies outside
+the rows shown, the table says `No changes among the rows shown.`
+
 See [JSON output schema](../reference/json.md) for the baseline file's format.

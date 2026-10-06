@@ -1,6 +1,6 @@
 # Spec 31: Score slices apply after the baseline comparison
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/main.rs`, `src/report/` (delta renderers)
 
@@ -148,6 +148,24 @@ Then  human, markdown, pr-comment and github show only the 5 highest-scoring fun
 And   the shields badge counts crappy functions among those 5
 ```
 
+### Scenario: A slice that keeps no rows still reports the comparison
+
+```
+Given a baseline against which one function regressed
+When  I run `cargo crap --baseline baseline.json --min 1000` with `--format human`, `--format markdown` or `--format pr-comment`
+Then  the output does not say "No functions found"
+And   the summary reports "1 regressed"
+```
+
+### Scenario: Changes outside the slice are not called "no changes"
+
+```
+Given a baseline against which only a function outside the highest-scoring one regressed
+When  I run `cargo crap --baseline baseline.json --top 1` with `--format human` or `--format markdown`
+Then  the output says "No changes among the rows shown."
+And   it does not say "No changes since baseline."
+```
+
 ### Scenario: top or min in config behaves like the flag
 
 ```
@@ -179,7 +197,7 @@ scenario, named after it.
 
 - [x] **T1 — Compare the whole run, and let the slice choose the rows in human, markdown and JSON.** `src/main.rs` keeps the entries from before `top` / `min`, builds the delta from them and passes the slice to the renderers. The human and markdown tables and the JSON envelope's `entries` show only sliced rows. `removed` is the full list. Scenarios: _--top does not report the functions it cut as removed; --min does not report the functions it cut as removed; A function that really is gone is still reported under --top; --min does not hide a removal; The rows still follow the slice; top or min in config behaves like the flag; Without top or min the report is unchanged_. Tests: unit (the slice's row keys) + property (`removed` equals the unsliced run's, and every removed function is absent from the current run) + acceptance.
 - [x] **T2 — Rows in pr-comment, GitHub and the badge follow the slice.** Each of these renderers picks its rows from the sliced set T1 provides. Needs: T1. Scenarios: _Every format shows the same rows_. Tests: unit per renderer + acceptance.
-- [ ] **T3 — Count lines and --fail-regression count the whole comparison.** The gate reads the full report's regression count, and the human, markdown, pr-comment and `--summary` count lines read every entry. Needs: T1, T2. Scenarios: _An improvement below the cutoff is counted, not removed; A move below the cut is not reported as removed; --fail-regression sees a regression outside the slice; The delta summary line counts the whole comparison_. Tests: property (the regression count equals the unsliced run's) + acceptance.
+- [x] **T3 — Count lines and --fail-regression count the whole comparison.** `DeltaReport::counts` is taken before the rows are narrowed to the slice. The gate reads it, `--summary` prints it, and the human, markdown and pr-comment count lines get it through `RenderOptions::delta_counts`. Needs: T1, T2. Scenarios: _An improvement below the cutoff is counted, not removed; A move below the cut is not reported as removed; --fail-regression sees a regression outside the slice; The delta summary line counts the whole comparison; A slice that keeps no rows still reports the comparison; Changes outside the slice are not called "no changes"_. Tests: property (the regression count equals the unsliced run's) + acceptance.
 
 ---
 
@@ -213,6 +231,13 @@ scenario, named after it.
 - `--fail-above` keeps judging the rows `top` / `min` select, with or
   without a baseline. Whether a score cut should be able to hide a
   failure is a separate question.
+- With `top` / `min`, `--fail-regression` can fail on a regression outside
+  the rows shown, and a format that prints no count line (`github`) then
+  shows nothing about it. The count lines of the other formats do.
+- The delta JSON envelope gains no counts object: its `entries` follow the
+  slice and `removed` is whole, so a consumer that needs the whole
+  comparison's counts runs without `top` / `min`. A counts object would be
+  a schema change for a later spec.
 - Runs without `--baseline` are unchanged.
 - No change to how the baseline is filtered (spec 18) or matched (spec 13).
 - No change to spec 19's human-table cap beyond its delta footer, which

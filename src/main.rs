@@ -17,7 +17,7 @@ use cargo_crap::{
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
     report::{
         self, Format, RenderOptions, SourceLinks, crappy_count, render, render_delta,
-        render_delta_summary, render_summary, set_color_enabled,
+        render_delta_counts, render_summary, set_color_enabled,
     },
     score::DEFAULT_THRESHOLD,
 };
@@ -703,6 +703,25 @@ fn apply_filters(
         });
     }
     Ok(())
+}
+
+/// The rows a run shows, in the requested order. Without `min` or `top`
+/// every entry is shown, so `entries` is sorted in place and `None` comes
+/// back: the run keeps one list. With a slice, `entries` stays whole and in
+/// CRAP order for the baseline comparison, and the slice is a sorted copy.
+fn shown_rows(
+    entries: &mut [cargo_crap::merge::CrapEntry],
+    min: Option<f64>,
+    top: Option<usize>,
+    order: SortOrder,
+) -> Option<Vec<cargo_crap::merge::CrapEntry>> {
+    if !is_sliced(min, top) {
+        sort_entries(entries, order);
+        return None;
+    }
+    let mut shown = slice_of(entries, min, top);
+    sort_entries(&mut shown, order);
+    Some(shown)
 }
 
 /// The rows `min` and `top` select: scores at or above the cutoff, then the
@@ -1399,14 +1418,21 @@ fn do_render(
     let summary = effective_summary(opts.summary, opts.render.format);
     let outcome = if let Some(baseline_data) = baseline {
         let mut report = compute_delta(compared, baseline_data, opts.epsilon);
+        // Counted before the rows are narrowed to the slice, so the gate and
+        // the count lines describe the whole comparison.
+        let counts = report.counts();
         report.restrict_to(entries);
         report.sort(opts.sort);
         let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
-        let has_regression = report.regression_count() > 0;
+        let has_regression = counts.regressed > 0;
         if summary {
-            render_delta_summary(&report, out)?;
+            render_delta_counts(&counts, out)?;
         } else {
-            render_delta(&report, &opts.render, out)?;
+            let render = RenderOptions {
+                delta_counts: Some(counts),
+                ..opts.render
+            };
+            render_delta(&report, &render, out)?;
         }
         (has_crappy, has_regression)
     } else {
@@ -1583,10 +1609,9 @@ fn run() -> Result<ExitCode> {
     assign_crate_names(&mut entries, &members);
     let (min, top) = (cli.min.or(config.min), cli.top.or(config.top));
     apply_filters(&mut entries, &effective_allow)?;
-    // `entries` stays whole for the baseline comparison. `shown` holds the
-    // rows `min` and `top` select, ordered after `top` has picked by CRAP.
-    let mut shown = slice_of(&entries, min, top);
-    sort_entries(&mut shown, sort_order);
+    // `entries` stays whole for the baseline comparison. `sliced_rows` holds
+    // the rows `min` and `top` select, ordered after `top` has picked by CRAP.
+    let sliced_rows = shown_rows(&mut entries, min, top, sort_order);
 
     // --- Baseline (loaded here, filtered per specs 18 + 25) ---
     let baseline_data = load_filtered_baseline(
@@ -1616,13 +1641,14 @@ fn run() -> Result<ExitCode> {
             try_weight,
             triage: dups.triage.as_deref(),
             sliced: is_sliced(min, top),
+            delta_counts: None,
         },
         epsilon,
         summary: cli.summary,
         sort: sort_order,
     };
     let (has_crappy, has_regression) = do_render(
-        &shown,
+        sliced_rows.as_deref().unwrap_or(&entries),
         &entries,
         baseline_data.as_deref(),
         &opts,
@@ -2097,6 +2123,41 @@ mod tests {
         // Kills: From<SortArg> collapsing to Default::default() (always Crap).
         assert_eq!(SortOrder::from(SortArg::Crap), SortOrder::Crap);
         assert_eq!(SortOrder::from(SortArg::File), SortOrder::File);
+    }
+
+    #[test]
+    fn without_a_slice_the_run_keeps_one_list_in_the_requested_order() {
+        // Merge order: highest CRAP first.
+        let merged = || -> Vec<cargo_crap::merge::CrapEntry> {
+            [("b", 9.0), ("a", 7.0)]
+                .iter()
+                .map(|&(name, crap)| cargo_crap::merge::CrapEntry {
+                    file: PathBuf::from(format!("src/{name}.rs")),
+                    function: name.into(),
+                    line: 1,
+                    cyclomatic: 1.0,
+                    coverage: Some(0.0),
+                    crap,
+                    crate_name: None,
+                    uncovered: Vec::new(),
+                })
+                .collect()
+        };
+        let mut entries = merged();
+        assert!(shown_rows(&mut entries, None, None, SortOrder::File).is_none());
+        let order: Vec<&str> = entries.iter().map(|e| e.function.as_str()).collect();
+        assert_eq!(order, ["a", "b"]);
+
+        let mut entries = merged();
+        let shown = shown_rows(&mut entries, None, Some(1), SortOrder::File).expect("a slice");
+        let shown: Vec<&str> = shown.iter().map(|e| e.function.as_str()).collect();
+        assert_eq!(shown, ["b"]);
+        let order: Vec<&str> = entries.iter().map(|e| e.function.as_str()).collect();
+        assert_eq!(
+            order,
+            ["b", "a"],
+            "a sliced run leaves the compared list alone"
+        );
     }
 
     #[test]

@@ -54,6 +54,11 @@ highest-scoring below it. `--top` or `--min` turns that cap off, and so does
 `--show-unchanged` with `--baseline`. See
 [The human table's cap](output-formats.md#the-human-tables-cap).
 
+With `--baseline`, `--top` and `--min` choose only the rows shown: the
+comparison, the Removed list, the summary line and `--fail-regression`
+still cover every function. See
+[Regression gate](../guides/regression-gate.md).
+
 `--summary` replaces the per-function table with the total, the crappy count
 and the worst offender. Under `--workspace` or `-p`/`--package` it prints
 the per-crate summary above that aggregate line. `json` and `github` stay machine-readable and are

@@ -7,7 +7,7 @@
 //! - [`uncovered_display`]: capped Uncovered-column text.
 
 use crate::coverage::LineRange;
-use crate::delta::{DeltaEntry, DeltaStatus};
+use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
 use comfy_table::Color;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -220,6 +220,16 @@ pub(crate) fn visible_delta_entries(
         .iter()
         .filter(|e| show_unchanged || e.status != DeltaStatus::Unchanged)
         .collect()
+}
+
+/// The line a delta table prints when it has no rows to show: either
+/// nothing changed, or every change lies outside the `top` / `min` slice.
+pub(crate) fn no_change_message(counts: &DeltaCounts) -> &'static str {
+    if counts.has_changes() {
+        "No changes among the rows shown."
+    } else {
+        "No changes since baseline."
+    }
 }
 
 /// Format the Δ column value for a single delta entry.

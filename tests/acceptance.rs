@@ -2395,3 +2395,187 @@ fn every_format_shows_the_same_rows() {
     let badge: serde_json::Value = serde_json::from_str(&run("shields")).expect("badge JSON");
     assert_eq!(badge["message"], "5 crappy", "{badge}");
 }
+
+// ---- Score slices after the baseline · T3 ----
+
+/// Fifteen functions `cold_00` to `cold_14` with complexity `2k + 1`, so a
+/// one-step regression never changes the ranking.
+fn fifteen_spaced() -> Vec<(String, String, usize)> {
+    (0..15)
+        .map(|k| ("lib.rs".to_owned(), format!("cold_{k:02}"), 2 * k + 1))
+        .collect()
+}
+
+/// `functions` with `+1` complexity for each named function.
+fn regressing(
+    functions: &[(String, String, usize)],
+    names: &[&str],
+) -> Vec<(String, String, usize)> {
+    functions
+        .iter()
+        .map(|(file, name, cc)| {
+            let bump = usize::from(names.contains(&name.as_str()));
+            (file.clone(), name.clone(), cc + bump)
+        })
+        .collect()
+}
+
+#[test]
+fn an_improvement_below_the_cutoff_is_counted_not_removed() {
+    // Given a baseline in which a function scored CRAP 42 (complexity 6)
+    let mut before = named("hot", 3, 2);
+    before.extend(named("cold", 1, 6));
+    // And that function now scores CRAP 2
+    let mut after = named("hot", 3, 2);
+    after.extend(named("cold", 1, 1));
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --baseline baseline.json --min 5`
+    let stdout = delta_human(dir.path(), &baseline, &["--min", "5"]);
+    // Then the function is not shown as a row
+    assert!(
+        !shown_rows(&stdout).contains(&"cold_000".to_owned()),
+        "{stdout}"
+    );
+    // And it is not listed under "Removed since baseline"
+    assert_eq!(removed_names(&stdout), Vec::<String>::new(), "{stdout}");
+    // And the delta summary line counts it as improved
+    assert!(stdout.contains("↓ 1 improved"), "{stdout}");
+}
+
+#[test]
+fn a_move_below_the_cut_is_not_reported_as_removed() {
+    // Given a baseline in which a low-scoring function lived in a.rs
+    let mut before = fifteen_ranked(0);
+    before[0].0 = "a.rs".to_owned();
+    // And that function now lives in b.rs, with its score unchanged
+    let mut after = fifteen_ranked(0);
+    after[0].0 = "b.rs".to_owned();
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --baseline baseline.json --top 5`
+    let stdout = delta_human(dir.path(), &baseline, &["--top", "5"]);
+    // Then it is not listed under "Removed since baseline"
+    assert_eq!(removed_names(&stdout), Vec::<String>::new(), "{stdout}");
+    // And the delta summary line counts it as moved
+    assert!(stdout.contains("↔ 1 moved"), "{stdout}");
+}
+
+#[test]
+fn fail_regression_sees_a_regression_outside_the_slice() {
+    // Given a baseline recorded from a tree of 15 functions
+    // And   only the sixth-highest-scoring function has regressed since
+    let before = fifteen_spaced();
+    let (dir, baseline) = baseline_then(&before, &regressing(&before, &["cold_09"]));
+    // When I run `cargo crap --baseline baseline.json --top 5 --fail-regression`
+    let (_, code) = run_in(
+        dir.path(),
+        &[
+            "--threshold",
+            "100000",
+            "--baseline",
+            &baseline,
+            "--top",
+            "5",
+            "--fail-regression",
+        ],
+    );
+    // Then the exit code is 1
+    assert_eq!(code, Some(1));
+}
+
+#[test]
+fn the_delta_summary_line_counts_the_whole_comparison() {
+    // Given a baseline recorded from a tree of 15 functions
+    // And   3 functions outside the 5 highest-scoring have regressed since
+    let before = fifteen_spaced();
+    let after = regressing(&before, &["cold_00", "cold_03", "cold_07"]);
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --baseline baseline.json --top 5` with
+    // `--format human`, `--format markdown` or `--summary`
+    for extra in [
+        &["--format", "human"][..],
+        &["--format", "markdown"],
+        &["--summary"],
+    ] {
+        let args = [
+            &[
+                "--threshold",
+                "100000",
+                "--baseline",
+                &baseline,
+                "--top",
+                "5",
+            ][..],
+            extra,
+        ]
+        .concat();
+        let (stdout, _) = run_in(dir.path(), &args);
+        // Then the summary reports "3 regressed"
+        assert!(stdout.contains("3 regressed"), "{extra:?}:\n{stdout}");
+    }
+}
+
+#[test]
+fn a_slice_that_keeps_no_rows_still_reports_the_comparison() {
+    // Given a baseline against which one function regressed
+    let before = fifteen_spaced();
+    let (dir, baseline) = baseline_then(&before, &regressing(&before, &["cold_04"]));
+    // When I run `cargo crap --baseline baseline.json --min 1000` with
+    // `--format human`, `--format markdown` or `--format pr-comment`
+    for format in ["human", "markdown", "pr-comment"] {
+        let (stdout, _) = run_in(
+            dir.path(),
+            &[
+                "--threshold",
+                "100000",
+                "--baseline",
+                &baseline,
+                "--min",
+                "1000",
+                "--format",
+                format,
+            ],
+        );
+        // Then the output does not say "No functions found"
+        assert!(
+            !stdout.contains("No functions found"),
+            "{format}:\n{stdout}"
+        );
+        // And the summary reports "1 regressed"
+        assert!(stdout.contains("1 regressed"), "{format}:\n{stdout}");
+    }
+}
+
+#[test]
+fn changes_outside_the_slice_are_not_called_no_changes() {
+    // Given a baseline against which only a function outside the
+    // highest-scoring one regressed
+    let before = fifteen_spaced();
+    let (dir, baseline) = baseline_then(&before, &regressing(&before, &["cold_00"]));
+    // When I run `cargo crap --baseline baseline.json --top 1` with
+    // `--format human` or `--format markdown`
+    for format in ["human", "markdown"] {
+        let (stdout, _) = run_in(
+            dir.path(),
+            &[
+                "--threshold",
+                "100000",
+                "--baseline",
+                &baseline,
+                "--top",
+                "1",
+                "--format",
+                format,
+            ],
+        );
+        // Then the output says "No changes among the rows shown."
+        assert!(
+            stdout.contains("No changes among the rows shown."),
+            "{format}:\n{stdout}"
+        );
+        // And it does not say "No changes since baseline."
+        assert!(
+            !stdout.contains("No changes since baseline."),
+            "{format}:\n{stdout}"
+        );
+    }
+}

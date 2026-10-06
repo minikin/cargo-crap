@@ -17,7 +17,7 @@
 //! Shared building blocks (severity grade, coverage bar, Δ formatting, source
 //! links, per-crate rollups) live in [`types`], [`links`], and [`per_crate`].
 
-use crate::delta::DeltaReport;
+use crate::delta::{DeltaCounts, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::triage::verdict::Assessment;
 use crate::merge::{CrapEntry, ScopeDiagnostics};
@@ -44,7 +44,7 @@ mod test_support;
 // Re-exports — the rest of the crate depends on these names being on `report`.
 pub use json::{DELTA_SCHEMA_URL, Envelope, REPORT_SCHEMA_URL, SCHEMA_VERSION};
 pub use links::SourceLinks;
-pub use summary::{render_delta_summary, render_summary};
+pub use summary::{render_delta_counts, render_delta_summary, render_summary};
 pub use types::set_color_enabled;
 
 /// Output format for the report.
@@ -133,6 +133,11 @@ pub struct RenderOptions<'a> {
     /// is given instead of capping the rows below the threshold. Only the
     /// human renderer reads it.
     pub sliced: bool,
+    /// The counts of the whole comparison when the delta report's rows were
+    /// narrowed to a `top` / `min` slice, so the human, markdown and
+    /// pr-comment count lines describe every compared function. `None`
+    /// counts the report's own rows.
+    pub delta_counts: Option<DeltaCounts>,
 }
 
 impl Default for RenderOptions<'_> {
@@ -151,6 +156,7 @@ impl Default for RenderOptions<'_> {
             try_weight: crate::config::DEFAULT_TRY_WEIGHT,
             triage: None,
             sliced: false,
+            delta_counts: None,
         }
     }
 }
@@ -199,6 +205,7 @@ pub fn render_delta(
     out: &mut dyn Write,
 ) -> Result<()> {
     let threshold = opts.threshold;
+    let counts = opts.delta_counts.unwrap_or_else(|| report.counts());
     match opts.format {
         Format::Json => json::render_delta_json(report, opts, out),
         Format::Human => human::render_delta_human(
@@ -207,6 +214,7 @@ pub fn render_delta(
             opts.show_unchanged,
             opts.uncovered_hints,
             opts.sliced,
+            &counts,
             out,
         ),
         Format::GitHub => github::render_delta_github(report, threshold, out),
@@ -216,6 +224,7 @@ pub fn render_delta(
             opts.links,
             opts.show_unchanged,
             opts.uncovered_hints,
+            &counts,
             out,
         ),
         Format::PrComment => pr_comment::render_delta_pr_comment(
@@ -223,6 +232,7 @@ pub fn render_delta(
             threshold,
             opts.links,
             opts.uncovered_hints,
+            &counts,
             out,
         ),
         // SARIF describes the *current* set of findings, not deltas. The
@@ -290,7 +300,131 @@ pub fn crappy_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
     use test_support::sample;
+
+    /// One regressed row, rendered with counts that describe a larger
+    /// comparison than the rows shown.
+    fn render_with_counts(format: Format) -> String {
+        let row = sample().remove(0);
+        let report = DeltaReport {
+            entries: vec![DeltaEntry {
+                current: row,
+                baseline_crap: Some(0.5),
+                delta: Some(0.5),
+                status: DeltaStatus::Regressed,
+                previous_file: None,
+            }],
+            removed: vec![],
+        };
+        let opts = RenderOptions {
+            format,
+            delta_counts: Some(DeltaCounts {
+                regressed: 7,
+                improved: 6,
+                new: 5,
+                moved: 4,
+                unchanged: 3,
+                removed: 2,
+            }),
+            ..RenderOptions::default()
+        };
+        let mut buf = Vec::new();
+        render_delta(&report, &opts, &mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    /// A report whose slice kept no rows, rendered with `counts`.
+    fn render_empty_slice(
+        format: Format,
+        counts: DeltaCounts,
+    ) -> String {
+        let report = DeltaReport {
+            entries: vec![],
+            removed: vec![],
+        };
+        let opts = RenderOptions {
+            format,
+            delta_counts: Some(counts),
+            ..RenderOptions::default()
+        };
+        let mut buf = Vec::new();
+        render_delta(&report, &opts, &mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn an_empty_slice_of_a_real_comparison_is_not_called_empty() {
+        let counts = DeltaCounts {
+            regressed: 1,
+            unchanged: 4,
+            ..DeltaCounts::default()
+        };
+        for format in [Format::Human, Format::Markdown, Format::PrComment] {
+            let out = render_empty_slice(format, counts);
+            assert!(!out.contains("No functions found"), "{format:?}:\n{out}");
+            assert!(out.contains("1 regressed"), "{format:?}:\n{out}");
+        }
+    }
+
+    #[test]
+    fn nothing_compared_is_still_called_empty() {
+        for format in [Format::Human, Format::Markdown, Format::PrComment] {
+            let out = render_empty_slice(format, DeltaCounts::default());
+            assert!(out.contains("No functions found"), "{format:?}:\n{out}");
+        }
+    }
+
+    #[test]
+    fn a_change_outside_the_rows_shown_is_not_called_no_change() {
+        let counts = DeltaCounts {
+            moved: 1,
+            ..DeltaCounts::default()
+        };
+        for format in [Format::Human, Format::Markdown] {
+            let out = render_empty_slice(format, counts);
+            assert!(
+                out.contains("No changes among the rows shown."),
+                "{format:?}:\n{out}"
+            );
+            assert!(
+                !out.contains("No changes since baseline."),
+                "{format:?}:\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unchanged_comparison_is_still_called_unchanged() {
+        let counts = DeltaCounts {
+            unchanged: 3,
+            ..DeltaCounts::default()
+        };
+        for format in [Format::Human, Format::Markdown] {
+            let out = render_empty_slice(format, counts);
+            assert!(
+                out.contains("No changes since baseline."),
+                "{format:?}:\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn count_lines_use_the_counts_they_are_given() {
+        for format in [Format::Human, Format::Markdown, Format::PrComment] {
+            let out = render_with_counts(format);
+            for part in [
+                "7 regressed",
+                "6 improved",
+                "5 new",
+                "4 moved",
+                "3 unchanged",
+                "2 removed",
+            ] {
+                assert!(out.contains(part), "{format:?} lacks {part}:\n{out}");
+            }
+        }
+    }
 
     #[test]
     fn crappy_count_respects_threshold() {

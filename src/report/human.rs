@@ -3,10 +3,10 @@
 
 use super::per_crate::write_per_crate_human;
 use super::types::{
-    Grade, apply_table_styling, cc_display, coverage_bar, delta_display, styled, uncovered_display,
-    visible_delta_entries,
+    Grade, apply_table_styling, cc_display, coverage_bar, delta_display, no_change_message, styled,
+    uncovered_display, visible_delta_entries,
 };
-use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
+use crate::delta::{DeltaCounts, DeltaEntry, DeltaReport, DeltaStatus};
 use crate::merge::{CrapEntry, file_order_key};
 use crate::score::Severity;
 use anyhow::Result;
@@ -216,9 +216,10 @@ pub(crate) fn render_delta_human(
     show_unchanged: bool,
     uncovered_hints: bool,
     sliced: bool,
+    counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
-    if report.entries.is_empty() && report.removed.is_empty() {
+    if counts.is_empty() {
         writeln!(out, "No functions found.")?;
         return Ok(());
     }
@@ -226,16 +227,25 @@ pub(crate) fn render_delta_human(
     // Unchanged rows are hidden by default (spec 16); the summary line below
     // still counts every entry.
     let visible = visible_delta_entries(&report.entries, show_unchanged);
-    write_delta_body(
-        report,
-        &visible,
+    let view = DeltaView {
         threshold,
         uncovered_hints,
         show_unchanged,
         sliced,
-        out,
-    )?;
-    write_delta_summary(out, report)
+        counts,
+    };
+    write_delta_body(report, &visible, &view, out)?;
+    super::summary::render_delta_counts(counts, out)
+}
+
+/// How the delta table is drawn: the threshold, the optional column, what
+/// the cap must keep, and the whole comparison's counts.
+struct DeltaView<'a> {
+    threshold: f64,
+    uncovered_hints: bool,
+    show_unchanged: bool,
+    sliced: bool,
+    counts: &'a DeltaCounts,
 }
 
 /// Write the table + removed section, or the quiet confirmation when nothing
@@ -243,24 +253,14 @@ pub(crate) fn render_delta_human(
 fn write_delta_body(
     report: &DeltaReport,
     visible: &[&DeltaEntry],
-    threshold: f64,
-    uncovered_hints: bool,
-    show_unchanged: bool,
-    sliced: bool,
+    view: &DeltaView,
     out: &mut dyn Write,
 ) -> Result<()> {
     if visible.is_empty() && report.removed.is_empty() {
-        return writeln!(out, "No changes since baseline.").map_err(Into::into);
+        return writeln!(out, "{}", no_change_message(view.counts)).map_err(Into::into);
     }
     if !visible.is_empty() {
-        write_capped_delta_table(
-            visible,
-            threshold,
-            uncovered_hints,
-            show_unchanged,
-            sliced,
-            out,
-        )?;
+        write_capped_delta_table(visible, view, out)?;
     }
     if !report.removed.is_empty() {
         write_removed_section(report, out)?;
@@ -273,24 +273,21 @@ fn write_delta_body(
 /// `--show-unchanged` and a `top` / `min` slice each ask for every row.
 fn write_capped_delta_table(
     visible: &[&DeltaEntry],
-    threshold: f64,
-    uncovered_hints: bool,
-    show_unchanged: bool,
-    sliced: bool,
+    view: &DeltaView,
     out: &mut dyn Write,
 ) -> Result<()> {
     let capped = cap_rows(
         visible,
         |de| {
-            show_unchanged
-                || sliced
+            view.show_unchanged
+                || view.sliced
                 || de.status == DeltaStatus::Regressed
-                || is_failure(&de.current, threshold)
+                || is_failure(&de.current, view.threshold)
         },
         |a, b| by_rank(&a.current, &b.current),
     );
     let kept: Vec<&DeltaEntry> = capped.kept.into_iter().copied().collect();
-    let table = build_delta_table(&kept, threshold, uncovered_hints);
+    let table = build_delta_table(&kept, view.threshold, view.uncovered_hints);
     writeln!(out, "{table}")?;
     write_hidden_footer(out, capped.hidden, DELTA_ESCAPES)
 }
@@ -387,50 +384,6 @@ fn build_delta_row(
     ];
     row.extend(uncovered_hints.then(|| Cell::new(uncovered_display(&e.uncovered))));
     row
-}
-
-fn write_delta_summary(
-    out: &mut dyn Write,
-    report: &DeltaReport,
-) -> Result<()> {
-    let regressed = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Regressed)
-        .count();
-    let improved = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Improved)
-        .count();
-    let new = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::New)
-        .count();
-    let moved = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Moved)
-        .count();
-    let unchanged = report
-        .entries
-        .iter()
-        .filter(|e| e.status == DeltaStatus::Unchanged)
-        .count();
-    let removed = report.removed.len();
-
-    writeln!(
-        out,
-        "{}  {}  {}  {}  {}  {}",
-        styled(&format!("↑ {regressed} regressed"), Style::new().red()),
-        styled(&format!("↓ {improved} improved"), Style::new().green()),
-        styled(&format!("★ {new} new"), Style::new().yellow()),
-        styled(&format!("↔ {moved} moved"), Style::new().cyan()),
-        styled(&format!("· {unchanged} unchanged"), Style::new().dimmed()),
-        styled(&format!("— {removed} removed"), Style::new().dimmed()),
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -663,7 +616,16 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, false, false, &mut buf).unwrap();
+        render_delta_human(
+            &report,
+            30.0,
+            false,
+            false,
+            false,
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("↔ 1 moved"),
@@ -715,7 +677,16 @@ mod tests {
     #[test]
     fn delta_human_hides_unchanged_rows_by_default() {
         let mut buf = Vec::new();
-        render_delta_human(&mixed_report(), 30.0, false, false, false, &mut buf).unwrap();
+        render_delta_human(
+            &mixed_report(),
+            30.0,
+            false,
+            false,
+            false,
+            &mixed_report().counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("reg"), "regressed row must appear:\n{s}");
         assert!(s.contains("imp"), "improved row must appear:\n{s}");
@@ -731,7 +702,16 @@ mod tests {
     #[test]
     fn delta_human_show_unchanged_restores_full_table() {
         let mut buf = Vec::new();
-        render_delta_human(&mixed_report(), 30.0, true, false, false, &mut buf).unwrap();
+        render_delta_human(
+            &mixed_report(),
+            30.0,
+            true,
+            false,
+            false,
+            &mixed_report().counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         for f in ["reg", "imp", "u1", "u2", "u3"] {
             assert!(s.contains(f), "{f} must appear with --show-unchanged:\n{s}");
@@ -748,7 +728,16 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, false, false, &mut buf).unwrap();
+        render_delta_human(
+            &report,
+            30.0,
+            false,
+            false,
+            false,
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("No changes since baseline."),
@@ -774,7 +763,16 @@ mod tests {
             }],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, false, false, &mut buf).unwrap();
+        render_delta_human(
+            &report,
+            30.0,
+            false,
+            false,
+            false,
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("Removed since baseline:") && s.contains("gone"),
@@ -845,7 +843,16 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_human(&report, 30.0, false, true, false, &mut buf).unwrap();
+        render_delta_human(
+            &report,
+            30.0,
+            false,
+            true,
+            false,
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("Uncovered"), "delta header column:\n{s}");
         assert!(s.contains("7–9"), "delta range cell:\n{s}");
