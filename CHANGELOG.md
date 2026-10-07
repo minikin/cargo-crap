@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `human` tables fit the terminal's width, or `$COLUMNS` when it is
+  set: the coverage bar shrinks and then goes, CC goes below 60 columns,
+  and long locations and names are cut with `…`, keeping each location's
+  file and line. Output that is not a terminal and has no `$COLUMNS` keeps
+  its full width. See
+  [Fitting the width](docs/reference/output-formats.md#fitting-the-width).
 - `--format human` lists every function above the threshold but only the
   10 highest-scoring below it, then one line counting the rest. `--top` or
   `--min` (on the command line or in config) shows exactly that slice

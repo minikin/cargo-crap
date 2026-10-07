@@ -4,7 +4,9 @@
 
 - `human`: the coloured Unicode table shown in
   [Quick start](../getting-started.md#quick-start). It is the one capped
-  format. See [The human table's cap](#the-human-tables-cap).
+  format, and the one that fits the terminal's width. See
+  [The human table's cap](#the-human-tables-cap) and
+  [Fitting the width](#fitting-the-width).
 - `json`: a versioned envelope, described under
   [JSON output schema](json.md).
 - `github`: `::warning` annotations for a GitHub Actions log.
@@ -37,6 +39,36 @@ and ends with one line counting the rest:
   shows the same rows as the default order.
 - The summary line, the per-crate rollup, the exit code and every other
   format still count every function.
+
+## Fitting the width
+
+The `human` tables fit the width they are printed into, so a narrow
+terminal does not wrap their borders.
+
+- The width is the terminal's when the report goes to one. Otherwise, or
+  when the terminal reports no width, it is `$COLUMNS` when that is set,
+  and a pipe, a file or a CI log without `$COLUMNS` has no limit and keeps
+  full paths.
+- The width decides the coverage bar and the CC column: the full layout at
+  100 columns or more, a 5-cell bar from 80, the percentage alone from 60,
+  and no CC below 60. When the table still does not fit, the bar goes
+  first, then the Uncovered column, then CC.
+- Text is cut only as far as the table needs: the Uncovered column first,
+  then Location from its start (`…/pr_comment.rs:388`, so the file and line
+  survive), then Function from its end, never below its header.
+- A moved row in the delta table keeps its current location. The previous
+  file shows whole when that costs nothing, else as its file name, and is
+  dropped below 80 columns or when it would cost a column or a Function
+  name.
+- The per-crate table cuts long crate names.
+- A table stops shrinking at its narrowest form, and below that its lines
+  wrap: a long file name can outgrow any narrow terminal, because the file
+  and line are never cut. The lines around the tables (the hidden-rows
+  line, the summary, the Removed list) stay plain text and wrap like any
+  other output.
+
+Set `COLUMNS` to choose the width for a pipe, as in
+`COLUMNS=100 cargo crap | less`.
 
 ## SARIF output
 
