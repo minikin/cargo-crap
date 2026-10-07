@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc d2093464d62b714eb3d83213d22975db2f4b06be025ec8cb1f21d38555af668c # shrinks to n = 1, noise = -6.828600832125007e-10
 cc a410bebf37be8760e2c4ecc542b9c5fa0aad38b435c5da917909597fdc8c5b5d # shrinks to cc = 541207.984554494
+cc eb5b15e0c1bf33a32dc404f934228ca18ec2a1e2d3bc11e1d62ae9094a09561c # shrinks to text = "🌀", budget = 0

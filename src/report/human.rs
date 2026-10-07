@@ -1,10 +1,15 @@
 //! `--format human` — coloured comfy-table output for terminal consumption.
 //! Used both for the absolute report and the delta report (with a Δ column).
 
+use super::RenderOptions;
+use super::layout::{
+    Budgets, Cut, FUNCTION_HEADER, LOCATION_HEADER, Tier, UNCOVERED_HEADER, can_fit, column_width,
+    fit, table_width, tier,
+};
 use super::per_crate::write_per_crate_human;
 use super::types::{
-    Grade, apply_table_styling, cc_display, coverage_bar, delta_display, no_change_message, styled,
-    uncovered_display, visible_delta_entries,
+    Grade, MOVED_ARROW, apply_table_styling, cc_display, coverage_cell, delta_display,
+    no_change_message, styled, uncovered_display, visible_delta_entries,
 };
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaReport, DeltaStatus};
 use crate::merge::{CrapEntry, file_order_key};
@@ -20,14 +25,15 @@ pub(crate) fn render_human(
     threshold: f64,
     uncovered_hints: bool,
     sliced: bool,
+    width: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
     if entries.is_empty() {
         writeln!(out, "No functions found.")?;
         return Ok(());
     }
-    write_per_crate_human(entries, threshold, out)?;
-    write_capped_table(entries, threshold, uncovered_hints, sliced, out)?;
+    write_per_crate_human(entries, threshold, width, out)?;
+    write_capped_table(entries, threshold, uncovered_hints, sliced, width, out)?;
     write_summary(
         out,
         super::crappy_count(entries, threshold),
@@ -44,10 +50,11 @@ fn write_capped_table(
     threshold: f64,
     uncovered_hints: bool,
     sliced: bool,
+    width: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let capped = cap_rows(entries, |e| sliced || is_failure(e, threshold), by_rank);
-    let table = build_table(&capped.kept, threshold, uncovered_hints);
+    let table = build_table(&capped.kept, threshold, uncovered_hints, width);
     writeln!(out, "{table}")?;
     write_hidden_footer(out, capped.hidden, ABSOLUTE_ESCAPES)
 }
@@ -128,57 +135,197 @@ fn write_hidden_footer(
     Ok(())
 }
 
-/// Build the full comfy-table for a slice of entries.
+/// Build the comfy-table for a slice of entries, laid out for `width`: the
+/// width decides the bar and the CC column, and Location, then Function,
+/// are cut only as far as the table needs to fit.
 fn build_table(
     entries: &[&CrapEntry],
     threshold: f64,
     uncovered_hints: bool,
+    width: Option<usize>,
 ) -> Table {
-    let mut table = Table::new();
-    table.load_preset(UTF8_FULL);
-    apply_table_styling(&mut table);
-    let mut header = vec![
-        Cell::new("").add_attribute(Attribute::Bold),
-        Cell::new("CRAP").add_attribute(Attribute::Bold),
-        Cell::new("CC").add_attribute(Attribute::Bold),
-        Cell::new("Coverage").add_attribute(Attribute::Bold),
-        Cell::new("Function").add_attribute(Attribute::Bold),
-        Cell::new("Location").add_attribute(Attribute::Bold),
-    ];
-    header.extend(uncovered_hints.then(|| Cell::new("Uncovered").add_attribute(Attribute::Bold)));
-    table.set_header(header);
-    // Numeric columns read more naturally when right-aligned.
-    table
-        .column_mut(1)
-        .unwrap()
-        .set_cell_alignment(CellAlignment::Right);
-    table
-        .column_mut(2)
-        .unwrap()
-        .set_cell_alignment(CellAlignment::Right);
-    for entry in entries.iter().copied() {
-        table.add_row(build_row(entry, threshold, uncovered_hints));
+    let locations: Vec<String> = entries.iter().map(|e| location_text(e)).collect();
+    let Fitted { tier, budgets, .. } = layout(entries, &locations, uncovered_hints, width, None);
+    let mut table = new_table(&headers(tier, uncovered_hints, false));
+    for (entry, location) in entries.iter().copied().zip(&locations) {
+        table.add_row(build_row(
+            entry,
+            location,
+            threshold,
+            uncovered_hints,
+            tier,
+            budgets,
+        ));
     }
     table
+}
+
+/// A table's headers for a tier: Δ in the delta table, and CC and
+/// Uncovered only when the tier keeps them.
+fn headers(
+    tier: Tier,
+    uncovered_hints: bool,
+    delta: bool,
+) -> Vec<&'static str> {
+    [
+        Some(""),
+        Some("CRAP"),
+        delta.then_some("Δ"),
+        tier.cc.then_some("CC"),
+        Some("Coverage"),
+        Some(FUNCTION_HEADER),
+        Some(LOCATION_HEADER),
+        shows_uncovered(uncovered_hints, tier).then_some(UNCOVERED_HEADER),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Numeric columns read more naturally when right-aligned.
+fn right_align(
+    table: &mut Table,
+    headers: &[&str],
+) {
+    for (index, _) in headers
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| matches!(**h, "CRAP" | "CC" | "Δ"))
+    {
+        if let Some(column) = table.column_mut(index) {
+            column.set_cell_alignment(CellAlignment::Right);
+        }
+    }
+}
+
+/// `<file>:<line>` as the Location column shows it, before any cut.
+fn location_text(entry: &CrapEntry) -> String {
+    format!("{}:{}", entry.file.display(), entry.line)
+}
+
+/// The columns and cuts that fit a table into `width`. The tier
+/// the width allows comes first. When Location and Function cannot fit it
+/// even at their floors, the bar goes, then CC, so the table fits whenever
+/// its narrowest form does. Without a limit nothing changes.
+fn layout(
+    entries: &[&CrapEntry],
+    locations: &[String],
+    uncovered_hints: bool,
+    width: Option<usize>,
+    delta: Option<usize>,
+) -> Fitted {
+    let allowed = tier(width);
+    let Some(width) = width else {
+        return Fitted {
+            tier: allowed,
+            budgets: Budgets::default(),
+            fits: true,
+        };
+    };
+    let functions: Vec<&str> = entries.iter().map(|e| e.function.as_str()).collect();
+    let locations: Vec<&str> = locations.iter().map(String::as_str).collect();
+    let uncovered_cells: Vec<String> = entries
+        .iter()
+        .map(|e| uncovered_display(&e.uncovered))
+        .collect();
+    let uncovered_cells: Vec<&str> = uncovered_cells.iter().map(String::as_str).collect();
+    let uncovered =
+        |t: Tier| shows_uncovered(uncovered_hints, t).then_some(uncovered_cells.as_slice());
+    let room = |t: Tier| width.saturating_sub(fixed_width(entries, uncovered_hints, t, delta));
+    let narrowest = Tier {
+        bar: 0,
+        cc: false,
+        uncovered: false,
+    };
+    let no_bar = Tier { bar: 0, ..allowed };
+    let no_uncovered = Tier {
+        uncovered: false,
+        ..no_bar
+    };
+    let steps = [allowed, no_bar, no_uncovered, narrowest];
+    let fitting = steps
+        .into_iter()
+        .find(|&t| can_fit(room(t), uncovered(t), &functions, &locations));
+    let chosen = fitting.unwrap_or(narrowest);
+    Fitted {
+        tier: chosen,
+        budgets: fit(room(chosen), uncovered(chosen), &functions, &locations),
+        fits: fitting.is_some(),
+    }
+}
+
+/// A table's layout: its tier, its cuts, and whether it fits the width.
+#[derive(Debug, Clone, Copy)]
+struct Fitted {
+    tier: Tier,
+    budgets: Budgets,
+    fits: bool,
+}
+
+/// The Uncovered column shows when the hints are on and the tier keeps it.
+/// It goes before CC, or with it.
+fn shows_uncovered(
+    uncovered_hints: bool,
+    tier: Tier,
+) -> bool {
+    uncovered_hints && tier.uncovered
+}
+
+/// The width of a table without its Uncovered, Function and Location text
+/// (`delta` is the Δ column's text width in the delta table):
+/// the fixed columns' text, plus every column's padding and borders.
+fn fixed_width(
+    entries: &[&CrapEntry],
+    uncovered_hints: bool,
+    tier: Tier,
+    delta: Option<usize>,
+) -> usize {
+    let text = |header: &str, cells: Vec<String>| {
+        let cells: Vec<&str> = cells.iter().map(String::as_str).collect();
+        column_width(header, &cells, None, Cut::End)
+    };
+    let mapped =
+        |f: &dyn Fn(&CrapEntry) -> String| entries.iter().map(|e| f(e)).collect::<Vec<_>>();
+    let columns = [
+        Some(1),
+        Some(text("CRAP", mapped(&|e| format!("{:.1}", e.crap)))),
+        delta,
+        tier.cc
+            .then(|| text("CC", mapped(&|e| cc_display(e.cyclomatic)))),
+        Some(text(
+            "Coverage",
+            mapped(&|e| coverage_cell(e.coverage, tier.bar)),
+        )),
+        shows_uncovered(uncovered_hints, tier).then_some(0),
+        Some(0),
+        Some(0),
+    ];
+    table_width(&columns.into_iter().flatten().collect::<Vec<_>>())
 }
 
 /// Build one table row for a single entry.
 fn build_row(
     entry: &CrapEntry,
+    location: &str,
     threshold: f64,
     uncovered_hints: bool,
+    tier: Tier,
+    budgets: Budgets,
 ) -> Vec<Cell> {
     let grade = Grade::of(entry.crap, threshold);
     let color = grade.color();
     let mut row = vec![
         Cell::new(grade.icon()).fg(color),
         Cell::new(format!("{:.1}", entry.crap)).fg(color),
-        Cell::new(cc_display(entry.cyclomatic)),
-        Cell::new(coverage_bar(entry.coverage)),
-        Cell::new(&entry.function),
-        Cell::new(format!("{}:{}", entry.file.display(), entry.line)),
     ];
-    row.extend(uncovered_hints.then(|| Cell::new(uncovered_display(&entry.uncovered))));
+    row.extend(tier.cc.then(|| Cell::new(cc_display(entry.cyclomatic))));
+    row.push(Cell::new(coverage_cell(entry.coverage, tier.bar)));
+    row.push(Cell::new(Cut::End.apply(&entry.function, budgets.function)));
+    row.push(Cell::new(Cut::Location.apply(location, budgets.location)));
+    row.extend(shows_uncovered(uncovered_hints, tier).then(|| {
+        let text = uncovered_display(&entry.uncovered);
+        Cell::new(Cut::End.apply(&text, budgets.uncovered))
+    }));
     row
 }
 
@@ -212,10 +359,7 @@ fn write_summary(
 
 pub(crate) fn render_delta_human(
     report: &DeltaReport,
-    threshold: f64,
-    show_unchanged: bool,
-    uncovered_hints: bool,
-    sliced: bool,
+    opts: &RenderOptions,
     counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -226,12 +370,13 @@ pub(crate) fn render_delta_human(
 
     // Unchanged rows are hidden by default (spec 16); the summary line below
     // still counts every entry.
-    let visible = visible_delta_entries(&report.entries, show_unchanged);
+    let visible = visible_delta_entries(&report.entries, opts.show_unchanged);
     let view = DeltaView {
-        threshold,
-        uncovered_hints,
-        show_unchanged,
-        sliced,
+        threshold: opts.threshold,
+        uncovered_hints: opts.uncovered_hints,
+        show_unchanged: opts.show_unchanged,
+        sliced: opts.sliced,
+        width: opts.width,
         counts,
     };
     write_delta_body(report, &visible, &view, out)?;
@@ -239,12 +384,13 @@ pub(crate) fn render_delta_human(
 }
 
 /// How the delta table is drawn: the threshold, the optional column, what
-/// the cap must keep, and the whole comparison's counts.
+/// the cap must keep, the width, and the whole comparison's counts.
 struct DeltaView<'a> {
     threshold: f64,
     uncovered_hints: bool,
     show_unchanged: bool,
     sliced: bool,
+    width: Option<usize>,
     counts: &'a DeltaCounts,
 }
 
@@ -287,7 +433,7 @@ fn write_capped_delta_table(
         |a, b| by_rank(&a.current, &b.current),
     );
     let kept: Vec<&DeltaEntry> = capped.kept.into_iter().copied().collect();
-    let table = build_delta_table(&kept, view.threshold, view.uncovered_hints);
+    let table = build_delta_table(&kept, view.threshold, view.uncovered_hints, view.width);
     writeln!(out, "{table}")?;
     write_hidden_footer(out, capped.hidden, DELTA_ESCAPES)
 }
@@ -310,80 +456,174 @@ fn write_removed_section(
     Ok(())
 }
 
+/// Build the delta table, laid out for `width` like the absolute table
+/// with the Δ column added. See [`fit_delta_rows`] for how much of a moved
+/// row's previous file shows.
 fn build_delta_table(
     entries: &[&DeltaEntry],
     threshold: f64,
     uncovered_hints: bool,
+    width: Option<usize>,
 ) -> Table {
-    let mut table = Table::new();
-    table.load_preset(UTF8_FULL);
-    apply_table_styling(&mut table);
-    let mut header = vec![
-        Cell::new("").add_attribute(Attribute::Bold),
-        Cell::new("CRAP").add_attribute(Attribute::Bold),
-        Cell::new("Δ").add_attribute(Attribute::Bold),
-        Cell::new("CC").add_attribute(Attribute::Bold),
-        Cell::new("Coverage").add_attribute(Attribute::Bold),
-        Cell::new("Function").add_attribute(Attribute::Bold),
-        Cell::new("Location").add_attribute(Attribute::Bold),
-    ];
-    header.extend(uncovered_hints.then(|| Cell::new("Uncovered").add_attribute(Attribute::Bold)));
-    table.set_header(header);
-    table
-        .column_mut(1)
-        .unwrap()
-        .set_cell_alignment(CellAlignment::Right);
-    table
-        .column_mut(2)
-        .unwrap()
-        .set_cell_alignment(CellAlignment::Right);
-    table
-        .column_mut(3)
-        .unwrap()
-        .set_cell_alignment(CellAlignment::Right);
-    for de in entries.iter().copied() {
-        table.add_row(build_delta_row(de, threshold, uncovered_hints));
+    let currents: Vec<&CrapEntry> = entries.iter().map(|de| &de.current).collect();
+    let deltas: Vec<String> = entries.iter().map(|de| delta_display(de)).collect();
+    let delta = {
+        let cells: Vec<&str> = deltas.iter().map(String::as_str).collect();
+        column_width("Δ", &cells, None, Cut::End)
+    };
+    let (locations, tier, budgets) =
+        fit_delta_rows(entries, &currents, delta, uncovered_hints, width);
+    let mut table = new_table(&headers(tier, uncovered_hints, true));
+    for ((de, location), delta_text) in entries.iter().copied().zip(&locations).zip(deltas) {
+        let mut row = build_row(
+            &de.current,
+            location,
+            threshold,
+            uncovered_hints,
+            tier,
+            budgets,
+        );
+        row.insert(2, delta_cell(de.status, delta_text));
+        table.add_row(row);
     }
     table
 }
 
-fn build_delta_row(
-    de: &DeltaEntry,
-    threshold: f64,
+/// The delta table's Locations, columns and cuts for `width`. Below 80
+/// columns a moved row's previous file is dropped. Otherwise it shows whole
+/// when that costs nothing, else as its file name, unless dropping it keeps
+/// a column or a Function name the name would cost.
+fn fit_delta_rows(
+    entries: &[&DeltaEntry],
+    currents: &[&CrapEntry],
+    delta: usize,
     uncovered_hints: bool,
-) -> Vec<Cell> {
-    let e = &de.current;
-    let grade = Grade::of(e.crap, threshold);
-    let color = grade.color();
-
-    let delta_text = delta_display(de);
-    let delta_cell = match de.status {
-        DeltaStatus::Regressed => Cell::new(delta_text).fg(Color::Red),
-        DeltaStatus::Improved => Cell::new(delta_text).fg(Color::Green),
-        DeltaStatus::New | DeltaStatus::Moved => Cell::new(delta_text).fg(Color::Yellow),
-        DeltaStatus::Unchanged => Cell::new(delta_text),
+    width: Option<usize>,
+) -> (Vec<String>, Tier, Budgets) {
+    let fitted = |tail: MovedTail| {
+        let locations = moved_locations(entries, tail);
+        let fitted = layout(currents, &locations, uncovered_hints, width, Some(delta));
+        (locations, fitted)
     };
+    let chosen = if MovedTail::for_width(width) == MovedTail::Dropped {
+        fitted(MovedTail::Dropped)
+    } else {
+        let whole = fitted(MovedTail::Whole);
+        if costs_nothing(&whole.1, width) {
+            whole
+        } else {
+            better_tail(fitted(MovedTail::FileName), fitted(MovedTail::Dropped))
+        }
+    };
+    let (locations, Fitted { tier, budgets, .. }) = chosen;
+    (locations, tier, budgets)
+}
 
-    // Location reads `<new-loc>:<line> ← <previous_file>` when the entry
-    // moved, so reviewers see both endpoints without an extra column.
-    let prev_suffix = de
-        .previous_file
-        .as_ref()
-        .map(|p| format!(" ← {}", p.display()))
-        .unwrap_or_default();
-    let location = format!("{}:{}{prev_suffix}", e.file.display(), e.line);
+/// Whether a whole previous path costs nothing: the table fits with every
+/// column the width allows and no Location cut.
+fn costs_nothing(
+    whole: &Fitted,
+    width: Option<usize>,
+) -> bool {
+    whole.fits && whole.tier == tier(width) && whole.budgets.location.is_none()
+}
 
-    let mut row = vec![
-        Cell::new(grade.icon()).fg(color),
-        Cell::new(format!("{:.1}", e.crap)).fg(color),
-        delta_cell,
-        Cell::new(cc_display(e.cyclomatic)),
-        Cell::new(coverage_bar(e.coverage)),
-        Cell::new(&e.function),
-        Cell::new(location),
-    ];
-    row.extend(uncovered_hints.then(|| Cell::new(uncovered_display(&e.uncovered))));
-    row
+/// Keep a moved row's previous file name unless dropping it buys a column
+/// or a Function name that keeping it would cut.
+fn better_tail(
+    named: (Vec<String>, Fitted),
+    dropped: (Vec<String>, Fitted),
+) -> (Vec<String>, Fitted) {
+    let cuts_function = |fitted: &Fitted| fitted.budgets.function.is_some();
+    let same_cost =
+        named.1.tier == dropped.1.tier && cuts_function(&named.1) == cuts_function(&dropped.1);
+    if named.1.fits && same_cost {
+        named
+    } else {
+        dropped
+    }
+}
+
+/// An empty table with the house style and `headers`, numbers right-aligned.
+fn new_table(headers: &[&str]) -> Table {
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL);
+    apply_table_styling(&mut table);
+    table.set_header(
+        headers
+            .iter()
+            .map(|h| Cell::new(h).add_attribute(Attribute::Bold)),
+    );
+    right_align(&mut table, headers);
+    table
+}
+
+/// How much of a moved row's previous file its Location shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MovedTail {
+    Whole,
+    FileName,
+    Dropped,
+}
+
+impl MovedTail {
+    /// The first form to try: whole, unless the width is under 80 columns.
+    fn for_width(width: Option<usize>) -> Self {
+        if width.is_some_and(|w| w < 80) {
+            Self::Dropped
+        } else {
+            Self::Whole
+        }
+    }
+
+    /// The previous file as this form shows it, or `None` when it is dropped.
+    fn show(
+        self,
+        previous: &std::path::Path,
+    ) -> Option<String> {
+        match self {
+            Self::Whole => Some(previous.display().to_string()),
+            Self::FileName => Some(
+                previous
+                    .file_name()
+                    .unwrap_or(previous.as_os_str())
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            Self::Dropped => None,
+        }
+    }
+}
+
+/// Every row's Location before any cut, with a moved row's previous file in
+/// the form `tail` asks for.
+fn moved_locations(
+    entries: &[&DeltaEntry],
+    tail: MovedTail,
+) -> Vec<String> {
+    entries
+        .iter()
+        .map(|de| {
+            let current = location_text(&de.current);
+            match de.previous_file.as_deref().and_then(|p| tail.show(p)) {
+                Some(previous) => format!("{current}{MOVED_ARROW}{previous}"),
+                None => current,
+            }
+        })
+        .collect()
+}
+
+/// The Δ cell, coloured by how the function changed.
+fn delta_cell(
+    status: DeltaStatus,
+    text: String,
+) -> Cell {
+    match status {
+        DeltaStatus::Regressed => Cell::new(text).fg(Color::Red),
+        DeltaStatus::Improved => Cell::new(text).fg(Color::Green),
+        DeltaStatus::New | DeltaStatus::Moved => Cell::new(text).fg(Color::Yellow),
+        DeltaStatus::Unchanged => Cell::new(text),
+    }
 }
 
 #[cfg(test)]
@@ -391,6 +631,7 @@ mod tests {
     use super::super::test_support::{opts, sample};
     use super::super::{Format, RenderOptions, render};
     use super::*;
+    use crate::coverage::LineRange;
     use std::path::PathBuf;
 
     fn entry(
@@ -618,10 +859,13 @@ mod tests {
         let mut buf = Vec::new();
         render_delta_human(
             &report,
-            30.0,
-            false,
-            false,
-            false,
+            &RenderOptions {
+                threshold: 30.0,
+                show_unchanged: false,
+                uncovered_hints: false,
+                sliced: false,
+                ..RenderOptions::default()
+            },
             &report.counts(),
             &mut buf,
         )
@@ -679,10 +923,13 @@ mod tests {
         let mut buf = Vec::new();
         render_delta_human(
             &mixed_report(),
-            30.0,
-            false,
-            false,
-            false,
+            &RenderOptions {
+                threshold: 30.0,
+                show_unchanged: false,
+                uncovered_hints: false,
+                sliced: false,
+                ..RenderOptions::default()
+            },
             &mixed_report().counts(),
             &mut buf,
         )
@@ -704,10 +951,13 @@ mod tests {
         let mut buf = Vec::new();
         render_delta_human(
             &mixed_report(),
-            30.0,
-            true,
-            false,
-            false,
+            &RenderOptions {
+                threshold: 30.0,
+                show_unchanged: true,
+                uncovered_hints: false,
+                sliced: false,
+                ..RenderOptions::default()
+            },
             &mixed_report().counts(),
             &mut buf,
         )
@@ -730,10 +980,13 @@ mod tests {
         let mut buf = Vec::new();
         render_delta_human(
             &report,
-            30.0,
-            false,
-            false,
-            false,
+            &RenderOptions {
+                threshold: 30.0,
+                show_unchanged: false,
+                uncovered_hints: false,
+                sliced: false,
+                ..RenderOptions::default()
+            },
             &report.counts(),
             &mut buf,
         )
@@ -765,10 +1018,13 @@ mod tests {
         let mut buf = Vec::new();
         render_delta_human(
             &report,
-            30.0,
-            false,
-            false,
-            false,
+            &RenderOptions {
+                threshold: 30.0,
+                show_unchanged: false,
+                uncovered_hints: false,
+                sliced: false,
+                ..RenderOptions::default()
+            },
             &report.counts(),
             &mut buf,
         )
@@ -795,6 +1051,7 @@ mod tests {
             30.0,
             true,
             false,
+            None,
             &mut buf,
         )
         .unwrap();
@@ -812,6 +1069,7 @@ mod tests {
             30.0,
             false,
             false,
+            None,
             &mut buf,
         )
         .unwrap();
@@ -828,6 +1086,7 @@ mod tests {
             30.0,
             false,
             false,
+            None,
             &mut without,
         )
         .unwrap();
@@ -845,10 +1104,13 @@ mod tests {
         let mut buf = Vec::new();
         render_delta_human(
             &report,
-            30.0,
-            false,
-            true,
-            false,
+            &RenderOptions {
+                threshold: 30.0,
+                show_unchanged: false,
+                uncovered_hints: true,
+                sliced: false,
+                ..RenderOptions::default()
+            },
             &report.counts(),
             &mut buf,
         )
@@ -1126,6 +1388,252 @@ mod tests {
         expected.sort();
         expected.truncate(HOT_SPOTS);
         assert_eq!(shown, expected);
+    }
+
+    /// The widest line of a rendered table, in display columns.
+    fn widest_line(table: &comfy_table::Table) -> usize {
+        table
+            .to_string()
+            .lines()
+            .map(unicode_width::UnicodeWidthStr::width)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn located(
+        function: &str,
+        file: &str,
+        crap: f64,
+    ) -> CrapEntry {
+        CrapEntry {
+            file: PathBuf::from(file),
+            function: function.into(),
+            line: 380,
+            cyclomatic: 3.0,
+            coverage: Some(42.0),
+            crap,
+            crate_name: None,
+            uncovered: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn no_width_keeps_today_s_table() {
+        let entries = [located(
+            "write_pr_comment_hot_spots",
+            "src/report/pr_comment.rs",
+            9.0,
+        )];
+        let refs: Vec<&CrapEntry> = entries.iter().collect();
+        let unlimited = build_table(&refs, 30.0, false, None).to_string();
+        assert!(
+            unlimited.contains("write_pr_comment_hot_spots"),
+            "{unlimited}"
+        );
+        assert!(
+            unlimited.contains("src/report/pr_comment.rs:380"),
+            "{unlimited}"
+        );
+        assert!(unlimited.contains("████░░░░░░  42.0%"), "{unlimited}");
+    }
+
+    #[test]
+    fn a_narrow_width_shortens_location_first() {
+        let entries = [located("run", "src/report/pr_comment.rs", 9.0)];
+        let refs: Vec<&CrapEntry> = entries.iter().collect();
+        let table = build_table(&refs, 30.0, false, Some(60));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 60, "{text}");
+        assert!(text.contains("…/pr_comment.rs:380"), "{text}");
+        assert!(text.contains("┆ run "), "{text}");
+    }
+
+    #[test]
+    fn a_bar_that_does_not_fit_goes_before_cc() {
+        // At 85 columns the tier allows a 5-cell bar and CC. With the bar,
+        // Location's floor ("…/<32 chars>.rs:380") does not fit; without it,
+        // it does, so CC stays.
+        let file = format!("src/{}.rs", "a".repeat(32));
+        let entries = [located("run", &file, 9.0)];
+        let refs: Vec<&CrapEntry> = entries.iter().collect();
+        let table = build_table(&refs, 30.0, false, Some(85));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 85, "{text}");
+        assert!(text.contains("┆ CC ┆"), "{text}");
+        assert!(!text.contains(['█', '░']), "{text}");
+    }
+
+    #[test]
+    fn the_uncovered_column_goes_with_cc() {
+        let mut entry = located("run", "src/lib.rs", 9.0);
+        entry.uncovered = vec![LineRange { start: 3, end: 4 }];
+        let refs = [&entry];
+        let wide = build_table(&refs, 30.0, true, Some(80)).to_string();
+        assert!(wide.contains("Uncovered"), "{wide}");
+        let narrow = build_table(&refs, 30.0, true, Some(50)).to_string();
+        assert!(!narrow.contains("Uncovered"), "{narrow}");
+        assert!(!narrow.contains("┆ CC ┆"), "{narrow}");
+    }
+
+    #[test]
+    fn the_uncovered_column_goes_before_cc() {
+        // At 70 columns: with Uncovered (floor 9), Function (8) and Location
+        // ("…/abcdefgh.rs:380", 17) need 34 of the 33 left; without
+        // Uncovered they fit, so CC stays.
+        let mut entry = located("run", "src/abcdefgh.rs", 9.0);
+        entry.uncovered = vec![LineRange { start: 3, end: 4 }];
+        let refs = [&entry];
+        let table = build_table(&refs, 30.0, true, Some(70));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 70, "{text}");
+        assert!(text.contains("┆ CC ┆"), "{text}");
+        assert!(!text.contains("Uncovered"), "{text}");
+    }
+
+    fn moved(previous: &str) -> DeltaEntry {
+        DeltaEntry {
+            current: CrapEntry {
+                line: 7,
+                ..located("run", "src/new/b.rs", 9.0)
+            },
+            baseline_crap: Some(9.0),
+            delta: Some(0.0),
+            status: DeltaStatus::Moved,
+            previous_file: Some(PathBuf::from(previous)),
+        }
+    }
+
+    #[test]
+    fn a_moved_row_shows_its_previous_path_without_a_limit() {
+        let de = moved("src/a_long_previous_directory_name_here/old_name.rs");
+        let text = build_delta_table(&[&de], 30.0, false, None).to_string();
+        assert!(
+            text.contains("src/new/b.rs:7 ← src/a_long_previous_directory_name_here/old_name.rs"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_moved_row_keeps_only_the_previous_file_name_when_cut_at_80() {
+        let de = moved("src/a_long_previous_directory_name_here/old_name.rs");
+        let table = build_delta_table(&[&de], 30.0, false, Some(80));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 80, "{text}");
+        assert!(text.contains("src/new/b.rs:7 ← old_name.rs"), "{text}");
+    }
+
+    #[test]
+    fn a_moved_row_drops_its_previous_file_below_80() {
+        let de = moved("src/a_long_previous_directory_name_here/old_name.rs");
+        let table = build_delta_table(&[&de], 30.0, false, Some(70));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 70, "{text}");
+        assert!(text.contains("src/new/b.rs:7 "), "{text}");
+        assert!(!text.contains('←'), "{text}");
+        assert!(text.contains("┆ Δ ┆"), "{text}");
+    }
+
+    #[test]
+    fn a_moved_row_drops_its_previous_file_before_a_function_name_is_cut() {
+        let mut de = moved("src/a_rather_long_previous_module_name_that_is_long.rs");
+        de.current.function = "write_pr_comment_hot_spots_section".into();
+        let table = build_delta_table(&[&de], 30.0, false, Some(120));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 120, "{text}");
+        assert!(
+            text.contains("write_pr_comment_hot_spots_section"),
+            "{text}"
+        );
+        assert!(!text.contains('←'), "{text}");
+    }
+
+    #[test]
+    fn a_long_previous_path_shrinks_before_the_bar_goes() {
+        let de = moved(&format!("src/{}/old.rs", "a".repeat(24)));
+        let table = build_delta_table(&[&de], 30.0, false, Some(100));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 100, "{text}");
+        assert!(text.contains("████░░░░░░  42.0%"), "{text}");
+        assert!(text.contains("src/new/b.rs:7 ← old.rs"), "{text}");
+    }
+
+    #[test]
+    fn a_previous_file_stays_when_dropping_it_saves_nothing() {
+        let de = moved("src/old/previous_name.rs");
+        let mut other = moved("unused.rs");
+        other.status = DeltaStatus::Regressed;
+        other.previous_file = None;
+        other.current.function = format!("a_function_with_{}", "a_very_long_name_".repeat(3));
+        other.current.file = PathBuf::from("src/deep/deeper/deepest/module.rs");
+        let table = build_delta_table(&[&other, &de], 30.0, false, Some(100));
+        let text = table.to_string();
+        assert!(widest_line(&table) <= 100, "{text}");
+        assert!(text.contains("← previous_name.rs"), "{text}");
+    }
+
+    proptest::proptest! {
+        /// Whenever the width is at least the table's narrowest form, no
+        /// line of the rendered table is wider than the width.
+        #[test]
+        fn the_delta_table_fits_whenever_its_narrowest_form_does(
+            rows in proptest::collection::vec(
+                (
+                    "[a-z_:]{1,40}",
+                    proptest::collection::vec("[a-z_]{1,12}", 0..4),
+                    "[a-z_]{1,14}",
+                    proptest::option::of("[a-z_/]{1,60}"),
+                ),
+                1..6,
+            ),
+            width in 0usize..180,
+        ) {
+            let entries: Vec<DeltaEntry> = rows
+                .iter()
+                .map(|(function, dirs, file, previous)| {
+                    let path: String = dirs.iter().flat_map(|d| [d.as_str(), "/"]).collect();
+                    let mut de = moved(previous.as_deref().unwrap_or("x.rs"));
+                    de.current = located(function, &format!("{path}{file}.rs"), 9.0);
+                    de.previous_file = previous.as_deref().map(PathBuf::from);
+                    de
+                })
+                .collect();
+            let refs: Vec<&DeltaEntry> = entries.iter().collect();
+            let narrowest = widest_line(&build_delta_table(&refs, 30.0, true, Some(0)));
+            let table = build_delta_table(&refs, 30.0, true, Some(width));
+            if width >= narrowest {
+                proptest::prop_assert!(widest_line(&table) <= width, "{}", table);
+            }
+        }
+
+        /// Whenever the width is at least the table's narrowest form, no
+        /// line of the rendered table is wider than the width.
+        #[test]
+        fn the_table_fits_whenever_its_narrowest_form_does(
+            rows in proptest::collection::vec(
+                (
+                    "[a-z_:]{1,40}",
+                    proptest::collection::vec("[a-z_]{1,12}", 0..5),
+                    "[a-z_]{1,14}",
+                    0.0..500.0f64,
+                ),
+                1..8,
+            ),
+            width in 0usize..160,
+        ) {
+            let entries: Vec<CrapEntry> = rows
+                .iter()
+                .map(|(function, dirs, file, crap)| {
+                    let path: String = dirs.iter().flat_map(|d| [d.as_str(), "/"]).collect();
+                    located(function, &format!("{path}{file}.rs"), *crap)
+                })
+                .collect();
+            let refs: Vec<&CrapEntry> = entries.iter().collect();
+            let narrowest = widest_line(&build_table(&refs, 30.0, false, Some(0)));
+            let table = build_table(&refs, 30.0, false, Some(width));
+            if width >= narrowest {
+                proptest::prop_assert!(widest_line(&table) <= width, "{}", table);
+            }
+        }
     }
 
     /// A sink that accepts everything except the footer line.

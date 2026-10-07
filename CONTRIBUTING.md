@@ -82,6 +82,10 @@ CI runs the same gates and adds:
   `tests/fixtures/sample_project/`. It is the test that catches a path
   mismatch between the source walk and the LCOV file. If you add a function
   to the fixture, update its `lcov.info` to match.
+- `tests/width_snapshots.rs` keeps `insta` snapshots of every human table
+  at 120, 100, 80, 70, 50 and 30 columns. A layout change fails them; check
+  the diff with `cargo insta review` (`cargo install --locked cargo-insta`)
+  and accept it when it is the change you meant.
 
 ## Finding your way around
 

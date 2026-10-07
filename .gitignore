@@ -99,3 +99,6 @@ mutants.out*/
 .claude/settings.local.json
 .claude/worktrees/
 .keeler/
+
+# insta snapshots awaiting review (`cargo insta review`)
+*.snap.new

@@ -1,15 +1,20 @@
 //! Shared rendering primitives — used by every renderer that draws rows.
 //!
 //! - [`Grade`]: three-tier severity classification driving icon/colour.
-//! - [`coverage_bar`]: 10-block ASCII bar for human tables.
+//! - [`coverage_cell`]: coverage bar and percentage for human tables.
 //! - [`cc_display`]: CC text, integral or fractional to one decimal.
 //! - [`delta_display`]: Δ-column text for delta rows.
 //! - [`uncovered_display`]: capped Uncovered-column text.
+//! - [`available_width`], [`shorten_end`], [`shorten_location`]: fitting
+//!   the human tables to the output's width.
 
 use crate::coverage::LineRange;
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
 use comfy_table::Color;
+use std::borrow::Cow;
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
+use unicode_width::UnicodeWidthStr;
 
 /// Process-wide colour switch, set once by `main` after inspecting the sink
 /// (`--output`, stdout TTY-ness, `NO_COLOR` / `FORCE_COLOR`). Defaults to
@@ -91,19 +96,24 @@ impl Grade {
     }
 }
 
-/// Render a coverage value as a 10-block bar followed by the numeric percentage.
-///
-/// `None` (no coverage data) renders as an empty bar and a dash.
-pub(crate) fn coverage_bar(pct: Option<f64>) -> String {
-    match pct {
-        None => format!("{:░<10}    —", ""),
-        Some(p) => {
-            let filled = ((p / 100.0) * 10.0).round() as usize;
-            let filled = filled.min(10);
+/// Render a coverage value as a `cells`-block bar followed by the numeric
+/// percentage, or the percentage alone when `cells` is 0. `None` (no
+/// coverage data) renders as an empty bar and a dash.
+pub(crate) fn coverage_cell(
+    pct: Option<f64>,
+    cells: usize,
+) -> String {
+    match (pct, cells) {
+        (None, 0) => "—".to_owned(),
+        (Some(p), 0) => format!("{p:>5.1}%"),
+        (None, cells) => format!("{}    —", "░".repeat(cells)),
+        (Some(p), cells) => {
+            let filled = ((p / 100.0) * cells as f64).round() as usize;
+            let filled = filled.min(cells);
             format!(
                 "{}{} {:>5.1}%",
                 "█".repeat(filled),
-                "░".repeat(10 - filled),
+                "░".repeat(cells - filled),
                 p
             )
         },
@@ -220,6 +230,111 @@ pub(crate) fn visible_delta_entries(
         .iter()
         .filter(|e| show_unchanged || e.status != DeltaStatus::Unchanged)
         .collect()
+}
+
+/// The width the human tables may use, in terminal columns, or `None` for
+/// no limit. A terminal's own width wins when the report goes to stdout
+/// (`writes_to_stdout`) and stdout is one. Without it a positive
+/// `$COLUMNS` applies, and otherwise there is no limit, so full paths reach
+/// `grep` and logs.
+#[must_use]
+pub fn output_width(writes_to_stdout: bool) -> Option<usize> {
+    let columns = std::env::var("COLUMNS").ok();
+    available_width(
+        writes_to_stdout,
+        std::io::stdout().is_terminal(),
+        comfy_table::Table::new().width(),
+        columns.as_deref(),
+    )
+}
+
+/// The width rule behind [`output_width`], with the terminal probe and
+/// `$COLUMNS` passed in. The terminal's width counts only when the report
+/// goes to stdout and stdout is a terminal reporting a positive width.
+/// Otherwise a positive `$COLUMNS` applies, else `None`.
+pub(crate) fn available_width(
+    writes_to_stdout: bool,
+    stdout_is_terminal: bool,
+    terminal_width: Option<u16>,
+    columns: Option<&str>,
+) -> Option<usize> {
+    let terminal = terminal_width
+        .filter(|_| writes_to_stdout && stdout_is_terminal)
+        .map(usize::from)
+        .filter(|&width| width > 0);
+    terminal.or_else(|| {
+        columns
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|&width| width > 0)
+    })
+}
+
+/// Cut the end of `text` so it fits `budget` columns, marking the cut with
+/// `…`. Text that already fits comes back unchanged, and a budget of 0
+/// leaves nothing, not even the mark.
+pub(crate) fn shorten_end(
+    text: &str,
+    budget: usize,
+) -> Cow<'_, str> {
+    if text.width() <= budget {
+        return Cow::Borrowed(text);
+    }
+    if budget == 0 {
+        return Cow::Borrowed("");
+    }
+    // Widths are measured on whole prefixes: a character's width can
+    // depend on its neighbours, so summing single characters can overshoot.
+    let end = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| text[..i].width() < budget)
+        .last()
+        .unwrap_or(0);
+    Cow::Owned(format!("{}…", &text[..end]))
+}
+
+/// Cut the start of a `<path>:<line>` location so it fits `budget` columns,
+/// marking the cut with `…`. It cuts only at a path separator, so the file
+/// and line always survive, even past the budget. A location that fits, or
+/// has no directory to drop, comes back unchanged. A moved row's
+/// ` ← <previous file>` tail is kept as it is: only the current location
+/// before it is cut.
+pub(crate) fn shorten_location(
+    location: &str,
+    budget: usize,
+) -> Cow<'_, str> {
+    if location.width() <= budget {
+        return Cow::Borrowed(location);
+    }
+    let Some(arrow) = location.find(MOVED_ARROW) else {
+        return shorten_path(location, budget);
+    };
+    let (current, tail) = location.split_at(arrow);
+    let current = shorten_path(current, budget.saturating_sub(tail.width()));
+    Cow::Owned(format!("{current}{tail}"))
+}
+
+/// What separates a moved row's current location from its previous file.
+pub(crate) const MOVED_ARROW: &str = " ← ";
+
+/// [`shorten_location`] for a bare `<path>:<line>`.
+fn shorten_path(
+    location: &str,
+    budget: usize,
+) -> Cow<'_, str> {
+    if location.width() <= budget {
+        return Cow::Borrowed(location);
+    }
+    // Separators from the left give tails from the longest to the shortest:
+    // the first that fits wins, and the file itself is the last resort.
+    let mut tails = location
+        .match_indices(['/', '\\'])
+        .map(|(i, _)| &location[i..]);
+    let fitting = tails.clone().find(|tail| tail.width() < budget);
+    let tail = fitting.or_else(|| tails.next_back());
+    tail.map_or(Cow::Borrowed(location), |tail| {
+        Cow::Owned(format!("…{tail}"))
+    })
 }
 
 /// The line a delta table prints when it has no rows to show: either
@@ -348,7 +463,7 @@ mod tests {
     #[test]
     fn coverage_bar_is_all_empty_for_zero_percent() {
         // Kills: filled = pct * 10 replaced with 10 - pct * 10, or always 0.
-        let bar = coverage_bar(Some(0.0));
+        let bar = coverage_cell(Some(0.0), 10);
         assert!(
             bar.starts_with("░░░░░░░░░░"),
             "0% must start with 10 empty blocks, got: {bar}"
@@ -359,7 +474,7 @@ mod tests {
     #[test]
     fn coverage_bar_is_all_full_for_100_percent() {
         // Kills: filled = pct * 10 replaced with 0, or empty/full swapped.
-        let bar = coverage_bar(Some(100.0));
+        let bar = coverage_cell(Some(100.0), 10);
         assert!(
             bar.starts_with("██████████"),
             "100% must start with 10 full blocks, got: {bar}"
@@ -370,7 +485,7 @@ mod tests {
     #[test]
     fn coverage_bar_is_half_full_for_50_percent() {
         // Kills: rounding errors that shift the boundary, filled/empty swap.
-        let bar = coverage_bar(Some(50.0));
+        let bar = coverage_cell(Some(50.0), 10);
         assert!(
             bar.starts_with("█████░░░░░"),
             "50% must have 5 full then 5 empty blocks, got: {bar}"
@@ -380,7 +495,7 @@ mod tests {
     #[test]
     fn coverage_bar_none_is_all_empty_with_dash() {
         // Already exercised indirectly, but this pins the direct function contract.
-        let bar = coverage_bar(None);
+        let bar = coverage_cell(None, 10);
         assert!(
             bar.contains("░░░░░░░░░░"),
             "None must render with all-empty bar, got: {bar}"
@@ -507,5 +622,145 @@ mod tests {
             " 1–2 |"
         );
         assert_eq!(uncovered_cell_suffix(true, &[]), "  |");
+    }
+
+    #[test]
+    fn a_coverage_cell_without_a_bar_keeps_its_decimal_points_aligned() {
+        assert_eq!(coverage_cell(Some(7.5), 0), "  7.5%");
+        assert_eq!(coverage_cell(Some(100.0), 0), "100.0%");
+        assert_eq!(coverage_cell(None, 0), "—");
+    }
+
+    // --- width ---------------------------------------------------------------
+
+    #[test]
+    fn a_terminal_uses_its_own_width_over_columns() {
+        assert_eq!(available_width(true, true, Some(90), Some("40")), Some(90));
+    }
+
+    #[test]
+    fn a_terminal_without_a_width_falls_back_to_columns() {
+        assert_eq!(available_width(true, true, None, Some("40")), Some(40));
+        assert_eq!(available_width(true, true, Some(0), Some("40")), Some(40));
+        assert_eq!(available_width(true, true, Some(0), None), None);
+        assert_eq!(available_width(true, true, None, None), None);
+    }
+
+    #[test]
+    fn a_report_written_elsewhere_ignores_the_terminal() {
+        // `--output <file>` from a terminal: the file has no width of its own.
+        assert_eq!(available_width(false, true, Some(90), Some("40")), Some(40));
+        assert_eq!(available_width(false, true, Some(90), None), None);
+    }
+
+    #[test]
+    fn other_output_uses_a_positive_columns_or_no_limit() {
+        assert_eq!(available_width(true, false, Some(90), Some("40")), Some(40));
+        assert_eq!(available_width(true, false, None, Some(" 80 ")), Some(80));
+        assert_eq!(available_width(true, false, None, None), None);
+        assert_eq!(available_width(true, false, None, Some("0")), None);
+        assert_eq!(available_width(true, false, None, Some("-5")), None);
+        assert_eq!(available_width(true, false, None, Some("wide")), None);
+    }
+
+    #[test]
+    fn shorten_end_keeps_the_start_and_marks_the_cut() {
+        assert_eq!(shorten_end("run", 10), "run");
+        assert_eq!(shorten_end("DeltaBuckets::from_report", 12), "DeltaBucket…");
+        assert_eq!(shorten_end("abc", 1), "…");
+        assert_eq!(shorten_end("abc", 0), "");
+    }
+
+    #[test]
+    fn shorten_end_measures_display_columns() {
+        // Each of these ideographs is two columns wide.
+        assert_eq!(shorten_end("函数名字", 5), "函数…");
+    }
+
+    #[test]
+    fn shorten_location_keeps_the_file_and_line() {
+        assert_eq!(shorten_location("src/main.rs:12", 40), "src/main.rs:12");
+        assert_eq!(
+            shorten_location("src/report/pr_comment.rs:380", 20),
+            "…/pr_comment.rs:380"
+        );
+        assert_eq!(
+            shorten_location("src/report/pr_comment.rs:380", 27),
+            "…/report/pr_comment.rs:380"
+        );
+        // Too narrow even for the file: the file and line still survive.
+        assert_eq!(
+            shorten_location("src/report/pr_comment.rs:380", 5),
+            "…/pr_comment.rs:380"
+        );
+        // Nothing to cut without a directory.
+        assert_eq!(shorten_location("lib.rs:3", 4), "lib.rs:3");
+        assert_eq!(
+            shorten_location(r"src\report\pr_comment.rs:380", 20),
+            r"…\pr_comment.rs:380"
+        );
+    }
+
+    #[test]
+    fn shorten_location_never_cuts_into_a_moved_row_s_previous_file() {
+        // The budget left for "src/report/b.rs:12" is 26 - 15 = 11.
+        assert_eq!(
+            shorten_location("src/report/b.rs:12 ← src/old/c.rs", 26),
+            "…/b.rs:12 ← src/old/c.rs"
+        );
+        assert_eq!(
+            shorten_location("src/b.rs:12 ← old.rs", 40),
+            "src/b.rs:12 ← old.rs"
+        );
+    }
+
+    fn path_strategy() -> impl Strategy<Value = String> {
+        (
+            proptest::collection::vec("[a-z_]{1,12}", 0..6),
+            "[a-z_]{1,16}",
+            1u32..100_000,
+        )
+            .prop_map(|(dirs, file, line)| {
+                let mut path = dirs.join("/");
+                if !path.is_empty() {
+                    path.push('/');
+                }
+                format!("{path}{file}.rs:{line}")
+            })
+    }
+
+    proptest! {
+        /// A shortened name fits its budget, keeps the original's start, and
+        /// a name that already fits comes back unchanged.
+        #[test]
+        fn shorten_end_fits_and_keeps_the_start(text in "\\PC{0,40}", budget in 0usize..40) {
+            let short = shorten_end(&text, budget);
+            prop_assert!(UnicodeWidthStr::width(short.as_ref()) <= budget);
+            if UnicodeWidthStr::width(text.as_str()) <= budget {
+                prop_assert_eq!(short.as_ref(), text.as_str());
+            } else if budget == 0 {
+                prop_assert_eq!(short.as_ref(), "");
+            } else {
+                let kept = short.strip_suffix('…').expect("marked");
+                prop_assert!(text.starts_with(kept));
+            }
+        }
+
+        /// A shortened Location keeps its `<file>:<line>` suffix, ends with
+        /// the original's tail, fits the budget whenever the file and line
+        /// can, and comes back unchanged when it already fits.
+        #[test]
+        fn shorten_location_keeps_the_suffix(path in path_strategy(), budget in 1usize..80) {
+            let short = shorten_location(&path, budget);
+            let file = path.rsplit('/').next().expect("a file");
+            prop_assert!(short.ends_with(file));
+            prop_assert!(path.ends_with(short.trim_start_matches('…')));
+            let width = UnicodeWidthStr::width(short.as_ref());
+            if UnicodeWidthStr::width(path.as_str()) <= budget {
+                prop_assert_eq!(short.as_ref(), path.as_str());
+            } else if path.contains('/') && budget > file.len() + 1 {
+                prop_assert!(width <= budget, "{} wider than {}", short, budget);
+            }
+        }
     }
 }

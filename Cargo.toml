@@ -55,6 +55,8 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 quote = "1"
 syn = { version = "2", features = ["full", "visit", "printing"] }
 toml = { version = "0.8", default-features = false, features = ["parse"] }
+# Display width of table text, the same measure comfy-table lays out by.
+unicode-width = "0.2"
 # TypeSafe triage (spec 30): a small blocking client; rustls, no gzip.
 # Optional: only the `triage` feature compiles a network client in.
 ureq = { version = "3.4", default-features = false, features = ["rustls"], optional = true }
@@ -71,6 +73,8 @@ assert_cmd = "2"
 predicates = "3"
 jsonschema = { version = "0.46", default-features = false }
 proptest = "1.11.0"
+# Snapshots of the human tables at fixed widths (spec 20).
+insta = "1"
 
 # docs.rs documents every feature, so the triage client appears in the docs.
 [package.metadata.docs.rs]

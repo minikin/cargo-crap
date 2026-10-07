@@ -16,7 +16,7 @@ use cargo_crap::{
     duplicates::triage::verdict::Assessment,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
     report::{
-        self, Format, RenderOptions, SourceLinks, crappy_count, render, render_delta,
+        self, Format, RenderOptions, SourceLinks, crappy_count, output_width, render, render_delta,
         render_delta_counts, render_summary, set_color_enabled,
     },
     score::DEFAULT_THRESHOLD,
@@ -1438,7 +1438,7 @@ fn do_render(
     } else {
         let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
         if summary {
-            render_summary(entries, opts.render.threshold, out)?;
+            render_summary(entries, opts.render.threshold, opts.render.width, out)?;
         } else {
             render(entries, &opts.render, out)?;
         }
@@ -1642,6 +1642,7 @@ fn run() -> Result<ExitCode> {
             triage: dups.triage.as_deref(),
             sliced: is_sliced(min, top),
             delta_counts: None,
+            width: output_width(cli.output.is_none()),
         },
         epsilon,
         summary: cli.summary,

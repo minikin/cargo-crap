@@ -52,8 +52,12 @@ fn write(
     fs::write(root.join(name), body).expect("write fixture");
 }
 
+/// The binary, with `COLUMNS` cleared so the caller's shell cannot narrow
+/// the human table under test. A test that wants a width sets it again.
 fn crap() -> Command {
-    Command::cargo_bin("cargo-crap").expect("binary builds")
+    let mut cmd = Command::cargo_bin("cargo-crap").expect("binary builds");
+    cmd.env_remove("COLUMNS");
+    cmd
 }
 
 #[test]
@@ -2578,4 +2582,418 @@ fn changes_outside_the_slice_are_not_called_no_changes() {
             "{format}:\n{stdout}"
         );
     }
+}
+
+// --- Width-aware human table ------------------------------------------------
+//
+// Each task fills only its own heading, so parallel branches never touch the
+// same lines.
+
+// ---- Width-aware human table · T1 ----
+
+#[test]
+fn piped_output_without_columns_is_not_limited() {
+    // Given stdout is a pipe
+    // And   COLUMNS is unset
+    let dir = TempDir::new().expect("temp dir");
+    let deep = dir
+        .path()
+        .join("a_rather_long_module_directory/another_long_directory_name");
+    fs::create_dir_all(&deep).expect("create dirs");
+    write(
+        &deep,
+        "widely_named_source_file.rs",
+        &function_with_cc("cold_00", 1),
+    );
+    // When I run `cargo crap --format human`
+    let out = crap()
+        .current_dir(dir.path())
+        .env_remove("COLUMNS")
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .args(["--format", "human", "--threshold", "1000"])
+        .output()
+        .expect("binary runs");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    // Then the table is laid out as today, with full Locations (Windows
+    // prints them with backslashes)
+    assert!(
+        stdout.replace('\\', "/").contains(
+            "a_rather_long_module_directory/another_long_directory_name/widely_named_source_file.rs:1"
+        ),
+        "{stdout}"
+    );
+    assert!(!stdout.contains('…'), "{stdout}");
+}
+
+// ---- Width-aware human table · T2 ----
+
+/// A project whose functions live in `src/report/pr_comment.rs` under the
+/// temp dir, with long names, so a narrow output has to shorten them.
+fn wide_project() -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    let report = dir.path().join("src/report");
+    fs::create_dir_all(&report).expect("create dirs");
+    let body: String = (0..12)
+        .map(|k| {
+            function_with_cc(
+                &format!("write_pr_comment_hot_spots_section_{k:02}"),
+                k % 4 + 1,
+            )
+        })
+        .collect();
+    write(&report, "pr_comment.rs", &body);
+    dir
+}
+
+/// Run `--format human` (plus `extra`) with `COLUMNS` set to `columns`.
+fn human_at(
+    dir: &Path,
+    columns: &str,
+    extra: &[&str],
+) -> String {
+    let out = crap()
+        .current_dir(dir)
+        .env("COLUMNS", columns)
+        .args(["--path", dir.to_str().expect("utf-8")])
+        .args(["--format", "human", "--threshold", "1000"])
+        .args(extra)
+        .output()
+        .expect("binary runs");
+    String::from_utf8(out.stdout).expect("utf-8")
+}
+
+/// The lines that draw a table: borders and rows.
+fn table_lines(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter(|line| line.starts_with(['┌', '│', '╞', '├', '└']))
+        .collect()
+}
+
+fn widest_table_line(stdout: &str) -> usize {
+    table_lines(stdout)
+        .iter()
+        .map(|line| unicode_width::UnicodeWidthStr::width(*line))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The trimmed cells of a table line.
+fn cells(line: &str) -> Vec<&str> {
+    line.trim_matches('│').split('┆').map(str::trim).collect()
+}
+
+/// The header cells of the first table on the page.
+fn header(stdout: &str) -> Vec<String> {
+    table_lines(stdout)
+        .iter()
+        .find(|line| line.starts_with('│'))
+        .map(|line| cells(line).into_iter().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// The cells of the column named `name`, one per row of the main table.
+fn column(
+    stdout: &str,
+    name: &str,
+) -> Vec<String> {
+    let names = header(stdout);
+    let index = names
+        .iter()
+        .position(|n| n == name)
+        .expect("column present");
+    table_lines(stdout)
+        .iter()
+        .filter(|line| line.starts_with('│'))
+        .skip(1)
+        .map(|line| cells(line)[index].to_owned())
+        .collect()
+}
+
+#[test]
+fn a_wide_output_renders_the_full_layout() {
+    // Given an output 120 columns wide
+    let dir = wide_project();
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "120", &[]);
+    // Then the table shows the grade, CRAP, CC, Coverage (10-cell bar),
+    // Function and Location columns
+    assert_eq!(
+        header(&stdout),
+        ["", "CRAP", "CC", "Coverage", "Function", "Location"],
+        "{stdout}"
+    );
+    for cell in column(&stdout, "Coverage") {
+        assert_eq!(
+            cell.chars().filter(|c| matches!(c, '█' | '░')).count(),
+            10,
+            "{stdout}"
+        );
+    }
+    // And no table line exceeds 120 columns
+    assert!(widest_table_line(&stdout) <= 120, "{stdout}");
+}
+
+#[test]
+fn eighty_columns_fit_without_wrapping() {
+    // Given an output 80 columns wide
+    // And   a project containing the path src/report/pr_comment.rs
+    let dir = wide_project();
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "80", &[]);
+    // Then no table line exceeds 80 columns
+    assert!(widest_table_line(&stdout) <= 80, "{stdout}");
+    // And the Location cell ends with "pr_comment.rs:" followed by the line number
+    for cell in column(&stdout, "Location") {
+        let line = cell.rsplit_once("pr_comment.rs:").map(|(_, line)| line);
+        assert!(
+            line.is_some_and(|l| l.parse::<u32>().is_ok()),
+            "{cell}:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn seventy_columns_drop_the_coverage_bar() {
+    // Given an output 70 columns wide
+    let dir = wide_project();
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "70", &[]);
+    // Then no table line exceeds 70 columns
+    assert!(widest_table_line(&stdout) <= 70, "{stdout}");
+    // And the Coverage column shows the percentage without a bar
+    for cell in column(&stdout, "Coverage") {
+        assert!(cell.ends_with('%') || cell == "—", "{cell}:\n{stdout}");
+        assert!(!cell.contains(['█', '░']), "{cell}:\n{stdout}");
+    }
+}
+
+#[test]
+fn fifty_columns_drop_the_cc_column() {
+    // Given an output 50 columns wide, and file names short enough for the
+    // table's narrowest form to fit it
+    let dir = tree_of(&named("write_pr_comment_section", 12, 2));
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "50", &[]);
+    // Then no table line exceeds 50 columns
+    assert!(widest_table_line(&stdout) <= 50, "{stdout}");
+    // And the table has no CC column
+    // And the CRAP, Function and Location columns are present
+    assert_eq!(
+        header(&stdout),
+        ["", "CRAP", "Coverage", "Function", "Location"],
+        "{stdout}"
+    );
+}
+
+#[test]
+fn below_the_narrowest_form_the_table_stops_shrinking() {
+    // Given an output 20 columns wide
+    let dir = wide_project();
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "20", &[]);
+    // Then the table has no CC column and no coverage bar
+    assert!(!header(&stdout).contains(&"CC".to_owned()), "{stdout}");
+    assert!(!stdout.contains(['█', '░']), "{stdout}");
+    // And every Location ends with its file and line
+    for cell in column(&stdout, "Location") {
+        assert!(
+            cell.starts_with('…') && cell.contains("pr_comment.rs:"),
+            "{cell}"
+        );
+    }
+    // And every Function cell is at most 8 columns wide
+    for cell in column(&stdout, "Function") {
+        assert!(
+            unicode_width::UnicodeWidthStr::width(cell.as_str()) <= 8,
+            "{cell}"
+        );
+    }
+}
+
+#[test]
+fn lines_around_the_tables_are_not_shortened() {
+    // Given an output 50 columns wide
+    // And   a project with more than 10 functions below the threshold
+    let dir = wide_project();
+    // When I run `cargo crap --format human`
+    let stdout = human_at(dir.path(), "50", &[]);
+    // Then the hidden-rows footer and the summary line are printed in full
+    assert!(
+        stdout.contains(
+            "· 2 more below threshold — use --top, --min 0, or --format markdown to see them."
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("12 function(s) analyzed; none exceed CRAP threshold 1000."),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn other_formats_ignore_the_width() {
+    // Given any output width
+    let dir = wide_project();
+    // When I run `cargo crap --format markdown` (or json, github, sarif, pr-comment)
+    for format in ["markdown", "json", "github", "sarif", "pr-comment"] {
+        let run = |columns: Option<&str>| {
+            let mut cmd = crap();
+            cmd.current_dir(dir.path()).env_remove("COLUMNS");
+            if let Some(columns) = columns {
+                cmd.env("COLUMNS", columns);
+            }
+            let out = cmd
+                .args(["--path", dir.path().to_str().expect("utf-8")])
+                .args(["--format", format, "--threshold", "5"])
+                .output()
+                .expect("binary runs");
+            String::from_utf8(out.stdout).expect("utf-8")
+        };
+        // Then the output is identical regardless of the width
+        assert_eq!(run(Some("40")), run(None), "{format}");
+    }
+}
+
+// ---- Width-aware human table · T3 ----
+
+#[test]
+fn the_uncovered_column_shortens_before_anything_else() {
+    // Given uncovered-hints = true in .cargo-crap.toml
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), ".cargo-crap.toml", "uncovered-hints = true\n");
+    // And a function whose uncovered ranges are too long for the width:
+    // after 1000 blank lines, every other line of its body is missed
+    let mut source = "\n".repeat(1000);
+    source.push_str("fn spans_many_lines_of_code_here(x: i32) -> i32 {\n    let mut y = x;\n");
+    source.push_str(&"    y += 1;\n".repeat(60));
+    source.push_str("    y\n}\n");
+    write(dir.path(), "lib.rs", &source);
+    let file = dir
+        .path()
+        .join("lib.rs")
+        .canonicalize()
+        .expect("canonical path");
+    let lcov = (1001..=1064).fold(String::new(), |mut lcov, line| {
+        writeln!(lcov, "DA:{line},{}", line % 2).expect("write to a String");
+        lcov
+    });
+    write(
+        dir.path(),
+        "lcov.info",
+        &format!("SF:{}\n{lcov}end_of_record\n", file.display()),
+    );
+    // When I run `cargo crap --format human` with an output 100 columns wide,
+    // from the project so Locations are short and nothing else needs cutting
+    let out = crap()
+        .current_dir(dir.path())
+        .env("COLUMNS", "100")
+        .args(["--path", ".", "--lcov", "lcov.info"])
+        .args(["--format", "human", "--threshold", "1000"])
+        .output()
+        .expect("binary runs");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    // Then no table line exceeds 100 columns
+    assert!(widest_table_line(&stdout) <= 100, "{stdout}");
+    // And the Uncovered cell ends with "…"
+    assert_eq!(column(&stdout, "Uncovered").len(), 1, "{stdout}");
+    assert!(column(&stdout, "Uncovered")[0].ends_with('…'), "{stdout}");
+    // And Function and Location are whole: Uncovered gave way first
+    assert_eq!(
+        column(&stdout, "Function"),
+        ["spans_many_lines_of_code_here"],
+        "{stdout}"
+    );
+    let location = column(&stdout, "Location");
+    assert_eq!(location.len(), 1, "{stdout}");
+    assert_eq!(location[0].replace('\\', "/"), "./lib.rs:1001", "{stdout}");
+    // And the Coverage column still shows the 10-cell bar
+    for cell in column(&stdout, "Coverage") {
+        assert_eq!(
+            cell.chars().filter(|c| matches!(c, '█' | '░')).count(),
+            10,
+            "{stdout}"
+        );
+    }
+}
+
+// ---- Width-aware human table · T4 ----
+
+#[test]
+fn the_delta_table_keeps_delta_and_the_current_location_of_a_moved_row() {
+    // Given a baseline against which a function moved from a long path to b.rs
+    let before = [(
+        "a_rather_long_previous_module_name.rs".to_owned(),
+        "moved_fn".to_owned(),
+        1,
+    )];
+    let after = [("b.rs".to_owned(), "moved_fn".to_owned(), 1)];
+    let (dir, baseline) = baseline_then(&before, &after);
+    // When I run `cargo crap --format human --baseline baseline.json` with an
+    // output 50 columns wide
+    let stdout = human_at(dir.path(), "50", &["--baseline", &baseline]);
+    // Then no table line exceeds 50 columns
+    assert!(widest_table_line(&stdout) <= 50, "{stdout}");
+    // And the table has a Δ column
+    assert!(header(&stdout).contains(&"Δ".to_owned()), "{stdout}");
+    // And the moved row's Location ends with "b.rs:" followed by the line number
+    let location = column(&stdout, "Location");
+    let line = location[0].rsplit_once("b.rs:").map(|(_, line)| line);
+    assert!(line.is_some_and(|l| l.parse::<u32>().is_ok()), "{stdout}");
+}
+
+// ---- Width-aware human table · T5 ----
+
+#[test]
+fn the_per_crate_table_fits() {
+    // Given a workspace with a member crate whose name is 60 characters long
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    let name = format!("a_{}", "very_long_member_name_".repeat(3))
+        .chars()
+        .take(60)
+        .collect::<String>();
+    assert_eq!(name.len(), 60);
+    fs::create_dir_all(root.join("crates/long/src")).expect("mkdir");
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/long\"]\nresolver = \"2\"\n",
+    );
+    write(
+        &root.join("crates/long"),
+        "Cargo.toml",
+        &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+    );
+    write(
+        &root.join("crates/long/src"),
+        "lib.rs",
+        &function_with_cc("run", 1),
+    );
+    // When I run `cargo crap --format human --workspace` with an output 50
+    // columns wide
+    let out = crap()
+        .current_dir(root)
+        .env("COLUMNS", "50")
+        .args(["--workspace", "--format", "human", "--threshold", "1000"])
+        .output()
+        .expect("binary runs");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let per_crate: String = stdout
+        .split("Per-crate summary:")
+        .nth(1)
+        .expect("a per-crate table")
+        .lines()
+        .take_while(|line| !line.starts_with('└'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Then no line of the per-crate table exceeds 50 columns
+    assert!(widest_table_line(&per_crate) <= 50, "{stdout}");
+    // And the long crate name ends with "…"
+    let first_row = column(&per_crate, "Crate");
+    assert!(first_row[0].ends_with('…'), "{stdout}");
+    assert!(
+        name.starts_with(first_row[0].trim_end_matches('…')),
+        "{stdout}"
+    );
 }

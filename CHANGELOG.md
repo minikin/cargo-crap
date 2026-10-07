@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `human` tables fit the terminal's width, or `$COLUMNS` when it is
+  set: the coverage bar shrinks and then goes, CC goes below 60 columns,
+  and long locations and names are cut with `…`, keeping each location's
+  file and line. Output that is not a terminal and has no `$COLUMNS` keeps
+  its full width. See
+  [Fitting the width](docs/reference/output-formats.md#fitting-the-width).
 - `--format human` lists every function above the threshold but only the
   10 highest-scoring below it, then one line counting the rest. `--top` or
   `--min` (on the command line or in config) shows exactly that slice
@@ -22,12 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summary line and `--fail-regression` count changes outside the rows
   shown, and a run can now fail on a regression that `--top` leaves out.
 - **BREAKING (library API):** `RenderOptions` gained `sliced: bool`, set
-  when the user asked for `top` or `min`, and `delta_counts:
+  when the user asked for `top` or `min`, `delta_counts:
   Option<DeltaCounts>`, the whole comparison's counts when the rows were
-  sliced. Code that builds `RenderOptions` with an exhaustive struct literal
-  must add the fields or spread `..Default::default()`. `DeltaReport` gained
-  `counts` and `restrict_to`, and `report::render_delta_counts` prints a
-  `DeltaCounts`.
+  sliced, and `width: Option<usize>`, the width the human tables fit (see
+  `report::output_width`). Code that builds `RenderOptions` with an
+  exhaustive struct literal must add the fields or spread
+  `..Default::default()`. `report::render_summary` takes the width as a new
+  third argument. `DeltaReport` gained `counts` and `restrict_to`, and
+  `report::render_delta_counts` prints a `DeltaCounts`.
 
 ### Fixed
 

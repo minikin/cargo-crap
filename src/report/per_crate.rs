@@ -2,6 +2,7 @@
 //! renderers when `--workspace` has tagged each entry with a crate name.
 //! No-op when no entry carries a crate name (single-crate runs).
 
+use super::layout::{Cut, column_width, table_width};
 use super::types::apply_table_styling;
 use crate::merge::CrapEntry;
 use anyhow::Result;
@@ -52,6 +53,7 @@ pub(crate) fn has_crate_data(entries: &[CrapEntry]) -> bool {
 pub(crate) fn write_per_crate_human(
     entries: &[CrapEntry],
     threshold: f64,
+    width: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let rollups = crate_rollups(entries, threshold);
@@ -75,15 +77,41 @@ pub(crate) fn write_per_crate_human(
         .column_mut(2)
         .unwrap()
         .set_cell_alignment(CellAlignment::Right);
+    let budget = crate_name_budget(&rollups, width);
     for r in &rollups {
         table.add_row(vec![
-            Cell::new(&r.name),
+            Cell::new(Cut::End.apply(&r.name, budget)),
             Cell::new(r.total),
             Cell::new(r.crappy),
         ]);
     }
     writeln!(out, "{table}")?;
     Ok(())
+}
+
+/// How far crate names are cut so the per-crate table fits `width`: the
+/// two count columns keep their width, and the Crate column takes the rest,
+/// never less than its header. Without a limit nothing is cut.
+fn crate_name_budget(
+    rollups: &[CrateRollup],
+    width: Option<usize>,
+) -> Option<usize> {
+    let width = width?;
+    let column = |header: &str, cells: Vec<String>| {
+        let cells: Vec<&str> = cells.iter().map(String::as_str).collect();
+        column_width(header, &cells, None, Cut::End)
+    };
+    let totals = column(
+        "Functions",
+        rollups.iter().map(|r| r.total.to_string()).collect(),
+    );
+    let crappy = column(
+        "Crappy",
+        rollups.iter().map(|r| r.crappy.to_string()).collect(),
+    );
+    let room = width.saturating_sub(table_width(&[0, totals, crappy]));
+    // A name that already fits comes back whole from the cut.
+    Some(room.max("Crate".len()))
 }
 
 /// Markdown variant of the per-crate rollup. No-op when no entry carries
@@ -186,11 +214,53 @@ mod tests {
     fn write_per_crate_human_noop_when_no_crate_data() {
         let entries = vec![entry(None, "x", 1.0)];
         let mut buf = Vec::new();
-        write_per_crate_human(&entries, 30.0, &mut buf).unwrap();
+        write_per_crate_human(&entries, 30.0, None, &mut buf).unwrap();
         assert!(
             buf.is_empty(),
             "no per-crate output when no entry has crate_name"
         );
+    }
+
+    fn per_crate_human(
+        name: &str,
+        width: Option<usize>,
+    ) -> String {
+        let entries = vec![entry(Some(name), "run", 1.0)];
+        let mut buf = Vec::new();
+        write_per_crate_human(&entries, 30.0, width, &mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn widest(text: &str) -> usize {
+        text.lines()
+            .filter(|line| line.starts_with(['┌', '│', '╞', '├', '└']))
+            .map(unicode_width::UnicodeWidthStr::width)
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_long_crate_name_is_cut_to_fit() {
+        let name = "a_crate_whose_name_runs_on_for_quite_a_while";
+        let out = per_crate_human(name, Some(40));
+        assert!(widest(&out) <= 40, "{out}");
+        assert!(out.contains("a_crate_whose_…"), "{out}");
+        assert!(per_crate_human(name, None).contains(name));
+    }
+
+    proptest::proptest! {
+        /// The per-crate table fits any width its narrowest form fits.
+        #[test]
+        fn the_per_crate_table_fits_whenever_its_narrowest_form_does(
+            name in "[a-z_-]{1,80}",
+            width in 0usize..120,
+        ) {
+            let narrowest = widest(&per_crate_human(&name, Some(0)));
+            if width >= narrowest {
+                let out = per_crate_human(&name, Some(width));
+                proptest::prop_assert!(widest(&out) <= width, "{}", out);
+            }
+        }
     }
 
     #[test]
