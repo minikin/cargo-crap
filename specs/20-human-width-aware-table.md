@@ -1,6 +1,6 @@
 # Spec 20: Width-aware human table
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/report/human.rs`, `src/report/per_crate.rs`, `src/report/types.rs`
 
