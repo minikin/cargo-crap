@@ -2614,9 +2614,10 @@ fn piped_output_without_columns_is_not_limited() {
         .output()
         .expect("binary runs");
     let stdout = String::from_utf8(out.stdout).expect("utf-8");
-    // Then the table is laid out as today, with full Locations
+    // Then the table is laid out as today, with full Locations (Windows
+    // prints them with backslashes)
     assert!(
-        stdout.contains(
+        stdout.replace('\\', "/").contains(
             "a_rather_long_module_directory/another_long_directory_name/widely_named_source_file.rs:1"
         ),
         "{stdout}"
@@ -2903,7 +2904,9 @@ fn the_uncovered_column_shortens_before_anything_else() {
         ["spans_many_lines_of_code_here"],
         "{stdout}"
     );
-    assert_eq!(column(&stdout, "Location"), ["./lib.rs:1001"], "{stdout}");
+    let location = column(&stdout, "Location");
+    assert_eq!(location.len(), 1, "{stdout}");
+    assert_eq!(location[0].replace('\\', "/"), "./lib.rs:1001", "{stdout}");
     // And the Coverage column still shows the 10-cell bar
     for cell in column(&stdout, "Coverage") {
         assert_eq!(
