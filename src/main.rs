@@ -1081,7 +1081,23 @@ fn validate_merged_values(
              must be between 0.0 and 1.0"
         );
     }
-    validate_triage_floor(dup.triage_floor).and_then(|()| validate_try_weight(try_weight))
+    validate_triage_floor(dup.triage_floor)
+        .and_then(|()| validate_triage_provider(&dup.triage_provider))
+        .and_then(|()| validate_try_weight(try_weight))
+}
+
+/// Reject a triage provider id no provider is registered under, listing
+/// the ones that are. Runs in every build: the registry needs no client.
+fn validate_triage_provider(id: &str) -> Result<()> {
+    use cargo_crap::duplicates::triage::provider::{by_id, ids};
+    if by_id(id).is_none() {
+        bail!(
+            "invalid duplicates.triage.provider (config): {id:?} is not a provider; \
+             expected one of: {}",
+            ids().collect::<Vec<_>>().join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// Reject a triage confidence floor outside `0.0..=1.0`, NaN included,
@@ -1250,6 +1266,9 @@ struct DupSettings {
         )
     )]
     triage_root: PathBuf,
+    /// The id of the API to ask, as configured. Checked against the
+    /// registered providers with the other merged values.
+    triage_provider: String,
     /// The model to ask.
     #[cfg_attr(
         not(feature = "triage"),
@@ -1281,6 +1300,12 @@ impl DupSettings {
                 .min_nodes
                 .unwrap_or(cargo_crap::config::DEFAULT_DUP_MIN_NODES),
             triage_enabled: config.duplicates.triage.enabled.unwrap_or(false),
+            triage_provider: config
+                .duplicates
+                .triage
+                .provider
+                .clone()
+                .unwrap_or_else(|| default_provider().id().to_owned()),
             triage_model: config
                 .duplicates
                 .triage
@@ -1518,7 +1543,8 @@ struct LoadedArgs {
 }
 
 /// Parse argv, load config, and validate the merged epsilon, jobs,
-/// similarity threshold, triage confidence floor and try-weight, returning
+/// similarity threshold, triage confidence floor, triage provider and
+/// try-weight, returning
 /// exactly what was validated so [`run`] cannot consume a different
 /// (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
@@ -2021,8 +2047,68 @@ mod tests {
             min_nodes: cargo_crap::config::DEFAULT_DUP_MIN_NODES,
             triage_enabled: false,
             triage_root: PathBuf::from("."),
+            triage_provider: default_provider().id().to_owned(),
             triage_model: default_provider().default_model().to_owned(),
             triage_floor,
+        }
+    }
+
+    /// Duplicate settings naming `provider`, valid otherwise.
+    fn with_provider(provider: &str) -> DupSettings {
+        DupSettings {
+            triage_provider: provider.to_owned(),
+            ..dup_settings(0.82, 0.5)
+        }
+    }
+
+    #[test]
+    fn validate_merged_values_accepts_every_registered_provider() {
+        for id in cargo_crap::duplicates::triage::provider::ids() {
+            assert!(
+                validate_merged_values(0.01, None, &with_provider(id), 1.0).is_ok(),
+                "{id} is a provider"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_merged_values_rejects_an_unknown_provider_naming_the_choices() {
+        let err = validate_merged_values(0.01, None, &with_provider("acme"), 1.0)
+            .expect_err("acme is no provider")
+            .to_string();
+        assert_eq!(
+            err,
+            "invalid duplicates.triage.provider (config): \"acme\" is not a provider; \
+             expected one of: typesafe, openai"
+        );
+    }
+
+    /// Registered ids half the time, near-misses and noise the rest.
+    fn provider_ids() -> impl proptest::strategy::Strategy<Value = String> {
+        use proptest::strategy::Strategy;
+        proptest::prop_oneof![
+            proptest::sample::select(
+                cargo_crap::duplicates::triage::provider::ids().collect::<Vec<_>>()
+            )
+            .prop_map(|id: &str| id.to_owned()),
+            "[a-zA-Z._ -]{0,12}",
+        ]
+    }
+
+    proptest::proptest! {
+        /// A provider id validates exactly when the registry holds it, and a
+        /// rejection lists exactly the registered ids.
+        #[test]
+        fn a_provider_validates_exactly_when_registered(id in provider_ids()) {
+            use cargo_crap::duplicates::triage::provider::{by_id, ids};
+            let result = validate_merged_values(0.01, None, &with_provider(&id), 1.0);
+            proptest::prop_assert_eq!(result.is_ok(), by_id(&id).is_some());
+            if let Err(err) = result {
+                let listed = err.to_string();
+                let choices = listed.rsplit("expected one of: ").next().expect("a list");
+                let expected: Vec<&str> = ids().collect();
+                proptest::prop_assert_eq!(choices, expected.join(", "));
+            }
         }
     }
 

@@ -3119,6 +3119,72 @@ fn typesafe_stays_the_default_provider() {
 
 // ---- Spec 32 · T5 ----
 
+#[test]
+fn an_unknown_provider_is_rejected_before_any_analysis() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given a .cargo-crap.toml with provider = "acme" in [duplicates.triage]
+    let dir = alpha_beta_tree();
+    let stub = ApiStub::scripted(vec![Reply::json("{}")]);
+    // When cargo-crap runs
+    let out = run_with_config(
+        dir.path(),
+        "[duplicates]\nenabled = true\n[duplicates.triage]\nenabled = true\n\
+         provider = \"acme\"\n",
+        &stub,
+        &[],
+    );
+    // Then it exits with the configuration-error code
+    assert_eq!(out.status.code(), Some(2));
+    // And the message names duplicates.triage.provider and the accepted values
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        stderr.contains("duplicates.triage.provider")
+            && stderr.contains("\"acme\"")
+            && stderr.contains("expected one of: typesafe, openai"),
+        "{stderr}"
+    );
+    // And no analysis and no network request happen
+    assert!(out.stdout.is_empty(), "no report was written");
+    assert_eq!(stub.request_count(), 0);
+    // (This build's feature set does not matter: the check runs in both.)
+}
+
+#[cfg(not(feature = "triage"))]
+#[test]
+fn a_build_without_the_triage_feature_accepts_any_known_provider() {
+    use support::api_stub::{ApiStub, Reply};
+    for provider in cargo_crap::duplicates::triage::provider::ids() {
+        // Given a cargo-crap built without the `triage` feature
+        // And a .cargo-crap.toml that enables triage with a known provider,
+        // every provider's API pointed at the stub so a request would show
+        let dir = three_pairs_tree();
+        let stub = ApiStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+        let stub_env = [
+            ("OPENAI_API_KEY", "test-key".to_owned()),
+            ("OPENAI_BASE_URL", format!("{}/v1", stub.base_url())),
+        ];
+        let env: Vec<(&str, &str)> = stub_env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let config = format!("{TRIAGE_ON}provider = \"{provider}\"\n");
+        // When cargo-crap runs with duplicate detection
+        let out = run_with_env(dir.path(), &config, &stub, &[], &env);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // Then the duplicates section is byte-identical to the spec-29 output
+        let plain = run_with_env(dir.path(), DUPLICATES_ONLY, &stub, &[], &env);
+        assert_eq!(out.stdout, plain.stdout, "{provider}");
+        // And stderr carries one warning naming the `triage` feature
+        let stderr = String::from_utf8(out.stderr).expect("utf-8");
+        let warnings: Vec<&str> = stderr.lines().filter(|l| l.contains("triage")).collect();
+        assert_eq!(warnings.len(), 1, "{provider}: {stderr}");
+        assert!(warnings[0].contains("--features triage"), "{stderr}");
+        // And no network request is made
+        assert_eq!(stub.request_count(), 0, "{provider}");
+    }
+}
+
 // ---- Spec 32 · T6 ----
 
 // ---- Spec 32 · T7 ----

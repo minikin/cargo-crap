@@ -49,7 +49,8 @@ min-nodes = 20      # skip functions smaller than this; 0 compares everything
 # `triage` build feature and TYPESAFE_API_KEY; see docs/guides/triage.md).
 [duplicates.triage]
 enabled          = false
-model            = "jev-latest"
+provider         = "typesafe"   # or "openai" (reads OPENAI_API_KEY)
+model            = "jev-latest" # default: the provider's own
 confidence-floor = 0.5   # below this a verdict says "uncertain"; 0.0..=1.0
 ```
 
