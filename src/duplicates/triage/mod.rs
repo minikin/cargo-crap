@@ -75,8 +75,8 @@ pub fn run(
         .map_err(|e| TriageError::Threads(e.to_string()))?;
     let cache = settings.cache_dir.as_ref().map(Cache::new);
     let run = Run {
-        client: client.as_ref().ok(),
-        provider: provider::default_provider(),
+        client: client.as_ref(),
+        provider: settings.provider,
         model: &settings.model,
         cache: cache.as_ref(),
         warned: AtomicBool::new(false),
@@ -87,7 +87,8 @@ pub fn run(
 /// What every pair of one run shares.
 #[cfg(feature = "triage")]
 struct Run<'a> {
-    /// `None` without an API key; only a cache miss needs it.
+    /// `None` without an API key, which is all a missing client can mean.
+    /// Only a cache miss needs it.
     client: Option<&'a Client>,
     /// Whose wire shape the requests are written in and the answers read in.
     provider: &'a dyn Provider,
@@ -119,13 +120,18 @@ impl Run<'_> {
         if let Some(verdict) = self.cache.and_then(|cache| cache.get(key)) {
             return Ok(verdict);
         }
-        let client = self.client.ok_or(TriageError::MissingKey)?;
+        let client = self.client.ok_or(TriageError::MissingKey {
+            var: self.provider.key_var(),
+        })?;
         let body = request::body(self.provider, pair, &source_a, &source_b, self.model);
         let verdict = self
             .provider
             .decode(&client.evaluate(&body.to_string())?)
             .and_then(Verdict::from_answers)
-            .map_err(TriageError::Decode)?;
+            .map_err(|error| TriageError::Decode {
+                api: self.provider.display_name(),
+                error,
+            })?;
         self.remember(key, &verdict);
         Ok(verdict)
     }

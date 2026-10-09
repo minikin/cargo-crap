@@ -1,29 +1,22 @@
-//! The HTTP client for the `TypeSafe` evaluation endpoint.
+//! The HTTP client every triage provider is reached through.
 //!
-//! Blocking, one request per pair. A connection that failed or dropped, a
+//! Blocking, one request per pair, sent to the endpoint and with the key the
+//! run's [`Provider`] names. A connection that failed or dropped, a
 //! 429 and any 5xx (the API's own 529 "overloaded" included) count as
 //! transient and are retried a bounded number of times with a doubling
 //! back-off. Any other 4xx is final: the same request will be refused the
 //! same way.
 
 use crate::duplicates::triage::cache;
-use crate::duplicates::triage::provider::typesafe;
+use crate::duplicates::triage::provider::Provider;
 use crate::duplicates::triage::verdict::DecodeError;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The only place the API key is read from.
-pub const API_KEY_VAR: &str = typesafe::API_KEY_VAR;
-/// Overrides the API's base URL (tests point it at a local stub).
-pub const BASE_URL_VAR: &str = typesafe::BASE_URL_VAR;
 /// Cargo's target directory, where the verdict cache lives.
 pub const TARGET_DIR_VAR: &str = "CARGO_TARGET_DIR";
-/// The API's base URL, absent an override.
-pub const DEFAULT_BASE_URL: &str = typesafe::DEFAULT_BASE_URL;
-
-const ENDPOINT_PATH: &str = typesafe::ENDPOINT_PATH;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_ATTEMPTS: u32 = 3;
@@ -33,13 +26,18 @@ const DEFAULT_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(10);
 
 /// Everything a triage run needs to reach the API.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Settings {
+    /// Whose API is asked: its endpoint, key variable and wire shape.
+    pub provider: &'static dyn Provider,
     /// The model every request names.
     pub model: String,
-    /// The API's base URL, without the endpoint path.
+    /// What the provider's endpoint path is joined to. How much of the path
+    /// it holds is the provider's convention: `https://api.typesafe.ai` for
+    /// `TypeSafe`, `https://api.openai.com/v1` for `OpenAI`.
     pub base_url: String,
-    /// The bearer token; `None` when `TYPESAFE_API_KEY` is unset or empty.
+    /// The bearer token; `None` when the provider's key variable is unset
+    /// or empty.
     pub api_key: Option<String>,
     /// Limit on each request, connection to last byte.
     pub timeout: Duration,
@@ -54,26 +52,53 @@ pub struct Settings {
     pub cache_dir: Option<PathBuf>,
 }
 
+/// Shows which provider and model, never the key: settings end up in panic
+/// messages and logs, and CI logs are often public.
+impl fmt::Debug for Settings {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        f.debug_struct("Settings")
+            .field("provider", &self.provider.id())
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("timeout", &self.timeout)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("attempts", &self.attempts)
+            .field("backoff", &self.backoff)
+            .field("cache_dir", &self.cache_dir)
+            .finish()
+    }
+}
+
 impl Settings {
-    /// Settings for `model` in the project rooted at `project_root`, with the
-    /// key, base URL and target directory read from the process environment.
+    /// Settings for asking `provider`'s `model` in the project rooted at
+    /// `project_root`, with the key, base URL and target directory read from
+    /// the process environment.
     #[must_use]
     pub fn from_env(
+        provider: &'static dyn Provider,
         model: &str,
         project_root: &Path,
     ) -> Self {
-        Self::from_lookup(model, project_root, |name| std::env::var(name).ok())
+        Self::from_lookup(provider, model, project_root, |name| {
+            std::env::var(name).ok()
+        })
     }
 
-    /// Settings for `model` in the project rooted at `project_root`, with
-    /// `TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL` and `CARGO_TARGET_DIR` read
-    /// through `lookup`, so tests can supply an environment without mutating
-    /// the process's. An empty value counts as unset. Verdicts are cached in
+    /// Settings for asking `provider`'s `model` in the project rooted at
+    /// `project_root`, with the provider's key and base-URL variables and
+    /// `CARGO_TARGET_DIR` read through `lookup`, so tests can supply an
+    /// environment without mutating the process's. No other provider's
+    /// variables are read. An empty value counts as unset. Verdicts are cached in
     /// the project's target directory (`CARGO_TARGET_DIR` when set, as for
     /// cargo, else `target/` beside the configuration), so `cargo clean`
     /// sweeps them wherever the command was run from.
     #[must_use]
     pub fn from_lookup(
+        provider: &'static dyn Provider,
         model: &str,
         project_root: &Path,
         lookup: impl Fn(&str) -> Option<String>,
@@ -81,9 +106,11 @@ impl Settings {
         let set = |name| lookup(name).filter(|value: &String| !value.is_empty());
         let target = set(TARGET_DIR_VAR).map_or_else(|| project_root.join("target"), PathBuf::from);
         Self {
+            provider,
             model: model.to_owned(),
-            base_url: set(BASE_URL_VAR).unwrap_or_else(|| DEFAULT_BASE_URL.to_owned()),
-            api_key: set(API_KEY_VAR),
+            base_url: set(provider.base_url_var())
+                .unwrap_or_else(|| provider.default_base_url().to_owned()),
+            api_key: set(provider.key_var()),
             timeout: DEFAULT_TIMEOUT,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
@@ -95,7 +122,11 @@ impl Settings {
     /// The evaluation endpoint's full URL.
     #[must_use]
     pub fn endpoint(&self) -> String {
-        format!("{}{ENDPOINT_PATH}", self.base_url.trim_end_matches('/'))
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            self.provider.endpoint_path()
+        )
     }
 }
 
@@ -103,24 +134,32 @@ impl Settings {
 /// the one warning a failed run prints is actionable.
 #[derive(Debug)]
 pub enum TriageError {
-    /// `TYPESAFE_API_KEY` is unset or empty.
-    MissingKey,
+    /// The provider's key variable, `var`, is unset or empty.
+    MissingKey { var: &'static str },
     /// A side's source could not be read back from disk.
     Source(io::Error),
     /// The API answered with a failure status, after every allowed attempt.
     Status {
+        /// How the provider names its API.
+        api: &'static str,
         status: u16,
         body: String,
         attempts: u32,
     },
     /// The API could not be reached, after every allowed attempt.
     Transport {
+        /// How the provider names its API.
+        api: &'static str,
         endpoint: String,
         message: String,
         attempts: u32,
     },
     /// The API answered, but not with the three answers asked for.
-    Decode(DecodeError),
+    Decode {
+        /// How the provider names its API.
+        api: &'static str,
+        error: DecodeError,
+    },
     /// The threads the requests run on could not be started.
     Threads(String),
 }
@@ -131,27 +170,28 @@ impl fmt::Display for TriageError {
         f: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
         match self {
-            Self::MissingKey => write!(f, "{API_KEY_VAR} is not set"),
+            Self::MissingKey { var } => write!(f, "{var} is not set"),
             Self::Source(e) => write!(f, "could not read a duplicate's source: {e}"),
             Self::Status {
+                api,
                 status,
                 body,
                 attempts,
             } => write!(
                 f,
-                "the TypeSafe API answered {status} after {attempts} attempt(s): {}",
+                "the {api} answered {status} after {attempts} attempt(s): {}",
                 body.chars().take(200).collect::<String>()
             ),
             Self::Transport {
+                api,
                 endpoint,
                 message,
                 attempts,
             } => write!(
                 f,
-                "could not reach the TypeSafe API at {endpoint} after {attempts} attempt(s): \
-                 {message}"
+                "could not reach the {api} at {endpoint} after {attempts} attempt(s): {message}"
             ),
-            Self::Decode(e) => write!(f, "unexpected answer from the TypeSafe API: {e}"),
+            Self::Decode { api, error } => write!(f, "unexpected answer from the {api}: {error}"),
             Self::Threads(e) => write!(f, "could not start the triage request threads: {e}"),
         }
     }
@@ -195,6 +235,8 @@ pub fn retry_delay(
 /// request, which may be sent from many threads at once.
 pub struct Client {
     agent: ureq::Agent,
+    /// How the provider names its API, for errors.
+    api: &'static str,
     endpoint: String,
     authorization: String,
     attempts: u32,
@@ -202,21 +244,20 @@ pub struct Client {
 }
 
 impl Client {
-    /// A client for `settings`, or [`TriageError::MissingKey`] without a key.
-    ///
-    /// # Errors
-    ///
-    /// When `settings` carries no API key.
-    pub fn new(settings: &Settings) -> Result<Self, TriageError> {
-        let key = settings.api_key.as_deref().ok_or(TriageError::MissingKey)?;
+    /// A client for `settings`, or `None` when they carry no API key, which
+    /// is the only thing a client can be missing.
+    #[must_use]
+    pub fn new(settings: &Settings) -> Option<Self> {
+        let key = settings.api_key.as_deref()?;
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(settings.timeout))
             .timeout_connect(Some(settings.connect_timeout))
             .http_status_as_error(false)
             .build()
             .into();
-        Ok(Self {
+        Some(Self {
             agent,
+            api: settings.provider.display_name(),
             endpoint: settings.endpoint(),
             authorization: format!("Bearer {key}"),
             attempts: settings.attempts.max(1),
@@ -254,6 +295,7 @@ impl Client {
     ) -> Result<String, Failure> {
         let transport = |e: ureq::Error| Failure::Transient {
             error: TriageError::Transport {
+                api: self.api,
                 endpoint: self.endpoint.clone(),
                 message: e.to_string(),
                 attempts: attempt,
@@ -280,6 +322,7 @@ impl Client {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
         Err(failed_status(
+            self.api,
             response.status().as_u16(),
             text.unwrap_or_else(|e| format!("(body unreadable: {e})")),
             attempt,
@@ -290,12 +333,14 @@ impl Client {
 
 /// A failure status, as a failed attempt worth another try or not.
 fn failed_status(
+    api: &'static str,
     status: u16,
     body: String,
     attempts: u32,
     retry_after: Option<String>,
 ) -> Failure {
     let error = TriageError::Status {
+        api,
         status,
         body,
         attempts,
@@ -320,6 +365,10 @@ enum Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::duplicates::triage::provider::PROVIDERS;
+    use crate::duplicates::triage::provider::openai::OpenAi;
+    use crate::duplicates::triage::provider::typesafe::{self, TypeSafe};
+    use proptest::prelude::*;
 
     fn lookup<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |name| {
@@ -349,11 +398,12 @@ mod tests {
     #[test]
     fn settings_read_the_key_and_base_url_from_the_environment() {
         let settings = Settings::from_lookup(
+            &TypeSafe,
             "jev-1",
             Path::new("/proj"),
             lookup(&[
-                (API_KEY_VAR, "secret"),
-                (BASE_URL_VAR, "http://127.0.0.1:9"),
+                (typesafe::API_KEY_VAR, "secret"),
+                (typesafe::BASE_URL_VAR, "http://127.0.0.1:9"),
             ]),
         );
         assert_eq!(settings.model, "jev-1");
@@ -364,19 +414,29 @@ mod tests {
     #[test]
     fn an_unset_or_empty_key_is_no_key() {
         assert_eq!(
-            Settings::from_lookup("m", Path::new("/proj"), lookup(&[])).api_key,
+            Settings::from_lookup(&TypeSafe, "m", Path::new("/proj"), lookup(&[])).api_key,
             None
         );
         assert_eq!(
-            Settings::from_lookup("m", Path::new("/proj"), lookup(&[(API_KEY_VAR, "")])).api_key,
+            Settings::from_lookup(
+                &TypeSafe,
+                "m",
+                Path::new("/proj"),
+                lookup(&[(typesafe::API_KEY_VAR, "")])
+            )
+            .api_key,
             None
         );
     }
 
     #[test]
     fn the_base_url_defaults_to_the_public_api() {
-        let settings =
-            Settings::from_lookup("m", Path::new("/proj"), lookup(&[(BASE_URL_VAR, "")]));
+        let settings = Settings::from_lookup(
+            &TypeSafe,
+            "m",
+            Path::new("/proj"),
+            lookup(&[(typesafe::BASE_URL_VAR, "")]),
+        );
         assert_eq!(settings.base_url, "https://api.typesafe.ai");
         assert_eq!(settings.endpoint(), "https://api.typesafe.ai/v1/systemone");
     }
@@ -384,16 +444,17 @@ mod tests {
     #[test]
     fn the_endpoint_joins_the_base_url_without_a_double_slash() {
         let settings = Settings::from_lookup(
+            &TypeSafe,
             "m",
             Path::new("/proj"),
-            lookup(&[(BASE_URL_VAR, "http://stub:1/")]),
+            lookup(&[(typesafe::BASE_URL_VAR, "http://stub:1/")]),
         );
         assert_eq!(settings.endpoint(), "http://stub:1/v1/systemone");
     }
 
     #[test]
     fn the_defaults_bound_every_request() {
-        let settings = Settings::from_lookup("m", Path::new("/proj"), lookup(&[]));
+        let settings = Settings::from_lookup(&TypeSafe, "m", Path::new("/proj"), lookup(&[]));
         assert_eq!(settings.timeout, std::time::Duration::from_secs(10));
         assert_eq!(settings.attempts, 3);
     }
@@ -401,7 +462,7 @@ mod tests {
     #[test]
     fn a_connection_attempt_is_bounded_separately() {
         // A host that drops SYNs fails in seconds, not a full request timeout.
-        let settings = Settings::from_lookup("m", Path::new("/proj"), lookup(&[]));
+        let settings = Settings::from_lookup(&TypeSafe, "m", Path::new("/proj"), lookup(&[]));
         assert_eq!(settings.connect_timeout, std::time::Duration::from_secs(3));
     }
 
@@ -424,7 +485,7 @@ mod tests {
     fn verdicts_are_cached_under_the_projects_target_directory() {
         // Beside the configuration that enabled triage, not wherever the
         // command happened to run; CARGO_TARGET_DIR still wins, as for cargo.
-        let default = Settings::from_lookup("m", Path::new("/proj"), lookup(&[]));
+        let default = Settings::from_lookup(&TypeSafe, "m", Path::new("/proj"), lookup(&[]));
         assert_eq!(
             default.cache_dir,
             Some(
@@ -434,6 +495,7 @@ mod tests {
             )
         );
         let custom = Settings::from_lookup(
+            &TypeSafe,
             "m",
             Path::new("/proj"),
             lookup(&[(TARGET_DIR_VAR, "/tmp/t")]),
@@ -455,34 +517,156 @@ mod tests {
     #[test]
     fn every_error_names_its_cause() {
         let cases = [
-            (TriageError::MissingKey, "TYPESAFE_API_KEY"),
+            (
+                TriageError::MissingKey {
+                    var: "TYPESAFE_API_KEY",
+                },
+                "TYPESAFE_API_KEY is not set",
+            ),
+            (
+                TriageError::MissingKey {
+                    var: "OPENAI_API_KEY",
+                },
+                "OPENAI_API_KEY is not set",
+            ),
             (
                 TriageError::Status {
+                    api: "OpenAI API",
                     status: 503,
                     body: "overloaded".into(),
                     attempts: 3,
                 },
-                "503",
+                "the OpenAI API answered 503 after 3 attempt(s): overloaded",
             ),
             (
                 TriageError::Transport {
-                    endpoint: "http://stub/v1/systemone".into(),
+                    api: "OpenAI API",
+                    endpoint: "http://stub/v1/decisions".into(),
                     message: "connection refused".into(),
                     attempts: 3,
                 },
-                "http://stub/v1/systemone",
+                "could not reach the OpenAI API at http://stub/v1/decisions after 3 \
+                 attempt(s): connection refused",
+            ),
+            (
+                TriageError::Decode {
+                    api: "OpenAI API",
+                    error: crate::duplicates::triage::verdict::DecodeError::new("x: no answer"),
+                },
+                "unexpected answer from the OpenAI API: x: no answer",
             ),
             (
                 TriageError::Source(std::io::Error::other("src/a.rs: gone")),
-                "src/a.rs",
+                "could not read a duplicate's source: src/a.rs: gone",
             ),
             (
                 TriageError::Threads("out of threads".into()),
-                "out of threads",
+                "could not start the triage request threads: out of threads",
             ),
         ];
-        for (error, cause) in cases {
-            assert!(error.to_string().contains(cause), "{error}");
+        for (error, message) in cases {
+            assert_eq!(error.to_string(), message);
         }
+    }
+
+    #[test]
+    fn openai_settings_read_only_openai_variables() {
+        let settings = Settings::from_lookup(
+            &OpenAi,
+            "gpt-6-luna",
+            Path::new("/proj"),
+            lookup(&[
+                (typesafe::API_KEY_VAR, "typesafe-secret"),
+                (typesafe::BASE_URL_VAR, "http://typesafe:1"),
+            ]),
+        );
+        assert_eq!(
+            settings.api_key, None,
+            "a TypeSafe key is never an OpenAI key"
+        );
+        assert_eq!(settings.base_url, "https://api.openai.com/v1");
+        assert_eq!(settings.endpoint(), "https://api.openai.com/v1/decisions");
+        let settings = Settings::from_lookup(
+            &OpenAi,
+            "gpt-6-luna",
+            Path::new("/proj"),
+            lookup(&[
+                ("OPENAI_API_KEY", "openai-secret"),
+                ("OPENAI_BASE_URL", "http://127.0.0.1:9/v1/"),
+            ]),
+        );
+        assert_eq!(settings.api_key.as_deref(), Some("openai-secret"));
+        assert_eq!(settings.endpoint(), "http://127.0.0.1:9/v1/decisions");
+        assert_eq!(settings.provider.id(), "openai");
+    }
+
+    /// Every variable any registered provider reads.
+    fn provider_variables() -> Vec<&'static str> {
+        PROVIDERS
+            .iter()
+            .flat_map(|p| [p.key_var(), p.base_url_var()])
+            .collect()
+    }
+
+    proptest! {
+        /// Whatever is set, a provider's settings carry only values read
+        /// from its own variables.
+        #[test]
+        fn settings_never_carry_another_providers_values(
+            set in proptest::collection::vec(any::<bool>(), 2 * PROVIDERS.len()),
+            which in 0..PROVIDERS.len(),
+        ) {
+            let vars = provider_variables();
+            prop_assert_eq!(vars.len(), set.len());
+            let provider = PROVIDERS[which];
+            let present: Vec<&str> = vars
+                .iter()
+                .zip(&set)
+                .filter(|(_, on)| **on)
+                .map(|(var, _)| *var)
+                .collect();
+            let settings = Settings::from_lookup(provider, "m", Path::new("/proj"), |name| {
+                present.contains(&name).then(|| format!("{name}-value"))
+            });
+            if let Some(key) = &settings.api_key {
+                prop_assert_eq!(key, &format!("{}-value", provider.key_var()));
+            }
+            let own_url = format!("{}-value", provider.base_url_var());
+            prop_assert!(
+                settings.base_url == own_url || settings.base_url == provider.default_base_url(),
+                "{}", settings.base_url
+            );
+        }
+    }
+
+    #[test]
+    fn debug_output_names_the_provider_and_never_shows_the_key() {
+        let settings = Settings::from_lookup(
+            &OpenAi,
+            "gpt-6-luna",
+            Path::new("/proj"),
+            lookup(&[("OPENAI_API_KEY", "sk-very-secret")]),
+        );
+        let shown = format!("{settings:?}");
+        assert!(!shown.contains("sk-very-secret"), "{shown}");
+        assert!(shown.contains("<redacted>"), "{shown}");
+        assert!(shown.contains("provider: \"openai\""), "{shown}");
+        assert!(shown.contains("gpt-6-luna"), "{shown}");
+        let keyless = Settings::from_lookup(&OpenAi, "m", Path::new("/proj"), lookup(&[]));
+        assert!(
+            format!("{keyless:?}").contains("api_key: None"),
+            "{keyless:?}"
+        );
+    }
+
+    #[test]
+    fn a_client_needs_a_key() {
+        let keyless = Settings::from_lookup(&TypeSafe, "m", Path::new("/proj"), lookup(&[]));
+        assert!(Client::new(&keyless).is_none());
+        let keyed = Settings {
+            api_key: Some("k".into()),
+            ..keyless
+        };
+        assert!(Client::new(&keyed).is_some());
     }
 }

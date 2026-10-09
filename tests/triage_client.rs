@@ -1,4 +1,4 @@
-//! The triage client against the recording `TypeSafe` stub.
+//! The triage client against the recording stub, playing each provider.
 //!
 //! No test here touches the network or needs a key. Built only with the
 //! `triage` feature, which is what compiles the client in.
@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use cargo_crap::duplicates::compare::DuplicatePair;
 use cargo_crap::duplicates::extract::Location;
+use cargo_crap::duplicates::triage::provider::{by_id, default_provider};
 use cargo_crap::duplicates::triage::verdict::{Kind, Verdict};
 use cargo_crap::duplicates::triage::{Settings, TriageError, run};
 use support::api_stub::{ApiStub, Reply};
@@ -57,6 +58,7 @@ fn pairs(
 
 fn settings(base_url: String) -> Settings {
     Settings {
+        provider: default_provider(),
         model: "jev-latest".to_owned(),
         base_url,
         api_key: Some("test-key".to_owned()),
@@ -199,6 +201,75 @@ fn a_missing_key_errs_naming_it_with_zero_requests_made() {
     let err = run_within(pairs(dir.path(), 2), settings).expect_err("no key");
     assert!(err.to_string().contains("TYPESAFE_API_KEY"), "{err}");
     assert_eq!(stub.request_count(), 0);
+}
+
+/// An `OpenAI` Decisions answer naming `kind`.
+fn openai_answer(kind: &str) -> String {
+    format!(
+        r#"{{"answers":[
+            {{"type":"choice","name":"duplication_kind","choice":"{kind}","confidence":0.9}},
+            {{"type":"score","name":"worth_extracting","score":2.0,"confidence":0.8}},
+            {{"type":"predicate","name":"divergence_risk","probability":0.6}}]}}"#
+    )
+}
+
+/// Settings that ask `OpenAI` at the stub, its base URL ending in `/v1` as the
+/// `OpenAI` convention has it.
+fn openai_settings(stub: &ApiStub) -> Settings {
+    Settings {
+        provider: by_id("openai").expect("registered"),
+        model: "gpt-6-luna".to_owned(),
+        api_key: Some("openai-key".to_owned()),
+        ..settings(format!("{}/v1", stub.base_url()))
+    }
+}
+
+#[test]
+fn an_openai_answer_decodes_through_the_openai_provider() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::json(&openai_answer("same_logic"))]);
+    let verdicts = run_within(pairs(dir.path(), 1), openai_settings(&stub)).expect("triaged");
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!(verdicts[0].kind, Kind::SameLogic);
+    let request = &stub.requests()[0];
+    assert_eq!(request.path, "/v1/decisions");
+    assert_eq!(request.header("authorization"), Some("Bearer openai-key"));
+    assert_eq!(request.json()["model"], "gpt-6-luna");
+}
+
+#[test]
+fn a_missing_openai_key_errs_naming_it_with_zero_requests_made() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::json(&openai_answer("same_logic"))]);
+    let settings = Settings {
+        api_key: None,
+        ..openai_settings(&stub)
+    };
+    let err = run_within(pairs(dir.path(), 2), settings).expect_err("no key");
+    assert_eq!(err.to_string(), "OPENAI_API_KEY is not set");
+    assert_eq!(stub.request_count(), 0);
+}
+
+#[test]
+fn an_openai_failure_status_names_the_openai_api() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::status(401)]);
+    let err = run_within(pairs(dir.path(), 1), openai_settings(&stub)).expect_err("refused");
+    assert_eq!(
+        err.to_string(),
+        r#"the OpenAI API answered 401 after 1 attempt(s): {"error":"stub status 401"}"#
+    );
+}
+
+#[test]
+fn an_openai_answer_that_does_not_decode_names_the_openai_api() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::json(r#"{"answers":[]}"#)]);
+    let err = run_within(pairs(dir.path(), 1), openai_settings(&stub)).expect_err("empty");
+    assert_eq!(
+        err.to_string(),
+        "unexpected answer from the OpenAI API: duplication_kind: no answer"
+    );
 }
 
 #[test]

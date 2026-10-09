@@ -41,8 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `config::DEFAULT_TRIAGE_MODEL` is gone (ask
   `provider::default_provider().default_model()`), `Verdict::decode` is
   replaced by a provider's `decode` followed by `Verdict::from_answers`,
-  and `request::body` and `request::build` take the provider first. The
-  requests TypeSafe receives are unchanged.
+  and `request::body` and `request::build` take the provider first.
+  `triage::Settings` gained `provider`, and `Settings::from_env` and
+  `from_lookup` take it first. `TriageError::MissingKey` names the
+  variable (`MissingKey { var }`), `Status` and `Transport` gained `api`,
+  and `Decode` became `Decode { api, error }`. `Client::new` returns an
+  `Option`. `client::API_KEY_VAR`, `BASE_URL_VAR` and `DEFAULT_BASE_URL`
+  are gone: each provider names its own. The requests TypeSafe receives,
+  and the warnings it causes, are unchanged.
 
 ### Fixed
 

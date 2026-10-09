@@ -1375,8 +1375,11 @@ fn triage_assessments(
     #[cfg(feature = "triage")]
     {
         use cargo_crap::duplicates::triage;
-        let api_settings =
-            triage::Settings::from_env(&settings.triage_model, &settings.triage_root);
+        let api_settings = triage::Settings::from_env(
+            default_provider(),
+            &settings.triage_model,
+            &settings.triage_root,
+        );
         triage::run(pairs, &api_settings)
             .inspect_err(|e| {
                 eprintln!(
