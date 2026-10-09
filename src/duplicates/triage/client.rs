@@ -7,6 +7,7 @@
 //! same way.
 
 use crate::duplicates::triage::cache;
+use crate::duplicates::triage::provider::typesafe;
 use crate::duplicates::triage::verdict::DecodeError;
 use std::fmt;
 use std::io;
@@ -14,15 +15,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The only place the API key is read from.
-pub const API_KEY_VAR: &str = "TYPESAFE_API_KEY";
+pub const API_KEY_VAR: &str = typesafe::API_KEY_VAR;
 /// Overrides the API's base URL (tests point it at a local stub).
-pub const BASE_URL_VAR: &str = "TYPESAFE_BASE_URL";
+pub const BASE_URL_VAR: &str = typesafe::BASE_URL_VAR;
 /// Cargo's target directory, where the verdict cache lives.
 pub const TARGET_DIR_VAR: &str = "CARGO_TARGET_DIR";
 /// The API's base URL, absent an override.
-pub const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
+pub const DEFAULT_BASE_URL: &str = typesafe::DEFAULT_BASE_URL;
 
-const ENDPOINT_PATH: &str = "/v1/systemone";
+const ENDPOINT_PATH: &str = typesafe::ENDPOINT_PATH;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_ATTEMPTS: u32 = 3;

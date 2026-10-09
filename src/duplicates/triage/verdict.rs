@@ -1,8 +1,7 @@
 //! What the model said about one pair, and how sure it has to be before the
 //! report repeats it.
 
-use serde::Deserialize;
-use std::collections::HashMap;
+use crate::duplicates::triage::provider::Answers;
 use std::fmt;
 
 /// Question id of the Choice that names the kind of duplication.
@@ -125,27 +124,25 @@ pub enum Assessment {
 }
 
 impl Verdict {
-    /// Decode a `/v1/systemone` response carrying the three answers.
+    /// The verdict `answers` carry, every value checked against its range.
+    /// Every provider's answers pass through here, so every provider gets
+    /// the same checks and the same clamp.
     ///
     /// # Errors
     ///
-    /// When the body is not a response, an answer is missing or of the wrong
-    /// type, the kind is not one of the offered options, or a value is out
-    /// of range.
-    pub fn decode(body: &str) -> Result<Self, DecodeError> {
-        let response: Response = serde_json::from_str(body)
-            .map_err(|e| DecodeError(format!("not a /v1/systemone response: {e}")))?;
-        let (choice, confidence) = response.choice(KIND_QUESTION)?;
-        let kind = Kind::from_wire(&choice).ok_or_else(|| {
-            DecodeError(format!(
-                "{KIND_QUESTION}: {choice:?} is not an offered option"
-            ))
-        })?;
+    /// When a confidence or the divergence probability is outside `0..=1`,
+    /// or the worth score is outside its levels, NaN included. The error
+    /// names the question and the field.
+    pub fn from_answers(answers: Answers) -> Result<Self, DecodeError> {
+        let confidence = within(KIND_QUESTION, "confidence", answers.kind_confidence, 1.0)?;
+        // Checked, not kept: only the kind's confidence meets the floor.
+        within(WORTH_QUESTION, "confidence", answers.worth_confidence, 1.0)?;
+        let worth = within(WORTH_QUESTION, "score", answers.worth, WorthExtracting::TOP)?;
         Ok(Self {
-            kind,
+            kind: answers.kind,
             confidence,
-            worth_extracting: WorthExtracting(response.score(WORTH_QUESTION)?),
-            divergence_risk: response.noul(DIVERGENCE_QUESTION)?,
+            worth_extracting: WorthExtracting(worth),
+            divergence_risk: within(DIVERGENCE_QUESTION, "probability", answers.divergence, 1.0)?,
         })
     }
 
@@ -180,103 +177,20 @@ impl fmt::Display for DecodeError {
     }
 }
 
+impl DecodeError {
+    /// An error whose message is `message`.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
 impl std::error::Error for DecodeError {}
 
 /// Values the server computes can land a hair past a bound. Within this of
 /// one they are float noise, clamped to it rather than rejected: one
 /// rejected pair discards the whole run's triage.
 const TOLERANCE: f64 = 1e-9;
-
-/// The parts of a `/v1/systemone` response this module reads. Answers stay
-/// raw until asked for, so an answer nobody asked for is ignored and a
-/// malformed one fails under its own question's name.
-#[derive(Deserialize)]
-struct Response {
-    answers: HashMap<String, serde_json::Value>,
-}
-
-/// One answer; fields this module does not read (`probabilities`,
-/// `legend`) are ignored.
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum Answer {
-    Choice { choice: String, confidence: f64 },
-    Score { score: f64, confidence: f64 },
-    Noul { noul: f64 },
-}
-
-impl Answer {
-    fn type_name(&self) -> &'static str {
-        match self {
-            Answer::Choice { .. } => "choice",
-            Answer::Score { .. } => "score",
-            Answer::Noul { .. } => "noul",
-        }
-    }
-}
-
-impl Response {
-    fn answer(
-        &self,
-        id: &str,
-    ) -> Result<Answer, DecodeError> {
-        let raw = self
-            .answers
-            .get(id)
-            .ok_or_else(|| DecodeError(format!("{id}: no answer")))?;
-        Answer::deserialize(raw).map_err(|e| DecodeError(format!("{id}: {e}")))
-    }
-
-    /// The chosen option and the Choice's confidence.
-    fn choice(
-        &self,
-        id: &str,
-    ) -> Result<(String, f64), DecodeError> {
-        match self.answer(id)? {
-            Answer::Choice { choice, confidence } => {
-                Ok((choice, within(id, "confidence", confidence, 1.0)?))
-            },
-            other => Err(wrong_type(id, "choice", &other)),
-        }
-    }
-
-    /// The Score's position across the worth-extracting levels. Its
-    /// confidence is checked but not kept: only the kind's confidence meets
-    /// the floor.
-    fn score(
-        &self,
-        id: &str,
-    ) -> Result<f64, DecodeError> {
-        match self.answer(id)? {
-            Answer::Score { score, confidence } => {
-                within(id, "confidence", confidence, 1.0)?;
-                within(id, "score", score, WorthExtracting::TOP)
-            },
-            other => Err(wrong_type(id, "score", &other)),
-        }
-    }
-
-    fn noul(
-        &self,
-        id: &str,
-    ) -> Result<f64, DecodeError> {
-        match self.answer(id)? {
-            Answer::Noul { noul } => within(id, "noul", noul, 1.0),
-            other => Err(wrong_type(id, "noul", &other)),
-        }
-    }
-}
-
-fn wrong_type(
-    id: &str,
-    expected: &str,
-    got: &Answer,
-) -> DecodeError {
-    DecodeError(format!(
-        "{id}: expected a {expected} answer, got {}",
-        got.type_name()
-    ))
-}
 
 /// `value` clamped into `0.0..=top` when it lies there or within
 /// [`TOLERANCE`] of an end; an error naming the field otherwise, NaN
@@ -305,32 +219,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// A full `/v1/systemone` response with the three answers, overridable
-    /// one answer at a time.
-    fn response(
-        kind: &str,
-        worth: &str,
-        divergence: &str,
-    ) -> String {
-        format!(
-            r#"{{"model":"jev-1.13.0","answers":{{"duplication_kind":{kind},"worth_extracting":{worth},"divergence_risk":{divergence}}},"usage":{{"input_tokens":900,"output_tokens":40}}}}"#
-        )
-    }
-
-    const KIND: &str = r#"{"type":"choice","choice":"same_logic","probabilities":{"same_logic":0.86,"shared_shape_only":0.08,"structural_obligation":0.04,"parameterisable":0.02},"confidence":0.81}"#;
-    const WORTH: &str = r#"{"type":"score","score":2.4,"legend":{"0":"a","1":"b","2":"c","3":"d"},"probabilities":{"0":0.0,"1":0.1,"2":0.4,"3":0.5},"confidence":0.62}"#;
-    const DIVERGENCE: &str = r#"{"type":"noul","noul":0.8}"#;
-
-    #[test]
-    fn decodes_a_canned_response() {
-        let verdict = Verdict::decode(&response(KIND, WORTH, DIVERGENCE)).expect("decodes");
-        assert_eq!(verdict.kind, Kind::SameLogic);
-        assert_eq!(verdict.confidence, 0.81);
-        assert_eq!(verdict.worth_extracting.score(), 2.4);
-        assert_eq!(verdict.worth_extracting.label(), "worthwhile");
-        assert_eq!(verdict.divergence_risk, 0.8);
-    }
-
     #[test]
     fn every_kind_has_one_wire_name_and_one_kebab_label() {
         let wire = [
@@ -357,151 +245,118 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_missing_answer_is_an_error_naming_the_question() {
-        let body = r#"{"model":"jev","answers":{},"usage":{}}"#;
-        let err = Verdict::decode(body).expect_err("nothing to decode");
-        assert!(err.to_string().contains(KIND_QUESTION), "{err}");
-
-        let without_worth = response(KIND, WORTH, DIVERGENCE)
-            .replace(&format!(r#""worth_extracting":{WORTH},"#), "");
-        let err = Verdict::decode(&without_worth).expect_err("no worth answer");
-        assert!(err.to_string().contains(WORTH_QUESTION), "{err}");
-
-        let without_divergence = response(KIND, WORTH, DIVERGENCE)
-            .replace(&format!(r#","divergence_risk":{DIVERGENCE}"#), "");
-        let err = Verdict::decode(&without_divergence).expect_err("no divergence answer");
-        assert!(err.to_string().contains(DIVERGENCE_QUESTION), "{err}");
+    fn answers() -> Answers {
+        Answers {
+            kind: Kind::SameLogic,
+            kind_confidence: 0.81,
+            worth: 2.4,
+            worth_confidence: 0.62,
+            divergence: 0.8,
+        }
     }
 
     #[test]
-    fn an_answer_of_the_wrong_type_is_an_error_naming_both_types() {
-        // The message names the question, the type it needed and the type
-        // that came back: the three facts a mismatched question set needs.
-        let cases = [
+    fn answers_in_range_become_the_verdict() {
+        let verdict = Verdict::from_answers(answers()).expect("in range");
+        assert_eq!(verdict.kind, Kind::SameLogic);
+        assert_eq!(verdict.confidence, 0.81);
+        assert_eq!(verdict.worth_extracting.score(), 2.4);
+        assert_eq!(verdict.divergence_risk, 0.8);
+    }
+
+    #[test]
+    fn an_out_of_range_answer_is_an_error_naming_its_question_and_field() {
+        type Spoil = fn(&mut Answers);
+        let cases: [(Spoil, &str); 9] = [
             (
-                response(DIVERGENCE, WORTH, DIVERGENCE),
-                KIND_QUESTION,
-                "a choice answer, got noul",
+                |a| a.kind_confidence = 1.2,
+                "duplication_kind: confidence 1.2",
             ),
             (
-                response(KIND, KIND, DIVERGENCE),
-                WORTH_QUESTION,
-                "a score answer, got choice",
+                |a| a.kind_confidence = -0.1,
+                "duplication_kind: confidence -0.1",
+            ),
+            (|a| a.worth = 3.5, "worth_extracting: score 3.5"),
+            (|a| a.worth = -0.5, "worth_extracting: score -0.5"),
+            (
+                |a| a.worth_confidence = 1.01,
+                "worth_extracting: confidence 1.01",
             ),
             (
-                response(KIND, WORTH, WORTH),
-                DIVERGENCE_QUESTION,
-                "a noul answer, got score",
+                |a| a.worth_confidence = -0.2,
+                "worth_extracting: confidence -0.2",
+            ),
+            (|a| a.divergence = 1.5, "divergence_risk: probability 1.5"),
+            (|a| a.divergence = -1.0, "divergence_risk: probability -1"),
+            (
+                |a| a.divergence = f64::NAN,
+                "divergence_risk: probability NaN",
             ),
         ];
-        for (body, question, types) in cases {
-            let err = Verdict::decode(&body)
-                .expect_err("wrong answer type")
+        for (spoil, message) in cases {
+            let mut bad = answers();
+            spoil(&mut bad);
+            let err = Verdict::from_answers(bad)
+                .expect_err("out of range")
                 .to_string();
-            assert!(err.contains(question) && err.contains(types), "{err}");
-        }
-    }
-
-    #[test]
-    fn an_option_that_was_never_offered_is_an_error() {
-        let kind = r#"{"type":"choice","choice":"copy_paste","probabilities":{},"confidence":0.9}"#;
-        let err = Verdict::decode(&response(kind, WORTH, DIVERGENCE)).expect_err("unknown option");
-        assert!(err.to_string().contains("copy_paste"), "{err}");
-    }
-
-    #[test]
-    fn an_out_of_range_value_is_an_error() {
-        let bad = [
-            response(&KIND.replace("0.81", "1.2"), WORTH, DIVERGENCE),
-            response(&KIND.replace("0.81", "-0.1"), WORTH, DIVERGENCE),
-            response(KIND, &WORTH.replace("2.4", "3.5"), DIVERGENCE),
-            response(KIND, &WORTH.replace("2.4", "-0.5"), DIVERGENCE),
-            response(KIND, &WORTH.replace("0.62", "1.01"), DIVERGENCE),
-            response(KIND, WORTH, &DIVERGENCE.replace("0.8", "1.5")),
-            response(KIND, WORTH, &DIVERGENCE.replace("0.8", "-1")),
-        ];
-        for body in bad {
-            assert!(Verdict::decode(&body).is_err(), "accepted: {body}");
-        }
-    }
-
-    #[test]
-    fn a_body_that_is_not_a_response_is_an_error() {
-        assert!(Verdict::decode("not json").is_err());
-        assert!(Verdict::decode(r#"{"error":"overloaded"}"#).is_err());
-    }
-
-    #[test]
-    fn values_on_the_bounds_are_accepted() {
-        // A certain Choice, a certain Noul either way, and both ends of the
-        // Score are ordinary answers.
-        for (confidence, noul) in [("1.0", "0.0"), ("0.0", "1.0")] {
-            let body = response(
-                &KIND.replace("0.81", confidence),
-                &WORTH.replace("0.62", confidence),
-                &DIVERGENCE.replace("0.8", noul),
-            );
-            let verdict = Verdict::decode(&body).expect("bounds are in range");
-            assert_eq!(
-                verdict.confidence.to_string(),
-                confidence.trim_end_matches(".0")
-            );
-            assert_eq!(
-                verdict.divergence_risk.to_string(),
-                noul.trim_end_matches(".0")
+            assert!(
+                err.starts_with(message) && err.contains("is outside 0..="),
+                "{err}"
             );
         }
     }
 
     #[test]
-    fn float_noise_at_a_bound_is_clamped_to_it() {
-        let body = response(
-            &KIND.replace("0.81", "1.0000000002"),
-            &WORTH.replace("2.4", "3.0000000001"),
-            &DIVERGENCE.replace("0.8", "-0.0000000001"),
-        );
-        let verdict = Verdict::decode(&body).expect("noise within the tolerance");
+    fn a_score_and_its_confidence_both_out_of_range_name_the_confidence() {
+        // The order the checks ran in before triage had providers.
+        let bad = Answers {
+            worth: 9.0,
+            worth_confidence: 9.0,
+            ..answers()
+        };
+        let err = Verdict::from_answers(bad)
+            .expect_err("both out of range")
+            .to_string();
+        assert!(err.starts_with("worth_extracting: confidence 9"), "{err}");
+    }
+
+    #[test]
+    fn answers_on_the_bounds_and_within_noise_of_them_are_clamped() {
+        let low = Answers {
+            kind_confidence: -1e-12,
+            worth: 0.0,
+            worth_confidence: 0.0,
+            divergence: -1e-12,
+            ..answers()
+        };
+        let verdict = Verdict::from_answers(low).expect("noise at the bottom");
+        assert_eq!(verdict.confidence, 0.0);
+        assert_eq!(verdict.worth_extracting.score(), 0.0);
+        assert_eq!(verdict.divergence_risk, 0.0);
+        let high = Answers {
+            kind_confidence: 1.0 + 1e-12,
+            worth: 3.0 + 1e-12,
+            worth_confidence: 1.0,
+            divergence: 1.0,
+            ..answers()
+        };
+        let verdict = Verdict::from_answers(high).expect("noise at the top");
         assert_eq!(verdict.confidence, 1.0);
         assert_eq!(verdict.worth_extracting.score(), 3.0);
-        assert_eq!(verdict.divergence_risk, 0.0);
-
-        // Past the tolerance it is still out of range.
-        let body = response(&KIND.replace("0.81", "1.000001"), WORTH, DIVERGENCE);
-        assert!(Verdict::decode(&body).is_err(), "1.000001 is not noise");
-    }
-
-    #[test]
-    fn an_answer_nobody_asked_for_is_ignored() {
-        let body = response(KIND, WORTH, DIVERGENCE).replace(
-            r#""answers":{"#,
-            r#""answers":{"diagnostic":{"type":"trace","id":"x"},"#,
-        );
-        let verdict = Verdict::decode(&body).expect("the three answers still decode");
-        assert_eq!(verdict.kind, Kind::SameLogic);
-    }
-
-    #[test]
-    fn a_malformed_answer_names_its_question() {
-        let kind = r#"{"type":"choice","choice":"same_logic"}"#;
-        let err = Verdict::decode(&response(kind, WORTH, DIVERGENCE))
-            .expect_err("a choice without confidence")
-            .to_string();
+        assert_eq!(verdict.divergence_risk, 1.0);
+        let past = Answers {
+            kind_confidence: 1.000_001,
+            ..answers()
+        };
         assert!(
-            err.contains(KIND_QUESTION) && err.contains("confidence"),
-            "{err}"
+            Verdict::from_answers(past).is_err(),
+            "1.000001 is not noise"
         );
-
-        let divergence = r#"{"type":"verdict","noul":0.8}"#;
-        let err = Verdict::decode(&response(KIND, WORTH, divergence))
-            .expect_err("an unknown answer type")
-            .to_string();
-        assert!(err.contains(DIVERGENCE_QUESTION), "{err}");
     }
 
     #[test]
     fn the_floor_is_inclusive() {
-        let verdict = Verdict::decode(&response(KIND, WORTH, DIVERGENCE)).expect("decodes");
+        let verdict = Verdict::from_answers(answers()).expect("in range");
         assert_eq!(verdict.assessment(0.81), Assessment::Kind(verdict));
         assert_eq!(
             verdict.assessment(0.82),

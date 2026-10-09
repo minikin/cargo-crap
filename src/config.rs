@@ -171,7 +171,7 @@ pub struct TriageConfig {
     /// Ask the model about each pair. Defaults to `false`.
     pub enabled: Option<bool>,
 
-    /// The model to ask. Defaults to [`DEFAULT_TRIAGE_MODEL`].
+    /// The model to ask. Defaults to the provider's own default model.
     pub model: Option<String>,
 
     /// Below this confidence a verdict names no kind and reports
@@ -181,9 +181,6 @@ pub struct TriageConfig {
     #[serde(alias = "confidence_floor")]
     pub confidence_floor: Option<f64>,
 }
-
-/// The triage model, absent any configuration.
-pub const DEFAULT_TRIAGE_MODEL: &str = "jev-latest";
 
 /// The triage confidence floor, absent any configuration.
 pub const DEFAULT_TRIAGE_CONFIDENCE_FLOOR: f64 = 0.5;
@@ -444,7 +441,6 @@ allow = ["Foo::*"]
         assert!(cfg.duplicates.triage.model.is_none());
         assert!(cfg.duplicates.triage.confidence_floor.is_none());
         // What an unset key resolves to.
-        assert_eq!(DEFAULT_TRIAGE_MODEL, "jev-latest");
         assert!((DEFAULT_TRIAGE_CONFIDENCE_FLOOR - 0.5).abs() < f64::EPSILON);
     }
 

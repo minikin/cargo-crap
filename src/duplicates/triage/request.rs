@@ -2,15 +2,19 @@
 //!
 //! One request per pair, carrying that pair's two function bodies and
 //! nothing else. The three questions share the state and are evaluated
-//! independently; their ids and option names are the ones
-//! [`verdict`](super::verdict) decodes.
+//! independently. They are written once, here, as data: each provider
+//! translates them into its own wire shape and decodes the answers by the
+//! same ids.
 
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
+use crate::duplicates::triage::provider::{
+    BinaryQuestion, ChoiceQuestion, Provider, QuestionSet, ScoreQuestion,
+};
 use crate::duplicates::triage::verdict::{
     DIVERGENCE_QUESTION, KIND_QUESTION, Kind, WORTH_QUESTION,
 };
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::io;
 use std::path::Path;
 
@@ -63,11 +67,12 @@ const DIVERGENCE_INSTRUCTIONS: &str = "If a bug were fixed in `function_a`, woul
 /// When either side's file cannot be read, or no longer holds the lines the
 /// scan located the function on.
 pub fn build(
+    provider: &dyn Provider,
     pair: &DuplicatePair,
     model: &str,
 ) -> io::Result<Value> {
     let (source_a, source_b) = sources(pair)?;
-    Ok(body(pair, &source_a, &source_b, model))
+    Ok(body(provider, pair, &source_a, &source_b, model))
 }
 
 /// Both sides' source, read back from disk: what the request carries and
@@ -81,19 +86,17 @@ pub fn sources(pair: &DuplicatePair) -> io::Result<(String, String)> {
     Ok((read_location(&pair.first)?, read_location(&pair.second)?))
 }
 
-/// The request body: the pair's state, the model and the three questions.
+/// The request body `provider` sends: the pair's state, the model and the
+/// three questions, in that provider's wire shape.
 #[must_use]
 pub fn body(
+    provider: &dyn Provider,
     pair: &DuplicatePair,
     source_a: &str,
     source_b: &str,
     model: &str,
 ) -> Value {
-    json!({
-        "state": state(pair, source_a, source_b),
-        "model": model,
-        "questions": questions(),
-    })
+    provider.encode(state(pair, source_a, source_b), model, &QUESTIONS)
 }
 
 /// What the model judges: each side's name, location and source, plus the
@@ -122,42 +125,45 @@ fn side(
     })
 }
 
-/// The three questions, keyed by the ids the verdict decodes.
-#[must_use]
-pub fn questions() -> Value {
-    let kinds: Map<String, Value> = Kind::ALL
-        .into_iter()
-        .map(|kind| (kind.wire_name().to_owned(), Value::from(kind_rubric(kind))))
-        .collect();
-    let levels: Vec<&str> = WORTH_LEVELS.iter().map(|(_, rubric)| *rubric).collect();
-    let mut questions = Map::new();
-    questions.insert(
-        KIND_QUESTION.to_owned(),
-        json!({"type": "choice", "instructions": KIND_INSTRUCTIONS, "criteria": kinds}),
-    );
-    questions.insert(
-        WORTH_QUESTION.to_owned(),
-        json!({"type": "score", "instructions": WORTH_INSTRUCTIONS, "criteria": levels}),
-    );
-    questions.insert(
-        DIVERGENCE_QUESTION.to_owned(),
-        json!({
-            "type": "noul",
-            "instructions": DIVERGENCE_INSTRUCTIONS,
-            "criteria": {
-                "true": "Yes: the two share logic a fix would have to change in both, and \
-                         nothing about them — the same file, a shared name, a common caller — \
-                         would lead someone fixing one to the other.",
-                "false": "No: a fix in one would not apply to the other, or anyone fixing one \
-                          would plainly see the other needs it too.",
-            },
-        }),
-    );
-    Value::Object(questions)
-}
+/// The three questions every provider asks, keyed by the ids the verdict
+/// decodes.
+pub const QUESTIONS: QuestionSet = QuestionSet {
+    kind: ChoiceQuestion {
+        id: KIND_QUESTION,
+        instructions: KIND_INSTRUCTIONS,
+        options: &KIND_RUBRICS,
+    },
+    worth: ScoreQuestion {
+        id: WORTH_QUESTION,
+        instructions: WORTH_INSTRUCTIONS,
+        levels: &WORTH_LEVELS,
+    },
+    divergence: BinaryQuestion {
+        id: DIVERGENCE_QUESTION,
+        instructions: DIVERGENCE_INSTRUCTIONS,
+        if_true: "Yes: the two share logic a fix would have to change in both, and nothing \
+                  about them — the same file, a shared name, a common caller — would lead \
+                  someone fixing one to the other.",
+        if_false: "No: a fix in one would not apply to the other, or anyone fixing one would \
+                   plainly see the other needs it too.",
+    },
+};
 
-/// The rubric sentence the model reads for each kind.
-fn kind_rubric(kind: Kind) -> &'static str {
+/// Every kind beside the rubric the model reads for it, in `Kind::ALL`
+/// order, so a new kind is offered as soon as it has a rubric.
+const KIND_RUBRICS: [(Kind, &str); Kind::ALL.len()] = {
+    let mut rubrics = [(Kind::SameLogic, ""); Kind::ALL.len()];
+    let mut i = 0;
+    while i < rubrics.len() {
+        rubrics[i] = (Kind::ALL[i], kind_rubric(Kind::ALL[i]));
+        i += 1;
+    }
+    rubrics
+};
+
+/// The rubric sentence the model reads for `kind`. Exhaustive, so a new
+/// kind does not compile until it has one.
+const fn kind_rubric(kind: Kind) -> &'static str {
     match kind {
         Kind::SameLogic => {
             "One routine written twice: the same steps on the same kinds of values, differing \
@@ -220,8 +226,9 @@ pub fn read_span(
 mod tests {
     use super::*;
     use crate::duplicates::extract::Location;
+    use crate::duplicates::triage::provider::typesafe::TypeSafe;
     use crate::duplicates::triage::verdict::{
-        DIVERGENCE_QUESTION, KIND_QUESTION, Kind, Verdict, WORTH_QUESTION, WorthExtracting,
+        DIVERGENCE_QUESTION, KIND_QUESTION, Kind, WORTH_QUESTION, WorthExtracting,
     };
     use proptest::prelude::*;
     use std::collections::BTreeSet;
@@ -249,6 +256,12 @@ mod tests {
         }
     }
 
+    /// The questions as `TypeSafe` sends them: the encoding the version pin
+    /// below was taken from.
+    fn questions() -> Value {
+        TypeSafe.encode(json!({}), "", &QUESTIONS)["questions"].clone()
+    }
+
     #[test]
     fn question_ids_and_types_match_what_the_verdict_decodes() {
         let questions = questions();
@@ -271,6 +284,20 @@ mod tests {
             offered, decodable,
             "every offered option decodes, and only those"
         );
+    }
+
+    #[test]
+    fn the_question_set_offers_each_kind_with_its_rubric_in_kind_order() {
+        let offered: Vec<Kind> = QUESTIONS
+            .kind
+            .options
+            .iter()
+            .map(|(kind, _)| *kind)
+            .collect();
+        assert_eq!(offered, Kind::ALL);
+        for (kind, rubric) in QUESTIONS.kind.options {
+            assert_eq!(*rubric, kind_rubric(*kind), "{kind:?}");
+        }
     }
 
     #[test]
@@ -315,27 +342,6 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_naming_any_offered_option_decodes() {
-        for option in questions()[KIND_QUESTION]["criteria"]
-            .as_object()
-            .expect("option -> rubric")
-            .keys()
-        {
-            let body = serde_json::json!({
-                "model": "jev",
-                "answers": {
-                    KIND_QUESTION: {"type": "choice", "choice": option, "confidence": 0.9},
-                    WORTH_QUESTION: {"type": "score", "score": 1.0, "confidence": 0.9},
-                    DIVERGENCE_QUESTION: {"type": "noul", "noul": 0.5},
-                },
-                "usage": {}
-            });
-            let verdict = Verdict::decode(&body.to_string()).expect("decodes");
-            assert_eq!(verdict.kind.wire_name(), option);
-        }
-    }
-
-    #[test]
     fn the_state_carries_both_sides_and_the_score() {
         let state = state(&pair(), "fn alpha() {}", "fn beta() {}");
         assert_eq!(state["function_a"]["name"], "alpha");
@@ -346,18 +352,6 @@ mod tests {
         assert_eq!(state["function_b"]["source"], "fn beta() {}");
         assert_eq!(state["structural_similarity"], 0.91);
         assert_eq!(state.as_object().expect("a map").len(), 3, "nothing else");
-    }
-
-    #[test]
-    fn the_body_names_the_model_and_carries_state_and_questions() {
-        let body = body(&pair(), "fn alpha() {}", "fn beta() {}", "jev-latest");
-        assert_eq!(body["model"], "jev-latest");
-        assert_eq!(
-            body["state"],
-            state(&pair(), "fn alpha() {}", "fn beta() {}")
-        );
-        assert_eq!(body["questions"], questions());
-        assert_eq!(body.as_object().expect("a map").len(), 3);
     }
 
     fn write_lines(lines: &[String]) -> tempfile::NamedTempFile {
@@ -484,7 +478,7 @@ mod tests {
             },
             score: 0.9,
         };
-        let body = build(&pair, "jev-latest").expect("both spans read");
+        let body = build(&TypeSafe, &pair, "jev-latest").expect("both spans read");
         assert_eq!(
             body["state"]["function_a"]["source"],
             "fn alpha() {\n    1\n}"

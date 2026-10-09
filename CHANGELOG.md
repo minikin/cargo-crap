@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `..Default::default()`. `report::render_summary` takes the width as a new
   third argument. `DeltaReport` gained `counts` and `restrict_to`, and
   `report::render_delta_counts` prints a `DeltaCounts`.
+- **BREAKING (library API):** duplicate triage asks its model through a
+  `duplicates::triage::provider::Provider`, with `TypeSafe` as the first.
+  `config::DEFAULT_TRIAGE_MODEL` is gone (ask
+  `provider::default_provider().default_model()`), `Verdict::decode` is
+  replaced by a provider's `decode` followed by `Verdict::from_answers`,
+  and `request::body` and `request::build` take the provider first. The
+  requests TypeSafe receives are unchanged.
 
 ### Fixed
 

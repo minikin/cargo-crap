@@ -13,6 +13,7 @@ use cargo_crap::{
     delta::{compute_delta, load_baseline_with_weight},
     duplicates,
     duplicates::compare::DuplicatePair,
+    duplicates::triage::provider::default_provider,
     duplicates::triage::verdict::Assessment,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
     report::{
@@ -1285,7 +1286,7 @@ impl DupSettings {
                 .triage
                 .model
                 .clone()
-                .unwrap_or_else(|| cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned()),
+                .unwrap_or_else(|| default_provider().default_model().to_owned()),
             triage_floor: config
                 .duplicates
                 .triage
@@ -2017,7 +2018,7 @@ mod tests {
             min_nodes: cargo_crap::config::DEFAULT_DUP_MIN_NODES,
             triage_enabled: false,
             triage_root: PathBuf::from("."),
-            triage_model: cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned(),
+            triage_model: default_provider().default_model().to_owned(),
             triage_floor,
         }
     }

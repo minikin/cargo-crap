@@ -1,4 +1,4 @@
-//! Advisory triage of duplicate pairs by a `TypeSafe` System One model.
+//! Advisory triage of duplicate pairs by a model behind a typed-answer API.
 //!
 //! Opt-in and annotation-only: for each pair the duplicate pass already
 //! found, the model is asked what kind of duplication it is, whether it is
@@ -6,13 +6,16 @@
 //! other. The answers are printed beside the pair; they never filter,
 //! reorder or gate anything.
 //!
-//! The HTTP client (the `client` module and `run`) is compiled only with the
-//! `triage` Cargo feature; decoding, requests, the cache and rendering use no
-//! network and are always present.
+//! Which API is asked is a [`provider`]: it owns the wire shape, the
+//! endpoint and the environment, and everything else here is shared. The
+//! HTTP client (the `client` module and `run`) is compiled only with the
+//! `triage` Cargo feature. Providers, decoding, requests, the cache and
+//! rendering use no network and are always present.
 
 pub mod cache;
 #[cfg(feature = "triage")]
 pub mod client;
+pub mod provider;
 pub mod request;
 pub mod verdict;
 
@@ -25,6 +28,8 @@ use crate::duplicates::compare::DuplicatePair;
 use cache::{Cache, CacheKey};
 #[cfg(feature = "triage")]
 use client::Client;
+#[cfg(feature = "triage")]
+use provider::Provider;
 #[cfg(feature = "triage")]
 use rayon::prelude::*;
 #[cfg(feature = "triage")]
@@ -71,6 +76,7 @@ pub fn run(
     let cache = settings.cache_dir.as_ref().map(Cache::new);
     let run = Run {
         client: client.as_ref().ok(),
+        provider: provider::default_provider(),
         model: &settings.model,
         cache: cache.as_ref(),
         warned: AtomicBool::new(false),
@@ -83,6 +89,8 @@ pub fn run(
 struct Run<'a> {
     /// `None` without an API key; only a cache miss needs it.
     client: Option<&'a Client>,
+    /// Whose wire shape the requests are written in and the answers read in.
+    provider: &'a dyn Provider,
     model: &'a str,
     cache: Option<&'a Cache>,
     /// Set once a cache write has failed and been reported.
@@ -112,9 +120,12 @@ impl Run<'_> {
             return Ok(verdict);
         }
         let client = self.client.ok_or(TriageError::MissingKey)?;
-        let body = request::body(pair, &source_a, &source_b, self.model);
-        let verdict =
-            Verdict::decode(&client.evaluate(&body.to_string())?).map_err(TriageError::Decode)?;
+        let body = request::body(self.provider, pair, &source_a, &source_b, self.model);
+        let verdict = self
+            .provider
+            .decode(&client.evaluate(&body.to_string())?)
+            .and_then(Verdict::from_answers)
+            .map_err(TriageError::Decode)?;
         self.remember(key, &verdict);
         Ok(verdict)
     }
