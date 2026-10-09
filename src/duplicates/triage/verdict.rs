@@ -135,7 +135,7 @@ impl Verdict {
     /// names the question and the field.
     pub fn from_answers(answers: Answers) -> Result<Self, DecodeError> {
         let confidence = within(KIND_QUESTION, "confidence", answers.kind_confidence, 1.0)?;
-        // Checked, not kept: only the kind's confidence meets the floor.
+        // Checked, not kept: only the kind's confidence is compared to the floor.
         within(WORTH_QUESTION, "confidence", answers.worth_confidence, 1.0)?;
         let worth = within(WORTH_QUESTION, "score", answers.worth, WorthExtracting::TOP)?;
         Ok(Self {

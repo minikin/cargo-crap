@@ -1548,11 +1548,10 @@ struct LoadedArgs {
     try_weight: f64,
 }
 
-/// Parse argv, load config, resolve the triage provider, and validate the
+/// Parse argv, load config, resolve the triage provider and validate the
 /// merged epsilon, jobs, similarity threshold, triage confidence floor and
-/// try-weight, returning
-/// exactly what was validated so [`run`] cannot consume a different
-/// (unchecked) merge of the same knobs.
+/// try-weight, returning exactly what was validated so [`run`] cannot
+/// consume a different (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
     let (cli, config, project_root) = parse_and_load_config()?;
     let epsilon = cli

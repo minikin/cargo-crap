@@ -137,7 +137,7 @@ struct Response {
     answers: HashMap<String, Value>,
 }
 
-/// One answer; fields this module does not read (`probabilities`,
+/// One answer. Fields this module does not read (`probabilities`,
 /// `legend`) are ignored.
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]

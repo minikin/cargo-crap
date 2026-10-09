@@ -156,8 +156,8 @@ enum Answer {
     Score {
         score: f64,
         confidence: f64,
-        /// Read only to find where the levels start, and never required:
-        /// a shape this module does not expect costs nothing.
+        /// Read only to find where the levels start, and never required: an
+        /// unexpected shape is ignored, not rejected.
         #[serde(default)]
         probabilities: Value,
     },
@@ -241,7 +241,7 @@ impl Response {
 
 /// The index the response gives the lowest level sent, found by the label
 /// it echoes back. When no entry carries that label and a number, the
-/// guide's numbering from 0 is assumed.
+/// Decisions guide's numbering from 0 is assumed.
 fn lowest_level(probabilities: &Value) -> f64 {
     let lowest = QUESTIONS.worth.levels[0].0;
     probabilities
@@ -266,7 +266,7 @@ mod tests {
     use serde_json::json;
 
     /// A `/v1/decisions` response carrying `answers` under the names the
-    /// encoded questions use, in the shapes the guide documents.
+    /// encoded questions use, in the shapes the Decisions guide documents.
     fn response_for(answers: &Answers) -> String {
         let body = OpenAi.encode(json!({}), "gpt-6-luna", &QUESTIONS);
         let mut out = Vec::new();
@@ -568,7 +568,7 @@ mod tests {
             r#"[{"value":1,"label":"leave-it","probability":0.0},{"value":2,"label":"optional","probability":0.1},{"value":3,"label":"worthwhile","probability":0.4},{"value":4,"label":"should-be-one","probability":0.5}]"#,
         );
         assert!((decoded_worth(&one_based) - 2.4).abs() < 1e-12);
-        // The bottom level left out: nothing to anchor on, so the guide's
+        // The bottom level left out: nothing to anchor on, so the Decisions guide's
         // numbering from 0 holds and the score is not shifted.
         let bottom_dropped = worth(
             2.4,

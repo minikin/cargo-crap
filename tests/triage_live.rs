@@ -4,7 +4,7 @@
 //! provider's key (`TYPESAFE_API_KEY` or `OPENAI_API_KEY`). Run by hand with
 //! `just triage-live`, `just triage-live openai` or `just triage-live all`.
 //! Each test's name ends in `<provider>_live`, which is how the recipe picks
-//! them. One fixture is a function this repository has written twice; the
+//! them. One fixture is a function this repository has written twice. The
 //! other is two unrelated jobs that share a run of `writeln!` calls.
 
 #![cfg(feature = "triage")]
@@ -104,19 +104,19 @@ fn assert_not_marked_for_merging(
 }
 
 #[test]
-#[ignore = "calls the real TypeSafe API; run with `just triage-live`"]
+#[ignore = "calls the real TypeSafe API: run with `just triage-live`"]
 fn two_functions_sharing_only_an_idiom_are_not_marked_for_merging_typesafe_live() {
     assert_not_marked_for_merging("typesafe", "");
 }
 
 #[test]
-#[ignore = "calls the real TypeSafe API; run with `just triage-live`"]
+#[ignore = "calls the real TypeSafe API: run with `just triage-live`"]
 fn the_same_logic_written_twice_is_named_as_such_typesafe_live() {
     assert_same_logic("typesafe");
 }
 
 #[test]
-#[ignore = "calls the real OpenAI API; run with `just triage-live openai`"]
+#[ignore = "calls the real OpenAI API: run with `just triage-live openai`"]
 fn two_functions_sharing_only_an_idiom_are_not_marked_for_merging_openai_live() {
     // A floor of 0 always prints a kind and a worth level. A score read one
     // level too low would be negative and fail to decode, so this catches
@@ -127,7 +127,7 @@ fn two_functions_sharing_only_an_idiom_are_not_marked_for_merging_openai_live() 
 }
 
 #[test]
-#[ignore = "calls the real OpenAI API; run with `just triage-live openai`"]
+#[ignore = "calls the real OpenAI API: run with `just triage-live openai`"]
 fn the_same_logic_written_twice_is_named_as_such_openai_live() {
     assert_same_logic("openai");
 }

@@ -135,7 +135,7 @@ dev-mutants-diff: dev mutants-diff
 # Full validation including mutation tests (slow)
 dev-full: dev mutants-all
 
-# --- Duplicate-pair triage, live (specs 30 and 32) -------------------------
+# --- Duplicate-pair triage, live ---------------------------------------------
 # Every other recipe here is offline and free. This one is neither: it calls
 # a provider's real API, costs API calls and needs that provider's key. It is
 # never part of `dev` or CI — run it by hand to check that the model still
@@ -144,7 +144,7 @@ dev-full: dev mutants-all
 # Live triage check against a provider's real API: `typesafe` (needs
 # TYPESAFE_API_KEY), `openai` (needs OPENAI_API_KEY) or `all`. The names and
 # key variables follow the provider registry in
-# src/duplicates/triage/provider/mod.rs; keep the two in step.
+# src/duplicates/triage/provider/mod.rs. Keep the two in step.
 triage-live provider="typesafe":
     #!/usr/bin/env bash
     set -euo pipefail

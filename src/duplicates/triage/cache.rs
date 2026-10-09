@@ -389,8 +389,8 @@ mod tests {
     }
 
     /// The key as it was computed before triage had providers, with its own
-    /// FNV-1a rather than the crate's: the oracle `TypeSafe`'s keys must keep
-    /// matching, so no cache is emptied.
+    /// FNV-1a rather than the crate's. It is the oracle: `TypeSafe`'s keys
+    /// must keep matching it, so no cache is emptied.
     fn key_before_providers(
         source_a: &str,
         source_b: &str,

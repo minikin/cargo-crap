@@ -36,7 +36,7 @@ pub struct Settings {
     /// it holds is the provider's convention: `https://api.typesafe.ai` for
     /// `TypeSafe`, `https://api.openai.com/v1` for `OpenAI`.
     pub base_url: String,
-    /// The bearer token; `None` when the provider's key variable is unset
+    /// The bearer token: `None` when the provider's key variable is unset
     /// or empty.
     pub api_key: Option<String>,
     /// Limit on each request, connection to last byte.
@@ -92,8 +92,8 @@ impl Settings {
     /// `project_root`, with the provider's key and base-URL variables and
     /// `CARGO_TARGET_DIR` read through `lookup`, so tests can supply an
     /// environment without mutating the process's. No other provider's
-    /// variables are read. An empty value counts as unset. Verdicts are cached in
-    /// the project's target directory (`CARGO_TARGET_DIR` when set, as for
+    /// variables are read. An empty value counts as unset. Verdicts are
+    /// cached in the project's target directory (`CARGO_TARGET_DIR` when set, as for
     /// cargo, else `target/` beside the configuration), so `cargo clean`
     /// sweeps them wherever the command was run from.
     #[must_use]
