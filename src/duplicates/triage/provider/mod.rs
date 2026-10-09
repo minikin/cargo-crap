@@ -11,6 +11,7 @@
 //! Compiled in every build: configuration validation lists the registered
 //! ids whether or not the `triage` feature put a client in.
 
+pub mod openai;
 pub mod typesafe;
 
 use crate::duplicates::triage::verdict::{DecodeError, Kind};
@@ -110,10 +111,33 @@ pub struct Answers {
     pub divergence: f64,
 }
 
+/// The kind a choice answer to `question` names, or an error naming the
+/// question and the value when it names none.
+pub(crate) fn offered_kind(
+    question: &str,
+    choice: &str,
+) -> Result<Kind, DecodeError> {
+    Kind::from_wire(choice)
+        .ok_or_else(|| DecodeError::new(format!("{question}: {choice:?} is not an offered option")))
+}
+
+/// The error for an answer to `question` that came back as `got` where
+/// `expected` was asked.
+pub(crate) fn wrong_type(
+    question: &str,
+    expected: &str,
+    got: &str,
+) -> DecodeError {
+    DecodeError::new(format!(
+        "{question}: expected a {expected} answer, got {got}"
+    ))
+}
+
 static TYPESAFE: typesafe::TypeSafe = typesafe::TypeSafe;
+static OPENAI: openai::OpenAi = openai::OpenAi;
 
 /// Every provider this build can ask.
-pub static PROVIDERS: &[&dyn Provider] = &[&TYPESAFE];
+pub static PROVIDERS: &[&dyn Provider] = &[&TYPESAFE, &OPENAI];
 
 /// The provider asked when the configuration names none.
 #[must_use]
@@ -145,6 +169,13 @@ mod tests {
         let provider = by_id("typesafe").expect("registered");
         assert_eq!(provider.id(), "typesafe");
         assert_eq!(default_provider().id(), "typesafe");
+    }
+
+    #[test]
+    fn openai_is_registered() {
+        let provider = by_id("openai").expect("registered");
+        assert_eq!(provider.id(), "openai");
+        assert!(ids().any(|id| id == "openai"));
     }
 
     #[test]

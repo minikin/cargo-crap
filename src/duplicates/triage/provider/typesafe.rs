@@ -5,9 +5,11 @@
 //! answers as an object keyed by the same ids. The binary question is a
 //! Noul.
 
-use crate::duplicates::triage::provider::{Answers, Provider, QuestionSet};
+use crate::duplicates::triage::provider::{
+    Answers, Provider, QuestionSet, offered_kind, wrong_type,
+};
 use crate::duplicates::triage::verdict::{
-    DIVERGENCE_QUESTION, DecodeError, KIND_QUESTION, Kind, WORTH_QUESTION,
+    DIVERGENCE_QUESTION, DecodeError, KIND_QUESTION, WORTH_QUESTION,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -77,11 +79,7 @@ impl Provider for TypeSafe {
         let response: Response = serde_json::from_str(body)
             .map_err(|e| DecodeError::new(format!("not a /v1/systemone response: {e}")))?;
         let (choice, kind_confidence) = response.choice(KIND_QUESTION)?;
-        let kind = Kind::from_wire(&choice).ok_or_else(|| {
-            DecodeError::new(format!(
-                "{KIND_QUESTION}: {choice:?} is not an offered option"
-            ))
-        })?;
+        let kind = offered_kind(KIND_QUESTION, &choice)?;
         let (worth, worth_confidence) = response.score(WORTH_QUESTION)?;
         Ok(Answers {
             kind,
@@ -171,7 +169,7 @@ impl Response {
     ) -> Result<(String, f64), DecodeError> {
         match self.answer(id)? {
             Answer::Choice { choice, confidence } => Ok((choice, confidence)),
-            other => Err(wrong_type(id, "choice", &other)),
+            other => Err(wrong_type(id, "choice", other.type_name())),
         }
     }
 
@@ -182,7 +180,7 @@ impl Response {
     ) -> Result<(f64, f64), DecodeError> {
         match self.answer(id)? {
             Answer::Score { score, confidence } => Ok((score, confidence)),
-            other => Err(wrong_type(id, "score", &other)),
+            other => Err(wrong_type(id, "score", other.type_name())),
         }
     }
 
@@ -192,20 +190,9 @@ impl Response {
     ) -> Result<f64, DecodeError> {
         match self.answer(id)? {
             Answer::Noul { noul } => Ok(noul),
-            other => Err(wrong_type(id, "noul", &other)),
+            other => Err(wrong_type(id, "noul", other.type_name())),
         }
     }
-}
-
-fn wrong_type(
-    id: &str,
-    expected: &str,
-    got: &Answer,
-) -> DecodeError {
-    DecodeError::new(format!(
-        "{id}: expected a {expected} answer, got {}",
-        got.type_name()
-    ))
 }
 
 #[cfg(test)]
@@ -214,7 +201,7 @@ mod tests {
     use crate::duplicates::compare::DuplicatePair;
     use crate::duplicates::extract::Location;
     use crate::duplicates::triage::request::{self, QUESTIONS};
-    use crate::duplicates::triage::verdict::Verdict;
+    use crate::duplicates::triage::verdict::{Kind, Verdict};
     use proptest::prelude::*;
     use std::path::PathBuf;
 
