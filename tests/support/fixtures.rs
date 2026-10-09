@@ -1,15 +1,18 @@
 //! Copies of the triage fixtures in `tests/fixtures/triage/`.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use tempfile::TempDir;
+
+/// `tests/fixtures/triage/`, where every triage fixture lives.
+pub fn triage_fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/triage")
+}
 
 /// A temporary copy of `tests/fixtures/triage/<name>`: its own directory, so
 /// a run's `.cargo-crap.toml` and verdict cache never touch the fixture.
 pub fn triage_fixture(name: &str) -> TempDir {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/triage")
-        .join(name);
+    let source = triage_fixtures().join(name);
     let copy = TempDir::new().expect("temp dir");
     let entries =
         std::fs::read_dir(&source).unwrap_or_else(|e| panic!("fixture {}: {e}", source.display()));
