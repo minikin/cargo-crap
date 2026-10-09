@@ -895,8 +895,59 @@ fn run_with_config(
     run_with_env(dir, config, stub, extra, &[])
 }
 
-/// [`run_with_config`] with extra environment variables. `NO_COLOR` and
-/// `FORCE_COLOR` are cleared first, so only `env` decides the colour.
+/// A run from `dir` with `config` as its `.cargo-crap.toml`: the plumbing
+/// every triage run shares. Colour and every provider's key and base URL
+/// are cleared, so only the caller decides them, and the verdict cache lives
+/// in `dir`.
+fn triage_run(
+    dir: &Path,
+    config: &str,
+) -> Command {
+    write(dir, ".cargo-crap.toml", config);
+    let mut command = crap();
+    command
+        .timeout(TRIAGE_RUN_LIMIT)
+        .current_dir(dir)
+        .env_remove("NO_COLOR")
+        .env_remove("FORCE_COLOR")
+        .env_remove("TYPESAFE_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("TYPESAFE_BASE_URL")
+        .env_remove("OPENAI_BASE_URL")
+        .env("CARGO_TARGET_DIR", dir.join("target"))
+        .args(["--path", dir.to_str().expect("utf-8")]);
+    command
+}
+
+/// Assert `state` holds the two bodies of one of `two_pairs_tree`'s pairs,
+/// each with its own name and a location naming its own file, and that
+/// `body`, the whole request, carries nothing of the other pair.
+#[cfg(feature = "triage")]
+fn assert_one_pair(
+    state: &serde_json::Value,
+    body: &str,
+) {
+    let first = |s: &str| s.contains("fn alpha") || s.contains("fn beta");
+    let second = |s: &str| s.contains("fn gamma") || s.contains("fn delta");
+    let source = |side: &str| state[side]["source"].as_str().expect("a source");
+    let (a, b) = (source("function_a"), source("function_b"));
+    assert!(
+        (first(a) && first(b) && !second(body)) || (second(a) && second(b) && !first(body)),
+        "{a}\n---\n{b}\n--- whole request:\n{body}"
+    );
+    for side in ["function_a", "function_b"] {
+        let name = state[side]["name"].as_str().expect("a name");
+        let location = state[side]["location"].as_str().expect("a location");
+        assert!(source(side).contains(&format!("fn {name}")), "{side}");
+        assert!(
+            location.contains(&format!("{name}.rs:")),
+            "{side}: {location}"
+        );
+    }
+}
+
+/// [`run_with_config`] with extra environment variables, which also decide
+/// the colour.
 fn run_with_env(
     dir: &Path,
     config: &str,
@@ -904,17 +955,12 @@ fn run_with_env(
     extra: &[&str],
     env: &[(&str, &str)],
 ) -> std::process::Output {
-    write(dir, ".cargo-crap.toml", config);
-    crap()
-        .timeout(TRIAGE_RUN_LIMIT)
-        .current_dir(dir)
-        .env_remove("NO_COLOR")
-        .env_remove("FORCE_COLOR")
+    triage_run(dir, config)
         .envs(env.iter().copied())
+        // The cache stays in `dir` whatever `env` says.
         .env("CARGO_TARGET_DIR", dir.join("target"))
         .env("TYPESAFE_API_KEY", "test-key")
         .env("TYPESAFE_BASE_URL", stub.base_url())
-        .args(["--path", dir.to_str().expect("utf-8")])
         .args(extra)
         .output()
         .expect("cargo-crap runs")
@@ -1048,26 +1094,10 @@ fn a_request_carries_exactly_the_pair_under_judgment() {
     let requests = stub.requests();
     assert_eq!(requests.len(), 2);
     for request in requests {
-        let state = &request.json()["state"];
-        let a = state["function_a"]["source"].as_str().expect("a source");
-        let b = state["function_b"]["source"].as_str().expect("b source");
         // And each request's state contains exactly the two function bodies
         // of one pair and their locations
-        let pair = [a, b];
-        let one_pair = pair
-            .iter()
-            .all(|s| s.contains("fn alpha") || s.contains("fn beta"))
-            || pair
-                .iter()
-                .all(|s| s.contains("fn gamma") || s.contains("fn delta"));
-        assert!(one_pair, "{a}\n---\n{b}");
-        assert!(state["function_a"]["location"].is_string());
-        assert!(state["function_b"]["location"].is_string());
         // And no request contains a function body from any other pair
-        let body = request.body;
-        let first_pair = body.contains("fn alpha") || body.contains("fn beta");
-        let second_pair = body.contains("fn gamma") || body.contains("fn delta");
-        assert!(first_pair != second_pair, "{body}");
+        assert_one_pair(&request.json()["state"], &request.body);
     }
 }
 
@@ -1126,19 +1156,10 @@ fn run_against(
     key: bool,
     extra: &[&str],
 ) -> std::process::Output {
-    write(dir, ".cargo-crap.toml", config);
-    let mut command = crap();
-    command
-        .timeout(TRIAGE_RUN_LIMIT)
-        .current_dir(dir)
-        .env("CARGO_TARGET_DIR", dir.join("target"))
-        .env("TYPESAFE_BASE_URL", base_url)
-        .args(["--path", dir.to_str().expect("utf-8")])
-        .args(extra);
+    let mut command = triage_run(dir, config);
+    command.env("TYPESAFE_BASE_URL", base_url).args(extra);
     if key {
         command.env("TYPESAFE_API_KEY", "test-key");
-    } else {
-        command.env_remove("TYPESAFE_API_KEY");
     }
     command.output().expect("cargo-crap runs")
 }
@@ -3217,19 +3238,10 @@ fn run_providers(
     stub: &support::api_stub::ApiStub,
     keys: Keys,
 ) -> std::process::Output {
-    write(dir, ".cargo-crap.toml", config);
-    let mut command = crap();
+    let mut command = triage_run(dir, config);
     command
-        .timeout(TRIAGE_RUN_LIMIT)
-        .current_dir(dir)
-        .env_remove("NO_COLOR")
-        .env_remove("FORCE_COLOR")
-        .env("CARGO_TARGET_DIR", dir.join("target"))
         .env("TYPESAFE_BASE_URL", stub.base_url())
-        .env("OPENAI_BASE_URL", format!("{}/v1", stub.base_url()))
-        .env_remove("TYPESAFE_API_KEY")
-        .env_remove("OPENAI_API_KEY")
-        .args(["--path", dir.to_str().expect("utf-8")]);
+        .env("OPENAI_BASE_URL", format!("{}/v1", stub.base_url()));
     if keys.openai {
         command.env("OPENAI_API_KEY", "openai-key");
     }
@@ -3308,26 +3320,8 @@ fn an_openai_request_carries_exactly_the_pair_under_judgment() {
                 .expect("the state as JSON");
         // Then each request's input contains the two function bodies of one
         // pair and their locations
-        let a = input["function_a"]["source"].as_str().expect("a source");
-        let b = input["function_b"]["source"].as_str().expect("b source");
-        let first = |s: &str| s.contains("fn alpha") || s.contains("fn beta");
-        let second = |s: &str| s.contains("fn gamma") || s.contains("fn delta");
-        // Each location names the file its own body came from.
-        for (side, source) in [("function_a", a), ("function_b", b)] {
-            let location = input[side]["location"].as_str().expect("a location");
-            let name = input[side]["name"].as_str().expect("a name");
-            assert!(source.contains(&format!("fn {name}")), "{side}: {source}");
-            assert!(
-                location.contains(&format!("{name}.rs:")),
-                "{side}: {location}"
-            );
-        }
         // And no request contains a function body from any other pair
-        assert!(
-            (first(a) && first(b) && !second(&request.body))
-                || (second(a) && second(b) && !first(&request.body)),
-            "{a}\n---\n{b}"
-        );
+        assert_one_pair(&input, &request.body);
         // And each request asks three questions: a choice offering the four
         // kinds, a score over the four levels from lowest to highest, and a
         // predicate for divergence risk
@@ -3475,17 +3469,9 @@ fn run_openai_at(
     base_url: &str,
     extra: &[&str],
 ) -> std::process::Output {
-    write(dir, ".cargo-crap.toml", config);
-    crap()
-        .timeout(TRIAGE_RUN_LIMIT)
-        .current_dir(dir)
-        .env_remove("NO_COLOR")
-        .env_remove("FORCE_COLOR")
-        .env_remove("TYPESAFE_API_KEY")
-        .env("CARGO_TARGET_DIR", dir.join("target"))
+    triage_run(dir, config)
         .env("OPENAI_API_KEY", "openai-key")
         .env("OPENAI_BASE_URL", base_url)
-        .args(["--path", dir.to_str().expect("utf-8")])
         .args(extra)
         .output()
         .expect("cargo-crap runs")
@@ -3760,3 +3746,54 @@ fn a_second_openai_run_over_unchanged_code_asks_nothing() {
 }
 
 // ---- Spec 32 · T9 ----
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_same_judgment_prints_the_same_whichever_provider_made_it() {
+    // Given a project where duplicate detection reports two pairs
+    // And a TypeSafe stub and an OpenAI stub that each answer every pair with
+    // the same kind, worth-extracting score, divergence probability and
+    // confidence, in their own wire shape
+    let dir = two_pairs_tree();
+    let stub = both_providers_stub("parameterisable");
+    // When cargo-crap runs once against each, in human and in json, each run
+    // with an empty cache so every verdict comes through its wire decode
+    let run = |provider: &str, format: &str| {
+        let _ = std::fs::remove_dir_all(dir.path().join("target/cargo-crap/triage"));
+        let config = format!("{TRIAGE_ON}provider = \"{provider}\"\n");
+        let out = triage_run(dir.path(), &config)
+            .env("TYPESAFE_API_KEY", "typesafe-key")
+            .env("OPENAI_API_KEY", "openai-key")
+            .env("TYPESAFE_BASE_URL", stub.base_url())
+            .env("OPENAI_BASE_URL", format!("{}/v1", stub.base_url()))
+            .args(["--format", format])
+            .output()
+            .expect("cargo-crap runs");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stderr}");
+        assert!(
+            !stderr.contains(TRIAGE_SKIPPED),
+            "{provider}/{format}: {stderr}"
+        );
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        assert!(
+            stdout.contains("parameterisable"),
+            "{provider}/{format}: {stdout}"
+        );
+        stdout
+    };
+    let typesafe_human = run("typesafe", "human");
+    let openai_human = run("openai", "human");
+    let typesafe_json = run("typesafe", "json");
+    let openai_json = run("openai", "json");
+    let to = |path: &str| stub.requests().iter().filter(|r| r.path == path).count();
+    assert_eq!(
+        (to("/v1/systemone"), to("/v1/decisions")),
+        (4, 4),
+        "every run asked about both pairs"
+    );
+    // Then the two human outputs are byte-identical
+    assert_eq!(openai_human, typesafe_human);
+    // And the two json outputs are byte-identical
+    assert_eq!(openai_json, typesafe_json);
+}
