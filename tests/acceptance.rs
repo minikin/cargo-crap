@@ -3466,6 +3466,163 @@ fn a_key_set_for_another_provider_is_never_used() {
 
 // ---- Spec 32 · T7 ----
 
+/// Run from `dir` with `config`, asking `OpenAI` at `base_url` (which carries
+/// the `/v1`) with a key set and no `TypeSafe` key, plus `extra` arguments.
+#[cfg(feature = "triage")]
+fn run_openai_at(
+    dir: &Path,
+    config: &str,
+    base_url: &str,
+    extra: &[&str],
+) -> std::process::Output {
+    write(dir, ".cargo-crap.toml", config);
+    crap()
+        .timeout(TRIAGE_RUN_LIMIT)
+        .current_dir(dir)
+        .env_remove("NO_COLOR")
+        .env_remove("FORCE_COLOR")
+        .env_remove("TYPESAFE_API_KEY")
+        .env("CARGO_TARGET_DIR", dir.join("target"))
+        .env("OPENAI_API_KEY", "openai-key")
+        .env("OPENAI_BASE_URL", base_url)
+        .args(["--path", dir.to_str().expect("utf-8")])
+        .args(extra)
+        .output()
+        .expect("cargo-crap runs")
+}
+
+/// A `/v1/decisions` answer that refuses the worth question.
+#[cfg(feature = "triage")]
+const OPENAI_REFUSAL: &str = r#"{"answers":[
+    {"type":"choice","name":"duplication_kind","choice":"same_logic","confidence":0.9},
+    {"type":"refusal","name":"worth_extracting"},
+    {"type":"predicate","name":"divergence_risk","probability":0.6}]}"#;
+
+#[cfg(feature = "triage")]
+#[test]
+fn an_unreachable_openai_api_degrades_to_the_untriaged_report() {
+    // Given triage is enabled with provider = "openai" and the key is set
+    // And every request to the API fails
+    let dir = three_pairs_tree();
+    let unreachable = format!("{UNREACHABLE_API}/v1");
+    // When cargo-crap runs
+    let out = run_openai_at(dir.path(), &openai_config(""), &unreachable, &[]);
+    let plain = untriaged(dir.path(), &[]);
+    // Then the duplicates section is byte-identical to the spec-29 output
+    assert_eq!(out.stdout, plain.stdout);
+    // And stderr carries a warning naming the OpenAI API and the failure
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        stderr.contains(&format!(
+            "{TRIAGE_SKIPPED}could not reach the OpenAI API at {unreachable}/decisions \
+             after 3 attempt(s): "
+        )),
+        "{stderr}"
+    );
+    // And the exit code is what the same run would produce with triage disabled
+    assert_eq!(out.status.code(), plain.status.code());
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_refused_question_discards_the_whole_triage() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given triage is enabled with provider = "openai" and three pairs were found
+    // And the API refuses one question about one pair
+    let dir = three_pairs_tree();
+    let ok = Reply::json(&openai_answer("same_logic"));
+    let stub = ApiStub::scripted(vec![ok.clone(), Reply::json(OPENAI_REFUSAL), ok]);
+    // When cargo-crap runs
+    let base = format!("{}/v1", stub.base_url());
+    let out = run_openai_at(dir.path(), &openai_config(""), &base, &[]);
+    let plain = untriaged(dir.path(), &[]);
+    assert_eq!(stub.request_count(), 3);
+    // Then no pair carries a triage line
+    assert_eq!(out.stdout, plain.stdout);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("triage:"));
+    // And stderr carries a warning that says the question was refused and
+    // names it
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        stderr.contains(&skipped_line(
+            "unexpected answer from the OpenAI API: worth_extracting: the question was refused"
+        )),
+        "{stderr}"
+    );
+    // And the exit code is what the same run would produce with triage disabled
+    assert_eq!(out.status.code(), plain.status.code());
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn an_openai_answer_that_cannot_be_decoded_degrades() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given triage is enabled with provider = "openai"
+    // And the API answers the kind question with a choice that was not offered
+    let dir = alpha_beta_tree();
+    let stub = ApiStub::scripted(vec![Reply::json(&openai_answer("copy_paste"))]);
+    // When cargo-crap runs
+    let base = format!("{}/v1", stub.base_url());
+    let out = run_openai_at(dir.path(), &openai_config(""), &base, &[]);
+    // Then no pair carries a triage line
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("triage:"));
+    // And stderr carries a warning naming the question and the unexpected value
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(
+        stderr.contains(&skipped_line(
+            r#"unexpected answer from the OpenAI API: duplication_kind: "copy_paste" is not an offered option"#
+        )),
+        "{stderr}"
+    );
+}
+
+#[cfg(feature = "triage")]
+mod openai_degradation {
+    use super::*;
+    use proptest::prelude::*;
+    use proptest::test_runner::FileFailurePersistence;
+    use support::api_stub::{ApiStub, Reply};
+
+    fn failures() -> impl Strategy<Value = Reply> {
+        prop_oneof![
+            prop::sample::select(vec![400u16, 401, 403, 404, 422, 429, 500, 503])
+                .prop_map(Reply::status),
+            Just(Reply::Drop),
+            Just(Reply::json(r#"{"answers":[]}"#)),
+            Just(Reply::json(OPENAI_REFUSAL)),
+            Just(Reply::json(r#"{"error":{"message":"overloaded"}}"#)),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 8,
+            failure_persistence: Some(Box::new(FileFailurePersistence::WithSource("proptest-regressions"))),
+            ..ProptestConfig::default()
+        })]
+
+        /// For any failure the stub injects under provider = "openai", the
+        /// run prints exactly what it prints with triage disabled, and exits
+        /// the same.
+        #[test]
+        fn any_openai_failure_leaves_the_report_and_the_exit_code_untouched(
+            failure in failures(),
+            gate in any::<bool>(),
+        ) {
+            let dir = alpha_beta_tree();
+            let stub = ApiStub::scripted(vec![failure]);
+            let extra: &[&str] = if gate { &["--threshold", "0.5", "--fail-above"] } else { &[] };
+            let base = format!("{}/v1", stub.base_url());
+            let out = run_openai_at(dir.path(), &openai_config(""), &base, extra);
+            let plain = untriaged(dir.path(), extra);
+            prop_assert_eq!(&out.stdout, &plain.stdout, "{}", String::from_utf8_lossy(&out.stdout));
+            prop_assert_eq!(out.status.code(), plain.status.code());
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            prop_assert!(stderr.contains(TRIAGE_SKIPPED), "{}", stderr);
+        }
+    }
+}
+
 // ---- Spec 32 · T8 ----
 
 /// The verdict cache file name as cargo-crap computed it before triage had
