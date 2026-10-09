@@ -1,4 +1,4 @@
-//! The triage client against the recording `TypeSafe` stub.
+//! The triage client against the recording stub, playing each provider.
 //!
 //! No test here touches the network or needs a key. Built only with the
 //! `triage` feature, which is what compiles the client in.
@@ -12,9 +12,10 @@ use std::time::Duration;
 
 use cargo_crap::duplicates::compare::DuplicatePair;
 use cargo_crap::duplicates::extract::Location;
+use cargo_crap::duplicates::triage::provider::{by_id, default_provider};
 use cargo_crap::duplicates::triage::verdict::{Kind, Verdict};
 use cargo_crap::duplicates::triage::{Settings, TriageError, run};
-use support::typesafe_stub::{Reply, TypesafeStub};
+use support::api_stub::{ApiStub, Reply};
 use tempfile::TempDir;
 
 /// A full `/v1/systemone` answer naming `kind`.
@@ -57,6 +58,7 @@ fn pairs(
 
 fn settings(base_url: String) -> Settings {
     Settings {
+        provider: default_provider(),
         model: "jev-latest".to_owned(),
         base_url,
         api_key: Some("test-key".to_owned()),
@@ -72,7 +74,7 @@ fn settings(base_url: String) -> Settings {
 #[test]
 fn a_successful_answer_decodes_into_one_verdict_per_pair() {
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::scripted(vec![Reply::json(&answer("same_logic"))]);
+    let stub = ApiStub::scripted(vec![Reply::json(&answer("same_logic"))]);
     let verdicts = run_within(pairs(dir.path(), 2), settings(stub.base_url())).expect("triaged");
     assert_eq!(verdicts.len(), 2);
     assert!(verdicts.iter().all(|v| v.kind == Kind::SameLogic));
@@ -93,7 +95,7 @@ fn verdicts_come_back_in_the_pairs_order() {
     // Requests run in parallel; answers are chosen by content, so a result
     // in the wrong slot would show as the wrong kind.
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::respond_with(|request| {
+    let stub = ApiStub::respond_with(|request| {
         let kind = if request.body.contains("fn_1_a") {
             "shared_shape_only"
         } else {
@@ -112,7 +114,7 @@ fn verdicts_come_back_in_the_pairs_order() {
 #[test]
 fn a_server_error_then_success_is_retried() {
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::scripted(vec![Reply::status(503), Reply::json(&answer("same_logic"))]);
+    let stub = ApiStub::scripted(vec![Reply::status(503), Reply::json(&answer("same_logic"))]);
     run_within(pairs(dir.path(), 1), settings(stub.base_url())).expect("the retry succeeds");
     assert_eq!(stub.request_count(), 2);
 }
@@ -120,7 +122,7 @@ fn a_server_error_then_success_is_retried() {
 #[test]
 fn a_rate_limit_then_success_is_retried() {
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::scripted(vec![Reply::status(429), Reply::json(&answer("same_logic"))]);
+    let stub = ApiStub::scripted(vec![Reply::status(429), Reply::json(&answer("same_logic"))]);
     run_within(pairs(dir.path(), 1), settings(stub.base_url())).expect("the retry succeeds");
     assert_eq!(stub.request_count(), 2);
 }
@@ -128,7 +130,7 @@ fn a_rate_limit_then_success_is_retried() {
 #[test]
 fn a_dropped_connection_then_success_is_retried() {
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::scripted(vec![Reply::Drop, Reply::json(&answer("same_logic"))]);
+    let stub = ApiStub::scripted(vec![Reply::Drop, Reply::json(&answer("same_logic"))]);
     run_within(pairs(dir.path(), 1), settings(stub.base_url())).expect("the retry succeeds");
     assert_eq!(stub.request_count(), 2);
 }
@@ -153,7 +155,7 @@ fn run_within(
 #[test]
 fn a_persistent_failure_errs_after_a_bounded_number_of_attempts() {
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::scripted(vec![Reply::status(503)]);
+    let stub = ApiStub::scripted(vec![Reply::status(503)]);
     let err =
         run_within(pairs(dir.path(), 1), settings(stub.base_url())).expect_err("never succeeds");
     assert!(err.to_string().contains("503"), "{err}");
@@ -167,7 +169,7 @@ fn a_persistent_failure_errs_after_a_bounded_number_of_attempts() {
 #[test]
 fn a_client_error_is_not_retried() {
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::scripted(vec![Reply::status(422)]);
+    let stub = ApiStub::scripted(vec![Reply::status(422)]);
     let err = run_within(pairs(dir.path(), 1), settings(stub.base_url())).expect_err("rejected");
     assert!(err.to_string().contains("422"), "{err}");
     assert_eq!(stub.request_count(), 1, "a 4xx will not change on retry");
@@ -176,7 +178,7 @@ fn a_client_error_is_not_retried() {
 #[test]
 fn one_failing_pair_of_four_fails_the_batch() {
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::respond_with(|request| {
+    let stub = ApiStub::respond_with(|request| {
         if request.body.contains("fn_3_a") {
             Reply::status(500)
         } else {
@@ -191,7 +193,7 @@ fn one_failing_pair_of_four_fails_the_batch() {
 #[test]
 fn a_missing_key_errs_naming_it_with_zero_requests_made() {
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::scripted(vec![Reply::json(&answer("same_logic"))]);
+    let stub = ApiStub::scripted(vec![Reply::json(&answer("same_logic"))]);
     let settings = Settings {
         api_key: None,
         ..settings(stub.base_url())
@@ -201,9 +203,78 @@ fn a_missing_key_errs_naming_it_with_zero_requests_made() {
     assert_eq!(stub.request_count(), 0);
 }
 
+/// An `OpenAI` Decisions answer naming `kind`.
+fn openai_answer(kind: &str) -> String {
+    format!(
+        r#"{{"answers":[
+            {{"type":"choice","name":"duplication_kind","choice":"{kind}","confidence":0.9}},
+            {{"type":"score","name":"worth_extracting","score":2.0,"confidence":0.8}},
+            {{"type":"predicate","name":"divergence_risk","probability":0.6}}]}}"#
+    )
+}
+
+/// Settings that ask `OpenAI` at the stub, its base URL ending in `/v1` as the
+/// `OpenAI` convention has it.
+fn openai_settings(stub: &ApiStub) -> Settings {
+    Settings {
+        provider: by_id("openai").expect("registered"),
+        model: "gpt-6-luna".to_owned(),
+        api_key: Some("openai-key".to_owned()),
+        ..settings(format!("{}/v1", stub.base_url()))
+    }
+}
+
+#[test]
+fn an_openai_answer_decodes_through_the_openai_provider() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::json(&openai_answer("same_logic"))]);
+    let verdicts = run_within(pairs(dir.path(), 1), openai_settings(&stub)).expect("triaged");
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!(verdicts[0].kind, Kind::SameLogic);
+    let request = &stub.requests()[0];
+    assert_eq!(request.path, "/v1/decisions");
+    assert_eq!(request.header("authorization"), Some("Bearer openai-key"));
+    assert_eq!(request.json()["model"], "gpt-6-luna");
+}
+
+#[test]
+fn a_missing_openai_key_errs_naming_it_with_zero_requests_made() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::json(&openai_answer("same_logic"))]);
+    let settings = Settings {
+        api_key: None,
+        ..openai_settings(&stub)
+    };
+    let err = run_within(pairs(dir.path(), 2), settings).expect_err("no key");
+    assert_eq!(err.to_string(), "OPENAI_API_KEY is not set");
+    assert_eq!(stub.request_count(), 0);
+}
+
+#[test]
+fn an_openai_failure_status_names_the_openai_api() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::status(401)]);
+    let err = run_within(pairs(dir.path(), 1), openai_settings(&stub)).expect_err("refused");
+    assert_eq!(
+        err.to_string(),
+        r#"the OpenAI API answered 401 after 1 attempt(s): {"error":"stub status 401"}"#
+    );
+}
+
+#[test]
+fn an_openai_answer_that_does_not_decode_names_the_openai_api() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::json(r#"{"answers":[]}"#)]);
+    let err = run_within(pairs(dir.path(), 1), openai_settings(&stub)).expect_err("empty");
+    assert_eq!(
+        err.to_string(),
+        "unexpected answer from the OpenAI API: duplication_kind: no answer"
+    );
+}
+
 #[test]
 fn no_pairs_means_no_requests() {
-    let stub = TypesafeStub::scripted(vec![Reply::json(&answer("same_logic"))]);
+    let stub = ApiStub::scripted(vec![Reply::json(&answer("same_logic"))]);
     let verdicts = run_within(Vec::new(), settings(stub.base_url())).expect("nothing to do");
     assert_eq!(verdicts, []);
     assert_eq!(stub.request_count(), 0);
@@ -227,7 +298,7 @@ fn an_unreachable_api_errs_naming_where_it_looked() {
 #[test]
 fn an_answer_that_does_not_decode_errs() {
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::scripted(vec![Reply::json(r#"{"answers":{}}"#)]);
+    let stub = ApiStub::scripted(vec![Reply::json(r#"{"answers":{}}"#)]);
     let err = run_within(pairs(dir.path(), 1), settings(stub.base_url())).expect_err("undecodable");
     assert!(err.to_string().contains("duplication_kind"), "{err}");
     assert_eq!(stub.request_count(), 1, "a malformed answer is not retried");
@@ -238,7 +309,7 @@ fn a_source_that_changed_since_the_scan_errs_before_its_request() {
     let dir = TempDir::new().expect("temp dir");
     let mut pairs = pairs(dir.path(), 1);
     pairs[0].second.end_line = 99;
-    let stub = TypesafeStub::scripted(vec![Reply::json(&answer("same_logic"))]);
+    let stub = ApiStub::scripted(vec![Reply::json(&answer("same_logic"))]);
     let err = run_within(pairs, settings(stub.base_url())).expect_err("stale span");
     assert!(err.to_string().contains("f0.rs"), "{err}");
     assert_eq!(stub.request_count(), 0);
@@ -249,7 +320,7 @@ fn an_error_whose_body_cannot_be_read_is_classified_by_its_status() {
     // A 401 cut off mid-body is still a 401: final, and named as such, not
     // retried as if the API were unreachable.
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::scripted(vec![Reply::Raw(
+    let stub = ApiStub::scripted(vec![Reply::Raw(
         "HTTP/1.1 401 Unauthorized\r\nContent-Length: 99\r\nConnection: close\r\n\r\n{\"err"
             .to_owned(),
     )]);
@@ -265,7 +336,7 @@ fn an_error_whose_body_cannot_be_read_is_classified_by_its_status() {
 #[test]
 fn a_rate_limit_waits_as_long_as_the_api_asks() {
     let dir = TempDir::new().expect("temp dir");
-    let stub = TypesafeStub::scripted(vec![
+    let stub = ApiStub::scripted(vec![
         Reply::status(429).with_header("Retry-After", "1"),
         Reply::json(&answer("same_logic")),
     ]);
@@ -284,7 +355,7 @@ fn pairs_are_requested_concurrently_whatever_pool_calls_run() {
     let dir = TempDir::new().expect("temp dir");
     // Delayed outside the stub's lock, so the stub itself never serialises
     // the requests; only the client could.
-    let stub = TypesafeStub::scripted(vec![Reply::delayed(
+    let stub = ApiStub::scripted(vec![Reply::delayed(
         Duration::from_millis(300),
         Reply::json(&answer("same_logic")),
     )]);

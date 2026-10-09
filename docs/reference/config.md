@@ -45,11 +45,12 @@ try-weight = 1.0
 enabled   = false   # same as passing --duplicates
 threshold = 0.82    # similarity at or above which a pair is reported
 min-nodes = 20      # skip functions smaller than this; 0 compares everything
-# Since 0.6.0. Triage each reported pair with a TypeSafe model (needs the
-# `triage` build feature and TYPESAFE_API_KEY; see docs/guides/triage.md).
+# Since 0.6.0. Triage each reported pair with a model (needs the `triage`
+# build feature and the provider's key: see docs/guides/triage.md).
 [duplicates.triage]
 enabled          = false
-model            = "jev-latest"
+provider         = "typesafe"   # or "openai" (TYPESAFE_API_KEY or OPENAI_API_KEY)
+model            = "jev-latest" # default: the provider's own
 confidence-floor = 0.5   # below this a verdict says "uncertain"; 0.0..=1.0
 ```
 
@@ -85,5 +86,5 @@ its snake_case alias (`show-unchanged` / `show_unchanged`), except
 the built-in default list where `--no-default-excludes` empties it.
 
 See [The `--missing` policy](cli.md#the---missing-policy) for the three
-`missing` values, and [Triaging duplicates with TypeSafe](../guides/triage.md)
+`missing` values, and [Triaging duplicates](../guides/triage.md)
 for `[duplicates.triage]`.

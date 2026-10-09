@@ -2,9 +2,12 @@
 //!
 //! One JSON file per pair under `target/cargo-crap/triage/`: gitignored with
 //! the rest of `target/`, cleaned by `cargo clean`, machine-local. The key
-//! covers both function bodies, the model and the question-set version, so an
-//! unchanged pair costs nothing after its first run and a changed body, model
-//! or question never reuses an old verdict. A cache that cannot be read is
+//! covers both function bodies, the model, the provider's cache namespace
+//! and the question-set version, so an unchanged pair costs nothing after
+//! its first run and a changed body, model, provider or question never
+//! reuses an old verdict. `TypeSafe` has no namespace: its keys predate
+//! providers and stay as they were, and every other provider's keys carry
+//! one, so no two providers share a key. A cache that cannot be read is
 //! a miss, never an error: the worst it can do is ask the API again.
 //!
 //! Entries are never evicted: an edited function, a new model or a bumped
@@ -12,6 +15,7 @@
 //! sweep, as it is for everything else under `target/`.
 
 use crate::duplicates::fingerprint::Fnv1a;
+use crate::duplicates::triage::provider::Provider;
 use crate::duplicates::triage::verdict::{Kind, Verdict, WorthExtracting};
 use serde::{Deserialize, Serialize};
 use std::hash::Hasher;
@@ -35,9 +39,9 @@ pub fn default_dir(target_dir: &Path) -> PathBuf {
     target_dir.join("cargo-crap").join("triage")
 }
 
-/// What a cached verdict is keyed by: FNV-1a over both bodies, the model and
-/// the question-set version. Stable across processes and toolchains, unlike
-/// `DefaultHasher`.
+/// What a cached verdict is keyed by: FNV-1a over both bodies, the model,
+/// the provider's cache namespace when it has one, and the question-set
+/// version. Stable across processes and toolchains, unlike `DefaultHasher`.
 ///
 /// The request also carries each side's location and the similarity score.
 /// A location is context, not content: a function that moved is the same
@@ -49,10 +53,11 @@ pub fn default_dir(target_dir: &Path) -> PathBuf {
 pub struct CacheKey(u64);
 
 impl CacheKey {
-    /// The key for a verdict on `source_a` and `source_b` by `model`, asked
-    /// with question-set `version`.
+    /// The key for a verdict on `source_a` and `source_b` by `provider`'s
+    /// `model`, asked with question-set `version`.
     #[must_use]
     pub fn new(
+        provider: &dyn Provider,
         source_a: &str,
         source_b: &str,
         model: &str,
@@ -61,7 +66,8 @@ impl CacheKey {
         let mut hasher = Fnv1a::new();
         // Length-prefixed, so a boundary moving between fields ("ab" + "c"
         // against "a" + "bc") changes the key.
-        for field in [source_a, source_b, model] {
+        let namespace = provider.cache_namespace();
+        for field in [source_a, source_b, model].into_iter().chain(namespace) {
             hasher.write(&(field.len() as u64).to_le_bytes());
             hasher.write(field.as_bytes());
         }
@@ -185,6 +191,8 @@ impl Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::duplicates::triage::provider::PROVIDERS;
+    use crate::duplicates::triage::provider::typesafe::TypeSafe;
     use crate::duplicates::triage::verdict::{Kind, Verdict, WorthExtracting};
     use proptest::prelude::*;
     use std::path::Path;
@@ -199,7 +207,7 @@ mod tests {
     }
 
     fn key() -> CacheKey {
-        CacheKey::new("fn a() {}", "fn b() {}", "jev-latest", 1)
+        CacheKey::new(&TypeSafe, "fn a() {}", "fn b() {}", "jev-latest", 1)
     }
 
     #[test]
@@ -348,17 +356,24 @@ mod tests {
         // Pinned: a key that changed with the toolchain or the process would
         // silently empty every cache.
         assert_eq!(key().file_name(), "fb0a17ca1473c168.json");
+        // The same for a provider with a namespace: renaming its id would
+        // silently empty every cache of its verdicts.
+        let openai = crate::duplicates::triage::provider::by_id("openai").expect("registered");
+        assert_eq!(
+            CacheKey::new(openai, "fn a() {}", "fn b() {}", "jev-latest", 1).file_name(),
+            "26b95ef93a545bcc.json"
+        );
     }
 
     #[test]
     fn field_boundaries_are_part_of_the_key() {
         assert_ne!(
-            CacheKey::new("ab", "c", "m", 1),
-            CacheKey::new("a", "bc", "m", 1)
+            CacheKey::new(&TypeSafe, "ab", "c", "m", 1),
+            CacheKey::new(&TypeSafe, "a", "bc", "m", 1)
         );
         assert_ne!(
-            CacheKey::new("a", "b", "c", 1),
-            CacheKey::new("a", "bc", "", 1)
+            CacheKey::new(&TypeSafe, "a", "b", "c", 1),
+            CacheKey::new(&TypeSafe, "a", "bc", "", 1)
         );
     }
 
@@ -373,13 +388,36 @@ mod tests {
         )
     }
 
+    /// The key as it was computed before triage had providers, with its own
+    /// FNV-1a rather than the crate's. It is the oracle: `TypeSafe`'s keys
+    /// must keep matching it, so no cache is emptied.
+    fn key_before_providers(
+        source_a: &str,
+        source_b: &str,
+        model: &str,
+        version: u32,
+    ) -> CacheKey {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut write = |bytes: &[u8]| {
+            for byte in bytes {
+                hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for field in [source_a, source_b, model] {
+            write(&(field.len() as u64).to_le_bytes());
+            write(field.as_bytes());
+        }
+        write(&version.to_le_bytes());
+        CacheKey(hash)
+    }
+
     proptest! {
         /// The same content always yields the same key.
         #[test]
         fn the_key_is_stable(a in ".*", b in ".*", model in ".*", version in any::<u32>()) {
             prop_assert_eq!(
-                CacheKey::new(&a, &b, &model, version),
-                CacheKey::new(&a, &b, &model, version)
+                CacheKey::new(&TypeSafe, &a, &b, &model, version),
+                CacheKey::new(&TypeSafe, &a, &b, &model, version)
             );
         }
 
@@ -389,11 +427,38 @@ mod tests {
         fn the_key_changes_with_anything_it_covers(
             a in ".*", b in ".*", model in ".*", version in any::<u32>(), other in ".+",
         ) {
-            let base = CacheKey::new(&a, &b, &model, version);
-            prop_assert_ne!(base, CacheKey::new(&format!("{a}{other}"), &b, &model, version));
-            prop_assert_ne!(base, CacheKey::new(&a, &format!("{b}{other}"), &model, version));
-            prop_assert_ne!(base, CacheKey::new(&a, &b, &format!("{model}{other}"), version));
-            prop_assert_ne!(base, CacheKey::new(&a, &b, &model, version.wrapping_add(1)));
+            let base = CacheKey::new(&TypeSafe, &a, &b, &model, version);
+            prop_assert_ne!(base, CacheKey::new(&TypeSafe, &format!("{a}{other}"), &b, &model, version));
+            prop_assert_ne!(base, CacheKey::new(&TypeSafe, &a, &format!("{b}{other}"), &model, version));
+            prop_assert_ne!(base, CacheKey::new(&TypeSafe, &a, &b, &format!("{model}{other}"), version));
+            prop_assert_ne!(base, CacheKey::new(&TypeSafe, &a, &b, &model, version.wrapping_add(1)));
+        }
+
+        /// `TypeSafe`'s keys are the keys from before providers existed.
+        #[test]
+        fn the_typesafe_key_is_the_key_from_before_providers(
+            a in ".*", b in ".*", model in ".*", version in any::<u32>(),
+        ) {
+            prop_assert_eq!(
+                CacheKey::new(&TypeSafe, &a, &b, &model, version),
+                key_before_providers(&a, &b, &model, version)
+            );
+        }
+
+        /// No two providers share a key for the same bodies and model.
+        #[test]
+        fn every_provider_keys_its_own_verdicts(
+            a in ".*", b in ".*", model in ".*", version in any::<u32>(),
+        ) {
+            let keys: Vec<CacheKey> = PROVIDERS
+                .iter()
+                .map(|p| CacheKey::new(*p, &a, &b, &model, version))
+                .collect();
+            for (i, x) in keys.iter().enumerate() {
+                for y in &keys[i + 1..] {
+                    prop_assert_ne!(x, y);
+                }
+            }
         }
 
         /// A verdict written and read back is the verdict.
@@ -401,7 +466,7 @@ mod tests {
         fn write_then_read_returns_the_verdict(verdict in verdicts(), a in ".*", b in ".*") {
             let dir = tempfile::tempdir().expect("temp dir");
             let cache = Cache::new(dir.path());
-            let key = CacheKey::new(&a, &b, "jev-latest", 1);
+            let key = CacheKey::new(&TypeSafe, &a, &b, "jev-latest", 1);
             cache.put(key, &verdict).expect("writable");
             prop_assert_eq!(cache.get(key), Some(verdict));
         }

@@ -163,7 +163,8 @@ pub struct DuplicatesConfig {
 /// The `[duplicates.triage]` table. Turning triage on sends each reported
 /// pair's two function bodies to a third-party API, so it is off unless
 /// switched on here. There is deliberately no flag. The API key is read from
-/// `TYPESAFE_API_KEY` and never from this file; an `api-key` entry is an
+/// the chosen provider's environment variable (`TYPESAFE_API_KEY` or
+/// `OPENAI_API_KEY`) and never from this file. An `api-key` entry is an
 /// unknown key, rejected like any other.
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -171,7 +172,12 @@ pub struct TriageConfig {
     /// Ask the model about each pair. Defaults to `false`.
     pub enabled: Option<bool>,
 
-    /// The model to ask. Defaults to [`DEFAULT_TRIAGE_MODEL`].
+    /// Which API to ask, by its id (`typesafe` or `openai`). Defaults to
+    /// `typesafe`. Validated against the registered providers after the
+    /// merge.
+    pub provider: Option<String>,
+
+    /// The model to ask. Defaults to the provider's own default model.
     pub model: Option<String>,
 
     /// Below this confidence a verdict names no kind and reports
@@ -181,9 +187,6 @@ pub struct TriageConfig {
     #[serde(alias = "confidence_floor")]
     pub confidence_floor: Option<f64>,
 }
-
-/// The triage model, absent any configuration.
-pub const DEFAULT_TRIAGE_MODEL: &str = "jev-latest";
 
 /// The triage confidence floor, absent any configuration.
 pub const DEFAULT_TRIAGE_CONFIDENCE_FLOOR: f64 = 0.5;
@@ -444,7 +447,6 @@ allow = ["Foo::*"]
         assert!(cfg.duplicates.triage.model.is_none());
         assert!(cfg.duplicates.triage.confidence_floor.is_none());
         // What an unset key resolves to.
-        assert_eq!(DEFAULT_TRIAGE_MODEL, "jev-latest");
         assert!((DEFAULT_TRIAGE_CONFIDENCE_FLOOR - 0.5).abs() < f64::EPSILON);
     }
 
@@ -453,10 +455,12 @@ allow = ["Foo::*"]
         let dir = tempfile::tempdir().unwrap();
         write_config(
             dir.path(),
-            "[duplicates.triage]\nenabled = true\nmodel = \"jev-1.13.0\"\nconfidence-floor = 0.7\n",
+            "[duplicates.triage]\nenabled = true\nprovider = \"openai\"\nmodel = \"jev-1.13.0\"\n\
+             confidence-floor = 0.7\n",
         );
         let triage = load(dir.path()).unwrap().duplicates.triage;
         assert_eq!(triage.enabled, Some(true));
+        assert_eq!(triage.provider.as_deref(), Some("openai"));
         assert_eq!(triage.model.as_deref(), Some("jev-1.13.0"));
         assert_eq!(triage.confidence_floor, Some(0.7));
     }

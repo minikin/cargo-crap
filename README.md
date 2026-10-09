@@ -134,16 +134,18 @@ trip it, so add `--fail-above` once the old offenders are gone.
 Code Scanning, and the [PR comment bot](docs/guides/pr-comment.md) posts the
 delta as a pull-request comment.
 
-## Duplicates, triaged by TypeSafe
+## Duplicates, triaged
 
-*Since 0.6.0.*
+*Since 0.6.0. OpenAI as a provider since 0.7.0.*
 
 `--duplicates` lists pairs of functions with the same structure, and it needs
 no coverage. Structure alone cannot tell the same logic written twice from
-two functions that only share a Rust idiom. With triage on, a
-[TypeSafe](https://docs.typesafe.ai) model answers three questions about each
-pair: what kind of duplication it is, whether it is worth merging, and
-whether a fix to one side would be missed in the other. The kind and the
+two functions that only share a Rust idiom. With triage on, a model from
+[TypeSafe](https://docs.typesafe.ai) (the default) or the
+[OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions)
+answers three questions about each pair: what kind of duplication it is,
+whether it is worth merging, and whether a fix to one side would be missed
+in the other. The kind and the
 verdict on merging print under the pair, and `--format json` carries all
 three answers. A real run over the three pairs of the triage demo, all high
 on structure:
@@ -155,13 +157,14 @@ the first, give the second a parameter and leave the third, and on a colour
 terminal the verdict is red, yellow or dim to match. You know which pairs are
 worth your time before you open them.
 
-Triage sends both function bodies to TypeSafe, so it stays off until
-`.cargo-crap.toml` sets `[duplicates.triage] enabled = true` and
-`TYPESAFE_API_KEY` is in the environment. The release binaries (`cargo binstall`
+Triage sends both function bodies to the provider you pick, so it stays off
+until `.cargo-crap.toml` sets `[duplicates.triage] enabled = true` and that
+provider's key (`TYPESAFE_API_KEY` or `OPENAI_API_KEY`) is in the
+environment. The release binaries (`cargo binstall`
 and the downloads) include it. From source, install with
 `cargo install cargo-crap --features triage`. It never changes a score, the
 order of the pairs or the exit code.
-[Triaging duplicates with TypeSafe](docs/guides/triage.md) has the details,
+[Triaging duplicates](docs/guides/triage.md) has the details,
 and [the triage demo](examples/triage-demo) has three pairs to try it on.
 
 ## Documentation
@@ -172,7 +175,7 @@ and [the triage demo](examples/triage-demo) has three pairs to try it on.
   [workspaces and changed-package CI](docs/guides/workspaces.md),
   [Shields.io badge](docs/guides/badge.md).
 - [Finding duplicates](docs/guides/duplicates.md) and
-  [triaging them with TypeSafe](docs/guides/triage.md).
+  [triaging them](docs/guides/triage.md).
 - Reference: [command line](docs/reference/cli.md),
   [configuration file](docs/reference/config.md),
   [output formats](docs/reference/output-formats.md),

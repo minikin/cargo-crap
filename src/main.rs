@@ -13,6 +13,7 @@ use cargo_crap::{
     delta::{compute_delta, load_baseline_with_weight},
     duplicates,
     duplicates::compare::DuplicatePair,
+    duplicates::triage::provider::{Provider, default_provider},
     duplicates::triage::verdict::Assessment,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
     report::{
@@ -1249,6 +1250,15 @@ struct DupSettings {
         )
     )]
     triage_root: PathBuf,
+    /// The API to ask, resolved from its configured id.
+    #[cfg_attr(
+        not(feature = "triage"),
+        expect(
+            dead_code,
+            reason = "only a build with the triage client asks a provider"
+        )
+    )]
+    triage_provider: &'static dyn Provider,
     /// The model to ask.
     #[cfg_attr(
         not(feature = "triage"),
@@ -1263,11 +1273,15 @@ struct DupSettings {
 
 impl DupSettings {
     /// CLI wins over config, exactly as `threshold` and `fail_above` do.
+    /// `provider` is the already resolved triage provider, so an unset model
+    /// follows it.
     fn resolve(
         cli: &Cli,
         config: &cargo_crap::config::Config,
         project_root: PathBuf,
+        provider: &'static dyn Provider,
     ) -> Self {
+        let triage = &config.duplicates.triage;
         Self {
             triage_root: project_root,
             enabled: cli.duplicates || config.duplicates.enabled.unwrap_or(false),
@@ -1279,20 +1293,38 @@ impl DupSettings {
                 .duplicates
                 .min_nodes
                 .unwrap_or(cargo_crap::config::DEFAULT_DUP_MIN_NODES),
-            triage_enabled: config.duplicates.triage.enabled.unwrap_or(false),
-            triage_model: config
-                .duplicates
-                .triage
+            triage_enabled: triage.enabled.unwrap_or(false),
+            triage_provider: provider,
+            triage_model: triage
                 .model
                 .clone()
-                .unwrap_or_else(|| cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned()),
-            triage_floor: config
-                .duplicates
-                .triage
+                .unwrap_or_else(|| provider.default_model().to_owned()),
+            triage_floor: triage
                 .confidence_floor
                 .unwrap_or(cargo_crap::config::DEFAULT_TRIAGE_CONFIDENCE_FLOOR),
         }
     }
+}
+
+/// The provider registered under `id`, or the default provider when no id
+/// is configured. Runs in every build: the registry needs no client.
+///
+/// # Errors
+///
+/// When `id` names no registered provider. The message lists the ones that
+/// are.
+fn resolve_triage_provider(id: Option<&str>) -> Result<&'static dyn Provider> {
+    use cargo_crap::duplicates::triage::provider::{by_id, ids};
+    let Some(id) = id else {
+        return Ok(default_provider());
+    };
+    by_id(id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid duplicates.triage.provider (config): {id:?} is not a provider; \
+             expected one of: {}",
+            ids().collect::<Vec<_>>().join(", ")
+        )
+    })
 }
 
 /// Run the duplicate pass, when it was asked for.
@@ -1374,8 +1406,11 @@ fn triage_assessments(
     #[cfg(feature = "triage")]
     {
         use cargo_crap::duplicates::triage;
-        let api_settings =
-            triage::Settings::from_env(&settings.triage_model, &settings.triage_root);
+        let api_settings = triage::Settings::from_env(
+            settings.triage_provider,
+            &settings.triage_model,
+            &settings.triage_root,
+        );
         triage::run(pairs, &api_settings)
             .inspect_err(|e| {
                 eprintln!(
@@ -1513,10 +1548,10 @@ struct LoadedArgs {
     try_weight: f64,
 }
 
-/// Parse argv, load config, and validate the merged epsilon, jobs,
-/// similarity threshold, triage confidence floor and try-weight, returning
-/// exactly what was validated so [`run`] cannot consume a different
-/// (unchecked) merge of the same knobs.
+/// Parse argv, load config, resolve the triage provider and validate the
+/// merged epsilon, jobs, similarity threshold, triage confidence floor and
+/// try-weight, returning exactly what was validated so [`run`] cannot
+/// consume a different (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
     let (cli, config, project_root) = parse_and_load_config()?;
     let epsilon = cli
@@ -1524,14 +1559,17 @@ fn parse_and_validate() -> Result<LoadedArgs> {
         .or(config.epsilon)
         .unwrap_or(cargo_crap::delta::DEFAULT_EPSILON);
     let jobs = cli.jobs.or(config.jobs);
-    // Resolved here rather than at the call site: the merged similarity
-    // threshold has to be validated before anything is analyzed, and the
-    // config half of it is invisible to `validate_args`.
-    let dup = DupSettings::resolve(&cli, &config, project_root);
     let try_weight = config
         .try_weight
         .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
-    validate_merged_values(epsilon, jobs, &dup, try_weight)?;
+    // Resolved here rather than at the call site: the merged similarity
+    // threshold has to be validated before anything is analyzed, and the
+    // config half of it is invisible to `validate_args`. Resolving the
+    // provider is validating it, so it shares the one `?` with the other
+    // merged values.
+    let dup = resolve_triage_provider(config.duplicates.triage.provider.as_deref())
+        .map(|provider| DupSettings::resolve(&cli, &config, project_root, provider))
+        .and_then(|dup| validate_merged_values(epsilon, jobs, &dup, try_weight).map(|()| dup))?;
     Ok(LoadedArgs {
         cli,
         config,
@@ -2017,8 +2055,65 @@ mod tests {
             min_nodes: cargo_crap::config::DEFAULT_DUP_MIN_NODES,
             triage_enabled: false,
             triage_root: PathBuf::from("."),
-            triage_model: cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned(),
+            triage_provider: default_provider(),
+            triage_model: default_provider().default_model().to_owned(),
             triage_floor,
+        }
+    }
+
+    #[test]
+    fn an_unset_provider_is_the_default_one() {
+        let provider = resolve_triage_provider(None).expect("the default");
+        assert_eq!(provider.id(), default_provider().id());
+    }
+
+    #[test]
+    fn every_registered_provider_resolves_to_itself() {
+        for id in cargo_crap::duplicates::triage::provider::ids() {
+            let provider = resolve_triage_provider(Some(id)).expect("registered");
+            assert_eq!(provider.id(), id);
+        }
+    }
+
+    #[test]
+    fn an_unknown_provider_is_rejected_naming_the_choices() {
+        let err = resolve_triage_provider(Some("acme"))
+            .err()
+            .expect("acme is no provider")
+            .to_string();
+        assert_eq!(
+            err,
+            "invalid duplicates.triage.provider (config): \"acme\" is not a provider; \
+             expected one of: typesafe, openai"
+        );
+    }
+
+    /// Registered ids half the time, near-misses and noise the rest.
+    fn provider_ids() -> impl proptest::strategy::Strategy<Value = String> {
+        use proptest::strategy::Strategy;
+        proptest::prop_oneof![
+            proptest::sample::select(
+                cargo_crap::duplicates::triage::provider::ids().collect::<Vec<_>>()
+            )
+            .prop_map(|id: &str| id.to_owned()),
+            "[a-zA-Z._ -]{0,12}",
+        ]
+    }
+
+    proptest::proptest! {
+        /// A provider id validates exactly when the registry holds it, and a
+        /// rejection lists exactly the registered ids.
+        #[test]
+        fn a_provider_validates_exactly_when_registered(id in provider_ids()) {
+            use cargo_crap::duplicates::triage::provider::{by_id, ids};
+            let result = resolve_triage_provider(Some(&id));
+            proptest::prop_assert_eq!(result.is_ok(), by_id(&id).is_some());
+            if let Err(err) = result {
+                let listed = err.to_string();
+                let choices = listed.rsplit("expected one of: ").next().expect("a list");
+                let expected: Vec<&str> = ids().collect();
+                proptest::prop_assert_eq!(choices, expected.join(", "));
+            }
         }
     }
 

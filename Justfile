@@ -135,18 +135,43 @@ dev-mutants-diff: dev mutants-diff
 # Full validation including mutation tests (slow)
 dev-full: dev mutants-all
 
-# --- Duplicate-pair triage, live (spec 30) ----------------------------------
+# --- Duplicate-pair triage, live ---------------------------------------------
 # Every other recipe here is offline and free. This one is neither: it calls
-# the real TypeSafe API, costs API calls and needs TYPESAFE_API_KEY. It is
+# a provider's real API, costs API calls and needs that provider's key. It is
 # never part of `dev` or CI — run it by hand to check that the model still
 # names the spec's example pairs (tests/fixtures/triage/) as a person would.
 #
-# Live triage check against the real TypeSafe API (needs TYPESAFE_API_KEY)
-triage-live:
+# Live triage check against a provider's real API: `typesafe` (needs
+# TYPESAFE_API_KEY), `openai` (needs OPENAI_API_KEY) or `all`. The names and
+# key variables follow the provider registry in
+# src/duplicates/triage/provider/mod.rs. Keep the two in step.
+triage-live provider="typesafe":
     #!/usr/bin/env bash
     set -euo pipefail
-    : "${TYPESAFE_API_KEY:?set TYPESAFE_API_KEY to run the live triage check}"
-    cargo test --features triage --test triage_live -- --ignored
+    case "$provider" in
+        typesafe) providers=(typesafe) keys=(TYPESAFE_API_KEY) ;;
+        openai) providers=(openai) keys=(OPENAI_API_KEY) ;;
+        all) providers=(typesafe openai) keys=(TYPESAFE_API_KEY OPENAI_API_KEY) ;;
+        *)
+            echo "unknown provider '$provider': expected typesafe, openai or all" >&2
+            exit 2 ;;
+    esac
+    for key in "${keys[@]}"; do
+        if [ -z "${!key:-}" ]; then
+            echo "set $key to run the live triage check" >&2
+            exit 1
+        fi
+    done
+    for p in "${providers[@]}"; do
+        # A filter that matches nothing passes having run nothing: refuse it.
+        found=$(cargo test -q --features triage --test triage_live -- --ignored --list "${p}_live" \
+            | grep -c ': test$' || true)
+        if [ "$found" -eq 0 ]; then
+            echo "no live tests named *${p}_live in tests/triage_live.rs" >&2
+            exit 1
+        fi
+        cargo test --features triage --test triage_live -- --ignored "${p}_live"
+    done
 
 # "Main" is one thing, decided once: the first of the four names below
 # that exists in this repository. `mutants-diff` diffs against it and

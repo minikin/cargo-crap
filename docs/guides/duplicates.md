@@ -73,7 +73,8 @@ Limits of the comparison:
 
 ## Triage
 
-Since 0.6.0 a TypeSafe model can judge each reported pair: what kind of
-duplication it is, whether it is worth merging, and whether a fix to one side
-would be missed in the other. See
-[Triaging duplicates with TypeSafe](triage.md).
+Since 0.6.0 a model can judge each reported pair: what kind of duplication
+it is, whether it is worth merging, and whether a fix to one side would be
+missed in the other. TypeSafe is the default provider, and OpenAI the other
+since 0.7.0.
+See [Triaging duplicates](triage.md).

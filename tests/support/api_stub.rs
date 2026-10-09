@@ -1,5 +1,6 @@
-//! A recording stand-in for the `TypeSafe` API, so no test needs a network or
-//! a key.
+//! A recording stand-in for a triage provider's API, so no test needs a
+//! network or a key. It serves whatever JSON a test scripts, so one stub
+//! plays every provider.
 //!
 //! A std-only HTTP/1.1 server on `127.0.0.1:0`. Every request is recorded
 //! (method, path, headers, body) before it is answered, so a test can read
@@ -125,7 +126,7 @@ impl RecordedRequest {
 type Responder = dyn Fn(&RecordedRequest) -> Reply + Send + Sync;
 
 /// A running stub. Dropping it stops the server.
-pub struct TypesafeStub {
+pub struct ApiStub {
     addr: SocketAddr,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     stop: Arc<AtomicBool>,
@@ -133,7 +134,7 @@ pub struct TypesafeStub {
     server: Option<JoinHandle<Vec<JoinHandle<()>>>>,
 }
 
-impl TypesafeStub {
+impl ApiStub {
     /// Answer every request with whatever `responder` returns for it. Each
     /// connection is served on its own thread, so parallel clients work; the
     /// responder runs under the same lock that records the request, so
@@ -184,7 +185,8 @@ impl TypesafeStub {
         })
     }
 
-    /// `http://127.0.0.1:<port>`, for `TYPESAFE_BASE_URL`.
+    /// `http://127.0.0.1:<port>`, the base a provider's base-URL variable is
+    /// set to (plus any path prefix that provider's convention includes).
     pub fn base_url(&self) -> String {
         format!("http://{}", self.addr)
     }
@@ -200,7 +202,7 @@ impl TypesafeStub {
     }
 }
 
-impl Drop for TypesafeStub {
+impl Drop for ApiStub {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         // Join the connection threads too, not only the accept loop: a test
@@ -309,8 +311,8 @@ fn refuse(
     stream: &TcpStream,
     problem: &str,
 ) {
-    eprintln!("typesafe stub: refusing a request: {problem}");
-    let body = serde_json::json!({ "error": format!("typesafe stub: {problem}") }).to_string();
+    eprintln!("api stub: refusing a request: {problem}");
+    let body = serde_json::json!({ "error": format!("api stub: {problem}") }).to_string();
     write_response(stream, 400, &body, &[]);
     drain(stream);
 }
@@ -471,7 +473,7 @@ mod tests {
 
     #[test]
     fn answers_with_the_scripted_json_and_records_the_request() {
-        let stub = TypesafeStub::scripted(vec![Reply::json(r#"{"ok":true}"#)]);
+        let stub = ApiStub::scripted(vec![Reply::json(r#"{"ok":true}"#)]);
         let raw = send(
             &stub.base_url(),
             "/v1/systemone",
@@ -501,7 +503,7 @@ mod tests {
 
     #[test]
     fn fails_with_the_scripted_status() {
-        let stub = TypesafeStub::scripted(vec![Reply::status(503)]);
+        let stub = ApiStub::scripted(vec![Reply::status(503)]);
         let raw = send(&stub.base_url(), "/v1/systemone", &[], "{}");
         assert_eq!(status_of(&raw), 503, "{raw}");
         assert_eq!(
@@ -513,7 +515,7 @@ mod tests {
 
     #[test]
     fn drops_the_connection_without_answering() {
-        let stub = TypesafeStub::scripted(vec![Reply::Drop]);
+        let stub = ApiStub::scripted(vec![Reply::Drop]);
         let raw = send(&stub.base_url(), "/v1/systemone", &[], "{}");
         assert!(raw.is_empty(), "no response bytes: {raw}");
         assert_eq!(
@@ -525,7 +527,7 @@ mod tests {
 
     #[test]
     fn scripted_replies_are_served_in_order_and_the_last_one_repeats() {
-        let stub = TypesafeStub::scripted(vec![Reply::status(500), Reply::json("{}")]);
+        let stub = ApiStub::scripted(vec![Reply::status(500), Reply::json("{}")]);
         let codes: Vec<u16> = (0..4)
             .map(|_| status_of(&send(&stub.base_url(), "/v1/systemone", &[], "{}")))
             .collect();
@@ -534,7 +536,7 @@ mod tests {
 
     #[test]
     fn a_responder_answers_from_the_request_it_sees() {
-        let stub = TypesafeStub::respond_with(|request| {
+        let stub = ApiStub::respond_with(|request| {
             if request.body.contains("fail") {
                 Reply::status(502)
             } else {
@@ -549,14 +551,14 @@ mod tests {
 
     #[test]
     fn nothing_is_recorded_until_a_request_arrives() {
-        let stub = TypesafeStub::scripted(vec![Reply::json("{}")]);
+        let stub = ApiStub::scripted(vec![Reply::json("{}")]);
         assert_eq!(stub.request_count(), 0);
         assert!(stub.requests().is_empty());
     }
 
     #[test]
     fn concurrent_requests_are_all_answered_and_recorded() {
-        let stub = TypesafeStub::scripted(vec![Reply::json("{}")]);
+        let stub = ApiStub::scripted(vec![Reply::json("{}")]);
         let base = stub.base_url();
         let handles: Vec<_> = (0..8)
             .map(|i| {
@@ -588,7 +590,7 @@ mod tests {
         // The slow request takes the responder first; the fast one arrives
         // while it is still inside. Recording must follow the answering
         // order, or a parallel test that reads requests() positionally lies.
-        let stub = TypesafeStub::respond_with(|request| {
+        let stub = ApiStub::respond_with(|request| {
             if request.body.contains("slow") {
                 std::thread::sleep(Duration::from_millis(300));
             }
@@ -612,7 +614,7 @@ mod tests {
 
     #[test]
     fn dropping_the_stub_returns_promptly() {
-        let stub = TypesafeStub::scripted(vec![Reply::json("{}")]);
+        let stub = ApiStub::scripted(vec![Reply::json("{}")]);
         send(&stub.base_url(), "/v1/systemone", &[], "{}");
         let started = Instant::now();
         drop(stub);
@@ -625,7 +627,7 @@ mod tests {
 
     #[test]
     fn a_client_that_sends_nothing_is_disconnected() {
-        let stub = TypesafeStub::scripted(vec![Reply::json("{}")]);
+        let stub = ApiStub::scripted(vec![Reply::json("{}")]);
         let mut stream =
             TcpStream::connect(stub.base_url().trim_start_matches("http://")).expect("connect");
         stream
@@ -642,7 +644,7 @@ mod tests {
 
     #[test]
     fn a_chunked_request_is_refused_loudly() {
-        let stub = TypesafeStub::scripted(vec![Reply::json("{}")]);
+        let stub = ApiStub::scripted(vec![Reply::json("{}")]);
         let raw = send_raw(
             &stub.base_url(),
             "POST /v1/systemone HTTP/1.1\r\nHost: stub\r\nTransfer-Encoding: chunked\r\n\
@@ -659,7 +661,7 @@ mod tests {
 
     #[test]
     fn an_unparsable_content_length_is_refused_loudly() {
-        let stub = TypesafeStub::scripted(vec![Reply::json("{}")]);
+        let stub = ApiStub::scripted(vec![Reply::json("{}")]);
         let raw = send_raw(
             &stub.base_url(),
             "POST /v1/systemone HTTP/1.1\r\nHost: stub\r\nContent-Length: two\r\n\
@@ -672,7 +674,7 @@ mod tests {
 
     #[test]
     fn a_reply_can_carry_extra_headers() {
-        let stub = TypesafeStub::scripted(vec![Reply::status(429).with_header("Retry-After", "0")]);
+        let stub = ApiStub::scripted(vec![Reply::status(429).with_header("Retry-After", "0")]);
         let raw = send(&stub.base_url(), "/v1/systemone", &[], "{}");
         assert_eq!(status_of(&raw), 429, "{raw}");
         assert!(raw.contains("\r\nRetry-After: 0\r\n"), "{raw}");
@@ -683,7 +685,7 @@ mod tests {
         // For responses no well-behaved server sends: a body cut short, a
         // lying Content-Length.
         let response = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 99\r\n\r\n{\"err";
-        let stub = TypesafeStub::scripted(vec![Reply::Raw(response.to_owned())]);
+        let stub = ApiStub::scripted(vec![Reply::Raw(response.to_owned())]);
         let raw = send(&stub.base_url(), "/v1/systemone", &[], "{}");
         assert_eq!(raw, response);
         assert_eq!(stub.request_count(), 1);
@@ -691,7 +693,7 @@ mod tests {
 
     #[test]
     fn a_delayed_reply_arrives_after_the_delay() {
-        let stub = TypesafeStub::scripted(vec![Reply::delayed(
+        let stub = ApiStub::scripted(vec![Reply::delayed(
             Duration::from_millis(200),
             Reply::json(r#"{"late":true}"#).with_header("X-Stub", "delayed"),
         )]);

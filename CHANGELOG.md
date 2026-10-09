@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Duplicate triage can ask the OpenAI Decisions API as well as TypeSafe.
+  `provider = "openai"` in `[duplicates.triage]` reads `OPENAI_API_KEY`
+  and `OPENAI_BASE_URL` (which includes `/v1`, as for OpenAI's SDKs) and
+  defaults the model to `gpt-6-luna`. TypeSafe stays the default, and its
+  requests, warnings and cached verdicts are unchanged. An unknown provider
+  is a configuration error before any analysis, a question the model
+  declines fails the run's triage like any other API failure, and verdicts
+  are cached per provider, so switching never reuses the other's. See
+  [Triaging duplicates](docs/guides/triage.md#choosing-a-provider).
+- `just triage-live` takes a provider: `typesafe` (the default), `openai`
+  or `all`.
+
 ### Changed
 
 - The `human` tables fit the terminal's width, or `$COLUMNS` when it is
@@ -36,6 +50,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `..Default::default()`. `report::render_summary` takes the width as a new
   third argument. `DeltaReport` gained `counts` and `restrict_to`, and
   `report::render_delta_counts` prints a `DeltaCounts`.
+- **BREAKING (library API):** duplicate triage asks its model through a
+  `duplicates::triage::provider::Provider`, implemented by `TypeSafe` and
+  `OpenAi`.
+  `config::DEFAULT_TRIAGE_MODEL` is gone (ask
+  `provider::default_provider().default_model()`), `Verdict::decode` is
+  replaced by a provider's `decode` followed by `Verdict::from_answers`,
+  and `request::body` and `request::build` take the provider first.
+  `triage::Settings` gained `provider`, and `Settings::from_env` and
+  `from_lookup` take it first. `TriageError::MissingKey` names the
+  variable (`MissingKey { var }`), `Status` and `Transport` gained `api`,
+  and `Decode` became `Decode { api, error }`. `Client::new` returns an
+  `Option`. `client::API_KEY_VAR`, `BASE_URL_VAR` and `DEFAULT_BASE_URL`
+  are gone: each provider names its own. The requests TypeSafe receives,
+  and the warnings it causes, are unchanged.
 
 ### Fixed
 

@@ -99,7 +99,7 @@
         },
         "triage": {
           "type": "object",
-          "description": "The TypeSafe model's advisory verdict on this pair (spec 30), present only when triage ran. Below the confidence floor `kind` is `uncertain` and only `confidence` accompanies it: no kind, and none of the other answers, is asserted.",
+          "description": "The triage model's advisory verdict on this pair, whichever provider gave it, present only when triage ran. Below the confidence floor `kind` is `uncertain` and only `confidence` accompanies it: no kind, and none of the other answers, is asserted.",
           "required": ["kind", "confidence"],
           "additionalProperties": false,
           "properties": {

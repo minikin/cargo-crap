@@ -10,18 +10,21 @@ every pair high. Each was written to be a different kind of duplication:
 | `shipped_weight` / `shipped_volume`      | the same routine over a different field                 |
 | `write_receipt` / `write_shipping_label` | two unrelated jobs that share a run of `writeln!` calls |
 
-Triage asks a [TypeSafe](https://docs.typesafe.ai) model to tell these apart.
+Triage asks a model to tell these apart: [TypeSafe](https://docs.typesafe.ai)
+by default, or the [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions) with
+`provider = "openai"`.
 `.cargo-crap.toml` here already turns on duplicate detection and triage.
 
 ## Run it
 
-Triage needs cargo-crap 0.6.0 or later with the `triage` feature, and a
-TypeSafe API key. The release binaries include the feature. From source,
-add it when installing:
+Triage needs the `triage` feature and a key: cargo-crap 0.6.0 or later with
+`TYPESAFE_API_KEY`, or 0.7.0 or later with `OPENAI_API_KEY` and
+`provider = "openai"`. The release binaries include the feature. From
+source, add it when installing:
 
 ```bash
 cargo binstall cargo-crap    # or: cargo install cargo-crap --features triage
-export TYPESAFE_API_KEY=...
+export TYPESAFE_API_KEY=...   # or OPENAI_API_KEY with provider = "openai"
 cd examples/triage-demo
 cargo crap --summary
 ```
@@ -33,13 +36,14 @@ cd examples/triage-demo
 cargo run --release --features triage --manifest-path ../../Cargo.toml -- --summary
 ```
 
-The run sends the three pairs' function bodies to TypeSafe and caches the
+The run sends the three pairs' function bodies to the provider and caches the
 verdicts under `target/`, so a second run asks nothing. Without a key it
 prints the same pairs untriaged, with one warning saying why.
 
 ## Output
 
-A real run, with `--summary` so the CRAP table stays out of the way:
+A real run against TypeSafe, with `--summary` so the CRAP table stays out of
+the way:
 
 ```text
 ✗ Analyzed: 6 · Crappy: 2 (threshold 30) · Worst: write_receipt (CRAP 42.0)

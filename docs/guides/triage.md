@@ -1,12 +1,14 @@
-# Triaging duplicates with TypeSafe
+# Triaging duplicates
 
-*Since 0.6.0.*
+*Since 0.6.0. OpenAI as a provider since 0.7.0.*
 
 Structural similarity cannot tell *the same logic written twice* from *two
 unrelated functions that share a Rust idiom*. Two functions that are each a
 run of `writeln!` calls score as high as a real copy-paste. Triage asks a
-[TypeSafe](https://docs.typesafe.ai) System One model three narrow questions
-about each reported pair and prints the answers beside it. On
+model three narrow questions about each reported pair and prints the answers
+beside it. The model is [TypeSafe](https://docs.typesafe.ai) System One by
+default, or the [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions)
+([Choosing a provider](#choosing-a-provider)). On
 [a small shop backend](../../examples/triage-demo) with three look-alike
 pairs, a real run prints:
 
@@ -30,11 +32,12 @@ pair would be missed in the other. That divergence risk (`divergence_risk`
 in the JSON) points at the copies where a bug fix is most likely to reach
 only one side.
 
-The answers are typed, not prose. A System One model picks the kind from a
-fixed list, places the pair on a fixed four-level scale, returns a
+The answers are typed, not prose. Either provider's model picks the kind
+from a fixed list, places the pair on a fixed four-level scale, returns a
 probability for the divergence question, and reports how confident it is.
 cargo-crap can print, cache and test answers like that, and when the model
 is not confident enough it says `uncertain` instead of passing on a guess.
+The same answers print the same way whichever provider gave them.
 
 ## Reading the verdict
 
@@ -75,16 +78,17 @@ a third-party API:
    cargo install cargo-crap --features triage
    ```
 
-2. **Switch it on** in `.cargo-crap.toml` (there is no flag), and put the key
-   in the environment. It is never read from the config file:
+2. **Switch it on** in `.cargo-crap.toml` (there is no flag), and put the
+   provider's key in the environment. It is never read from the config file:
 
    ```toml
    [duplicates.triage]
    enabled = true
+   provider = "typesafe"   # the default, or "openai"
    ```
 
    ```bash
-   export TYPESAFE_API_KEY=...
+   export TYPESAFE_API_KEY=...   # or OPENAI_API_KEY for provider = "openai"
    cargo crap --path src --duplicates
    ```
 
@@ -95,7 +99,32 @@ saying why.
 
 Verdicts are cached in `cargo-crap/triage/` under the target directory:
 `CARGO_TARGET_DIR` when it is set, otherwise `target/` beside
-`.cargo-crap.toml`. The cache is keyed by both function bodies, so an
-unchanged pair is never asked about twice, and `cargo clean` removes it.
-`TYPESAFE_BASE_URL` points the client at another API host (the default is
-`https://api.typesafe.ai`).
+`.cargo-crap.toml`. The cache is keyed by both function bodies, the model
+and the provider, so an unchanged pair is never asked about twice, switching
+provider never reuses the other provider's verdicts, and `cargo clean`
+removes it.
+
+## Choosing a provider
+
+`provider` in `[duplicates.triage]` picks the API. An unknown name is a
+configuration error before anything is analyzed. Each provider reads only
+its own environment variables:
+
+| `provider`             | Key variable       | Base URL variable   | Default base URL            | Default `model` |
+| ---------------------- | ------------------ | ------------------- | --------------------------- | --------------- |
+| `typesafe` (default)   | `TYPESAFE_API_KEY` | `TYPESAFE_BASE_URL` | `https://api.typesafe.ai`   | `jev-latest`    |
+| `openai`               | `OPENAI_API_KEY`   | `OPENAI_BASE_URL`   | `https://api.openai.com/v1` | `gpt-6-luna`    |
+
+`model` overrides the provider's default. `OPENAI_BASE_URL` includes `/v1`,
+as it does for OpenAI's own SDKs, so a proxy or gateway already set up for
+them works here too. A key set for one provider is never sent to another.
+
+Whichever you pick receives, for every pair it is asked about, the two
+function bodies, their names, their file paths and line ranges, and the
+similarity score. Nothing else leaves the project.
+
+Each provider calibrates its own confidence, so the same
+`confidence-floor` can mark a different share of pairs `uncertain` under
+each. A question the OpenAI model declines to answer counts as a failure:
+the run prints the untriaged section and one warning naming the question,
+as for any other failure.
