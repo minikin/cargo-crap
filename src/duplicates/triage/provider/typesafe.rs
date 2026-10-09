@@ -59,6 +59,13 @@ impl Provider for TypeSafe {
         DEFAULT_MODEL
     }
 
+    /// None: `TypeSafe` was the only provider when the cache was keyed
+    /// without one, so its keys stay exactly as they were and no existing
+    /// cache is emptied.
+    fn cache_namespace(&self) -> Option<&'static str> {
+        None
+    }
+
     fn encode(
         &self,
         state: Value,

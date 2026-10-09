@@ -19,7 +19,7 @@ use serde_json::Value;
 
 /// One API that can answer the triage questions.
 pub trait Provider: Sync {
-    /// The name configuration selects it by, and its cache namespace.
+    /// The name configuration selects it by.
     fn id(&self) -> &'static str;
     /// How warnings and errors name the API.
     fn display_name(&self) -> &'static str;
@@ -34,6 +34,11 @@ pub trait Provider: Sync {
     fn endpoint_path(&self) -> &'static str;
     /// The model asked when the configuration names none.
     fn default_model(&self) -> &'static str;
+    /// What the verdict cache mixes into a key so this provider's verdicts
+    /// are never served for another's. Its id, unless it overrides this.
+    fn cache_namespace(&self) -> Option<&'static str> {
+        Some(self.id())
+    }
     /// The request body asking `questions` about `state` of `model`.
     fn encode(
         &self,
@@ -169,6 +174,13 @@ mod tests {
         let provider = by_id("typesafe").expect("registered");
         assert_eq!(provider.id(), "typesafe");
         assert_eq!(default_provider().id(), "typesafe");
+    }
+
+    #[test]
+    fn a_provider_namespaces_its_cache_by_its_id_unless_it_says_otherwise() {
+        let openai = by_id("openai").expect("registered");
+        assert_eq!(openai.cache_namespace(), Some("openai"));
+        assert_eq!(default_provider().cache_namespace(), None);
     }
 
     #[test]

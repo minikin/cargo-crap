@@ -112,6 +112,7 @@ impl Run<'_> {
     ) -> Result<Verdict, TriageError> {
         let (source_a, source_b) = request::sources(pair).map_err(TriageError::Source)?;
         let key = CacheKey::new(
+            self.provider,
             &source_a,
             &source_b,
             self.model,

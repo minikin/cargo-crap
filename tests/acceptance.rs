@@ -3468,4 +3468,138 @@ fn a_key_set_for_another_provider_is_never_used() {
 
 // ---- Spec 32 · T8 ----
 
+/// The verdict cache file name as cargo-crap computed it before triage had
+/// providers: FNV-1a over both bodies and the model, each length-prefixed,
+/// then the question-set version. Pasted, so the test does not trust the
+/// code under test to compute the key it is checking.
+#[cfg(feature = "triage")]
+fn cache_file_before_providers(
+    source_a: &str,
+    source_b: &str,
+    model: &str,
+    version: u32,
+) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut write = |bytes: &[u8]| {
+        for byte in bytes {
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for field in [source_a, source_b, model] {
+        write(&(field.len() as u64).to_le_bytes());
+        write(field.as_bytes());
+    }
+    write(&version.to_le_bytes());
+    format!("{hash:016x}.json")
+}
+
+/// A stub answering each provider in its own shape: `OpenAI` on
+/// `/decisions`, `TypeSafe` everywhere else.
+#[cfg(feature = "triage")]
+fn both_providers_stub(kind: &'static str) -> support::api_stub::ApiStub {
+    use support::api_stub::{ApiStub, Reply};
+    ApiStub::respond_with(move |request| {
+        if request.path.ends_with("/decisions") {
+            Reply::json(&openai_answer(kind))
+        } else {
+            Reply::json(&triage_answer(kind, 0.9))
+        }
+    })
+}
+
+#[cfg(feature = "triage")]
+const BOTH_KEYS: Keys = Keys {
+    openai: true,
+    typesafe: true,
+};
+
+#[cfg(feature = "triage")]
+#[test]
+fn existing_typesafe_verdicts_stay_cached_across_the_upgrade() {
+    // Given a verdict cache entry stored under the key spec 30 computes for a
+    // pair's two bodies, the model jev-latest and the current question set.
+    // The key rests on three facts about the run: alpha sorts before beta,
+    // a side's source is its lines without the final newline, and TypeSafe's
+    // default model is jev-latest. A failure here may mean one of those moved.
+    let dir = alpha_beta_tree();
+    let source = |file: &str| {
+        let text = std::fs::read_to_string(dir.path().join(file)).expect("source");
+        text.trim_end_matches('\n').to_owned()
+    };
+    let entry =
+        cache_file_before_providers(&source("alpha.rs"), &source("beta.rs"), "jev-latest", 1);
+    let cache = dir.path().join("target/cargo-crap/triage");
+    std::fs::create_dir_all(&cache).expect("cache dir");
+    std::fs::write(
+        cache.join(entry),
+        r#"{"kind":"parameterisable","confidence":0.77,"worth_extracting":1.0,"divergence_risk":0.2}"#,
+    )
+    .expect("cache entry");
+    // And neither body has changed
+    let stub = both_providers_stub("same_logic");
+    // When cargo-crap runs with triage enabled and no provider named
+    let out = run_providers(dir.path(), TRIAGE_ON, &stub, BOTH_KEYS);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Then the pair carries the cached triage line
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    assert!(stdout.contains("triage: parameterisable"), "{stdout}");
+    // And no network request is made
+    assert_eq!(stub.request_count(), 0);
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn switching_provider_never_reuses_the_other_providers_verdicts() {
+    // Given a TypeSafe run cached a verdict for every pair under model name M
+    let dir = two_pairs_tree();
+    let stub = both_providers_stub("same_logic");
+    let model = "model = \"shared-model\"\n";
+    let typesafe = run_providers(dir.path(), &format!("{TRIAGE_ON}{model}"), &stub, BOTH_KEYS);
+    assert!(typesafe.status.success());
+    assert_eq!(stub.request_count(), 2, "TypeSafe asked about both pairs");
+    // When the provider is switched to "openai" with model = M
+    // And cargo-crap runs
+    let stub = both_providers_stub("parameterisable");
+    let out = run_providers(dir.path(), &openai_config(model), &stub, BOTH_KEYS);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Then a request is made for every pair
+    let requests = stub.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|r| r.path == "/v1/decisions"));
+    // (and the report carries OpenAI's verdicts, not the cached TypeSafe ones)
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    assert_eq!(
+        stdout.matches("triage: parameterisable").count(),
+        2,
+        "{stdout}"
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_second_openai_run_over_unchanged_code_asks_nothing() {
+    // Given an OpenAI run cached its verdicts
+    let dir = two_pairs_tree();
+    let stub = both_providers_stub("same_logic");
+    let first = run_providers(dir.path(), &openai_config(""), &stub, OPENAI_ONLY);
+    assert!(first.status.success());
+    let asked = stub.request_count();
+    assert_eq!(asked, 2);
+    // And no function body in any pair has changed
+    // When cargo-crap runs again with the same provider and model
+    let second = run_providers(dir.path(), &openai_config(""), &stub, OPENAI_ONLY);
+    // Then every pair carries the same triage line as the previous run
+    assert_eq!(second.stdout, first.stdout);
+    // And no network request is made
+    assert_eq!(stub.request_count(), asked);
+}
+
 // ---- Spec 32 · T9 ----
