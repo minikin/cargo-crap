@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use syn::visit::{self, Visit};
-use syn::{Block, File, ImplItemFn, ItemFn, ItemMod, Signature};
+use syn::{Block, File, ImplItemFn, ItemFn, ItemMod, Signature, TraitItemFn};
 
 use super::fingerprint::{Fingerprint, fingerprints};
 use super::normalize::normalize;
@@ -68,10 +68,10 @@ struct Collector {
 impl Collector {
     /// Fingerprint one function and file it under its location.
     ///
-    /// A free `fn` and a method in an `impl` are different syntax for the
-    /// same thing here, and both reach this through their signature and
-    /// block — so the span arithmetic that locates a function is written
-    /// once and the two forms cannot drift apart.
+    /// A free `fn`, a method in an `impl` and a trait's default method are
+    /// different syntax for the same thing here, and all reach this through
+    /// their signature and block — so the span arithmetic that locates a
+    /// function is written once and the forms cannot drift apart.
     fn record(
         &mut self,
         sig: &Signature,
@@ -118,6 +118,20 @@ impl<'ast> Visit<'ast> for Collector {
         }
         self.record(&node.sig, &node.block);
         visit::visit_impl_item_fn(self, node);
+    }
+
+    fn visit_trait_item_fn(
+        &mut self,
+        node: &'ast TraitItemFn,
+    ) {
+        // A required method has no body, so nothing to compare.
+        if has_attr(&node.attrs, "test") {
+            return;
+        }
+        if let Some(block) = &node.default {
+            self.record(&node.sig, block);
+        }
+        visit::visit_trait_item_fn(self, node);
     }
 
     fn visit_item_mod(
@@ -172,6 +186,17 @@ mod tests {
             .into_iter()
             .map(|f| f.location.name)
             .collect()
+    }
+
+    #[test]
+    fn a_traits_default_method_is_a_candidate_and_a_required_one_is_not() {
+        let found = names(
+            "trait Shape {
+                fn area(&self) -> f64;
+                fn label(&self, x: i32) -> i32 { if x > 0 { 1 } else { 2 } }
+            }",
+        );
+        assert_eq!(found, ["label"], "got {found:?}");
     }
 
     #[test]

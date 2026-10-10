@@ -3915,3 +3915,61 @@ fn triage_verdicts_follow_the_same_target_directory() {
     // And crates/a/target does not exist
     assert!(!member.join("target").exists());
 }
+
+// ── Spec 34: trait default methods are duplicate candidates ──────────────
+
+#[test]
+fn two_traits_structurally_identical_default_methods_are_reported_as_a_pair() {
+    // Given two traits, each with a default method whose body is the same
+    // loop under different names
+    // And each trait also declares a required method with no body
+    let dir = TempDir::new().expect("temp dir");
+    for (file, tr, method, required) in [
+        ("first.rs", "First", "sum_first", "need_first"),
+        ("second.rs", "Second", "sum_second", "need_second"),
+    ] {
+        write(
+            dir.path(),
+            file,
+            &format!(
+                "pub trait {tr} {{
+    fn {required}(&self) -> i32;
+    fn {method}(&self, xs: &[i32]) -> Vec<i32> {{
+        let mut ys = Vec::new();
+        for x in xs {{
+            if x % 2 == 1 {{
+                ys.push(x + 1);
+            }}
+        }}
+        ys
+    }}
+}}
+"
+            ),
+        );
+    }
+    // When I run `cargo crap --duplicates`
+    let out = crap()
+        .args([
+            "--path",
+            dir.path().to_str().expect("utf-8"),
+            "--duplicates",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
+    let section = stdout
+        .split("duplicate candidate")
+        .nth(1)
+        .unwrap_or_else(|| panic!("a duplicate section: {stdout}"));
+    // Then the two default methods are reported as a duplicate pair
+    assert!(
+        section.contains("sum_first") && section.contains("sum_second"),
+        "{stdout}"
+    );
+    // And neither required method appears in the duplicate section
+    assert!(
+        !section.contains("need_first") && !section.contains("need_second"),
+        "{stdout}"
+    );
+}
