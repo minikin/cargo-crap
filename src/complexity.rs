@@ -6,6 +6,7 @@
 //! [`Visit`] trait. LCOV's `FN:line,name` record only gives us the starting
 //! line — the span has to come from the AST.
 
+use crate::cache::complexity::{ComplexityCache, FileRecord};
 use anyhow::{Context, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use rayon::prelude::*;
@@ -57,8 +58,20 @@ pub fn analyze_file_weighted(
 ) -> Result<Vec<FunctionComplexity>> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("reading source file {}", path.display()))?;
+    analyze_source(path, &source, try_weight)
+}
 
-    let syntax = syn::parse_file(&source).with_context(|| format!("parsing {}", path.display()))?;
+/// [`analyze_file_weighted`] on `source`, already read from `path`.
+///
+/// # Errors
+///
+/// When `source` is not valid Rust.
+pub fn analyze_source(
+    path: &Path,
+    source: &str,
+    try_weight: f64,
+) -> Result<Vec<FunctionComplexity>> {
+    let syntax = syn::parse_file(source).with_context(|| format!("parsing {}", path.display()))?;
 
     let mut visitor = FunctionVisitor {
         file: path,
@@ -369,6 +382,105 @@ pub fn analyze_tree_weighted<S: AsRef<str>>(
         .collect();
 
     Ok(all)
+}
+
+/// What [`analyze_tree_cached`] found: the functions, in walk order, and one
+/// record per file analysed to store in the next cache.
+#[derive(Debug)]
+pub struct CachedAnalysis {
+    /// Every function, exactly as [`analyze_tree_weighted`] would return it.
+    pub functions: Vec<FunctionComplexity>,
+    /// One record per file that was served or parsed; files that could not
+    /// be read or parsed have none.
+    pub records: Vec<FileRecord>,
+}
+
+/// [`analyze_tree_weighted`], serving each file from `cache` when its
+/// content is unchanged and parsing it otherwise (spec 10). The `?` weight
+/// is the cache's own, so a cache can never mix two weights.
+///
+/// The functions and the warnings are the same as an uncached walk's. Each
+/// file is keyed by the canonical walk root joined with its path below the
+/// root, so the key does not depend on how the root was spelled.
+///
+/// # Errors
+///
+/// Returns an error when an exclude pattern is not a valid glob.
+pub fn analyze_tree_cached<S: AsRef<str>>(
+    root: &Path,
+    excludes: &[S],
+    cache: &ComplexityCache,
+) -> Result<CachedAnalysis> {
+    let try_weight = cache.try_weight();
+    let paths = rust_files(root, excludes)?;
+    let canonical_root = std::fs::canonicalize(root).ok();
+    let analysed: Vec<(Vec<FunctionComplexity>, Option<FileRecord>)> = paths
+        .par_iter()
+        .map(|path| {
+            let key = cache_key(path, root, canonical_root.as_deref());
+            analyze_file_cached(path, key, try_weight, cache)
+        })
+        .collect();
+    let mut functions = Vec::new();
+    let mut records = Vec::new();
+    for (fns, record) in analysed {
+        functions.extend(fns);
+        records.extend(record);
+    }
+    Ok(CachedAnalysis { functions, records })
+}
+
+/// The canonical path `path` is cached under: the canonical root joined
+/// with its path below `root` (the root itself when `--path` named the
+/// file). `None` when the root could not be canonicalized: that file is
+/// parsed and not stored.
+fn cache_key(
+    path: &Path,
+    root: &Path,
+    canonical_root: Option<&Path>,
+) -> Option<PathBuf> {
+    let below = path.strip_prefix(root).ok()?;
+    let canonical = canonical_root?;
+    Some(if below.as_os_str().is_empty() {
+        canonical.to_path_buf()
+    } else {
+        canonical.join(below)
+    })
+}
+
+/// One file of [`analyze_tree_cached`]: a hit, a fresh parse, or a warning
+/// worded as an uncached walk words it.
+fn analyze_file_cached(
+    path: &Path,
+    key: Option<PathBuf>,
+    try_weight: f64,
+    cache: &ComplexityCache,
+) -> (Vec<FunctionComplexity>, Option<FileRecord>) {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let err =
+                anyhow::Error::new(err).context(format!("reading source file {}", path.display()));
+            eprintln!("warning: could not analyze {}: {err}", path.display());
+            return (Vec::new(), None);
+        },
+    };
+    if let Some(hit) = key.as_ref().and_then(|key| cache.lookup(key, &bytes, path)) {
+        return (hit.functions, Some(hit.record));
+    }
+    let parsed = std::str::from_utf8(&bytes)
+        .with_context(|| format!("reading source file {}", path.display()))
+        .and_then(|source| analyze_source(path, source, try_weight));
+    match parsed {
+        Ok(fns) => {
+            let record = key.map(|key| FileRecord::new(key, &bytes, &fns));
+            (fns, record)
+        },
+        Err(err) => {
+            eprintln!("warning: could not analyze {}: {err}", path.display());
+            (Vec::new(), None)
+        },
+    }
 }
 
 /// Every `.rs` file under `root` that survives `excludes` and `.gitignore`.
@@ -1057,6 +1169,151 @@ fn allowed() -> i32 { 42 }
             let (body, _, _) = assemble(&picks);
             let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
             prop_assert!(cc_of_body(&body, lo) <= cc_of_body(&body, hi));
+        }
+    }
+
+    #[test]
+    fn a_file_named_as_the_root_is_keyed_by_its_own_path() {
+        let canonical = Path::new("/p/src/lib.rs");
+        assert_eq!(
+            cache_key(
+                Path::new("src/lib.rs"),
+                Path::new("src/lib.rs"),
+                Some(canonical)
+            ),
+            Some(canonical.to_path_buf()),
+            "no trailing separator"
+        );
+        assert_eq!(
+            cache_key(
+                Path::new("./src/a.rs"),
+                Path::new("."),
+                Some(Path::new("/p"))
+            ),
+            Some(PathBuf::from("/p/src/a.rs"))
+        );
+        assert_eq!(cache_key(Path::new("src/a.rs"), Path::new("."), None), None);
+        assert_eq!(
+            cache_key(
+                Path::new("/elsewhere/a.rs"),
+                Path::new("/p"),
+                Some(Path::new("/p"))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_file_with_no_key_is_parsed_and_not_stored() {
+        use crate::cache::complexity::{ComplexityCache, Executable, Header};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("a.rs");
+        std::fs::write(&file, "fn a() { if true {} }\n").expect("write");
+        let cache = ComplexityCache::empty(Header {
+            executable: Executable {
+                path: "/x".to_owned(),
+                len: 1,
+                mtime_ns: 1,
+            },
+            try_weight: 1.0,
+        });
+        let (fns, record) = analyze_file_cached(&file, None, 1.0, &cache);
+        assert_eq!(fns.len(), 1);
+        assert!((fns[0].cyclomatic - 2.0).abs() < f64::EPSILON);
+        assert!(record.is_none());
+    }
+
+    #[test]
+    fn the_cached_walk_uses_the_caches_own_weight() {
+        use crate::cache::complexity::{ComplexityCache, Executable, Header};
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn a() -> Option<()> { None?; None }\n",
+        )
+        .expect("write");
+        let cache = ComplexityCache::empty(Header {
+            executable: Executable {
+                path: "/x".to_owned(),
+                len: 1,
+                mtime_ns: 1,
+            },
+            try_weight: 0.5,
+        });
+        let analysis = analyze_tree_cached(dir.path(), &[] as &[&str], &cache).expect("walks");
+        assert!((analysis.functions[0].cyclomatic - 1.5).abs() < f64::EPSILON);
+    }
+
+    /// One generated source file: a name and a body for each of its
+    /// functions, each body a run of `if`s.
+    fn generated_tree() -> impl Strategy<Value = Vec<Vec<usize>>> {
+        proptest::collection::vec(proptest::collection::vec(0usize..4, 0..3), 1..5)
+    }
+
+    fn write_tree(
+        root: &Path,
+        files: &[Vec<usize>],
+    ) {
+        use std::fmt::Write as _;
+        for (i, fns) in files.iter().enumerate() {
+            let mut source = String::new();
+            for (j, ifs) in fns.iter().enumerate() {
+                writeln!(source, "fn f{i}_{j}(x: i32) {{").expect("a String");
+                for k in 0..*ifs {
+                    writeln!(source, "    if x > {k} {{ }}").expect("a String");
+                }
+                source.push_str("}\n");
+            }
+            std::fs::write(root.join(format!("m{i}.rs")), source).expect("write");
+        }
+    }
+
+    /// (file, name, start, end, cc bits): everything a report reads.
+    fn rows(fns: &[FunctionComplexity]) -> Vec<(PathBuf, String, usize, usize, u64)> {
+        fns.iter()
+            .map(|f| {
+                (
+                    f.file.clone(),
+                    f.name.clone(),
+                    f.start_line,
+                    f.end_line,
+                    f.cyclomatic.to_bits(),
+                )
+            })
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn a_cached_analysis_equals_an_uncached_one(
+            first in generated_tree(),
+            edits in generated_tree(),
+        ) {
+            use crate::cache::complexity::{ComplexityCache, Executable, Header};
+            let dir = tempfile::tempdir().expect("temp dir");
+            let root = dir.path().join("src");
+            std::fs::create_dir_all(&root).expect("mkdir");
+            let file = dir.path().join("cache.json");
+            let header = Header {
+                executable: Executable { path: "/x".to_owned(), len: 1, mtime_ns: 1 },
+                try_weight: 1.0,
+            };
+            write_tree(&root, &first);
+            // Cold, warm, then after rewriting some files (edits may also
+            // add files): the cached analysis matches the uncached one, in
+            // the same order, every time.
+            for round in 0..3 {
+                if round == 2 {
+                    write_tree(&root, &edits);
+                }
+                let cache = ComplexityCache::load(&file, header.clone());
+                let cached = analyze_tree_cached(&root, &[] as &[&str], &cache).expect("walks");
+                let plain = analyze_tree_weighted(&root, &[] as &[&str], 1.0).expect("walks");
+                prop_assert_eq!(rows(&cached.functions), rows(&plain));
+                cache.save(&file, std::slice::from_ref(&root), cached.records).expect("writable");
+            }
         }
     }
 }

@@ -170,6 +170,12 @@ pub struct ComplexityCache {
 }
 
 impl ComplexityCache {
+    /// The `?` weight every entry was computed with, and every miss must be.
+    #[must_use]
+    pub fn try_weight(&self) -> f64 {
+        self.header.try_weight
+    }
+
     /// A cache with no entries.
     #[must_use]
     pub fn empty(header: Header) -> Self {
@@ -267,6 +273,48 @@ impl ComplexityCache {
             (Some(dir), Some(name)) => write_atomic(dir, name, &bytes),
             _ => Err(io::Error::other("the cache file has no directory or name")),
         }
+    }
+}
+
+/// One run's cache: the file it lives in and what it held when opened.
+#[derive(Debug)]
+pub struct Session {
+    file: PathBuf,
+    cache: ComplexityCache,
+}
+
+impl Session {
+    /// The cache under `target_dir` for a run with `try_weight`, or `None`
+    /// when the running executable cannot be identified.
+    #[must_use]
+    pub fn open(
+        target_dir: &Path,
+        try_weight: f64,
+    ) -> Option<Self> {
+        let header = Header {
+            executable: Executable::current()?,
+            try_weight,
+        };
+        let file = cache_file(target_dir);
+        let cache = ComplexityCache::load(&file, header);
+        Some(Self { file, cache })
+    }
+
+    /// The entries the run may use.
+    #[must_use]
+    pub fn cache(&self) -> &ComplexityCache {
+        &self.cache
+    }
+
+    /// Save what the run analysed under `walked_roots`. A cache that cannot
+    /// be written is skipped silently: the next run parses again, which is
+    /// all a missing cache costs.
+    pub fn save(
+        self,
+        walked_roots: &[PathBuf],
+        records: Vec<FileRecord>,
+    ) {
+        let _ = self.cache.save(&self.file, walked_roots, records);
     }
 }
 
@@ -485,6 +533,34 @@ mod tests {
             .expect("writable");
         let cache = ComplexityCache::load(&file, header());
         assert!(cache.lookup(&gone, SOURCE, &gone).is_none(), "evicted");
+    }
+
+    #[test]
+    fn a_session_saves_where_the_next_one_reads() {
+        let target = tempfile::tempdir().expect("temp dir");
+        let key = PathBuf::from("/p/src/lib.rs");
+        let session = Session::open(target.path(), 1.0).expect("the executable is known");
+        assert!(session.cache().lookup(&key, SOURCE, &key).is_none(), "cold");
+        let record = FileRecord::new(key.clone(), SOURCE, &[function("a", 1.0)]);
+        session.save(&[PathBuf::from("/p")], vec![record]);
+        assert!(cache_file(target.path()).exists());
+        let next = Session::open(target.path(), 1.0).expect("the executable is known");
+        assert!(next.cache().lookup(&key, SOURCE, &key).is_some(), "warm");
+        let other_weight = Session::open(target.path(), 0.5).expect("the executable is known");
+        assert!(
+            other_weight.cache().lookup(&key, SOURCE, &key).is_none(),
+            "another weight"
+        );
+    }
+
+    #[test]
+    fn a_session_that_cannot_save_is_silent() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // `cargo-crap` is a file, so the cache directory cannot be created.
+        std::fs::write(dir.path().join("cargo-crap"), b"").expect("write");
+        let session = Session::open(dir.path(), 1.0).expect("the executable is known");
+        session.save(&[PathBuf::from("/p")], vec![]);
+        assert!(!cache_file(dir.path()).exists());
     }
 
     #[test]
