@@ -1,6 +1,6 @@
 # Spec 10: Incremental analysis cache
 
-**Status:** Draft
+**Status:** Approved
 **Effort:** Large
 **Module:** new `src/cache/` (`mod.rs`, `fs.rs`, `target.rs`, `complexity.rs`), `src/complexity.rs`, `src/main.rs`, `src/config.rs`, `src/duplicates/triage/cache.rs`, `src/duplicates/triage/client.rs`
 
