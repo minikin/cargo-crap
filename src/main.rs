@@ -561,9 +561,7 @@ fn analyze_workspace_members(
             excludes: walk_excludes,
         });
     }
-    if let Some(session) = session {
-        save_members(session, &discovered, &members, records);
-    }
+    save_members(session, &discovered, &members, records);
     let member_scope =
         (!packages.is_empty()).then(|| MemberScope::new(&workspace_root, &discovered, &members));
     Ok(AnalyzedSources {
@@ -575,15 +573,18 @@ fn analyze_workspace_members(
     })
 }
 
-/// Save a workspace run's cache: the selected members' directories were
+/// Save a workspace run's cache, if it has one: the selected members' directories were
 /// walked; an unselected member nested inside one of them was not, so its
 /// entries are kept.
 fn save_members(
-    session: Session,
+    session: Option<Session>,
     discovered: &[WorkspaceMember],
     selected: &[WorkspaceMember],
     records: Vec<FileRecord>,
 ) {
+    let Some(session) = session else {
+        return;
+    };
     let walked: Vec<PathBuf> = selected.iter().map(|m| m.dir.clone()).collect();
     let kept: Vec<PathBuf> = discovered
         .iter()
@@ -1024,15 +1025,7 @@ fn parse_workspace_metadata(stdout: &[u8]) -> Result<Workspace> {
     let meta: serde_json::Value =
         serde_json::from_slice(stdout).context("parsing `cargo metadata` output")?;
 
-    let workspace_root = meta["workspace_root"]
-        .as_str()
-        .map(PathBuf::from)
-        .context("`cargo metadata` output missing `workspace_root`")?;
-
-    let target = meta["target_directory"]
-        .as_str()
-        .map(PathBuf::from)
-        .context("`cargo metadata` output missing `target_directory`")?;
+    let (workspace_root, target) = workspace_paths(&meta)?;
 
     let members: Vec<WorkspaceMember> = meta["packages"]
         .as_array()
@@ -1055,6 +1048,18 @@ fn parse_workspace_metadata(stdout: &[u8]) -> Result<Workspace> {
         target,
         members,
     })
+}
+
+/// The workspace root and target directory a `cargo metadata` document
+/// names; either one missing is an error.
+fn workspace_paths(meta: &serde_json::Value) -> Result<(PathBuf, PathBuf)> {
+    let path = |key: &str| {
+        meta[key]
+            .as_str()
+            .map(PathBuf::from)
+            .with_context(|| format!("`cargo metadata` output missing `{key}`"))
+    };
+    Ok((path("workspace_root")?, path("target_directory")?))
 }
 
 /// Lead line of the scope-mismatch warning, picked by overlap severity
@@ -1593,6 +1598,15 @@ fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config, ProjectDi
     Ok((cli, config, ProjectDirs { config_dir, cwd }))
 }
 
+/// Whether the complexity cache is used: `--no-cache` or `cache = false`
+/// turns it off, and it is on otherwise (spec 10).
+fn cache_enabled(
+    no_cache: bool,
+    config: Option<bool>,
+) -> bool {
+    !no_cache && config.unwrap_or(true)
+}
+
 /// Where the project is, as far as configuration can tell.
 struct ProjectDirs {
     /// The directory `.cargo-crap.toml` was found in, if it was.
@@ -1663,7 +1677,7 @@ fn parse_and_validate() -> Result<LoadedArgs> {
         .try_weight
         .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
     validate_merged_values(epsilon, jobs, &dup, try_weight)?;
-    let cache = !cli.no_cache && config.cache.unwrap_or(true);
+    let cache = cache_enabled(cli.no_cache, config.cache);
     Ok(LoadedArgs {
         cli,
         config,
@@ -1966,6 +1980,15 @@ mod tests {
         assert_eq!(ws.members.len(), 1);
         assert_eq!(ws.members[0].name, "alpha");
         assert_eq!(ws.members[0].dir, PathBuf::from("/ws/crates/alpha"));
+    }
+
+    #[test]
+    fn the_cache_is_on_unless_a_switch_turns_it_off() {
+        assert!(cache_enabled(false, None));
+        assert!(cache_enabled(false, Some(true)));
+        assert!(!cache_enabled(false, Some(false)));
+        assert!(!cache_enabled(true, None));
+        assert!(!cache_enabled(true, Some(true)));
     }
 
     #[test]
