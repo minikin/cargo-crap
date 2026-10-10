@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A trait's default methods were never scored: only free functions and
+  `impl` methods were. They now get a row named `Trait::method`, so a crate
+  with logic in default methods can see new rows, and `--fail-above` can trip
+  on them. Required methods, which have no body, still get none (spec 33).
 - With `--baseline`, `--top` and `--min` cut the run before comparing it,
   so every function they left out was listed under "Removed since
   baseline" although it still existed. Removed now lists only functions

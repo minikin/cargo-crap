@@ -2997,3 +2997,32 @@ fn the_per_crate_table_fits() {
         "{stdout}"
     );
 }
+
+// ── Spec 33: trait default methods are scored ─────────────────────────────
+
+#[test]
+fn a_traits_default_method_is_scored_a_required_method_is_not() {
+    // Given a trait `Shape` with a required method `fn area(&self) -> f64;`
+    // And a default method `label` whose body is an if / else if / else
+    let dir = TempDir::new().expect("temp dir");
+    write(
+        dir.path(),
+        "lib.rs",
+        "pub trait Shape {
+    fn area(&self) -> f64;
+    fn label(&self, x: i32) -> i32 {
+        if x > 0 { 1 } else if x < 0 { 2 } else { 3 }
+    }
+}
+",
+    );
+    // When I run `cargo crap`
+    let path = dir.path().to_str().expect("utf-8");
+    let doc = json_run(dir.path(), &["--path", path]);
+    // Then the report has one row for that trait: `Shape::label`, CC 3
+    let entries = doc["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 1, "{doc}");
+    assert_eq!(entries[0]["function"], "Shape::label", "{doc}");
+    assert_eq!(entries[0]["cyclomatic"], 3.0, "{doc}");
+    // And `area` does not appear (the one row above is the whole report)
+}
