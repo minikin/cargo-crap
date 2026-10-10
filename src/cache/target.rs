@@ -104,16 +104,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = &dir.path().canonicalize().expect("canonical");
         write(&root.join("Cargo.toml"), PACKAGE);
-        let both = env(&[("CARGO_TARGET_DIR", "/a"), ("CARGO_BUILD_TARGET_DIR", "/b")]);
-        assert_eq!(
-            target_dir(None, root, None, root, both),
-            Some(PathBuf::from("/a"))
-        );
-        let build = env(&[("CARGO_BUILD_TARGET_DIR", "/b")]);
-        assert_eq!(
-            target_dir(None, root, None, root, build),
-            Some(PathBuf::from("/b"))
-        );
+        // Absolute on every platform: `/a` has no drive on Windows, so it
+        // would be taken against the working directory's drive.
+        let (a, b) = (root.join("a"), root.join("b"));
+        let (a_str, b_str) = (a.to_str().expect("utf-8"), b.to_str().expect("utf-8"));
+        let both = env(&[
+            ("CARGO_TARGET_DIR", a_str),
+            ("CARGO_BUILD_TARGET_DIR", b_str),
+        ]);
+        assert_eq!(target_dir(None, root, None, root, both), Some(a.clone()));
+        let build = env(&[("CARGO_BUILD_TARGET_DIR", b_str)]);
+        assert_eq!(target_dir(None, root, None, root, build), Some(b.clone()));
     }
 
     #[test]
@@ -212,8 +213,10 @@ mod tests {
         ]
     }
 
-    fn var() -> impl Strategy<Value = Option<&'static str>> {
-        prop_oneof![Just(None), Just(Some("")), Just(Some("/env/dir"))]
+    /// Unset, empty, or `name`: relative, so it resolves against the working
+    /// directory the same way on every platform.
+    fn var(name: &'static str) -> impl Strategy<Value = Option<&'static str>> {
+        prop_oneof![Just(None), Just(Some("")), Just(Some(name))]
     }
 
     proptest! {
@@ -222,8 +225,8 @@ mod tests {
         fn the_resolver_follows_its_precedence(
             levels in proptest::collection::vec(level(), 1..5),
             metadata in proptest::option::of(Just("/meta")),
-            target in var(),
-            build in var(),
+            target in var("target-var"),
+            build in var("build-var"),
             config in proptest::option::of(Just("/config")),
         ) {
             // A chain of nested directories l0/l1/…, each holding what
@@ -253,7 +256,7 @@ mod tests {
                 env(&vars),
             );
 
-            let set = |v: Option<&str>| v.filter(|v| !v.is_empty()).map(PathBuf::from);
+            let set = |v: Option<&str>| v.filter(|v| !v.is_empty()).map(|v| dir.path().join(v));
             let workspace = chain.iter().zip(&levels).rev()
                 .find(|(_, l)| **l == Level::Workspace).map(|(p, _)| p.join("target"));
             let package = chain.iter().zip(&levels).rev()
