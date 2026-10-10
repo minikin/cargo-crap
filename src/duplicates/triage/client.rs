@@ -17,8 +17,6 @@ use std::time::Duration;
 pub const API_KEY_VAR: &str = "TYPESAFE_API_KEY";
 /// Overrides the API's base URL (tests point it at a local stub).
 pub const BASE_URL_VAR: &str = "TYPESAFE_BASE_URL";
-/// Cargo's target directory, where the verdict cache lives.
-pub const TARGET_DIR_VAR: &str = "CARGO_TARGET_DIR";
 /// The API's base URL, absent an override.
 pub const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
 
@@ -54,31 +52,29 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Settings for `model` in the project rooted at `project_root`, with the
-    /// key, base URL and target directory read from the process environment.
+    /// Settings for `model`, caching under `target_dir`, with the key and
+    /// base URL read from the process environment.
     #[must_use]
     pub fn from_env(
         model: &str,
-        project_root: &Path,
+        target_dir: Option<&Path>,
     ) -> Self {
-        Self::from_lookup(model, project_root, |name| std::env::var(name).ok())
+        Self::from_lookup(model, target_dir, |name| std::env::var(name).ok())
     }
 
-    /// Settings for `model` in the project rooted at `project_root`, with
-    /// `TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL` and `CARGO_TARGET_DIR` read
-    /// through `lookup`, so tests can supply an environment without mutating
-    /// the process's. An empty value counts as unset. Verdicts are cached in
-    /// the project's target directory (`CARGO_TARGET_DIR` when set, as for
-    /// cargo, else `target/` beside the configuration), so `cargo clean`
-    /// sweeps them wherever the command was run from.
+    /// Settings for `model`, with `TYPESAFE_API_KEY` and `TYPESAFE_BASE_URL`
+    /// read through `lookup`, so tests can supply an environment without
+    /// mutating the process's. An empty value counts as unset. Verdicts are
+    /// cached under `target_dir`, the directory
+    /// [`target_dir`](crate::cache::target::target_dir) resolves for every
+    /// cache (spec 10), so `cargo clean` sweeps them; `None` caches nothing.
     #[must_use]
     pub fn from_lookup(
         model: &str,
-        project_root: &Path,
+        target_dir: Option<&Path>,
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Self {
         let set = |name| lookup(name).filter(|value: &String| !value.is_empty());
-        let target = set(TARGET_DIR_VAR).map_or_else(|| project_root.join("target"), PathBuf::from);
         Self {
             model: model.to_owned(),
             base_url: set(BASE_URL_VAR).unwrap_or_else(|| DEFAULT_BASE_URL.to_owned()),
@@ -87,7 +83,7 @@ impl Settings {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
             backoff: DEFAULT_BACKOFF,
-            cache_dir: Some(cache::default_dir(&target)),
+            cache_dir: target_dir.map(cache::default_dir),
         }
     }
 
@@ -349,7 +345,7 @@ mod tests {
     fn settings_read_the_key_and_base_url_from_the_environment() {
         let settings = Settings::from_lookup(
             "jev-1",
-            Path::new("/proj"),
+            Some(Path::new("/proj/target")),
             lookup(&[
                 (API_KEY_VAR, "secret"),
                 (BASE_URL_VAR, "http://127.0.0.1:9"),
@@ -363,19 +359,27 @@ mod tests {
     #[test]
     fn an_unset_or_empty_key_is_no_key() {
         assert_eq!(
-            Settings::from_lookup("m", Path::new("/proj"), lookup(&[])).api_key,
+            Settings::from_lookup("m", Some(Path::new("/proj/target")), lookup(&[])).api_key,
             None
         );
         assert_eq!(
-            Settings::from_lookup("m", Path::new("/proj"), lookup(&[(API_KEY_VAR, "")])).api_key,
+            Settings::from_lookup(
+                "m",
+                Some(Path::new("/proj/target")),
+                lookup(&[(API_KEY_VAR, "")])
+            )
+            .api_key,
             None
         );
     }
 
     #[test]
     fn the_base_url_defaults_to_the_public_api() {
-        let settings =
-            Settings::from_lookup("m", Path::new("/proj"), lookup(&[(BASE_URL_VAR, "")]));
+        let settings = Settings::from_lookup(
+            "m",
+            Some(Path::new("/proj/target")),
+            lookup(&[(BASE_URL_VAR, "")]),
+        );
         assert_eq!(settings.base_url, "https://api.typesafe.ai");
         assert_eq!(settings.endpoint(), "https://api.typesafe.ai/v1/systemone");
     }
@@ -384,7 +388,7 @@ mod tests {
     fn the_endpoint_joins_the_base_url_without_a_double_slash() {
         let settings = Settings::from_lookup(
             "m",
-            Path::new("/proj"),
+            Some(Path::new("/proj/target")),
             lookup(&[(BASE_URL_VAR, "http://stub:1/")]),
         );
         assert_eq!(settings.endpoint(), "http://stub:1/v1/systemone");
@@ -392,7 +396,7 @@ mod tests {
 
     #[test]
     fn the_defaults_bound_every_request() {
-        let settings = Settings::from_lookup("m", Path::new("/proj"), lookup(&[]));
+        let settings = Settings::from_lookup("m", Some(Path::new("/proj/target")), lookup(&[]));
         assert_eq!(settings.timeout, std::time::Duration::from_secs(10));
         assert_eq!(settings.attempts, 3);
     }
@@ -400,7 +404,7 @@ mod tests {
     #[test]
     fn a_connection_attempt_is_bounded_separately() {
         // A host that drops SYNs fails in seconds, not a full request timeout.
-        let settings = Settings::from_lookup("m", Path::new("/proj"), lookup(&[]));
+        let settings = Settings::from_lookup("m", Some(Path::new("/proj/target")), lookup(&[]));
         assert_eq!(settings.connect_timeout, std::time::Duration::from_secs(3));
     }
 
@@ -420,27 +424,20 @@ mod tests {
     }
 
     #[test]
-    fn verdicts_are_cached_under_the_projects_target_directory() {
-        // Beside the configuration that enabled triage, not wherever the
-        // command happened to run; CARGO_TARGET_DIR still wins, as for cargo.
-        let default = Settings::from_lookup("m", Path::new("/proj"), lookup(&[]));
-        assert_eq!(
-            default.cache_dir,
-            Some(
-                PathBuf::from("/proj/target")
-                    .join("cargo-crap")
-                    .join("triage")
-            )
-        );
-        let custom = Settings::from_lookup(
+    fn verdicts_are_cached_under_the_resolved_target_directory() {
+        // The resolver (spec 10) decides the directory; the client only
+        // appends its own corner of it, and reads no target variable itself.
+        let settings = Settings::from_lookup(
             "m",
-            Path::new("/proj"),
-            lookup(&[(TARGET_DIR_VAR, "/tmp/t")]),
+            Some(Path::new("/proj/target")),
+            lookup(&[("CARGO_TARGET_DIR", "/elsewhere")]),
         );
         assert_eq!(
-            custom.cache_dir,
-            Some(PathBuf::from("/tmp/t").join("cargo-crap").join("triage"))
+            settings.cache_dir,
+            Some(PathBuf::from("/proj/target/cargo-crap/triage"))
         );
+        let nowhere = Settings::from_lookup("m", None, lookup(&[]));
+        assert_eq!(nowhere.cache_dir, None, "no target directory, no cache");
     }
 
     #[test]

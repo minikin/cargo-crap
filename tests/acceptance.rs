@@ -1466,6 +1466,7 @@ fn the_cache_lives_beside_the_configuration() {
     let out = crap()
         .current_dir(&subdir)
         .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
         .env("TYPESAFE_API_KEY", "test-key")
         .env("TYPESAFE_BASE_URL", stub.base_url())
         .args(["--path", dir.path().to_str().expect("utf-8")])
@@ -3863,4 +3864,54 @@ fn a_run_over_a_parent_member_keeps_its_nested_members_entries() {
     workspace_run(root, Some(target.path()), &["-p", "parent"]);
     let ccs = workspace_run(root, Some(target.path()), &["-p", "child"]);
     assert_eq!(ccs["child_fn"], 42.0, "{ccs:?}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn triage_verdicts_follow_the_same_target_directory() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given a workspace whose root Cargo.toml has a [workspace] table
+    let pairs = three_pairs_tree();
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/a\"]\n",
+    );
+    // And a member crate in crates/a whose .cargo-crap.toml turns triage on
+    let member = root.join("crates/a");
+    fs::create_dir_all(member.join("src")).expect("mkdir");
+    write(
+        &member,
+        "Cargo.toml",
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    for entry in fs::read_dir(pairs.path()).expect("the pairs") {
+        let entry = entry.expect("an entry");
+        fs::copy(entry.path(), member.join("src").join(entry.file_name())).expect("copy");
+    }
+    write(&member, ".cargo-crap.toml", TRIAGE_ON);
+    // And no CARGO_TARGET_DIR
+    // When I run `cargo crap` from crates/a against a stub triage API
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let out = crap()
+        .timeout(TRIAGE_RUN_LIMIT)
+        .current_dir(&member)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env("TYPESAFE_API_KEY", "test-key")
+        .env("TYPESAFE_BASE_URL", stub.base_url())
+        .output()
+        .expect("cargo-crap runs");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("  triage: same-logic"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Then the verdicts are cached under <root>/target/cargo-crap/triage/
+    let cached = fs::read_dir(root.join("target/cargo-crap/triage")).map_or(0, Iterator::count);
+    assert_eq!(cached, 3, "one entry per pair");
+    // And crates/a/target does not exist
+    assert!(!member.join("target").exists());
 }

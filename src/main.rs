@@ -424,6 +424,9 @@ struct AnalyzedSources {
     /// Baseline scope attribution for `-p` runs (spec 25). `None` unless
     /// `-p` narrowed the analysis to a subset of the discovered members.
     member_scope: Option<MemberScope>,
+    /// The target directory every cache lives under (spec 10), whether or
+    /// not the complexity cache was used: the triage cache uses it too.
+    target: Option<PathBuf>,
 }
 
 /// Walk source trees and discover Cargo workspace members in one pass.
@@ -448,7 +451,7 @@ fn analyze_sources(
             .with_context(|| format!("configuring rayon thread pool to {n} threads"))?;
     }
     if !workspace && packages.is_empty() {
-        let fns = analyze_path(path, excludes, knobs)?;
+        let (fns, target) = analyze_path(path, excludes, knobs)?;
         return Ok(AnalyzedSources {
             fns,
             roots: vec![ScanRoot {
@@ -457,6 +460,7 @@ fn analyze_sources(
             }],
             members: Vec::new(),
             member_scope: None,
+            target,
         });
     }
     analyze_workspace_members(packages, excludes, knobs)
@@ -469,17 +473,15 @@ fn analyze_path(
     path: &Path,
     excludes: &[String],
     knobs: &AnalysisKnobs,
-) -> Result<Vec<complexity::FunctionComplexity>> {
+) -> Result<(Vec<complexity::FunctionComplexity>, Option<PathBuf>)> {
     let config_dir = knobs.config_dir.as_deref();
-    let session = knobs
-        .cache
-        .then(|| {
-            target_dir(None, path, config_dir, &knobs.cwd, |name| {
-                std::env::var(name).ok()
-            })
-        })
-        .flatten()
-        .and_then(|target| Session::open(&target, knobs.try_weight));
+    let target = target_dir(None, path, config_dir, &knobs.cwd, |name| {
+        std::env::var(name).ok()
+    });
+    let session = target
+        .as_deref()
+        .filter(|_| knobs.cache)
+        .and_then(|target| Session::open(target, knobs.try_weight));
     let mut records = Vec::new();
     let fns = analyze_root(
         path,
@@ -491,7 +493,7 @@ fn analyze_path(
     if let Some(session) = session {
         session.save(&[path.to_path_buf()], records);
     }
-    Ok(fns)
+    Ok((fns, target))
 }
 
 /// Walk one root, through `session`'s cache when there is one, adding the
@@ -569,6 +571,7 @@ fn analyze_workspace_members(
         roots,
         members,
         member_scope,
+        target: Some(target),
     })
 }
 
@@ -1356,16 +1359,6 @@ struct DupSettings {
     min_nodes: usize,
     /// Whether to ask the model about each reported pair.
     triage_enabled: bool,
-    /// The project the configuration describes; triage caches under its
-    /// target directory.
-    #[cfg_attr(
-        not(feature = "triage"),
-        expect(
-            dead_code,
-            reason = "only a build with the triage client caches verdicts"
-        )
-    )]
-    triage_root: PathBuf,
     /// The model to ask.
     #[cfg_attr(
         not(feature = "triage"),
@@ -1383,10 +1376,8 @@ impl DupSettings {
     fn resolve(
         cli: &Cli,
         config: &cargo_crap::config::Config,
-        project_root: PathBuf,
     ) -> Self {
         Self {
-            triage_root: project_root,
             enabled: cli.duplicates || config.duplicates.enabled.unwrap_or(false),
             threshold: cli
                 .dup_threshold
@@ -1465,11 +1456,12 @@ fn duplicate_section(
     settings: &DupSettings,
     roots: &[ScanRoot],
     format: Format,
+    target: Option<&Path>,
 ) -> Result<DuplicateSection> {
     let pairs = duplicate_pairs(settings, roots, format)?;
     let triage = pairs
         .as_deref()
-        .and_then(|pairs| triage_assessments(settings, pairs));
+        .and_then(|pairs| triage_assessments(settings, pairs, target));
     Ok(DuplicateSection { pairs, triage })
 }
 
@@ -1484,6 +1476,7 @@ fn duplicate_section(
 fn triage_assessments(
     settings: &DupSettings,
     pairs: &[DuplicatePair],
+    target: Option<&Path>,
 ) -> Option<Vec<Assessment>> {
     if !settings.triage_enabled {
         return None;
@@ -1491,8 +1484,7 @@ fn triage_assessments(
     #[cfg(feature = "triage")]
     {
         use cargo_crap::duplicates::triage;
-        let api_settings =
-            triage::Settings::from_env(&settings.triage_model, &settings.triage_root);
+        let api_settings = triage::Settings::from_env(&settings.triage_model, target);
         triage::run(pairs, &api_settings)
             .inspect_err(|e| {
                 eprintln!(
@@ -1509,7 +1501,7 @@ fn triage_assessments(
     }
     #[cfg(not(feature = "triage"))]
     {
-        let _ = pairs;
+        let _ = (pairs, target);
         eprintln!(
             "warning: [duplicates.triage] is enabled, but this cargo-crap was built without \
              the `triage` feature; reinstall with `cargo install cargo-crap --features triage` \
@@ -1598,22 +1590,11 @@ fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config, ProjectDi
     let config = cargo_crap::config::load(&cwd)?;
     let config_dir =
         cargo_crap::config::find(&cwd).and_then(|file| file.parent().map(Path::to_path_buf));
-    let root = config_dir.clone().unwrap_or_else(|| cwd.clone());
-    Ok((
-        cli,
-        config,
-        ProjectDirs {
-            root,
-            config_dir,
-            cwd,
-        },
-    ))
+    Ok((cli, config, ProjectDirs { config_dir, cwd }))
 }
 
 /// Where the project is, as far as configuration can tell.
 struct ProjectDirs {
-    /// The configuration's directory, or the working directory without one.
-    root: PathBuf,
     /// The directory `.cargo-crap.toml` was found in, if it was.
     config_dir: Option<PathBuf>,
     /// The working directory, read once.
@@ -1677,7 +1658,7 @@ fn parse_and_validate() -> Result<LoadedArgs> {
     // Resolved here rather than at the call site: the merged similarity
     // threshold has to be validated before anything is analyzed, and the
     // config half of it is invisible to `validate_args`.
-    let dup = DupSettings::resolve(&cli, &config, dirs.root);
+    let dup = DupSettings::resolve(&cli, &config);
     let try_weight = config
         .try_weight
         .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
@@ -1744,6 +1725,7 @@ fn run() -> Result<ExitCode> {
         roots,
         members,
         member_scope,
+        target,
     } = analyze_sources(
         cli.workspace,
         &cli.package,
@@ -1783,7 +1765,7 @@ fn run() -> Result<ExitCode> {
     apply_color_policy(cli.output.is_some());
     let mut out_box = open_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref);
-    let dups = duplicate_section(&dup, &roots, cli.format.into())?;
+    let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref())?;
     let opts = RenderOpts {
         render: RenderOptions {
             threshold,
@@ -2183,7 +2165,6 @@ mod tests {
             threshold,
             min_nodes: cargo_crap::config::DEFAULT_DUP_MIN_NODES,
             triage_enabled: false,
-            triage_root: PathBuf::from("."),
             triage_model: cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned(),
             triage_floor,
         }
