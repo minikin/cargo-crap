@@ -45,12 +45,15 @@ test call sites, `DupSettings::resolve` in `main.rs`, and
 `docs/guides/triage.md`), so whichever lands second resolves textual
 conflicts there.
 
-Moving to the shared resolver relocates triage verdicts in two layouts: a
-`.cargo-crap.toml` in a member crate under a `[workspace]` root, and a
-configuration at a monorepo root above several standalone crates. There the
-verdicts were under the configuration's `target/` and are now under the
-workspace's, so each pair is asked once more after upgrading. Every other
-layout keeps its verdicts where they are.
+Moving to the shared resolver relocates triage verdicts in three cases: a
+`.cargo-crap.toml` in a member crate under a `[workspace]` root; a
+configuration at a monorepo root above several standalone crates; and a
+`--path` pointing into another Cargo project than the one whose
+configuration turned triage on, where the verdicts now follow the analysed
+project into its `target/`. In each the verdicts were under the
+configuration's `target/` and are now under the analysed workspace's, so
+each pair is asked once more after upgrading. Every other layout keeps its
+verdicts where they are.
 
 ## Scope and invariants
 
