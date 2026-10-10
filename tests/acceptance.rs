@@ -3118,7 +3118,7 @@ fn plant(
     let files = cache["files"].as_object_mut().expect("files");
     let mut planted = 0;
     for (key, entry) in files.iter_mut() {
-        if key.ends_with(suffix) {
+        if key.replace('\\', "/").ends_with(suffix) {
             edit(entry);
             planted += 1;
         }
@@ -3149,7 +3149,7 @@ fn cached_keys(
         .as_object()
         .expect("files")
         .keys()
-        .filter(|key| key.ends_with(suffix))
+        .filter(|key| key.replace('\\', "/").ends_with(suffix))
         .cloned()
         .collect()
 }
