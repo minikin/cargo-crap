@@ -67,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `impl` methods were. They now get a row named `Trait::method`, so a crate
   with logic in default methods can see new rows, and `--fail-above` can trip
   on them. Required methods, which have no body, still get none (spec 33).
+- `--duplicates` never compared a trait's default methods either: two
+  traits carrying the same default logic were never reported. Default
+  methods are now duplicate candidates like any other function; required
+  methods still are not (spec 34).
 - With `--baseline`, `--top` and `--min` cut the run before comparing it,
   so every function they left out was listed under "Removed since
   baseline" although it still existed. Removed now lists only functions
