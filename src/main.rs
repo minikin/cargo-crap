@@ -8,7 +8,10 @@
 
 use anyhow::{Context, Result, bail};
 use cargo_crap::{
-    cache::{complexity::Session, target::target_dir},
+    cache::{
+        complexity::{FileRecord, Session},
+        target::target_dir,
+    },
     complexity,
     coverage::{self, FileCoverage},
     delta::{compute_delta, load_baseline_with_weight},
@@ -438,7 +441,6 @@ fn analyze_sources(
     excludes: &[String],
     knobs: &AnalysisKnobs,
 ) -> Result<AnalyzedSources> {
-    let try_weight = knobs.try_weight;
     if let Some(n) = knobs.jobs {
         rayon::ThreadPoolBuilder::new()
             .num_threads(n)
@@ -457,7 +459,7 @@ fn analyze_sources(
             member_scope: None,
         });
     }
-    analyze_workspace_members(packages, excludes, try_weight)
+    analyze_workspace_members(packages, excludes, knobs)
 }
 
 /// Analyze one `--path` root, through the complexity cache when there is a
@@ -468,8 +470,6 @@ fn analyze_path(
     excludes: &[String],
     knobs: &AnalysisKnobs,
 ) -> Result<Vec<complexity::FunctionComplexity>> {
-    let context = || format!("analyzing {}", path.display());
-    let try_weight = knobs.try_weight;
     let config_dir = knobs.config_dir.as_deref();
     let session = knobs
         .cache
@@ -479,13 +479,37 @@ fn analyze_path(
             })
         })
         .flatten()
-        .and_then(|target| Session::open(&target, try_weight));
+        .and_then(|target| Session::open(&target, knobs.try_weight));
+    let mut records = Vec::new();
+    let fns = analyze_root(
+        path,
+        excludes,
+        knobs.try_weight,
+        session.as_ref(),
+        &mut records,
+    )?;
+    if let Some(session) = session {
+        session.save(&[path.to_path_buf()], records);
+    }
+    Ok(fns)
+}
+
+/// Walk one root, through `session`'s cache when there is one, adding the
+/// records to store to `records`.
+fn analyze_root(
+    dir: &Path,
+    excludes: &[String],
+    try_weight: f64,
+    session: Option<&Session>,
+    records: &mut Vec<FileRecord>,
+) -> Result<Vec<complexity::FunctionComplexity>> {
+    let context = || format!("analyzing {}", dir.display());
     let Some(session) = session else {
-        return complexity::analyze_tree_weighted(path, excludes, try_weight).with_context(context);
+        return complexity::analyze_tree_weighted(dir, excludes, try_weight).with_context(context);
     };
     let analysis =
-        complexity::analyze_tree_cached(path, excludes, session.cache()).with_context(context)?;
-    session.save(&[path.to_path_buf()], analysis.records);
+        complexity::analyze_tree_cached(dir, excludes, session.cache()).with_context(context)?;
+    records.extend(analysis.records);
     Ok(analysis.functions)
 }
 
@@ -495,14 +519,26 @@ fn analyze_path(
 fn analyze_workspace_members(
     packages: &[String],
     excludes: &[String],
-    try_weight: f64,
+    knobs: &AnalysisKnobs,
 ) -> Result<AnalyzedSources> {
-    let (workspace_root, discovered) = workspace_members()?;
+    let Workspace {
+        root: workspace_root,
+        target,
+        members: discovered,
+    } = workspace_members()?;
     let members = if packages.is_empty() {
         discovered.clone()
     } else {
         select_members(&discovered, packages)?
     };
+    // One cache for every member, in the directory cargo builds into
+    // (spec 10): opened once, saved once, so members never evict each other.
+    let session = knobs
+        .cache
+        .then(|| Session::open(&target, knobs.try_weight))
+        .flatten();
+    let cache = session.as_ref();
+    let mut records = Vec::new();
     let mut fns = Vec::new();
     let mut roots = Vec::new();
     for m in &members {
@@ -511,13 +547,20 @@ fn analyze_workspace_members(
         // not leak into its parent's walk either.
         let mut walk_excludes = excludes.to_vec();
         walk_excludes.extend(nested_member_excludes(&m.dir, &discovered));
-        let member_fns = complexity::analyze_tree_weighted(&m.dir, &walk_excludes, try_weight)
-            .with_context(|| format!("analyzing {}", m.dir.display()))?;
-        fns.extend(member_fns);
+        fns.extend(analyze_root(
+            &m.dir,
+            &walk_excludes,
+            knobs.try_weight,
+            cache,
+            &mut records,
+        )?);
         roots.push(ScanRoot {
             dir: m.dir.clone(),
             excludes: walk_excludes,
         });
+    }
+    if let Some(session) = session {
+        save_members(session, &discovered, &members, records);
     }
     let member_scope =
         (!packages.is_empty()).then(|| MemberScope::new(&workspace_root, &discovered, &members));
@@ -527,6 +570,24 @@ fn analyze_workspace_members(
         members,
         member_scope,
     })
+}
+
+/// Save a workspace run's cache: the selected members' directories were
+/// walked; an unselected member nested inside one of them was not, so its
+/// entries are kept.
+fn save_members(
+    session: Session,
+    discovered: &[WorkspaceMember],
+    selected: &[WorkspaceMember],
+    records: Vec<FileRecord>,
+) {
+    let walked: Vec<PathBuf> = selected.iter().map(|m| m.dir.clone()).collect();
+    let kept: Vec<PathBuf> = discovered
+        .iter()
+        .filter(|m| !walked.contains(&m.dir))
+        .map(|m| m.dir.clone())
+        .collect();
+    session.save_keeping(&walked, &kept, records);
 }
 
 /// One discovered member as seen by [`MemberScope`]: its directory
@@ -922,12 +983,24 @@ fn spinner(msg: &'static str) -> ProgressBar {
     pb
 }
 
-/// Discover all workspace members via `cargo metadata`.
-///
-/// Returns one [`WorkspaceMember`] per member crate (name + the directory
-/// containing its `Cargo.toml`). Used both to walk source trees and to
-/// assign a `crate` field to each `CrapEntry` for per-crate rollup.
-fn workspace_members() -> Result<(PathBuf, Vec<WorkspaceMember>)> {
+/// What `cargo metadata` says about the workspace.
+#[derive(Debug)]
+struct Workspace {
+    /// The workspace root (spec 25 anchors members' relative dirs on it).
+    root: PathBuf,
+    /// The directory cargo builds into, every variable and
+    /// `.cargo/config.toml` applied: where the caches live (spec 10).
+    target: PathBuf,
+    /// Every package in the workspace.
+    members: Vec<WorkspaceMember>,
+}
+
+/// Discover the workspace via `cargo metadata`: its root, the directory
+/// cargo builds into, and one [`WorkspaceMember`] per member crate (name +
+/// the directory containing its `Cargo.toml`). The members are used both to
+/// walk source trees and to assign a `crate` field to each `CrapEntry` for
+/// per-crate rollup.
+fn workspace_members() -> Result<Workspace> {
     let output = std::process::Command::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .output()
@@ -941,10 +1014,10 @@ fn workspace_members() -> Result<(PathBuf, Vec<WorkspaceMember>)> {
 }
 
 /// Parse `cargo metadata` JSON into the workspace root (spec 25 — it
-/// anchors the members' workspace-relative dirs for [`MemberScope`]) and
-/// the member list. Split from [`workspace_members`] so the parsing is
-/// testable without spawning cargo.
-fn parse_workspace_metadata(stdout: &[u8]) -> Result<(PathBuf, Vec<WorkspaceMember>)> {
+/// anchors the members' workspace-relative dirs for [`MemberScope`]), its
+/// target directory (spec 10) and the member list. Split from
+/// [`workspace_members`] so the parsing is testable without spawning cargo.
+fn parse_workspace_metadata(stdout: &[u8]) -> Result<Workspace> {
     let meta: serde_json::Value =
         serde_json::from_slice(stdout).context("parsing `cargo metadata` output")?;
 
@@ -952,6 +1025,11 @@ fn parse_workspace_metadata(stdout: &[u8]) -> Result<(PathBuf, Vec<WorkspaceMemb
         .as_str()
         .map(PathBuf::from)
         .context("`cargo metadata` output missing `workspace_root`")?;
+
+    let target = meta["target_directory"]
+        .as_str()
+        .map(PathBuf::from)
+        .context("`cargo metadata` output missing `target_directory`")?;
 
     let members: Vec<WorkspaceMember> = meta["packages"]
         .as_array()
@@ -969,7 +1047,11 @@ fn parse_workspace_metadata(stdout: &[u8]) -> Result<(PathBuf, Vec<WorkspaceMemb
     if members.is_empty() {
         bail!("`cargo metadata` returned no packages");
     }
-    Ok((workspace_root, members))
+    Ok(Workspace {
+        root: workspace_root,
+        target,
+        members,
+    })
 }
 
 /// Lead line of the scope-mismatch warning, picked by overlap severity
@@ -1888,18 +1970,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_workspace_metadata_extracts_root_and_members() {
+    fn parse_workspace_metadata_extracts_root_target_and_members() {
         let json = serde_json::json!({
             "workspace_root": "/ws",
+            "target_directory": "/ws/build-out",
             "packages": [
                 {"name": "alpha", "manifest_path": "/ws/crates/alpha/Cargo.toml"},
             ]
         });
-        let (root, members) = parse_workspace_metadata(json.to_string().as_bytes()).unwrap();
-        assert_eq!(root, PathBuf::from("/ws"));
-        assert_eq!(members.len(), 1);
-        assert_eq!(members[0].name, "alpha");
-        assert_eq!(members[0].dir, PathBuf::from("/ws/crates/alpha"));
+        let ws = parse_workspace_metadata(json.to_string().as_bytes()).unwrap();
+        assert_eq!(ws.root, PathBuf::from("/ws"));
+        assert_eq!(ws.target, PathBuf::from("/ws/build-out"));
+        assert_eq!(ws.members.len(), 1);
+        assert_eq!(ws.members[0].name, "alpha");
+        assert_eq!(ws.members[0].dir, PathBuf::from("/ws/crates/alpha"));
     }
 
     #[test]
@@ -1910,7 +1994,17 @@ mod tests {
             .to_string();
         assert!(err.contains("workspace_root"), "got: {err}");
 
-        let empty = serde_json::json!({"workspace_root": "/ws", "packages": []});
+        let no_target = serde_json::json!({"workspace_root": "/ws", "packages": []});
+        let err = parse_workspace_metadata(no_target.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("target_directory"), "got: {err}");
+
+        let empty = serde_json::json!({
+            "workspace_root": "/ws",
+            "target_directory": "/ws/target",
+            "packages": []
+        });
         let err = parse_workspace_metadata(empty.to_string().as_bytes())
             .unwrap_err()
             .to_string();
