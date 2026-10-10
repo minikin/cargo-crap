@@ -3348,3 +3348,111 @@ fn a_file_that_does_not_parse_warns_on_every_run() {
     );
     assert_eq!(cached_keys(target.path(), "src/lib.rs").len(), 1);
 }
+
+/// [`cache_run_output`] for the same project with nowhere to keep a cache:
+/// the uncached report to compare against. Removes the manifest.
+fn uncached_output(dir: &Path) -> std::process::Output {
+    fs::remove_file(dir.join("Cargo.toml")).expect("remove the manifest");
+    crap()
+        .current_dir(dir)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .args(["--path", dir.to_str().expect("utf-8"), "--format", "json"])
+        .output()
+        .expect("binary runs")
+}
+
+#[test]
+fn a_cache_written_by_another_build_is_ignored() {
+    // Given a populated cache, every entry planted
+    let (dir, target) = cache_project();
+    cache_run(dir.path(), target.path());
+    let ours = read_cache(target.path())["exe"].clone();
+    plant_cc(target.path(), "", 42.0);
+    // And its header names a different executable (length or mtime)
+    let mut cache = read_cache(target.path());
+    cache["exe"]["len"] = serde_json::json!(ours["len"].as_u64().expect("a length") + 1);
+    fs::write(cache_path(target.path()), cache.to_string()).expect("write");
+    // When I run `cargo crap`
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then every function reports its real CC
+    assert_eq!((ccs["alpha"], ccs["beta"]), (2.0, 1.0), "{ccs:?}");
+    // And the cache is rewritten with this executable's header
+    assert_eq!(read_cache(target.path())["exe"], ours);
+}
+
+#[test]
+fn changing_the_try_weight_re_analyses_every_file() {
+    // Given a cache populated with try-weight 1, every entry planted
+    let (dir, target) = cache_project();
+    write(
+        &dir.path().join("src"),
+        "lib.rs",
+        "pub fn alpha(x: Option<i32>) -> Option<i32> {\n    let y = x?;\n    Some(y)\n}\n",
+    );
+    cache_run(dir.path(), target.path());
+    plant_cc(target.path(), "", 42.0);
+    // When I run `cargo crap` with try-weight 0.5 in .cargo-crap.toml
+    write(dir.path(), ".cargo-crap.toml", "try-weight = 0.5\n");
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then every function reports its real CC under weight 0.5
+    assert_eq!((ccs["alpha"], ccs["beta"]), (1.5, 1.0), "{ccs:?}");
+}
+
+#[test]
+fn a_corrupt_cache_file_is_silently_rebuilt() {
+    // Given a cache file holding bytes that are not a cache
+    let (dir, target) = cache_project();
+    fs::create_dir_all(target.path().join("cargo-crap")).expect("mkdir");
+    fs::write(cache_path(target.path()), b"\x00\xffnot a cache{").expect("write");
+    // When I run `cargo crap`
+    let out = cache_run_output(dir.path(), target.path(), &[]);
+    // Then the run succeeds with the same report as an uncached run
+    assert!(out.status.success());
+    let rebuilt = read_cache(target.path());
+    let uncached = uncached_output(dir.path());
+    assert_eq!(out.stdout, uncached.stdout);
+    // And stderr says nothing about the cache
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+    // And the cache file is rewritten as a valid cache
+    assert_eq!(
+        rebuilt["files"].as_object().map(serde_json::Map::len),
+        Some(2)
+    );
+}
+
+#[test]
+fn an_unwritable_cache_location_degrades_silently() {
+    // Given <target>/cargo-crap is a regular file, not a directory
+    let (dir, target) = cache_project();
+    fs::write(target.path().join("cargo-crap"), b"in the way").expect("write");
+    // When I run `cargo crap`
+    let out = cache_run_output(
+        dir.path(),
+        target.path(),
+        &["--fail-above", "--threshold", "1.5"],
+    );
+    // Then the run succeeds with the same report and exit code as an
+    // uncached run
+    let uncached = {
+        fs::remove_file(dir.path().join("Cargo.toml")).expect("remove the manifest");
+        crap()
+            .current_dir(dir.path())
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .args([
+                "--path",
+                dir.path().to_str().expect("utf-8"),
+                "--format",
+                "json",
+            ])
+            .args(["--fail-above", "--threshold", "1.5"])
+            .output()
+            .expect("binary runs")
+    };
+    assert_eq!(out.status.code(), Some(1), "alpha (CC 2) trips the gate");
+    assert_eq!(out.status.code(), uncached.status.code());
+    assert_eq!(out.stdout, uncached.stdout);
+    // And stderr says nothing about the cache
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
