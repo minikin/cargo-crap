@@ -92,6 +92,12 @@ struct Cli {
     #[arg(long)]
     no_default_excludes: bool,
 
+    /// Analyze every file afresh: neither read nor write the complexity
+    /// cache in `<target>/cargo-crap/`. Duplicate-triage verdicts stay
+    /// cached. The `cache = false` config key does the same for a project.
+    #[arg(long)]
+    no_cache: bool,
+
     /// CRAP score above which a function is considered "crappy".
     /// Falls back to `.cargo-crap.toml` → built-in default (30).
     #[arg(long)]
@@ -465,10 +471,15 @@ fn analyze_path(
     let context = || format!("analyzing {}", path.display());
     let try_weight = knobs.try_weight;
     let config_dir = knobs.config_dir.as_deref();
-    let session = target_dir(None, path, config_dir, &knobs.cwd, |name| {
-        std::env::var(name).ok()
-    })
-    .and_then(|target| Session::open(&target, try_weight));
+    let session = knobs
+        .cache
+        .then(|| {
+            target_dir(None, path, config_dir, &knobs.cwd, |name| {
+                std::env::var(name).ok()
+            })
+        })
+        .flatten()
+        .and_then(|target| Session::open(&target, try_weight));
     let Some(session) = session else {
         return complexity::analyze_tree_weighted(path, excludes, try_weight).with_context(context);
     };
@@ -1565,6 +1576,9 @@ struct AnalysisKnobs {
     /// The working directory a relative `--path` or target variable is
     /// taken against.
     cwd: PathBuf,
+    /// Whether the complexity cache is used: off when `--no-cache` is given
+    /// or the config says `cache = false`.
+    cache: bool,
 }
 
 /// Parse argv, load config, and validate the merged epsilon, jobs,
@@ -1586,6 +1600,7 @@ fn parse_and_validate() -> Result<LoadedArgs> {
         .try_weight
         .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
     validate_merged_values(epsilon, jobs, &dup, try_weight)?;
+    let cache = !cli.no_cache && config.cache.unwrap_or(true);
     Ok(LoadedArgs {
         cli,
         config,
@@ -1596,6 +1611,7 @@ fn parse_and_validate() -> Result<LoadedArgs> {
             try_weight,
             config_dir: dirs.config_dir,
             cwd: dirs.cwd,
+            cache,
         },
     })
 }
