@@ -20,7 +20,20 @@ fn fixture_lcov() -> &'static str {
 fn cmd() -> Command {
     let mut cmd = Command::cargo_bin("cargo-crap").expect("binary must be built");
     cmd.env_remove("COLUMNS");
+    // The complexity cache (spec 10) goes to a directory of this command's
+    // own under cargo's scratch directory for integration tests: never into
+    // the fixtures or the repository's target/, never shared between tests.
+    cmd.env("CARGO_TARGET_DIR", own_cache_dir());
     cmd
+}
+
+/// A directory no other command in any test process uses.
+fn own_cache_dir() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("cli-cache")
+        .join(format!("{}-{n}", std::process::id()))
 }
 
 /// Parse `--format json` stdout and return the envelope's `entries` array.

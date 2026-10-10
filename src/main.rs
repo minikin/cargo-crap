@@ -8,6 +8,7 @@
 
 use anyhow::{Context, Result, bail};
 use cargo_crap::{
+    cache::{complexity::Session, target::target_dir},
     complexity,
     coverage::{self, FileCoverage},
     delta::{compute_delta, load_baseline_with_weight},
@@ -429,18 +430,17 @@ fn analyze_sources(
     packages: &[String],
     path: &std::path::Path,
     excludes: &[String],
-    jobs: Option<usize>,
-    try_weight: f64,
+    knobs: &AnalysisKnobs,
 ) -> Result<AnalyzedSources> {
-    if let Some(n) = jobs {
+    let try_weight = knobs.try_weight;
+    if let Some(n) = knobs.jobs {
         rayon::ThreadPoolBuilder::new()
             .num_threads(n)
             .build_global()
             .with_context(|| format!("configuring rayon thread pool to {n} threads"))?;
     }
     if !workspace && packages.is_empty() {
-        let fns = complexity::analyze_tree_weighted(path, excludes, try_weight)
-            .with_context(|| format!("analyzing {}", path.display()))?;
+        let fns = analyze_path(path, excludes, knobs)?;
         return Ok(AnalyzedSources {
             fns,
             roots: vec![ScanRoot {
@@ -452,6 +452,30 @@ fn analyze_sources(
         });
     }
     analyze_workspace_members(packages, excludes, try_weight)
+}
+
+/// Analyze one `--path` root, through the complexity cache when there is a
+/// target directory to keep it in (spec 10). Without one, or when the
+/// running executable cannot be identified, the walk is uncached.
+fn analyze_path(
+    path: &Path,
+    excludes: &[String],
+    knobs: &AnalysisKnobs,
+) -> Result<Vec<complexity::FunctionComplexity>> {
+    let context = || format!("analyzing {}", path.display());
+    let try_weight = knobs.try_weight;
+    let config_dir = knobs.config_dir.as_deref();
+    let session = target_dir(None, path, config_dir, &knobs.cwd, |name| {
+        std::env::var(name).ok()
+    })
+    .and_then(|target| Session::open(&target, try_weight));
+    let Some(session) = session else {
+        return complexity::analyze_tree_weighted(path, excludes, try_weight).with_context(context);
+    };
+    let analysis =
+        complexity::analyze_tree_cached(path, excludes, session.cache()).with_context(context)?;
+    session.save(&[path.to_path_buf()], analysis.records);
+    Ok(analysis.functions)
 }
 
 /// The workspace side of [`analyze_sources`]: discover members, narrow to
@@ -1474,15 +1498,33 @@ fn resolve_source_links(
 /// `.cargo-crap.toml` (defaults when absent — the tool works without one).
 /// Also returns the project root: the directory the config file was found
 /// in, or the working directory when there was none.
-fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config, PathBuf)> {
+fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config, ProjectDirs)> {
     let cli = Cli::parse_from(strip_cargo_subcommand(std::env::args().collect()));
     validate_args(&cli)?;
     let cwd = std::env::current_dir().unwrap_or_else(|_| cli.path.clone());
     let config = cargo_crap::config::load(&cwd)?;
-    let root = cargo_crap::config::find(&cwd)
-        .and_then(|file| file.parent().map(Path::to_path_buf))
-        .unwrap_or(cwd);
-    Ok((cli, config, root))
+    let config_dir =
+        cargo_crap::config::find(&cwd).and_then(|file| file.parent().map(Path::to_path_buf));
+    let root = config_dir.clone().unwrap_or_else(|| cwd.clone());
+    Ok((
+        cli,
+        config,
+        ProjectDirs {
+            root,
+            config_dir,
+            cwd,
+        },
+    ))
+}
+
+/// Where the project is, as far as configuration can tell.
+struct ProjectDirs {
+    /// The configuration's directory, or the working directory without one.
+    root: PathBuf,
+    /// The directory `.cargo-crap.toml` was found in, if it was.
+    config_dir: Option<PathBuf>,
+    /// The working directory, read once.
+    cwd: PathBuf,
 }
 
 /// Exit-code contract (spec 23): 0 = analysis completed and no requested
@@ -1508,9 +1550,21 @@ struct LoadedArgs {
     /// Resolved and range-checked duplicate settings.
     dup: DupSettings,
     epsilon: f64,
+    /// The knobs the analysis itself reads.
+    knobs: AnalysisKnobs,
+}
+
+/// What [`analyze_sources`] needs besides the roots and excludes.
+struct AnalysisKnobs {
     jobs: Option<usize>,
     /// Resolved and range-checked `?` weight.
     try_weight: f64,
+    /// The directory `.cargo-crap.toml` was found in, if any: the last
+    /// place a cache's target directory is looked for (spec 10).
+    config_dir: Option<PathBuf>,
+    /// The working directory a relative `--path` or target variable is
+    /// taken against.
+    cwd: PathBuf,
 }
 
 /// Parse argv, load config, and validate the merged epsilon, jobs,
@@ -1518,7 +1572,7 @@ struct LoadedArgs {
 /// exactly what was validated so [`run`] cannot consume a different
 /// (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
-    let (cli, config, project_root) = parse_and_load_config()?;
+    let (cli, config, dirs) = parse_and_load_config()?;
     let epsilon = cli
         .epsilon
         .or(config.epsilon)
@@ -1527,7 +1581,7 @@ fn parse_and_validate() -> Result<LoadedArgs> {
     // Resolved here rather than at the call site: the merged similarity
     // threshold has to be validated before anything is analyzed, and the
     // config half of it is invisible to `validate_args`.
-    let dup = DupSettings::resolve(&cli, &config, project_root);
+    let dup = DupSettings::resolve(&cli, &config, dirs.root);
     let try_weight = config
         .try_weight
         .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
@@ -1537,8 +1591,12 @@ fn parse_and_validate() -> Result<LoadedArgs> {
         config,
         dup,
         epsilon,
-        jobs,
-        try_weight,
+        knobs: AnalysisKnobs {
+            jobs,
+            try_weight,
+            config_dir: dirs.config_dir,
+            cwd: dirs.cwd,
+        },
     })
 }
 
@@ -1548,9 +1606,9 @@ fn run() -> Result<ExitCode> {
         config,
         dup,
         epsilon,
-        jobs,
-        try_weight,
+        knobs,
     } = parse_and_validate()?;
+    let try_weight = knobs.try_weight;
 
     // Merge: CLI values take precedence; config fills in what's missing.
     let threshold = cli
@@ -1593,8 +1651,7 @@ fn run() -> Result<ExitCode> {
         &cli.package,
         &cli.path,
         &effective_exclude,
-        jobs,
-        try_weight,
+        &knobs,
     )?;
 
     pb.set_message("Parsing coverage report…");
