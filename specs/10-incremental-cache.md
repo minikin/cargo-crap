@@ -122,8 +122,11 @@ layout keeps its verdicts where they are.
   degrades to an uncached run, silently. The exit code and the report never
   depend on the cache.
 - **On by default.** `--no-cache` turns it off for one run; `cache = false`
-  in `.cargo-crap.toml` turns it off for the project. The flag wins. Off
-  means neither read nor written.
+  in `.cargo-crap.toml` turns it off for the project. Either one turns it
+  off; there is no flag to turn it back on over the config. Off means neither
+  read nor written. Both switches cover this cache only: triage verdicts
+  stay cached, since each one saved is a paid API call not repeated, and the
+  flag's help text says so.
 
 ---
 
@@ -261,6 +264,15 @@ Given a populated cache, every entry planted
 When  I run `cargo crap --no-cache`
 Then  every function reports its real CC
 And   the cache file is unchanged, byte for byte
+```
+
+### Scenario: --no-cache leaves triage verdicts cached
+
+```
+Given duplicate triage turned on against a stub API, with one pair's verdict cached
+When  I run `cargo crap --duplicates --no-cache`
+Then  the stub receives no request
+And   the pair prints its cached verdict
 ```
 
 ### Scenario: cache = false in the config neither reads nor writes the cache
