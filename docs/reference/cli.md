@@ -26,6 +26,7 @@
 | `--show-unchanged`                                               | off           | Also list `Unchanged` rows in `--baseline` mode.                     |
 | `--epsilon <VALUE>`                                              | `0.01`        | Tolerance of the regression detector.                                |
 | `--jobs <N>`                                                     | host CPUs     | Cap parallel source-file analysis at N threads.                      |
+| `--no-cache`                                                     | off           | Parse every file afresh; neither read nor write the analysis cache.  |
 | `--output <FILE>`                                                | none          | Write output to FILE instead of stdout.                              |
 | `--repo-url <URL>`                                               | none          | Repo base URL for clickable source links.                            |
 | `--commit-ref <REF>`                                             | none          | Commit SHA or branch those links point at.                           |

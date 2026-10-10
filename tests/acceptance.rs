@@ -3215,9 +3215,23 @@ fn a_cached_run_prints_exactly_what_an_uncached_run_prints() {
         .output()
         .expect("binary runs");
     assert!(!dir.path().join("target").exists(), "the run kept no cache");
-    // Then the reports are byte for byte identical
+    // Then the reports are byte for byte identical, and --no-cache prints
+    // the same again
     assert_eq!(warm.stdout, uncached.stdout);
     assert_eq!(cold.stdout, uncached.stdout);
+    let no_cache = crap()
+        .current_dir(dir.path())
+        .args([
+            "--path",
+            dir.path().to_str().expect("utf-8"),
+            "--format",
+            "json",
+        ])
+        .args(args)
+        .arg("--no-cache")
+        .output()
+        .expect("binary runs");
+    assert_eq!(no_cache.stdout, uncached.stdout);
 }
 
 #[test]
@@ -3455,4 +3469,77 @@ fn an_unwritable_cache_location_degrades_silently() {
     assert_eq!(out.stdout, uncached.stdout);
     // And stderr says nothing about the cache
     assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+#[test]
+fn no_cache_neither_reads_nor_writes_the_cache() {
+    // Given a populated cache, every entry planted
+    let (dir, target) = cache_project();
+    cache_run(dir.path(), target.path());
+    plant_cc(target.path(), "", 42.0);
+    let before = fs::read(cache_path(target.path())).expect("the cache");
+    // When I run `cargo crap --no-cache`
+    let out = cache_run_output(dir.path(), target.path(), &["--no-cache"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ccs = ccs(&serde_json::from_slice(&out.stdout).expect("JSON"));
+    // Then every function reports its real CC
+    assert_eq!((ccs["alpha"], ccs["beta"]), (2.0, 1.0), "{ccs:?}");
+    // And the cache file is unchanged, byte for byte
+    assert_eq!(
+        fs::read(cache_path(target.path())).expect("the cache"),
+        before
+    );
+}
+
+#[test]
+fn cache_false_in_the_config_neither_reads_nor_writes_the_cache() {
+    // Given a populated cache, every entry planted
+    let (dir, target) = cache_project();
+    cache_run(dir.path(), target.path());
+    plant_cc(target.path(), "", 42.0);
+    let before = fs::read(cache_path(target.path())).expect("the cache");
+    // And `.cargo-crap.toml` contains `cache = false`
+    write(dir.path(), ".cargo-crap.toml", "cache = false\n");
+    // When I run `cargo crap`
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then every function reports its real CC
+    assert_eq!((ccs["alpha"], ccs["beta"]), (2.0, 1.0), "{ccs:?}");
+    // And the cache file is unchanged, byte for byte
+    assert_eq!(
+        fs::read(cache_path(target.path())).expect("the cache"),
+        before
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn no_cache_leaves_triage_verdicts_cached() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given duplicate triage turned on against a stub API, with every pair's
+    // verdict cached
+    let dir = three_pairs_tree();
+    let first = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    run_with_config(dir.path(), TRIAGE_ON, &first, &[]);
+    assert_eq!(first.request_count(), 3);
+    // When I run `cargo crap --duplicates --no-cache`
+    let second = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let out = run_with_config(
+        dir.path(),
+        TRIAGE_ON,
+        &second,
+        &["--duplicates", "--no-cache"],
+    );
+    // Then the stub receives no request
+    assert_eq!(second.request_count(), 0);
+    // And the pair prints its cached verdict
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.matches("  triage: same-logic").count(),
+        3,
+        "{stdout}"
+    );
 }

@@ -132,6 +132,12 @@ pub struct Config {
     /// no CLI flag, so a weight cannot change between runs unnoticed.
     pub try_weight: Option<f64>,
 
+    /// Keep each file's analysis in `<target>/cargo-crap/complexity.json`
+    /// and reuse it while the file's content is unchanged (spec 10).
+    /// Defaults to true. `false` neither reads nor writes that cache; the
+    /// duplicate-triage verdicts stay cached either way.
+    pub cache: Option<bool>,
+
     /// Settings for structural duplicate detection. Its own table so the
     /// similarity threshold cannot be confused with the CRAP `threshold`.
     #[serde(default)]
@@ -371,6 +377,16 @@ allow = ["Foo::*"]
         write_config(dir.path(), "uncovered_hints = false\n");
         let cfg = load(dir.path()).unwrap();
         assert_eq!(cfg.uncovered_hints, Some(false));
+    }
+
+    #[test]
+    fn cache_false_is_parsed_and_absent_means_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load(dir.path()).unwrap().cache, None);
+        write_config(dir.path(), "cache = false\n");
+        assert_eq!(load(dir.path()).unwrap().cache, Some(false));
+        write_config(dir.path(), "cache = true\n");
+        assert_eq!(load(dir.path()).unwrap().cache, Some(true));
     }
 
     #[test]
