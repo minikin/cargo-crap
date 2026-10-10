@@ -2,7 +2,7 @@
 
 **Status:** Approved
 **Effort:** Large
-**Module:** new `src/cache/` (`mod.rs`, `fs.rs`, `target.rs`, `complexity.rs`), `src/complexity.rs`, `src/main.rs`, `src/config.rs`, `src/duplicates/triage/cache.rs`, `src/duplicates/triage/client.rs`
+**Module:** new `src/cache/` (`mod.rs`, `file.rs`, `target.rs`, `complexity.rs`), `src/complexity.rs`, `src/main.rs`, `src/config.rs`, `src/duplicates/triage/cache.rs`, `src/duplicates/triage/client.rs`
 
 ## Context
 
@@ -373,9 +373,9 @@ Each task lists its scenarios, the test types that pin it (unit /
 property / acceptance), and, when it depends on earlier tasks, a
 `Needs:` naming them. A task with no `Needs:` is a root.
 
-- [x] **T1 — Shared cache file mechanics.** New `src/cache/mod.rs` and `src/cache/fs.rs`: `read_retrying` moves there from `triage/cache.rs`, and `write_atomic(dir, name, bytes)` takes over the temporary-file-then-rename write. `triage/cache.rs` calls both; its key, entry format and behaviour are unchanged. Scenarios: none end-to-end (the existing triage cache tests are the refactor's oracle and stay green). Tests: unit (a denied read is retried, a missing file is not; a failed rename leaves no temporary file) + property (for any bytes, `write_atomic` then `read_retrying` returns them).
+- [x] **T1 — Shared cache file mechanics.** New `src/cache/mod.rs` and `src/cache/file.rs` (not `fs.rs`, which would shadow `std::fs` in its siblings): `read_retrying` moves there from `triage/cache.rs`, and `write_atomic(dir, name, bytes)` takes over the temporary-file-then-rename write. `triage/cache.rs` calls both; its key, entry format and behaviour are unchanged. Scenarios: none end-to-end (the existing triage cache tests are the refactor's oracle and stay green). Tests: unit (a denied read is retried, a missing file is not; a failed rename leaves no temporary file) + property (for any bytes, `write_atomic` then `read_retrying` returns them).
 - [x] **T2 — The target-directory resolver.** New `src/cache/target.rs`: `target_dir(metadata_target, analysed, config_dir, cwd, lookup)` returning `Option<PathBuf>` (`cwd` resolves a relative `--path` or target variable, keeping the function pure), pure apart from reading `Cargo.toml` files on the walk up. Scenarios: none end-to-end. Tests: unit (each rule in isolation; relative `CARGO_TARGET_DIR` against the working directory; empty values count as unset) + property (precedence: metadata, then `CARGO_TARGET_DIR`, then `CARGO_BUILD_TARGET_DIR`, then a `[workspace]` ancestor over a nearer plain `Cargo.toml`, then the config directory, else `None`, over generated layouts and environments).
-- [ ] **T3 — The complexity cache file.** Needs: T1. New `src/cache/complexity.rs`: the header (format, crate version, executable path, length and mtime, try weight by bits), entries keyed by canonical path holding length, FNV-1a hash and functions without their path; `load` (any mismatch or corrupt file is empty), `lookup(path, bytes)`, and `save(walked_roots, analysed)` which replaces the entries under the walked roots and keeps the rest. A non-UTF-8 path is never stored. Scenarios: none end-to-end. Tests: unit (corrupt, empty and foreign-header files load empty; non-UTF-8 path skipped) + property (round trip; content keyed: any byte change misses; header sensitivity: any field change misses every lookup; eviction: entries outside the walked roots survive a save, entries under them are exactly the analysed set).
+- [x] **T3 — The complexity cache file.** Needs: T1. New `src/cache/complexity.rs`: the header (format, crate version, executable path, length and mtime, try weight by bits), entries keyed by canonical path holding length, FNV-1a hash and functions without their path; `load` (any mismatch or corrupt file is empty), `lookup(path, bytes, walked)`, which attaches the walked path to the functions and returns them with the record that stores the entry again (a hit is hashed once), and `save(walked_roots, analysed)` which replaces the entries under the walked roots and keeps the rest. A non-UTF-8 path is never stored. Scenarios: none end-to-end. Tests: unit (corrupt, empty and foreign-header files load empty; non-UTF-8 path skipped) + property (round trip; content keyed: any byte change misses; header sensitivity: any field change misses every lookup; eviction: entries outside the walked roots survive a save, entries under them are exactly the analysed set).
 - [ ] **T4 — Cached analysis in a `--path` run.** Needs: T2, T3. A cache-aware sibling of `analyze_tree_weighted` (the existing signature stays for library callers), wired into `analyze_sources` after the rayon pool is built: resolve, load, walk with lookups in parallel, save once. Parse failures are never stored. Existing CLI tests that run inside `tests/fixtures/` get a temporary `CARGO_TARGET_DIR`. Acceptance tests for this spec go under a `// ── Spec 10` heading at the end of `tests/acceptance.rs`, with a `plant` helper that rewrites cached CCs. Scenarios: _A second run on unchanged files serves every file from the cache_, _A cached run prints exactly what an uncached run prints_, _A modified file is re-parsed and the others are not_, _A touched but unchanged file is not re-parsed_, _An edit that keeps the length and the mtime is not served stale_, _A deleted file leaves the output and the cache_, _A file with no functions is a hit, not a perpetual miss_, _A file that does not parse warns on every run_. Tests: acceptance + property (transparency: for a generated tree, cached and uncached analyses are equal and in the same order on a first run, a second run, and after editing any subset of files).
 - [ ] **T5 — Invalidation and silent degradation.** Needs: T4. Scenarios: _A cache written by another build is ignored_, _Changing the `?` weight re-analyses every file_, _A corrupt cache file is silently rebuilt_, _An unwritable cache location degrades silently_. Tests: acceptance.
 - [ ] **T6 — The switches.** Needs: T4. `--no-cache` in `Cli` and `cache` in `Config`; either one turns the analysis cache off, and neither touches the triage cache. Scenarios: _--no-cache neither reads nor writes the cache_, _--no-cache leaves triage verdicts cached_, _cache = false in the config neither reads nor writes the cache_. Tests: unit (config key parses; unknown-field rejection still holds) + acceptance (the triage one under `cfg(feature = "triage")`, against the stub).
@@ -393,13 +393,13 @@ property / acceptance), and, when it depends on earlier tasks, a
 ```
 src/cache/
 ├── mod.rs          pub mod declarations
-├── fs.rs           read_retrying (moved from triage/cache.rs), write_atomic
+├── file.rs         read_retrying (moved from triage/cache.rs), write_atomic
 ├── target.rs       target_dir(metadata, analysed, config_dir, cwd, lookup) -> Option<PathBuf>
 └── complexity.rs   ComplexityCache: load / lookup / store / save
 ```
 
 `triage/cache.rs` keeps its key and its entry format and calls
-`cache::fs` for the read and the write. Its behaviour is unchanged; the
+`cache::file` for the read and the write. Its behaviour is unchanged; the
 existing triage cache tests stay green as the refactor's oracle.
 `triage::Settings::from_lookup` takes the resolved target directory instead
 of computing `project_root.join("target")`, so the resolver lives in one
