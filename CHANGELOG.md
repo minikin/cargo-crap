@@ -8,7 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An analysis cache: each file's functions are kept in
+  `cargo-crap/complexity.json` under the target directory and reused while
+  the file's content is unchanged, so a repeat run parses only what
+  changed. The report is the same with or without it. A rebuilt binary or
+  a different `try-weight` starts over, and a `-p` or `--path` run replaces
+  only what it walked. `--no-cache` or `cache = false` turns it off. See
+  [The analysis cache](docs/explanation/how-it-works.md#the-analysis-cache)
+  (spec 10).
+
 ### Changed
+
+- Duplicate-triage verdicts are cached under the same target directory as
+  the analysis cache: with `--workspace` or `-p`, where cargo builds;
+  otherwise `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, then the analysed
+  project's workspace root, then beside `.cargo-crap.toml`. Verdicts move,
+  and each pair is asked once more, in three cases: a `.cargo-crap.toml` in
+  a member crate under a `[workspace]` root, a configuration at a monorepo
+  root above standalone crates, and a `--path` into another Cargo project.
+- **BREAKING (library API):** `duplicates::triage::Settings::from_env` and
+  `from_lookup` take the resolved target directory (`Option<&Path>`)
+  instead of a project root, and no longer read `CARGO_TARGET_DIR`;
+  `duplicates::triage::client::TARGET_DIR_VAR` is gone. The resolver is
+  `cache::target::target_dir`.
 
 - The `human` tables fit the terminal's width, or `$COLUMNS` when it is
   set: the coverage bar shrinks and then goes, CC goes below 60 columns,

@@ -93,9 +93,15 @@ same score, and the exit code never depends on it. Without a key, a network
 or a working API, the run prints the untriaged section and one warning
 saying why.
 
-Verdicts are cached in `cargo-crap/triage/` under the target directory:
-`CARGO_TARGET_DIR` when it is set, otherwise `target/` beside
+Verdicts are cached in `cargo-crap/triage/` under the target directory,
+the same one the analysis cache uses (see
+[The analysis cache](../explanation/how-it-works.md#the-analysis-cache)):
+with `--workspace` or `-p`, the directory cargo builds into; otherwise
+`CARGO_TARGET_DIR`, then `CARGO_BUILD_TARGET_DIR`, then `target/` at the
+analysed project's workspace root, then `target/` beside
 `.cargo-crap.toml`. The cache is keyed by both function bodies, so an
 unchanged pair is never asked about twice, and `cargo clean` removes it.
+`--no-cache` and `cache = false` leave it alone: each verdict kept is an
+API call not paid for again.
 `TYPESAFE_BASE_URL` points the client at another API host (the default is
 `https://api.typesafe.ai`).
