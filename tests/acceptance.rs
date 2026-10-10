@@ -3543,3 +3543,142 @@ fn no_cache_leaves_triage_verdicts_cached() {
         "{stdout}"
     );
 }
+
+/// The binary run from `cwd` with neither target variable set, so the
+/// cache's place is the resolver's to find.
+fn resolver_run(
+    cwd: &Path,
+    args: &[&str],
+) -> std::process::Output {
+    let out = crap()
+        .current_dir(cwd)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .args(["--format", "json"])
+        .args(args)
+        .output()
+        .expect("binary runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
+/// Each reported function's file, by name.
+fn files(doc: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
+    doc["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| {
+            let name = e["function"].as_str().expect("a name").to_owned();
+            (name, e["file"].as_str().expect("a file").to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn the_cache_follows_the_project_not_the_working_directory() {
+    // Given a cache populated by `cargo crap` run at the project root,
+    // entries planted
+    let (dir, _) = cache_project();
+    let root = dir.path();
+    resolver_run(root, &[]);
+    let target = root.join("target");
+    plant_cc(&target, "", 42.0);
+    // When I run `cargo crap --path ..` from the project's src/ directory
+    let src = root.join("src");
+    let out = resolver_run(&src, &["--path", ".."]);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    // Then every function reports its planted CC
+    let ccs = ccs(&doc);
+    assert_eq!((ccs["alpha"], ccs["beta"]), (42.0, 42.0), "{ccs:?}");
+    // And every location is the one an uncached run from src/ prints
+    let uncached = resolver_run(&src, &["--path", "..", "--no-cache"]);
+    let uncached: serde_json::Value = serde_json::from_slice(&uncached.stdout).expect("JSON");
+    assert_eq!(files(&doc), files(&uncached));
+    assert!(
+        !src.join("target").exists(),
+        "no stray target/ where it ran"
+    );
+    // (and from outside the project altogether, the analysed path, not the
+    // working directory, still finds it)
+    let outside = TempDir::new().expect("an unrelated directory");
+    let path = root.to_str().expect("utf-8");
+    let ccs = stdout_ccs(&resolver_run(outside.path(), &["--path", path]));
+    assert_eq!((ccs["alpha"], ccs["beta"]), (42.0, 42.0), "{ccs:?}");
+    assert!(!outside.path().join("target").exists());
+}
+
+/// [`ccs`] of a run's JSON stdout.
+fn stdout_ccs(out: &std::process::Output) -> std::collections::BTreeMap<String, f64> {
+    ccs(&serde_json::from_slice(&out.stdout).expect("JSON"))
+}
+
+#[test]
+fn a_member_crate_caches_in_the_workspaces_target_directory() {
+    // Given a workspace whose root Cargo.toml has a [workspace] table
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/a\"]\n",
+    );
+    // And a member crate in crates/a with its own Cargo.toml
+    let member = root.join("crates/a");
+    fs::create_dir_all(member.join("src")).expect("mkdir");
+    write(
+        &member,
+        "Cargo.toml",
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&member.join("src"), "lib.rs", "pub fn a() {}\n");
+    // And no .cargo-crap.toml and no CARGO_TARGET_DIR
+    // When I run `cargo crap` from crates/a
+    resolver_run(&member, &[]);
+    // Then the cache is written to <root>/target/cargo-crap/complexity.json
+    assert!(cache_path(&root.join("target")).exists());
+    // And crates/a/target does not exist
+    assert!(!member.join("target").exists());
+}
+
+#[test]
+fn cargo_target_dir_moves_the_cache() {
+    // Given CARGO_TARGET_DIR names a directory outside the project
+    let (dir, elsewhere) = cache_project();
+    // When I run `cargo crap`
+    let out = crap()
+        .current_dir(dir.path())
+        .env("CARGO_TARGET_DIR", elsewhere.path())
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .output()
+        .expect("binary runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Then the cache is written under that directory's cargo-crap/
+    assert!(cache_path(elsewhere.path()).exists());
+    // And the project has no target/cargo-crap/
+    assert!(!dir.path().join("target/cargo-crap").exists());
+}
+
+#[test]
+fn outside_any_project_nothing_is_cached() {
+    // Given a directory <dir> of .rs files with no Cargo.toml above it
+    // And no .cargo-crap.toml and no CARGO_TARGET_DIR
+    let (dir, _) = cache_project();
+    fs::remove_file(dir.path().join("Cargo.toml")).expect("remove the manifest");
+    // When I run `cargo crap --path <dir>` from <dir>
+    let path = dir.path().to_str().expect("utf-8");
+    let out = resolver_run(dir.path(), &["--path", path]);
+    // Then the report is the uncached report
+    let uncached = resolver_run(dir.path(), &["--path", path, "--no-cache"]);
+    assert_eq!(out.stdout, uncached.stdout);
+    // And <dir>/target does not exist
+    assert!(!dir.path().join("target").exists());
+}
