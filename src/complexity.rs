@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use syn::{
-    BinOp, ImplItemFn, ItemFn, ItemImpl,
+    BinOp, ImplItemFn, ItemFn, ItemImpl, ItemTrait, TraitItemFn,
     visit::{self, Visit},
 };
 
@@ -105,7 +105,8 @@ fn impl_type_name(ty: &syn::Type) -> Option<String> {
 struct FunctionVisitor<'a> {
     file: &'a Path,
     out: Vec<FunctionComplexity>,
-    /// Type name of the enclosing `impl` block, if any.
+    /// Type name of the enclosing `impl` block, or name of the enclosing
+    /// trait, if any.
     impl_type: Option<String>,
     /// What each `?` operator adds to a function's CC.
     try_weight: f64,
@@ -151,24 +152,28 @@ impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
         &mut self,
         node: &'ast ImplItemFn,
     ) {
-        if has_attr(&node.attrs, "test") {
-            return;
+        self.push_method(&node.attrs, &node.sig, &node.block);
+    }
+
+    fn visit_item_trait(
+        &mut self,
+        node: &'ast ItemTrait,
+    ) {
+        // A default method is named after its trait, as an impl method is
+        // after its self type.
+        let prev = self.impl_type.replace(node.ident.to_string());
+        visit::visit_item_trait(self, node);
+        self.impl_type = prev;
+    }
+
+    fn visit_trait_item_fn(
+        &mut self,
+        node: &'ast TraitItemFn,
+    ) {
+        // A required method has no body, so nothing to score.
+        if let Some(block) = &node.default {
+            self.push_method(&node.attrs, &node.sig, block);
         }
-        let method = node.sig.ident.to_string();
-        let name = match &self.impl_type {
-            Some(ty) => format!("{ty}::{method}"),
-            None => method,
-        };
-        let start_line = node.sig.fn_token.span.start().line;
-        let end_line = node.block.brace_token.span.close().end().line;
-        let cyclomatic = count_cyclomatic(&node.block, self.try_weight);
-        self.out.push(FunctionComplexity {
-            file: self.file.to_path_buf(),
-            name,
-            start_line,
-            end_line,
-            cyclomatic,
-        });
     }
 
     fn visit_item_mod(
@@ -180,6 +185,33 @@ impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
         if !is_cfg_test(&node.attrs) {
             visit::visit_item_mod(self, node);
         }
+    }
+}
+
+impl FunctionVisitor<'_> {
+    /// Record a method with a body, prefixed with the enclosing impl's self
+    /// type or trait's name. `#[test]` methods are skipped.
+    fn push_method(
+        &mut self,
+        attrs: &[syn::Attribute],
+        sig: &syn::Signature,
+        block: &syn::Block,
+    ) {
+        if has_attr(attrs, "test") {
+            return;
+        }
+        let method = sig.ident.to_string();
+        let name = match &self.impl_type {
+            Some(ty) => format!("{ty}::{method}"),
+            None => method,
+        };
+        self.out.push(FunctionComplexity {
+            file: self.file.to_path_buf(),
+            name,
+            start_line: sig.fn_token.span.start().line,
+            end_line: block.brace_token.span.close().end().line,
+            cyclomatic: count_cyclomatic(block, self.try_weight),
+        });
     }
 }
 
@@ -713,6 +745,26 @@ fn c() {}
             fns[0].cyclomatic, 1.0,
             "closure branches must not leak into outer CC"
         );
+    }
+
+    #[test]
+    fn trait_default_methods_are_scored_and_required_ones_are_not() {
+        let f = write_temp(
+            r"
+trait Shape {
+    fn area(&self) -> f64;
+    fn label(&self, x: i32) -> i32 {
+        if x > 0 { 1 } else if x < 0 { 2 } else { 3 }
+    }
+}
+",
+        );
+        let fns = analyze_file(f.path()).expect("analyze");
+        let names: Vec<_> = fns.iter().map(|fc| fc.name.as_str()).collect();
+        assert_eq!(names, ["Shape::label"], "got {names:?}");
+        let label = &fns[0];
+        assert!((label.cyclomatic - 3.0).abs() < f64::EPSILON);
+        assert_eq!((label.start_line, label.end_line), (4, 6));
     }
 
     #[test]
