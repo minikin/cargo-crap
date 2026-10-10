@@ -1466,6 +1466,7 @@ fn the_cache_lives_beside_the_configuration() {
     let out = crap()
         .current_dir(&subdir)
         .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
         .env("TYPESAFE_API_KEY", "test-key")
         .env("TYPESAFE_BASE_URL", stub.base_url())
         .args(["--path", dir.path().to_str().expect("utf-8")])
@@ -2994,6 +2995,981 @@ fn the_per_crate_table_fits() {
     assert!(first_row[0].ends_with('…'), "{stdout}");
     assert!(
         name.starts_with(first_row[0].trim_end_matches('…')),
+        "{stdout}"
+    );
+}
+
+// ── Spec 33: trait default methods are scored ─────────────────────────────
+
+#[test]
+fn a_traits_default_method_is_scored_a_required_method_is_not() {
+    // Given a trait `Shape` with a required method `fn area(&self) -> f64;`
+    // And a default method `label` whose body is an if / else if / else
+    let dir = TempDir::new().expect("temp dir");
+    write(
+        dir.path(),
+        "lib.rs",
+        "pub trait Shape {
+    fn area(&self) -> f64;
+    fn label(&self, x: i32) -> i32 {
+        if x > 0 { 1 } else if x < 0 { 2 } else { 3 }
+    }
+}
+",
+    );
+    // When I run `cargo crap`
+    let path = dir.path().to_str().expect("utf-8");
+    let doc = json_run(dir.path(), &["--path", path]);
+    // Then the report has one row for that trait: `Shape::label`, CC 3
+    let entries = doc["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 1, "{doc}");
+    assert_eq!(entries[0]["function"], "Shape::label", "{doc}");
+    assert_eq!(entries[0]["cyclomatic"], 3.0, "{doc}");
+    // And `area` does not appear (the one row above is the whole report)
+}
+
+// ── Spec 10: incremental analysis cache ───────────────────────────────────
+//
+// A hit is proved without any new output: a test *plants* a different CC in
+// a cached entry, keeping its content key, and runs again. The planted value
+// in the report means the file came from the cache; the real one means it
+// was parsed. Every test owns its CARGO_TARGET_DIR, so no two share a cache.
+
+/// A project with `src/lib.rs` (`alpha`, CC 2) and `src/other.rs` (`beta`,
+/// CC 1), and a separate directory for its cache.
+fn cache_project() -> (TempDir, TempDir) {
+    let dir = TempDir::new().expect("temp dir");
+    fs::create_dir_all(dir.path().join("src")).expect("mkdir");
+    write(
+        dir.path(),
+        "Cargo.toml",
+        "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(
+        &dir.path().join("src"),
+        "lib.rs",
+        "pub fn alpha(x: i32) -> i32 {\n    if x > 0 { 1 } else { 2 }\n}\n",
+    );
+    write(&dir.path().join("src"), "other.rs", "pub fn beta() {}\n");
+    (dir, TempDir::new().expect("target dir"))
+}
+
+/// `cargo crap --path <dir> --format json` from `dir`, caching under
+/// `target`, with `extra` appended.
+fn cache_run_output(
+    dir: &Path,
+    target: &Path,
+    extra: &[&str],
+) -> std::process::Output {
+    crap()
+        .current_dir(dir)
+        .env("CARGO_TARGET_DIR", target)
+        .args(["--path", dir.to_str().expect("utf-8"), "--format", "json"])
+        .args(extra)
+        .output()
+        .expect("binary runs")
+}
+
+/// [`cache_run_output`], asserted successful and parsed.
+fn cache_run(
+    dir: &Path,
+    target: &Path,
+) -> serde_json::Value {
+    let out = cache_run_output(dir, target, &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("one JSON document")
+}
+
+/// Each reported function's CC, by name.
+fn ccs(doc: &serde_json::Value) -> std::collections::BTreeMap<String, f64> {
+    doc["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| {
+            let name = e["function"].as_str().expect("a name").to_owned();
+            (name, e["cyclomatic"].as_f64().expect("a CC"))
+        })
+        .collect()
+}
+
+/// The cache file under `target`.
+fn cache_path(target: &Path) -> std::path::PathBuf {
+    target.join("cargo-crap/complexity.json")
+}
+
+fn read_cache(target: &Path) -> serde_json::Value {
+    let raw = fs::read_to_string(cache_path(target)).expect("a cache file");
+    serde_json::from_str(&raw).expect("the cache is JSON")
+}
+
+/// Rewrite the cache under `target`, applying `edit` to each file's entry
+/// whose key ends with `suffix` (every entry when `suffix` is empty).
+fn plant(
+    target: &Path,
+    suffix: &str,
+    edit: impl Fn(&mut serde_json::Value),
+) {
+    let mut cache = read_cache(target);
+    let files = cache["files"].as_object_mut().expect("files");
+    let mut planted = 0;
+    for (key, entry) in files.iter_mut() {
+        if key.replace('\\', "/").ends_with(suffix) {
+            edit(entry);
+            planted += 1;
+        }
+    }
+    assert!(planted > 0, "no cached entry ends with {suffix:?}");
+    fs::write(cache_path(target), cache.to_string()).expect("write the cache");
+}
+
+/// Set every cached function's CC under entries matching `suffix` to `cc`.
+fn plant_cc(
+    target: &Path,
+    suffix: &str,
+    cc: f64,
+) {
+    plant(target, suffix, |entry| {
+        for function in entry["functions"].as_array_mut().expect("functions") {
+            function["cyclomatic"] = serde_json::json!(cc);
+        }
+    });
+}
+
+/// The cached keys ending with `suffix`.
+fn cached_keys(
+    target: &Path,
+    suffix: &str,
+) -> Vec<String> {
+    read_cache(target)["files"]
+        .as_object()
+        .expect("files")
+        .keys()
+        .filter(|key| key.replace('\\', "/").ends_with(suffix))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_second_run_on_unchanged_files_serves_every_file_from_the_cache() {
+    // Given a Rust project analysed once, with the cache populated
+    let (dir, target) = cache_project();
+    cache_run(dir.path(), target.path());
+    // And every cached entry planted with a different CC
+    plant_cc(target.path(), "", 42.0);
+    // When I run `cargo crap` again without changing any source file
+    let doc = cache_run(dir.path(), target.path());
+    // Then every function's CC in the report is the planted one
+    let ccs = ccs(&doc);
+    assert_eq!(ccs.len(), 2, "{doc}");
+    assert!(
+        ccs.values().all(|cc| (*cc - 42.0).abs() < f64::EPSILON),
+        "{ccs:?}"
+    );
+}
+
+#[test]
+fn a_cached_run_prints_exactly_what_an_uncached_run_prints() {
+    // Given a Rust project with an LCOV file, analysed once, with the cache
+    // populated
+    let (dir, target) = cache_project();
+    let lib = dir.path().join("src/lib.rs");
+    write(
+        dir.path(),
+        "lcov.info",
+        &format!(
+            "SF:{}\nDA:1,1\nDA:2,1\nDA:3,0\nend_of_record\n",
+            lib.display()
+        ),
+    );
+    let args = ["--lcov", "lcov.info"];
+    let cold = cache_run_output(dir.path(), target.path(), &args);
+    assert!(
+        cold.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cold.stderr)
+    );
+    assert!(
+        cache_path(target.path()).exists(),
+        "the cold run filled a cache"
+    );
+    // When I run again (the cache is warm), and then with no cache at all:
+    // no Cargo.toml, no configuration and no target variable leave the run
+    // nowhere to keep one, so it takes the uncached walk.
+    let warm = cache_run_output(dir.path(), target.path(), &args);
+    fs::remove_file(dir.path().join("Cargo.toml")).expect("remove the manifest");
+    let uncached = crap()
+        .current_dir(dir.path())
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .args([
+            "--path",
+            dir.path().to_str().expect("utf-8"),
+            "--format",
+            "json",
+        ])
+        .args(args)
+        .output()
+        .expect("binary runs");
+    assert!(!dir.path().join("target").exists(), "the run kept no cache");
+    // Then the reports are byte for byte identical, and --no-cache prints
+    // the same again
+    assert_eq!(warm.stdout, uncached.stdout);
+    assert_eq!(cold.stdout, uncached.stdout);
+    let no_cache = crap()
+        .current_dir(dir.path())
+        .args([
+            "--path",
+            dir.path().to_str().expect("utf-8"),
+            "--format",
+            "json",
+        ])
+        .args(args)
+        .arg("--no-cache")
+        .output()
+        .expect("binary runs");
+    assert_eq!(no_cache.stdout, uncached.stdout);
+}
+
+#[test]
+fn a_modified_file_is_re_parsed_and_the_others_are_not() {
+    // Given a cached run over src/lib.rs and src/other.rs, both planted
+    let (dir, target) = cache_project();
+    cache_run(dir.path(), target.path());
+    plant_cc(target.path(), "", 42.0);
+    // When I add a branch to src/lib.rs
+    write(
+        &dir.path().join("src"),
+        "lib.rs",
+        "pub fn alpha(x: i32) -> i32 {\n    if x > 0 { 1 } else if x < 0 { 2 } else { 3 }\n}\n",
+    );
+    // And run `cargo crap` again
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then src/lib.rs reports its new, real CC
+    assert_eq!(ccs["alpha"], 3.0, "{ccs:?}");
+    // And src/other.rs still reports its planted CC
+    assert_eq!(ccs["beta"], 42.0, "{ccs:?}");
+}
+
+#[test]
+fn a_touched_but_unchanged_file_is_not_re_parsed() {
+    // Given a cached run with src/lib.rs's entry planted
+    let (dir, target) = cache_project();
+    cache_run(dir.path(), target.path());
+    plant_cc(target.path(), "src/lib.rs", 42.0);
+    // When src/lib.rs's mtime changes but its contents do not
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+    fs::File::options()
+        .write(true)
+        .open(dir.path().join("src/lib.rs"))
+        .and_then(|f| f.set_modified(later))
+        .expect("set the mtime");
+    // And I run `cargo crap` again
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then src/lib.rs reports its planted CC
+    assert_eq!(ccs["alpha"], 42.0, "{ccs:?}");
+}
+
+#[test]
+fn an_edit_that_keeps_the_length_and_the_mtime_is_not_served_stale() {
+    // Given a cached run over src/lib.rs (alpha: an if / else, CC 2)
+    let (dir, target) = cache_project();
+    let lib = dir.path().join("src/lib.rs");
+    let before = fs::read_to_string(&lib).expect("read");
+    cache_run(dir.path(), target.path());
+    let mtime = fs::metadata(&lib)
+        .and_then(|m| m.modified())
+        .expect("mtime");
+    // When src/lib.rs is rewritten with a different branch of the same
+    // length (a two-arm match, CC 3)
+    let mut after = "pub fn alpha(x: i32) -> i32 {\n    match x {0=>1,_=>2}\n}\n".to_owned();
+    assert!(after.len() <= before.len(), "the edit must fit");
+    after.insert_str(after.len() - 2, &" ".repeat(before.len() - after.len()));
+    assert_eq!(after.len(), before.len());
+    fs::write(&lib, &after).expect("write");
+    // And its mtime is set back to the value it had before the edit
+    fs::File::options()
+        .write(true)
+        .open(&lib)
+        .and_then(|f| f.set_modified(mtime))
+        .expect("restore the mtime");
+    // And I run `cargo crap` again
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then src/lib.rs reports its new, real CC
+    assert_eq!(ccs["alpha"], 3.0, "{ccs:?}");
+}
+
+#[test]
+fn a_deleted_file_leaves_the_output_and_the_cache() {
+    // Given a cached run that includes src/old.rs
+    let (dir, target) = cache_project();
+    write(&dir.path().join("src"), "old.rs", "pub fn gone() {}\n");
+    cache_run(dir.path(), target.path());
+    assert_eq!(cached_keys(target.path(), "src/old.rs").len(), 1);
+    // When src/old.rs is deleted
+    fs::remove_file(dir.path().join("src/old.rs")).expect("delete");
+    // And I run `cargo crap` again
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then src/old.rs does not appear in the report
+    assert!(!ccs.contains_key("gone"), "{ccs:?}");
+    // And the rewritten cache has no entry for src/old.rs
+    assert_eq!(
+        cached_keys(target.path(), "src/old.rs"),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_file_with_no_functions_is_a_hit_not_a_perpetual_miss() {
+    // Given a source file containing no functions, and a populated cache
+    let (dir, target) = cache_project();
+    write(&dir.path().join("src"), "empty.rs", "// nothing here\n");
+    cache_run(dir.path(), target.path());
+    // And its cached entry planted with one function
+    plant(target.path(), "src/empty.rs", |entry| {
+        entry["functions"] = serde_json::json!([
+            {"name": "planted", "start_line": 1, "end_line": 1, "cyclomatic": 7.0}
+        ]);
+    });
+    // When I run `cargo crap` again without changing the file
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then the planted function appears in the report
+    assert_eq!(ccs.get("planted"), Some(&7.0), "{ccs:?}");
+}
+
+#[test]
+fn a_file_that_does_not_parse_warns_on_every_run() {
+    // Given a source file that is not valid Rust
+    let (dir, target) = cache_project();
+    write(&dir.path().join("src"), "bad.rs", "fn (\n");
+    // When I run `cargo crap` twice
+    for run in 1..=2 {
+        let out = cache_run_output(dir.path(), target.path(), &[]);
+        // Then both runs print the "could not analyze" warning for it
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("could not analyze") && stderr.contains("bad.rs"),
+            "run {run}: {stderr}"
+        );
+    }
+    // And the cache holds no entry for it
+    assert_eq!(
+        cached_keys(target.path(), "src/bad.rs"),
+        Vec::<String>::new()
+    );
+    assert_eq!(cached_keys(target.path(), "src/lib.rs").len(), 1);
+}
+
+/// [`cache_run_output`] for the same project with nowhere to keep a cache:
+/// the uncached report to compare against. Removes the manifest.
+fn uncached_output(dir: &Path) -> std::process::Output {
+    fs::remove_file(dir.join("Cargo.toml")).expect("remove the manifest");
+    crap()
+        .current_dir(dir)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .args(["--path", dir.to_str().expect("utf-8"), "--format", "json"])
+        .output()
+        .expect("binary runs")
+}
+
+#[test]
+fn a_cache_written_by_another_build_is_ignored() {
+    // Given a populated cache, every entry planted
+    let (dir, target) = cache_project();
+    cache_run(dir.path(), target.path());
+    let ours = read_cache(target.path())["exe"].clone();
+    plant_cc(target.path(), "", 42.0);
+    // And its header names a different executable (length or mtime)
+    let mut cache = read_cache(target.path());
+    cache["exe"]["len"] = serde_json::json!(ours["len"].as_u64().expect("a length") + 1);
+    fs::write(cache_path(target.path()), cache.to_string()).expect("write");
+    // When I run `cargo crap`
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then every function reports its real CC
+    assert_eq!((ccs["alpha"], ccs["beta"]), (2.0, 1.0), "{ccs:?}");
+    // And the cache is rewritten with this executable's header
+    assert_eq!(read_cache(target.path())["exe"], ours);
+}
+
+#[test]
+fn changing_the_try_weight_re_analyses_every_file() {
+    // Given a cache populated with try-weight 1, every entry planted
+    let (dir, target) = cache_project();
+    write(
+        &dir.path().join("src"),
+        "lib.rs",
+        "pub fn alpha(x: Option<i32>) -> Option<i32> {\n    let y = x?;\n    Some(y)\n}\n",
+    );
+    cache_run(dir.path(), target.path());
+    plant_cc(target.path(), "", 42.0);
+    // When I run `cargo crap` with try-weight 0.5 in .cargo-crap.toml
+    write(dir.path(), ".cargo-crap.toml", "try-weight = 0.5\n");
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then every function reports its real CC under weight 0.5
+    assert_eq!((ccs["alpha"], ccs["beta"]), (1.5, 1.0), "{ccs:?}");
+}
+
+#[test]
+fn a_corrupt_cache_file_is_silently_rebuilt() {
+    // Given a cache file holding bytes that are not a cache
+    let (dir, target) = cache_project();
+    fs::create_dir_all(target.path().join("cargo-crap")).expect("mkdir");
+    fs::write(cache_path(target.path()), b"\x00\xffnot a cache{").expect("write");
+    // When I run `cargo crap`
+    let out = cache_run_output(dir.path(), target.path(), &[]);
+    // Then the run succeeds with the same report as an uncached run
+    assert!(out.status.success());
+    let rebuilt = read_cache(target.path());
+    let uncached = uncached_output(dir.path());
+    assert_eq!(out.stdout, uncached.stdout);
+    // And stderr says nothing about the cache
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+    // And the cache file is rewritten as a valid cache
+    assert_eq!(
+        rebuilt["files"].as_object().map(serde_json::Map::len),
+        Some(2)
+    );
+}
+
+#[test]
+fn an_unwritable_cache_location_degrades_silently() {
+    // Given <target>/cargo-crap is a regular file, not a directory
+    let (dir, target) = cache_project();
+    fs::write(target.path().join("cargo-crap"), b"in the way").expect("write");
+    // When I run `cargo crap`
+    let out = cache_run_output(
+        dir.path(),
+        target.path(),
+        &["--fail-above", "--threshold", "1.5"],
+    );
+    // Then the run succeeds with the same report and exit code as an
+    // uncached run
+    let uncached = {
+        fs::remove_file(dir.path().join("Cargo.toml")).expect("remove the manifest");
+        crap()
+            .current_dir(dir.path())
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .args([
+                "--path",
+                dir.path().to_str().expect("utf-8"),
+                "--format",
+                "json",
+            ])
+            .args(["--fail-above", "--threshold", "1.5"])
+            .output()
+            .expect("binary runs")
+    };
+    assert_eq!(out.status.code(), Some(1), "alpha (CC 2) trips the gate");
+    assert_eq!(out.status.code(), uncached.status.code());
+    assert_eq!(out.stdout, uncached.stdout);
+    // And stderr says nothing about the cache
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+#[test]
+fn no_cache_neither_reads_nor_writes_the_cache() {
+    // Given a populated cache, every entry planted
+    let (dir, target) = cache_project();
+    cache_run(dir.path(), target.path());
+    plant_cc(target.path(), "", 42.0);
+    let before = fs::read(cache_path(target.path())).expect("the cache");
+    // When I run `cargo crap --no-cache`
+    let out = cache_run_output(dir.path(), target.path(), &["--no-cache"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ccs = ccs(&serde_json::from_slice(&out.stdout).expect("JSON"));
+    // Then every function reports its real CC
+    assert_eq!((ccs["alpha"], ccs["beta"]), (2.0, 1.0), "{ccs:?}");
+    // And the cache file is unchanged, byte for byte
+    assert_eq!(
+        fs::read(cache_path(target.path())).expect("the cache"),
+        before
+    );
+}
+
+#[test]
+fn cache_false_in_the_config_neither_reads_nor_writes_the_cache() {
+    // Given a populated cache, every entry planted
+    let (dir, target) = cache_project();
+    cache_run(dir.path(), target.path());
+    plant_cc(target.path(), "", 42.0);
+    let before = fs::read(cache_path(target.path())).expect("the cache");
+    // And `.cargo-crap.toml` contains `cache = false`
+    write(dir.path(), ".cargo-crap.toml", "cache = false\n");
+    // When I run `cargo crap`
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then every function reports its real CC
+    assert_eq!((ccs["alpha"], ccs["beta"]), (2.0, 1.0), "{ccs:?}");
+    // And the cache file is unchanged, byte for byte
+    assert_eq!(
+        fs::read(cache_path(target.path())).expect("the cache"),
+        before
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn no_cache_leaves_triage_verdicts_cached() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given duplicate triage turned on against a stub API, with every pair's
+    // verdict cached
+    let dir = three_pairs_tree();
+    let first = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    run_with_config(dir.path(), TRIAGE_ON, &first, &[]);
+    assert_eq!(first.request_count(), 3);
+    // When I run `cargo crap --duplicates --no-cache`
+    let second = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let out = run_with_config(
+        dir.path(),
+        TRIAGE_ON,
+        &second,
+        &["--duplicates", "--no-cache"],
+    );
+    // Then the stub receives no request
+    assert_eq!(second.request_count(), 0);
+    // And the pair prints its cached verdict
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.matches("  triage: same-logic").count(),
+        3,
+        "{stdout}"
+    );
+}
+
+/// The binary run from `cwd` with neither target variable set, so the
+/// cache's place is the resolver's to find.
+fn resolver_run(
+    cwd: &Path,
+    args: &[&str],
+) -> std::process::Output {
+    let out = crap()
+        .current_dir(cwd)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .args(["--format", "json"])
+        .args(args)
+        .output()
+        .expect("binary runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
+/// Each reported function's file, by name.
+fn files(doc: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
+    doc["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| {
+            let name = e["function"].as_str().expect("a name").to_owned();
+            (name, e["file"].as_str().expect("a file").to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn the_cache_follows_the_project_not_the_working_directory() {
+    // Given a cache populated by `cargo crap` run at the project root,
+    // entries planted
+    let (dir, _) = cache_project();
+    let root = dir.path();
+    resolver_run(root, &[]);
+    let target = root.join("target");
+    plant_cc(&target, "", 42.0);
+    // When I run `cargo crap --path ..` from the project's src/ directory
+    let src = root.join("src");
+    let out = resolver_run(&src, &["--path", ".."]);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    // Then every function reports its planted CC
+    let ccs = ccs(&doc);
+    assert_eq!((ccs["alpha"], ccs["beta"]), (42.0, 42.0), "{ccs:?}");
+    // And every location is the one an uncached run from src/ prints
+    let uncached = resolver_run(&src, &["--path", "..", "--no-cache"]);
+    let uncached: serde_json::Value = serde_json::from_slice(&uncached.stdout).expect("JSON");
+    assert_eq!(files(&doc), files(&uncached));
+    assert!(
+        !src.join("target").exists(),
+        "no stray target/ where it ran"
+    );
+    // (and from outside the project altogether, the analysed path, not the
+    // working directory, still finds it)
+    let outside = TempDir::new().expect("an unrelated directory");
+    let path = root.to_str().expect("utf-8");
+    let ccs = stdout_ccs(&resolver_run(outside.path(), &["--path", path]));
+    assert_eq!((ccs["alpha"], ccs["beta"]), (42.0, 42.0), "{ccs:?}");
+    assert!(!outside.path().join("target").exists());
+}
+
+/// [`ccs`] of a run's JSON stdout.
+fn stdout_ccs(out: &std::process::Output) -> std::collections::BTreeMap<String, f64> {
+    ccs(&serde_json::from_slice(&out.stdout).expect("JSON"))
+}
+
+#[test]
+fn a_member_crate_caches_in_the_workspaces_target_directory() {
+    // Given a workspace whose root Cargo.toml has a [workspace] table
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/a\"]\n",
+    );
+    // And a member crate in crates/a with its own Cargo.toml
+    let member = root.join("crates/a");
+    fs::create_dir_all(member.join("src")).expect("mkdir");
+    write(
+        &member,
+        "Cargo.toml",
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&member.join("src"), "lib.rs", "pub fn a() {}\n");
+    // And no .cargo-crap.toml and no CARGO_TARGET_DIR
+    // When I run `cargo crap` from crates/a
+    resolver_run(&member, &[]);
+    // Then the cache is written to <root>/target/cargo-crap/complexity.json
+    assert!(cache_path(&root.join("target")).exists());
+    // And crates/a/target does not exist
+    assert!(!member.join("target").exists());
+}
+
+#[test]
+fn cargo_target_dir_moves_the_cache() {
+    // Given CARGO_TARGET_DIR names a directory outside the project
+    let (dir, elsewhere) = cache_project();
+    // When I run `cargo crap`
+    let out = crap()
+        .current_dir(dir.path())
+        .env("CARGO_TARGET_DIR", elsewhere.path())
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .output()
+        .expect("binary runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Then the cache is written under that directory's cargo-crap/
+    assert!(cache_path(elsewhere.path()).exists());
+    // And the project has no target/cargo-crap/
+    assert!(!dir.path().join("target/cargo-crap").exists());
+}
+
+#[test]
+fn outside_any_project_nothing_is_cached() {
+    // Given a directory <dir> of .rs files with no Cargo.toml above it
+    // And no .cargo-crap.toml and no CARGO_TARGET_DIR
+    let (dir, _) = cache_project();
+    fs::remove_file(dir.path().join("Cargo.toml")).expect("remove the manifest");
+    // When I run `cargo crap --path <dir>` from <dir>
+    let path = dir.path().to_str().expect("utf-8");
+    let out = resolver_run(dir.path(), &["--path", path]);
+    // Then the report is the uncached report
+    let uncached = resolver_run(dir.path(), &["--path", path, "--no-cache"]);
+    assert_eq!(out.stdout, uncached.stdout);
+    // And <dir>/target does not exist
+    assert!(!dir.path().join("target").exists());
+}
+
+/// A workspace with members crates/alpha (`alpha`, CC 2) and crates/beta
+/// (`beta`, CC 1).
+fn cache_workspace() -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\"]\nresolver = \"2\"\n",
+    );
+    for (name, body) in [
+        (
+            "alpha",
+            "pub fn alpha(x: i32) -> i32 {\n    if x > 0 { 1 } else { 2 }\n}\n",
+        ),
+        ("beta", "pub fn beta() {}\n"),
+    ] {
+        let member = root.join("crates").join(name);
+        fs::create_dir_all(member.join("src")).expect("mkdir");
+        write(
+            &member,
+            "Cargo.toml",
+            &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        );
+        write(&member.join("src"), "lib.rs", body);
+    }
+    dir
+}
+
+/// `cargo crap --format json` from `root` with `args`, caching under
+/// `target` (or wherever cargo says, when `target` is `None`).
+fn workspace_run(
+    root: &Path,
+    target: Option<&Path>,
+    args: &[&str],
+) -> std::collections::BTreeMap<String, f64> {
+    let mut cmd = crap();
+    cmd.current_dir(root).env_remove("CARGO_BUILD_TARGET_DIR");
+    match target {
+        Some(target) => cmd.env("CARGO_TARGET_DIR", target),
+        None => cmd.env_remove("CARGO_TARGET_DIR"),
+    };
+    let out = cmd
+        .args(["--format", "json"])
+        .args(args)
+        .output()
+        .expect("binary runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stdout_ccs(&out)
+}
+
+#[test]
+fn every_workspace_member_is_served_from_one_cache() {
+    // Given a workspace with members crates/alpha and crates/beta, analysed
+    // once with --workspace
+    let dir = cache_workspace();
+    let target = TempDir::new().expect("target dir");
+    workspace_run(dir.path(), Some(target.path()), &["--workspace"]);
+    // And every cached entry planted with a different CC
+    plant_cc(target.path(), "", 42.0);
+    // When I run `cargo crap --workspace` again
+    let ccs = workspace_run(dir.path(), Some(target.path()), &["--workspace"]);
+    // Then the functions of both members report their planted CC
+    assert_eq!((ccs["alpha"], ccs["beta"]), (42.0, 42.0), "{ccs:?}");
+}
+
+#[test]
+fn workspace_mode_caches_where_cargo_builds() {
+    // Given a workspace whose .cargo/config.toml sets build.target-dir
+    let dir = cache_workspace();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".cargo")).expect("mkdir");
+    write(
+        &root.join(".cargo"),
+        "config.toml",
+        "[build]\ntarget-dir = \"build-out\"\n",
+    );
+    // And no CARGO_TARGET_DIR and no CARGO_BUILD_TARGET_DIR
+    // When I run `cargo crap --workspace`
+    workspace_run(root, None, &["--workspace"]);
+    // Then the cache is written to <root>/build-out/cargo-crap/complexity.json
+    assert!(cache_path(&root.join("build-out")).exists());
+    // And <root>/target does not exist
+    assert!(!root.join("target").exists());
+}
+
+#[test]
+fn a_run_over_one_member_keeps_the_other_members_entries() {
+    // Given a workspace with members crates/alpha and crates/beta, analysed
+    // once with --workspace
+    let dir = cache_workspace();
+    let target = TempDir::new().expect("target dir");
+    workspace_run(dir.path(), Some(target.path()), &["--workspace"]);
+    // And every cached entry planted with a different CC
+    plant_cc(target.path(), "", 42.0);
+    // When I run `cargo crap -p alpha`
+    workspace_run(dir.path(), Some(target.path()), &["-p", "alpha"]);
+    // And then `cargo crap -p beta`
+    let ccs = workspace_run(dir.path(), Some(target.path()), &["-p", "beta"]);
+    // Then beta's functions report their planted CC
+    assert_eq!(ccs["beta"], 42.0, "{ccs:?}");
+    // (while a file deleted under the member a run selected still drops
+    // out of the cache)
+    fs::remove_file(dir.path().join("crates/alpha/src/lib.rs")).expect("delete");
+    write(
+        &dir.path().join("crates/alpha/src"),
+        "main.rs",
+        "fn main() {}\n",
+    );
+    workspace_run(dir.path(), Some(target.path()), &["-p", "alpha"]);
+    assert_eq!(
+        cached_keys(target.path(), "crates/alpha/src/lib.rs"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        cached_keys(target.path(), "crates/beta/src/lib.rs").len(),
+        1
+    );
+}
+
+#[test]
+fn a_file_excluded_under_a_walked_root_drops_out_of_the_cache() {
+    // Given a populated cache, src/generated.rs's entry planted
+    let (dir, target) = cache_project();
+    write(
+        &dir.path().join("src"),
+        "generated.rs",
+        "pub fn generated() {}\n",
+    );
+    cache_run(dir.path(), target.path());
+    plant_cc(target.path(), "src/generated.rs", 42.0);
+    // When I run `cargo crap --exclude "src/generated.rs"`
+    let out = cache_run_output(
+        dir.path(),
+        target.path(),
+        &["--exclude", "src/generated.rs"],
+    );
+    // Then src/generated.rs is absent from the report
+    assert!(!stdout_ccs(&out).contains_key("generated"));
+    // When I run `cargo crap` without that exclude and without changing the
+    // file
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then src/generated.rs is parsed afresh and reports its real CC
+    assert_eq!(ccs["generated"], 1.0, "{ccs:?}");
+}
+
+#[test]
+fn a_run_over_a_parent_member_keeps_its_nested_members_entries() {
+    // A member nested inside another is left out of the parent's walk, so
+    // a run over the parent alone must not evict the child's entries.
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"parent\", \"parent/child\"]\nresolver = \"2\"\n",
+    );
+    for (rel, name, body) in [
+        ("parent", "parent", "pub fn parent_fn() {}\n"),
+        ("parent/child", "child", "pub fn child_fn() {}\n"),
+    ] {
+        let member = root.join(rel);
+        fs::create_dir_all(member.join("src")).expect("mkdir");
+        write(
+            &member,
+            "Cargo.toml",
+            &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        );
+        write(&member.join("src"), "lib.rs", body);
+    }
+    let target = TempDir::new().expect("target dir");
+    workspace_run(root, Some(target.path()), &["--workspace"]);
+    plant_cc(target.path(), "", 42.0);
+    workspace_run(root, Some(target.path()), &["-p", "parent"]);
+    let ccs = workspace_run(root, Some(target.path()), &["-p", "child"]);
+    assert_eq!(ccs["child_fn"], 42.0, "{ccs:?}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn triage_verdicts_follow_the_same_target_directory() {
+    use support::typesafe_stub::{Reply, TypesafeStub};
+    // Given a workspace whose root Cargo.toml has a [workspace] table
+    let pairs = three_pairs_tree();
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/a\"]\n",
+    );
+    // And a member crate in crates/a whose .cargo-crap.toml turns triage on
+    let member = root.join("crates/a");
+    fs::create_dir_all(member.join("src")).expect("mkdir");
+    write(
+        &member,
+        "Cargo.toml",
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    for entry in fs::read_dir(pairs.path()).expect("the pairs") {
+        let entry = entry.expect("an entry");
+        fs::copy(entry.path(), member.join("src").join(entry.file_name())).expect("copy");
+    }
+    write(&member, ".cargo-crap.toml", TRIAGE_ON);
+    // And no CARGO_TARGET_DIR
+    // When I run `cargo crap` from crates/a against a stub triage API
+    let stub = TypesafeStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let out = crap()
+        .timeout(TRIAGE_RUN_LIMIT)
+        .current_dir(&member)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env("TYPESAFE_API_KEY", "test-key")
+        .env("TYPESAFE_BASE_URL", stub.base_url())
+        .output()
+        .expect("cargo-crap runs");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("  triage: same-logic"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Then the verdicts are cached under <root>/target/cargo-crap/triage/
+    let cached = fs::read_dir(root.join("target/cargo-crap/triage")).map_or(0, Iterator::count);
+    assert_eq!(cached, 3, "one entry per pair");
+    // And crates/a/target does not exist
+    assert!(!member.join("target").exists());
+}
+
+// ── Spec 34: trait default methods are duplicate candidates ──────────────
+
+#[test]
+fn two_traits_structurally_identical_default_methods_are_reported_as_a_pair() {
+    // Given two traits, each with a default method whose body is the same
+    // loop under different names
+    // And each trait also declares a required method with no body
+    let dir = TempDir::new().expect("temp dir");
+    for (file, tr, method, required) in [
+        ("first.rs", "First", "sum_first", "need_first"),
+        ("second.rs", "Second", "sum_second", "need_second"),
+    ] {
+        write(
+            dir.path(),
+            file,
+            &format!(
+                "pub trait {tr} {{
+    fn {required}(&self) -> i32;
+    fn {method}(&self, xs: &[i32]) -> Vec<i32> {{
+        let mut ys = Vec::new();
+        for x in xs {{
+            if x % 2 == 1 {{
+                ys.push(x + 1);
+            }}
+        }}
+        ys
+    }}
+}}
+"
+            ),
+        );
+    }
+    // When I run `cargo crap --duplicates`
+    let out = crap()
+        .args([
+            "--path",
+            dir.path().to_str().expect("utf-8"),
+            "--duplicates",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
+    let section = stdout
+        .split("duplicate candidate")
+        .nth(1)
+        .unwrap_or_else(|| panic!("a duplicate section: {stdout}"));
+    // Then the two default methods are reported as a duplicate pair
+    assert!(
+        section.contains("sum_first") && section.contains("sum_second"),
+        "{stdout}"
+    );
+    // And neither required method appears in the duplicate section
+    assert!(
+        !section.contains("need_first") && !section.contains("need_second"),
         "{stdout}"
     );
 }

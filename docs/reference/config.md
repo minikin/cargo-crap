@@ -41,6 +41,10 @@ uncovered-hints = false
 # different weight gets a warning: its deltas measure the weight change,
 # not code changes.
 try-weight = 1.0
+# Since 0.7.0. Reuse each file's analysis while its content is unchanged,
+# kept in <target>/cargo-crap/complexity.json. `false` (or --no-cache)
+# neither reads nor writes it; triage verdicts stay cached either way.
+cache = true
 [duplicates]
 enabled   = false   # same as passing --duplicates
 threshold = 0.82    # similarity at or above which a pair is reported
@@ -73,6 +77,7 @@ its snake_case alias (`show-unchanged` / `show_unchanged`), except
 | `--jobs`              | `jobs`                 |
 | `--fail-regression`   | `fail-regression`      |
 | `--show-unchanged`    | `show-unchanged`       |
+| `--no-cache`          | `cache` (as `false`)   |
 | `--duplicates`        | `duplicates.enabled`   |
 | `--dup-threshold`     | `duplicates.threshold` |
 | *(no flag)*           | `duplicates.min-nodes` |

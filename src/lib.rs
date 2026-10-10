@@ -142,6 +142,7 @@
 //!
 //! | Module | Role |
 //! |---|---|
+//! | [`cache`] | What is kept on disk between runs, under `<target>/cargo-crap/`. |
 //! | [`score`] | The CRAP formula and the `Clean`/`Crappy` classifier. No I/O. |
 //! | [`complexity`] | `syn`-based AST walker. Produces `(file, function, span, CC)` per function. |
 //! | [`coverage`] | LCOV parser. Produces `(file, line) → hit-count` maps. |
@@ -151,6 +152,7 @@
 //! | [`report`] | Renders `Vec<CrapEntry>` or `DeltaReport` as a human table, JSON, GitHub annotations, Markdown, a PR comment, SARIF, or a Shields.io badge. |
 //! | [`config`] | Loads `.cargo-crap.toml` by walking up from CWD. |
 
+pub mod cache;
 pub mod complexity;
 pub mod config;
 pub mod coverage;

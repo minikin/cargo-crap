@@ -8,6 +8,10 @@
 
 use anyhow::{Context, Result, bail};
 use cargo_crap::{
+    cache::{
+        complexity::{FileRecord, Session},
+        target::target_dir,
+    },
     complexity,
     coverage::{self, FileCoverage},
     delta::{compute_delta, load_baseline_with_weight},
@@ -90,6 +94,12 @@ struct Cli {
     /// Overrides the `default-excludes` config key.
     #[arg(long)]
     no_default_excludes: bool,
+
+    /// Analyze every file afresh: neither read nor write the complexity
+    /// cache in `<target>/cargo-crap/`. Duplicate-triage verdicts stay
+    /// cached. The `cache = false` config key does the same for a project.
+    #[arg(long)]
+    no_cache: bool,
 
     /// CRAP score above which a function is considered "crappy".
     /// Falls back to `.cargo-crap.toml` → built-in default (30).
@@ -414,6 +424,9 @@ struct AnalyzedSources {
     /// Baseline scope attribution for `-p` runs (spec 25). `None` unless
     /// `-p` narrowed the analysis to a subset of the discovered members.
     member_scope: Option<MemberScope>,
+    /// The target directory every cache lives under (spec 10), whether or
+    /// not the complexity cache was used: the triage cache uses it too.
+    target: Option<PathBuf>,
 }
 
 /// Walk source trees and discover Cargo workspace members in one pass.
@@ -429,18 +442,16 @@ fn analyze_sources(
     packages: &[String],
     path: &std::path::Path,
     excludes: &[String],
-    jobs: Option<usize>,
-    try_weight: f64,
+    knobs: &AnalysisKnobs,
 ) -> Result<AnalyzedSources> {
-    if let Some(n) = jobs {
+    if let Some(n) = knobs.jobs {
         rayon::ThreadPoolBuilder::new()
             .num_threads(n)
             .build_global()
             .with_context(|| format!("configuring rayon thread pool to {n} threads"))?;
     }
     if !workspace && packages.is_empty() {
-        let fns = complexity::analyze_tree_weighted(path, excludes, try_weight)
-            .with_context(|| format!("analyzing {}", path.display()))?;
+        let (fns, target) = analyze_path(path, excludes, knobs)?;
         return Ok(AnalyzedSources {
             fns,
             roots: vec![ScanRoot {
@@ -449,9 +460,59 @@ fn analyze_sources(
             }],
             members: Vec::new(),
             member_scope: None,
+            target,
         });
     }
-    analyze_workspace_members(packages, excludes, try_weight)
+    analyze_workspace_members(packages, excludes, knobs)
+}
+
+/// Analyze one `--path` root, through the complexity cache when there is a
+/// target directory to keep it in (spec 10). Without one, or when the
+/// running executable cannot be identified, the walk is uncached.
+fn analyze_path(
+    path: &Path,
+    excludes: &[String],
+    knobs: &AnalysisKnobs,
+) -> Result<(Vec<complexity::FunctionComplexity>, Option<PathBuf>)> {
+    let config_dir = knobs.config_dir.as_deref();
+    let target = target_dir(None, path, config_dir, &knobs.cwd, |name| {
+        std::env::var(name).ok()
+    });
+    let session = target
+        .as_deref()
+        .filter(|_| knobs.cache)
+        .and_then(|target| Session::open(target, knobs.try_weight));
+    let mut records = Vec::new();
+    let fns = analyze_root(
+        path,
+        excludes,
+        knobs.try_weight,
+        session.as_ref(),
+        &mut records,
+    )?;
+    if let Some(session) = session {
+        session.save(&[path.to_path_buf()], records);
+    }
+    Ok((fns, target))
+}
+
+/// Walk one root, through `session`'s cache when there is one, adding the
+/// records to store to `records`.
+fn analyze_root(
+    dir: &Path,
+    excludes: &[String],
+    try_weight: f64,
+    session: Option<&Session>,
+    records: &mut Vec<FileRecord>,
+) -> Result<Vec<complexity::FunctionComplexity>> {
+    let context = || format!("analyzing {}", dir.display());
+    let Some(session) = session else {
+        return complexity::analyze_tree_weighted(dir, excludes, try_weight).with_context(context);
+    };
+    let analysis =
+        complexity::analyze_tree_cached(dir, excludes, session.cache()).with_context(context)?;
+    records.extend(analysis.records);
+    Ok(analysis.functions)
 }
 
 /// The workspace side of [`analyze_sources`]: discover members, narrow to
@@ -460,14 +521,26 @@ fn analyze_sources(
 fn analyze_workspace_members(
     packages: &[String],
     excludes: &[String],
-    try_weight: f64,
+    knobs: &AnalysisKnobs,
 ) -> Result<AnalyzedSources> {
-    let (workspace_root, discovered) = workspace_members()?;
+    let Workspace {
+        root: workspace_root,
+        target,
+        members: discovered,
+    } = workspace_members()?;
     let members = if packages.is_empty() {
         discovered.clone()
     } else {
         select_members(&discovered, packages)?
     };
+    // One cache for every member, in the directory cargo builds into
+    // (spec 10): opened once, saved once, so members never evict each other.
+    let session = knobs
+        .cache
+        .then(|| Session::open(&target, knobs.try_weight))
+        .flatten();
+    let cache = session.as_ref();
+    let mut records = Vec::new();
     let mut fns = Vec::new();
     let mut roots = Vec::new();
     for m in &members {
@@ -476,14 +549,19 @@ fn analyze_workspace_members(
         // not leak into its parent's walk either.
         let mut walk_excludes = excludes.to_vec();
         walk_excludes.extend(nested_member_excludes(&m.dir, &discovered));
-        let member_fns = complexity::analyze_tree_weighted(&m.dir, &walk_excludes, try_weight)
-            .with_context(|| format!("analyzing {}", m.dir.display()))?;
-        fns.extend(member_fns);
+        fns.extend(analyze_root(
+            &m.dir,
+            &walk_excludes,
+            knobs.try_weight,
+            cache,
+            &mut records,
+        )?);
         roots.push(ScanRoot {
             dir: m.dir.clone(),
             excludes: walk_excludes,
         });
     }
+    save_members(session, &discovered, &members, records);
     let member_scope =
         (!packages.is_empty()).then(|| MemberScope::new(&workspace_root, &discovered, &members));
     Ok(AnalyzedSources {
@@ -491,7 +569,29 @@ fn analyze_workspace_members(
         roots,
         members,
         member_scope,
+        target: Some(target),
     })
+}
+
+/// Save a workspace run's cache, if it has one: the selected members' directories were
+/// walked; an unselected member nested inside one of them was not, so its
+/// entries are kept.
+fn save_members(
+    session: Option<Session>,
+    discovered: &[WorkspaceMember],
+    selected: &[WorkspaceMember],
+    records: Vec<FileRecord>,
+) {
+    let Some(session) = session else {
+        return;
+    };
+    let walked: Vec<PathBuf> = selected.iter().map(|m| m.dir.clone()).collect();
+    let kept: Vec<PathBuf> = discovered
+        .iter()
+        .filter(|m| !walked.contains(&m.dir))
+        .map(|m| m.dir.clone())
+        .collect();
+    session.save_keeping(&walked, &kept, records);
 }
 
 /// One discovered member as seen by [`MemberScope`]: its directory
@@ -887,12 +987,24 @@ fn spinner(msg: &'static str) -> ProgressBar {
     pb
 }
 
-/// Discover all workspace members via `cargo metadata`.
-///
-/// Returns one [`WorkspaceMember`] per member crate (name + the directory
-/// containing its `Cargo.toml`). Used both to walk source trees and to
-/// assign a `crate` field to each `CrapEntry` for per-crate rollup.
-fn workspace_members() -> Result<(PathBuf, Vec<WorkspaceMember>)> {
+/// What `cargo metadata` says about the workspace.
+#[derive(Debug)]
+struct Workspace {
+    /// The workspace root (spec 25 anchors members' relative dirs on it).
+    root: PathBuf,
+    /// The directory cargo builds into, every variable and
+    /// `.cargo/config.toml` applied: where the caches live (spec 10).
+    target: PathBuf,
+    /// Every package in the workspace.
+    members: Vec<WorkspaceMember>,
+}
+
+/// Discover the workspace via `cargo metadata`: its root, the directory
+/// cargo builds into, and one [`WorkspaceMember`] per member crate (name +
+/// the directory containing its `Cargo.toml`). The members are used both to
+/// walk source trees and to assign a `crate` field to each `CrapEntry` for
+/// per-crate rollup.
+fn workspace_members() -> Result<Workspace> {
     let output = std::process::Command::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .output()
@@ -906,17 +1018,14 @@ fn workspace_members() -> Result<(PathBuf, Vec<WorkspaceMember>)> {
 }
 
 /// Parse `cargo metadata` JSON into the workspace root (spec 25 — it
-/// anchors the members' workspace-relative dirs for [`MemberScope`]) and
-/// the member list. Split from [`workspace_members`] so the parsing is
-/// testable without spawning cargo.
-fn parse_workspace_metadata(stdout: &[u8]) -> Result<(PathBuf, Vec<WorkspaceMember>)> {
+/// anchors the members' workspace-relative dirs for [`MemberScope`]), its
+/// target directory (spec 10) and the member list. Split from
+/// [`workspace_members`] so the parsing is testable without spawning cargo.
+fn parse_workspace_metadata(stdout: &[u8]) -> Result<Workspace> {
     let meta: serde_json::Value =
         serde_json::from_slice(stdout).context("parsing `cargo metadata` output")?;
 
-    let workspace_root = meta["workspace_root"]
-        .as_str()
-        .map(PathBuf::from)
-        .context("`cargo metadata` output missing `workspace_root`")?;
+    let (workspace_root, target) = workspace_paths(&meta)?;
 
     let members: Vec<WorkspaceMember> = meta["packages"]
         .as_array()
@@ -934,7 +1043,23 @@ fn parse_workspace_metadata(stdout: &[u8]) -> Result<(PathBuf, Vec<WorkspaceMemb
     if members.is_empty() {
         bail!("`cargo metadata` returned no packages");
     }
-    Ok((workspace_root, members))
+    Ok(Workspace {
+        root: workspace_root,
+        target,
+        members,
+    })
+}
+
+/// The workspace root and target directory a `cargo metadata` document
+/// names; either one missing is an error.
+fn workspace_paths(meta: &serde_json::Value) -> Result<(PathBuf, PathBuf)> {
+    let path = |key: &str| {
+        meta[key]
+            .as_str()
+            .map(PathBuf::from)
+            .with_context(|| format!("`cargo metadata` output missing `{key}`"))
+    };
+    Ok((path("workspace_root")?, path("target_directory")?))
 }
 
 /// Lead line of the scope-mismatch warning, picked by overlap severity
@@ -1239,16 +1364,6 @@ struct DupSettings {
     min_nodes: usize,
     /// Whether to ask the model about each reported pair.
     triage_enabled: bool,
-    /// The project the configuration describes; triage caches under its
-    /// target directory.
-    #[cfg_attr(
-        not(feature = "triage"),
-        expect(
-            dead_code,
-            reason = "only a build with the triage client caches verdicts"
-        )
-    )]
-    triage_root: PathBuf,
     /// The model to ask.
     #[cfg_attr(
         not(feature = "triage"),
@@ -1266,10 +1381,8 @@ impl DupSettings {
     fn resolve(
         cli: &Cli,
         config: &cargo_crap::config::Config,
-        project_root: PathBuf,
     ) -> Self {
         Self {
-            triage_root: project_root,
             enabled: cli.duplicates || config.duplicates.enabled.unwrap_or(false),
             threshold: cli
                 .dup_threshold
@@ -1348,11 +1461,12 @@ fn duplicate_section(
     settings: &DupSettings,
     roots: &[ScanRoot],
     format: Format,
+    target: Option<&Path>,
 ) -> Result<DuplicateSection> {
     let pairs = duplicate_pairs(settings, roots, format)?;
     let triage = pairs
         .as_deref()
-        .and_then(|pairs| triage_assessments(settings, pairs));
+        .and_then(|pairs| triage_assessments(settings, pairs, target));
     Ok(DuplicateSection { pairs, triage })
 }
 
@@ -1367,6 +1481,7 @@ fn duplicate_section(
 fn triage_assessments(
     settings: &DupSettings,
     pairs: &[DuplicatePair],
+    target: Option<&Path>,
 ) -> Option<Vec<Assessment>> {
     if !settings.triage_enabled {
         return None;
@@ -1374,8 +1489,7 @@ fn triage_assessments(
     #[cfg(feature = "triage")]
     {
         use cargo_crap::duplicates::triage;
-        let api_settings =
-            triage::Settings::from_env(&settings.triage_model, &settings.triage_root);
+        let api_settings = triage::Settings::from_env(&settings.triage_model, target);
         triage::run(pairs, &api_settings)
             .inspect_err(|e| {
                 eprintln!(
@@ -1392,7 +1506,7 @@ fn triage_assessments(
     }
     #[cfg(not(feature = "triage"))]
     {
-        let _ = pairs;
+        let _ = (pairs, target);
         eprintln!(
             "warning: [duplicates.triage] is enabled, but this cargo-crap was built without \
              the `triage` feature; reinstall with `cargo install cargo-crap --features triage` \
@@ -1474,15 +1588,31 @@ fn resolve_source_links(
 /// `.cargo-crap.toml` (defaults when absent — the tool works without one).
 /// Also returns the project root: the directory the config file was found
 /// in, or the working directory when there was none.
-fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config, PathBuf)> {
+fn parse_and_load_config() -> Result<(Cli, cargo_crap::config::Config, ProjectDirs)> {
     let cli = Cli::parse_from(strip_cargo_subcommand(std::env::args().collect()));
     validate_args(&cli)?;
     let cwd = std::env::current_dir().unwrap_or_else(|_| cli.path.clone());
     let config = cargo_crap::config::load(&cwd)?;
-    let root = cargo_crap::config::find(&cwd)
-        .and_then(|file| file.parent().map(Path::to_path_buf))
-        .unwrap_or(cwd);
-    Ok((cli, config, root))
+    let config_dir =
+        cargo_crap::config::find(&cwd).and_then(|file| file.parent().map(Path::to_path_buf));
+    Ok((cli, config, ProjectDirs { config_dir, cwd }))
+}
+
+/// Whether the complexity cache is used: `--no-cache` or `cache = false`
+/// turns it off, and it is on otherwise (spec 10).
+fn cache_enabled(
+    no_cache: bool,
+    config: Option<bool>,
+) -> bool {
+    !no_cache && config.unwrap_or(true)
+}
+
+/// Where the project is, as far as configuration can tell.
+struct ProjectDirs {
+    /// The directory `.cargo-crap.toml` was found in, if it was.
+    config_dir: Option<PathBuf>,
+    /// The working directory, read once.
+    cwd: PathBuf,
 }
 
 /// Exit-code contract (spec 23): 0 = analysis completed and no requested
@@ -1508,9 +1638,24 @@ struct LoadedArgs {
     /// Resolved and range-checked duplicate settings.
     dup: DupSettings,
     epsilon: f64,
+    /// The knobs the analysis itself reads.
+    knobs: AnalysisKnobs,
+}
+
+/// What [`analyze_sources`] needs besides the roots and excludes.
+struct AnalysisKnobs {
     jobs: Option<usize>,
     /// Resolved and range-checked `?` weight.
     try_weight: f64,
+    /// The directory `.cargo-crap.toml` was found in, if any: the last
+    /// place a cache's target directory is looked for (spec 10).
+    config_dir: Option<PathBuf>,
+    /// The working directory a relative `--path` or target variable is
+    /// taken against.
+    cwd: PathBuf,
+    /// Whether the complexity cache is used: off when `--no-cache` is given
+    /// or the config says `cache = false`.
+    cache: bool,
 }
 
 /// Parse argv, load config, and validate the merged epsilon, jobs,
@@ -1518,7 +1663,7 @@ struct LoadedArgs {
 /// exactly what was validated so [`run`] cannot consume a different
 /// (unchecked) merge of the same knobs.
 fn parse_and_validate() -> Result<LoadedArgs> {
-    let (cli, config, project_root) = parse_and_load_config()?;
+    let (cli, config, dirs) = parse_and_load_config()?;
     let epsilon = cli
         .epsilon
         .or(config.epsilon)
@@ -1527,18 +1672,24 @@ fn parse_and_validate() -> Result<LoadedArgs> {
     // Resolved here rather than at the call site: the merged similarity
     // threshold has to be validated before anything is analyzed, and the
     // config half of it is invisible to `validate_args`.
-    let dup = DupSettings::resolve(&cli, &config, project_root);
+    let dup = DupSettings::resolve(&cli, &config);
     let try_weight = config
         .try_weight
         .unwrap_or(cargo_crap::config::DEFAULT_TRY_WEIGHT);
     validate_merged_values(epsilon, jobs, &dup, try_weight)?;
+    let cache = cache_enabled(cli.no_cache, config.cache);
     Ok(LoadedArgs {
         cli,
         config,
         dup,
         epsilon,
-        jobs,
-        try_weight,
+        knobs: AnalysisKnobs {
+            jobs,
+            try_weight,
+            config_dir: dirs.config_dir,
+            cwd: dirs.cwd,
+            cache,
+        },
     })
 }
 
@@ -1548,9 +1699,9 @@ fn run() -> Result<ExitCode> {
         config,
         dup,
         epsilon,
-        jobs,
-        try_weight,
+        knobs,
     } = parse_and_validate()?;
+    let try_weight = knobs.try_weight;
 
     // Merge: CLI values take precedence; config fills in what's missing.
     let threshold = cli
@@ -1588,13 +1739,13 @@ fn run() -> Result<ExitCode> {
         roots,
         members,
         member_scope,
+        target,
     } = analyze_sources(
         cli.workspace,
         &cli.package,
         &cli.path,
         &effective_exclude,
-        jobs,
-        try_weight,
+        &knobs,
     )?;
 
     pb.set_message("Parsing coverage report…");
@@ -1628,7 +1779,7 @@ fn run() -> Result<ExitCode> {
     apply_color_policy(cli.output.is_some());
     let mut out_box = open_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref);
-    let dups = duplicate_section(&dup, &roots, cli.format.into())?;
+    let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref())?;
     let opts = RenderOpts {
         render: RenderOptions {
             threshold,
@@ -1815,18 +1966,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_workspace_metadata_extracts_root_and_members() {
+    fn parse_workspace_metadata_extracts_root_target_and_members() {
         let json = serde_json::json!({
             "workspace_root": "/ws",
+            "target_directory": "/ws/build-out",
             "packages": [
                 {"name": "alpha", "manifest_path": "/ws/crates/alpha/Cargo.toml"},
             ]
         });
-        let (root, members) = parse_workspace_metadata(json.to_string().as_bytes()).unwrap();
-        assert_eq!(root, PathBuf::from("/ws"));
-        assert_eq!(members.len(), 1);
-        assert_eq!(members[0].name, "alpha");
-        assert_eq!(members[0].dir, PathBuf::from("/ws/crates/alpha"));
+        let ws = parse_workspace_metadata(json.to_string().as_bytes()).unwrap();
+        assert_eq!(ws.root, PathBuf::from("/ws"));
+        assert_eq!(ws.target, PathBuf::from("/ws/build-out"));
+        assert_eq!(ws.members.len(), 1);
+        assert_eq!(ws.members[0].name, "alpha");
+        assert_eq!(ws.members[0].dir, PathBuf::from("/ws/crates/alpha"));
+    }
+
+    #[test]
+    fn the_cache_is_on_unless_a_switch_turns_it_off() {
+        assert!(cache_enabled(false, None));
+        assert!(cache_enabled(false, Some(true)));
+        assert!(!cache_enabled(false, Some(false)));
+        assert!(!cache_enabled(true, None));
+        assert!(!cache_enabled(true, Some(true)));
     }
 
     #[test]
@@ -1837,7 +1999,17 @@ mod tests {
             .to_string();
         assert!(err.contains("workspace_root"), "got: {err}");
 
-        let empty = serde_json::json!({"workspace_root": "/ws", "packages": []});
+        let no_target = serde_json::json!({"workspace_root": "/ws", "packages": []});
+        let err = parse_workspace_metadata(no_target.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("target_directory"), "got: {err}");
+
+        let empty = serde_json::json!({
+            "workspace_root": "/ws",
+            "target_directory": "/ws/target",
+            "packages": []
+        });
         let err = parse_workspace_metadata(empty.to_string().as_bytes())
             .unwrap_err()
             .to_string();
@@ -2016,7 +2188,6 @@ mod tests {
             threshold,
             min_nodes: cargo_crap::config::DEFAULT_DUP_MIN_NODES,
             triage_enabled: false,
-            triage_root: PathBuf::from("."),
             triage_model: cargo_crap::config::DEFAULT_TRIAGE_MODEL.to_owned(),
             triage_floor,
         }
