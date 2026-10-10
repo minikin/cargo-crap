@@ -3682,3 +3682,185 @@ fn outside_any_project_nothing_is_cached() {
     // And <dir>/target does not exist
     assert!(!dir.path().join("target").exists());
 }
+
+/// A workspace with members crates/alpha (`alpha`, CC 2) and crates/beta
+/// (`beta`, CC 1).
+fn cache_workspace() -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\"]\nresolver = \"2\"\n",
+    );
+    for (name, body) in [
+        (
+            "alpha",
+            "pub fn alpha(x: i32) -> i32 {\n    if x > 0 { 1 } else { 2 }\n}\n",
+        ),
+        ("beta", "pub fn beta() {}\n"),
+    ] {
+        let member = root.join("crates").join(name);
+        fs::create_dir_all(member.join("src")).expect("mkdir");
+        write(
+            &member,
+            "Cargo.toml",
+            &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        );
+        write(&member.join("src"), "lib.rs", body);
+    }
+    dir
+}
+
+/// `cargo crap --format json` from `root` with `args`, caching under
+/// `target` (or wherever cargo says, when `target` is `None`).
+fn workspace_run(
+    root: &Path,
+    target: Option<&Path>,
+    args: &[&str],
+) -> std::collections::BTreeMap<String, f64> {
+    let mut cmd = crap();
+    cmd.current_dir(root).env_remove("CARGO_BUILD_TARGET_DIR");
+    match target {
+        Some(target) => cmd.env("CARGO_TARGET_DIR", target),
+        None => cmd.env_remove("CARGO_TARGET_DIR"),
+    };
+    let out = cmd
+        .args(["--format", "json"])
+        .args(args)
+        .output()
+        .expect("binary runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stdout_ccs(&out)
+}
+
+#[test]
+fn every_workspace_member_is_served_from_one_cache() {
+    // Given a workspace with members crates/alpha and crates/beta, analysed
+    // once with --workspace
+    let dir = cache_workspace();
+    let target = TempDir::new().expect("target dir");
+    workspace_run(dir.path(), Some(target.path()), &["--workspace"]);
+    // And every cached entry planted with a different CC
+    plant_cc(target.path(), "", 42.0);
+    // When I run `cargo crap --workspace` again
+    let ccs = workspace_run(dir.path(), Some(target.path()), &["--workspace"]);
+    // Then the functions of both members report their planted CC
+    assert_eq!((ccs["alpha"], ccs["beta"]), (42.0, 42.0), "{ccs:?}");
+}
+
+#[test]
+fn workspace_mode_caches_where_cargo_builds() {
+    // Given a workspace whose .cargo/config.toml sets build.target-dir
+    let dir = cache_workspace();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".cargo")).expect("mkdir");
+    write(
+        &root.join(".cargo"),
+        "config.toml",
+        "[build]\ntarget-dir = \"build-out\"\n",
+    );
+    // And no CARGO_TARGET_DIR and no CARGO_BUILD_TARGET_DIR
+    // When I run `cargo crap --workspace`
+    workspace_run(root, None, &["--workspace"]);
+    // Then the cache is written to <root>/build-out/cargo-crap/complexity.json
+    assert!(cache_path(&root.join("build-out")).exists());
+    // And <root>/target does not exist
+    assert!(!root.join("target").exists());
+}
+
+#[test]
+fn a_run_over_one_member_keeps_the_other_members_entries() {
+    // Given a workspace with members crates/alpha and crates/beta, analysed
+    // once with --workspace
+    let dir = cache_workspace();
+    let target = TempDir::new().expect("target dir");
+    workspace_run(dir.path(), Some(target.path()), &["--workspace"]);
+    // And every cached entry planted with a different CC
+    plant_cc(target.path(), "", 42.0);
+    // When I run `cargo crap -p alpha`
+    workspace_run(dir.path(), Some(target.path()), &["-p", "alpha"]);
+    // And then `cargo crap -p beta`
+    let ccs = workspace_run(dir.path(), Some(target.path()), &["-p", "beta"]);
+    // Then beta's functions report their planted CC
+    assert_eq!(ccs["beta"], 42.0, "{ccs:?}");
+    // (while a file deleted under the member a run selected still drops
+    // out of the cache)
+    fs::remove_file(dir.path().join("crates/alpha/src/lib.rs")).expect("delete");
+    write(
+        &dir.path().join("crates/alpha/src"),
+        "main.rs",
+        "fn main() {}\n",
+    );
+    workspace_run(dir.path(), Some(target.path()), &["-p", "alpha"]);
+    assert_eq!(
+        cached_keys(target.path(), "crates/alpha/src/lib.rs"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        cached_keys(target.path(), "crates/beta/src/lib.rs").len(),
+        1
+    );
+}
+
+#[test]
+fn a_file_excluded_under_a_walked_root_drops_out_of_the_cache() {
+    // Given a populated cache, src/generated.rs's entry planted
+    let (dir, target) = cache_project();
+    write(
+        &dir.path().join("src"),
+        "generated.rs",
+        "pub fn generated() {}\n",
+    );
+    cache_run(dir.path(), target.path());
+    plant_cc(target.path(), "src/generated.rs", 42.0);
+    // When I run `cargo crap --exclude "src/generated.rs"`
+    let out = cache_run_output(
+        dir.path(),
+        target.path(),
+        &["--exclude", "src/generated.rs"],
+    );
+    // Then src/generated.rs is absent from the report
+    assert!(!stdout_ccs(&out).contains_key("generated"));
+    // When I run `cargo crap` without that exclude and without changing the
+    // file
+    let ccs = ccs(&cache_run(dir.path(), target.path()));
+    // Then src/generated.rs is parsed afresh and reports its real CC
+    assert_eq!(ccs["generated"], 1.0, "{ccs:?}");
+}
+
+#[test]
+fn a_run_over_a_parent_member_keeps_its_nested_members_entries() {
+    // A member nested inside another is left out of the parent's walk, so
+    // a run over the parent alone must not evict the child's entries.
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"parent\", \"parent/child\"]\nresolver = \"2\"\n",
+    );
+    for (rel, name, body) in [
+        ("parent", "parent", "pub fn parent_fn() {}\n"),
+        ("parent/child", "child", "pub fn child_fn() {}\n"),
+    ] {
+        let member = root.join(rel);
+        fs::create_dir_all(member.join("src")).expect("mkdir");
+        write(
+            &member,
+            "Cargo.toml",
+            &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        );
+        write(&member.join("src"), "lib.rs", body);
+    }
+    let target = TempDir::new().expect("target dir");
+    workspace_run(root, Some(target.path()), &["--workspace"]);
+    plant_cc(target.path(), "", 42.0);
+    workspace_run(root, Some(target.path()), &["-p", "parent"]);
+    let ccs = workspace_run(root, Some(target.path()), &["-p", "child"]);
+    assert_eq!(ccs["child_fn"], 42.0, "{ccs:?}");
+}

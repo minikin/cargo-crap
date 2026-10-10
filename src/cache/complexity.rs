@@ -247,14 +247,31 @@ impl ComplexityCache {
         walked_roots: &[PathBuf],
         records: Vec<FileRecord>,
     ) -> io::Result<()> {
-        let roots: Vec<PathBuf> = walked_roots
-            .iter()
-            .map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
-            .collect();
+        self.save_keeping(file, walked_roots, &[], records)
+    }
+
+    /// [`save`](Self::save), also keeping the entries under `kept_roots`:
+    /// directories inside a walked root that the walk left out, such as a
+    /// nested workspace member the run did not select. For each entry the
+    /// deepest root above it decides, so a kept root that holds a walked one
+    /// (an unselected root package around a selected member) keeps nothing
+    /// of what that member walked.
+    ///
+    /// # Errors
+    ///
+    /// When the file cannot be written.
+    pub fn save_keeping(
+        self,
+        file: &Path,
+        walked_roots: &[PathBuf],
+        kept_roots: &[PathBuf],
+        records: Vec<FileRecord>,
+    ) -> io::Result<()> {
+        let (walked, kept) = (canonical(walked_roots), canonical(kept_roots));
         let mut files: BTreeMap<String, Entry> = self
             .entries
             .into_iter()
-            .filter(|(key, _)| !roots.iter().any(|root| Path::new(key).starts_with(root)))
+            .filter(|(key, _)| !evicted(Path::new(key), &walked, &kept))
             .collect();
         for record in records {
             if let Some(key) = record.key.to_str() {
@@ -274,6 +291,36 @@ impl ComplexityCache {
             _ => Err(io::Error::other("the cache file has no directory or name")),
         }
     }
+}
+
+/// Whether a save drops the entry at `key`: it lies under a walked root,
+/// and no kept root sits deeper above it than the deepest such walked root.
+/// On a tie the walked root wins: the run rewrote it, and its records put
+/// back whatever still exists there.
+fn evicted(
+    key: &Path,
+    walked: &[PathBuf],
+    kept: &[PathBuf],
+) -> bool {
+    let deepest = |roots: &[PathBuf]| {
+        roots
+            .iter()
+            .filter(|root| key.starts_with(root))
+            .map(|root| root.components().count())
+            .max()
+    };
+    match (deepest(walked), deepest(kept)) {
+        (Some(walked), Some(kept)) => walked >= kept,
+        (walked, _) => walked.is_some(),
+    }
+}
+
+/// `roots`, canonicalized where they exist.
+fn canonical(roots: &[PathBuf]) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
+        .collect()
 }
 
 /// One run's cache: the file it lives in and what it held when opened.
@@ -306,15 +353,29 @@ impl Session {
         &self.cache
     }
 
-    /// Save what the run analysed under `walked_roots`. A cache that cannot
-    /// be written is skipped silently: the next run parses again, which is
-    /// all a missing cache costs.
+    /// Save what the run analysed under `walked_roots` (see
+    /// [`ComplexityCache::save`]). A cache that cannot be written is skipped
+    /// silently: the next run parses again, which is all a missing cache
+    /// costs.
     pub fn save(
         self,
         walked_roots: &[PathBuf],
         records: Vec<FileRecord>,
     ) {
-        let _ = self.cache.save(&self.file, walked_roots, records);
+        self.save_keeping(walked_roots, &[], records);
+    }
+
+    /// [`save`](Self::save), keeping what lies under `kept_roots` (see
+    /// [`ComplexityCache::save_keeping`]).
+    pub fn save_keeping(
+        self,
+        walked_roots: &[PathBuf],
+        kept_roots: &[PathBuf],
+        records: Vec<FileRecord>,
+    ) {
+        let _ = self
+            .cache
+            .save_keeping(&self.file, walked_roots, kept_roots, records);
     }
 }
 
@@ -514,6 +575,94 @@ mod tests {
             shape(&again.expect("still a hit").functions),
             shape(&hit.functions)
         );
+    }
+
+    #[test]
+    fn a_kept_root_inside_a_walked_one_keeps_its_entries() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join(FILE_NAME);
+        let (parent, child) = (
+            PathBuf::from("/ws/parent"),
+            PathBuf::from("/ws/parent/child"),
+        );
+        let records = vec![
+            FileRecord::new(parent.join("src/a.rs"), SOURCE, &[function("a", 1.0)]),
+            FileRecord::new(child.join("src/b.rs"), SOURCE, &[function("b", 1.0)]),
+        ];
+        ComplexityCache::empty(header())
+            .save(&file, std::slice::from_ref(&parent), records)
+            .expect("writable");
+        // A run that walked the parent, leaving its nested child out.
+        ComplexityCache::load(&file, header())
+            .save_keeping(
+                &file,
+                std::slice::from_ref(&parent),
+                std::slice::from_ref(&child),
+                vec![],
+            )
+            .expect("writable");
+        let cache = ComplexityCache::load(&file, header());
+        let (a, b) = (parent.join("src/a.rs"), child.join("src/b.rs"));
+        assert!(
+            cache.lookup(&a, SOURCE, &a).is_none(),
+            "the walked parent's file is evicted"
+        );
+        assert!(
+            cache.lookup(&b, SOURCE, &b).is_some(),
+            "the nested child's file is kept"
+        );
+    }
+
+    #[test]
+    fn a_kept_root_around_a_walked_one_keeps_nothing_it_walked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join(FILE_NAME);
+        let (root, member) = (PathBuf::from("/ws"), PathBuf::from("/ws/crates/x"));
+        let (old, top) = (member.join("src/old.rs"), root.join("src/top.rs"));
+        let records = vec![
+            FileRecord::new(old.clone(), SOURCE, &[function("a", 1.0)]),
+            FileRecord::new(top.clone(), SOURCE, &[function("b", 1.0)]),
+        ];
+        ComplexityCache::empty(header())
+            .save(&file, std::slice::from_ref(&root), records)
+            .expect("writable");
+        // `-p x`: the member is walked and finds nothing; the unselected
+        // root package around it is kept.
+        ComplexityCache::load(&file, header())
+            .save_keeping(
+                &file,
+                std::slice::from_ref(&member),
+                std::slice::from_ref(&root),
+                vec![],
+            )
+            .expect("writable");
+        let cache = ComplexityCache::load(&file, header());
+        assert!(
+            cache.lookup(&old, SOURCE, &old).is_none(),
+            "deleted under the walked member"
+        );
+        assert!(
+            cache.lookup(&top, SOURCE, &top).is_some(),
+            "the root package's own file"
+        );
+    }
+
+    #[test]
+    fn eviction_follows_the_deepest_root() {
+        let (walked, kept) = (vec![PathBuf::from("/a/b")], vec![PathBuf::from("/a/b/c")]);
+        assert!(evicted(Path::new("/a/b/x.rs"), &walked, &kept));
+        assert!(!evicted(Path::new("/a/b/c/x.rs"), &walked, &kept));
+        assert!(!evicted(Path::new("/a/x.rs"), &walked, &kept));
+        assert!(
+            evicted(Path::new("/a/b/c/x.rs"), &kept, &walked),
+            "roles swapped"
+        );
+        assert!(evicted(Path::new("/a/b/x.rs"), &walked, &[]));
+        assert!(
+            evicted(Path::new("/a/b/x.rs"), &walked, &walked),
+            "a tie goes to the walk"
+        );
+        assert!(!evicted(Path::new("/z/x.rs"), &walked, &[]));
     }
 
     #[test]
