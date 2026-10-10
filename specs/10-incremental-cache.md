@@ -88,13 +88,25 @@ layout keeps its verdicts where they are.
 - **Location.** `<target>/cargo-crap/complexity.json`, beside the triage
   cache's `<target>/cargo-crap/triage/`. `<target>` is found by one resolver
   both caches use:
-  1. `CARGO_TARGET_DIR` when set and not empty;
-  2. else `target/` in the workspace root, found by walking up from the
-     analysed path (`--path`, the working directory by default): the nearest
-     ancestor whose `Cargo.toml` has a `[workspace]` table, else the nearest
-     ancestor with a `Cargo.toml`;
-  3. else `target/` beside `.cargo-crap.toml`;
-  4. else none: neither cache is used.
+  - **With `--workspace` or `-p`**, the run already calls `cargo metadata`;
+    `<target>` is the `target_directory` it reports. Cargo has applied
+    `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` and `build.target-dir` from
+    `.cargo/config.toml`, so the cache lands where `cargo clean` looks. No
+    extra `cargo` call is made.
+  - **Otherwise**, without running cargo:
+    1. `CARGO_TARGET_DIR` when set and not empty, then
+       `CARGO_BUILD_TARGET_DIR`; a relative value resolves against the
+       working directory, as cargo resolves it;
+    2. else `target/` in the workspace root, found by walking up from the
+       analysed path (`--path`, the working directory by default): the
+       nearest ancestor whose `Cargo.toml` has a `[workspace]` table, else
+       the nearest ancestor with a `Cargo.toml`;
+    3. else `target/` beside `.cargo-crap.toml`;
+    4. else none: neither cache is used.
+
+    Known limitation: in this mode `build.target-dir` in
+    `.cargo/config.toml` is not read, so a project that sets it gets the
+    cache under the workspace's `target/` instead. `--workspace` follows it.
 - **Read once, written once, per run.** The cache is loaded once in
   `analyze_sources` and saved once after every root is analysed, through the
   shared atomic write. In workspace mode one cache serves every member's
@@ -281,6 +293,16 @@ Then  the cache is written to <root>/target/cargo-crap/complexity.json
 And   crates/a/target does not exist
 ```
 
+### Scenario: Workspace mode caches where cargo builds
+
+```
+Given a workspace whose .cargo/config.toml sets build.target-dir = "build-out"
+And   no CARGO_TARGET_DIR and no CARGO_BUILD_TARGET_DIR
+When  I run `cargo crap --workspace`
+Then  the cache is written to <root>/build-out/cargo-crap/complexity.json
+And   <root>/target does not exist
+```
+
 ### Scenario: CARGO_TARGET_DIR moves the cache
 
 ```
@@ -424,9 +446,11 @@ CHANGELOG entry.
   second run, and after any subset of files is edited.
 - **Header sensitivity.** Changing any header field (format, crate version,
   exe path, exe length, exe mtime, try weight) makes every lookup a miss.
-- **Resolver.** For any directory layout, `CARGO_TARGET_DIR` wins; a
-  `[workspace]` ancestor beats a nearer plain `Cargo.toml`; with no
-  `Cargo.toml` above, the config directory is used; with neither, `None`.
+- **Resolver.** With metadata, its `target_directory` is the answer whatever
+  the environment says. Without it, for any directory layout and
+  environment: `CARGO_TARGET_DIR` beats `CARGO_BUILD_TARGET_DIR`, which beats
+  the walk; a `[workspace]` ancestor beats a nearer plain `Cargo.toml`; with
+  no `Cargo.toml` above, the config directory is used; with neither, `None`.
 
 ### Non-goals
 
