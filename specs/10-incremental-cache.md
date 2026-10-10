@@ -39,8 +39,18 @@ the first one taught a lesson:
   `triage/cache.rs` into one module both caches use.
 
 This spec is based on `main`, not on the unmerged spec-32 branch. It changes
-nothing about providers, and spec 32's changes to the triage cache key are
-untouched by it.
+nothing about providers or the triage cache key. It does touch the same
+functions spec 32 changes (`triage::Settings::from_lookup` / `from_env`, their
+test call sites, `DupSettings::resolve` in `main.rs`, and
+`docs/guides/triage.md`), so whichever lands second resolves textual
+conflicts there.
+
+Moving to the shared resolver relocates triage verdicts in two layouts: a
+`.cargo-crap.toml` in a member crate under a `[workspace]` root, and a
+configuration at a monorepo root above several standalone crates. There the
+verdicts were under the configuration's `target/` and are now under the
+workspace's, so each pair is asked once more after upgrading. Every other
+layout keeps its verdicts where they are.
 
 ## Scope and invariants
 
@@ -59,20 +69,19 @@ untouched by it.
 - **Output order is preserved.** Cached and freshly parsed results are
   assembled in walk order. Every report, in every format, is byte for byte
   what an uncached run prints.
-- **Freshness, per file.** An entry stores `(len, mtime, content_hash)`.
-  Matching `len` and `mtime` is a hit without reading the file. Otherwise the
-  file is read and hashed (FNV-1a, as the triage key is); a matching hash is
-  a hit and the stored `mtime` is refreshed. Only a different hash re-parses.
-- **No racy hits.** A file whose `mtime` is not at least two seconds older
-  than the moment the run started is stored as *racy*: its next lookup always
-  hashes. Otherwise an edit within the filesystem's timestamp granularity,
-  with the same length, would be served stale (the problem git calls "racy
-  git").
+- **Freshness is the content, nothing else.** An entry stores the file's
+  length and a 64-bit FNV-1a hash of its bytes (the triage key's hash). Every
+  run reads and hashes every walked file; a matching length and hash is a
+  hit, anything else is parsed. Timestamps are never consulted: `cp -p`,
+  `rsync -t`, `tar`, `touch -r` and an editor's revert all change contents
+  while keeping `mtime`, and reading plus hashing is cheap next to a `syn`
+  parse.
 - **Parse failures are not cached.** A file that does not parse is re-parsed
   every run and prints its warning every run, as it does today.
 - **The header decides whether any entry is trusted.** The cache file carries
   a format version, the crate version, the executable's length and `mtime`
-  (from `std::env::current_exe`), and the `?` weight. Any difference, or a
+  (from `std::env::current_exe`, canonicalized), its canonical path, and the
+  `?` weight. Any difference, or a
   file that is not a valid cache, discards every entry: the run is a full
   re-analysis and rewrites the cache. When the executable cannot be inspected
   the cache is neither read nor written.
@@ -86,11 +95,17 @@ untouched by it.
      ancestor with a `Cargo.toml`;
   3. else `target/` beside `.cargo-crap.toml`;
   4. else none: neither cache is used.
-- **Read once, written once.** The cache is read before the walk and written
-  after the analysis, through the shared atomic write. Each write holds
-  exactly the files analysed in this run, so deleted files drop out. Two runs
-  sharing a target directory each leave a complete cache; the last rename
-  wins.
+- **Read once, written once, per run.** The cache is loaded once in
+  `analyze_sources` and saved once after every root is analysed, through the
+  shared atomic write. In workspace mode one cache serves every member's
+  walk; members never save separately, so they never evict each other.
+- **Only what a run walked is evicted.** The rewrite keeps every entry outside
+  the roots this run walked, untouched, and replaces everything under them
+  with the files this run analysed. A file deleted or excluded under a walked
+  root drops out; a crate the run never walked keeps its entries, so
+  alternating `-p a` and `-p b` runs, or a narrow `--path`, never evict each
+  other. Two runs sharing a target directory each leave a complete cache; the
+  last rename wins.
 - **Never an error.** A missing, unreadable, corrupt or unwritable cache
   degrades to an uncached run, silently. The exit code and the report never
   depend on the cache.
@@ -119,9 +134,18 @@ Then  every function's CC in the report is the planted one
 ### Scenario: A cached run prints exactly what an uncached run prints
 
 ```
-Given a Rust project analysed once, with the cache populated
-When  I run `cargo crap` again, then `cargo crap --no-cache`
+Given a Rust project with an LCOV file, analysed once, with the cache populated
+When  I run `cargo crap --lcov lcov.info --format json` again, then the same with --no-cache
 Then  the two reports are byte for byte identical
+```
+
+### Scenario: Every workspace member is served from one cache
+
+```
+Given a workspace with members crates/alpha and crates/beta, analysed once with --workspace
+And   every cached entry planted with a different CC
+When  I run `cargo crap --workspace` again
+Then  the functions of both members report their planted CC
 ```
 
 ### Scenario: A modified file is re-parsed and the others are not
@@ -134,23 +158,23 @@ Then  src/lib.rs reports its new, real CC
 And   src/other.rs still reports its planted CC
 ```
 
-### Scenario: A touched but unchanged file is hashed, not re-parsed
+### Scenario: A touched but unchanged file is not re-parsed
 
 ```
 Given a cached run with src/lib.rs's entry planted
 When  src/lib.rs's mtime changes but its contents do not
 And   I run `cargo crap` again
 Then  src/lib.rs reports its planted CC
-And   the rewritten cache stores src/lib.rs's new mtime
 ```
 
-### Scenario: A file edited within the timestamp granularity is not served stale
+### Scenario: An edit that keeps the length and the mtime is not served stale
 
 ```
-Given a file whose cached entry was written less than two seconds after it was modified
-When  its contents change but its length and mtime do not
+Given a cached run over src/lib.rs
+When  src/lib.rs is rewritten with a different branch of the same length
+And   its mtime is set back to the value it had before the edit
 And   I run `cargo crap` again
-Then  the file reports its new, real CC
+Then  src/lib.rs reports its new, real CC
 ```
 
 ### Scenario: A deleted file leaves the output and the cache
@@ -167,8 +191,9 @@ And   the rewritten cache has no entry for src/old.rs
 
 ```
 Given a source file containing no functions, and a populated cache
-When  I run `cargo crap` again without changing it
-Then  the rewritten cache still holds its entry, with the same stored mtime
+And   its cached entry planted with one function
+When  I run `cargo crap` again without changing the file
+Then  the planted function appears in the report
 ```
 
 ### Scenario: A file that does not parse warns on every run
@@ -229,9 +254,11 @@ And   the cache file is unchanged, byte for byte
 ### Scenario: cache = false in the config neither reads nor writes the cache
 
 ```
-Given `.cargo-crap.toml` contains `cache = false`
+Given a populated cache, every entry planted
+And   `.cargo-crap.toml` contains `cache = false`
 When  I run `cargo crap`
-Then  no file is written under <target>/cargo-crap/
+Then  every function reports its real CC
+And   the cache file is unchanged, byte for byte
 ```
 
 ### Scenario: The cache follows the project, not the working directory
@@ -266,11 +293,11 @@ And   the project has no target/cargo-crap/
 ### Scenario: Outside any project, nothing is cached
 
 ```
-Given a directory of .rs files with no Cargo.toml above it
+Given a directory <dir> of .rs files with no Cargo.toml above it
 And   no .cargo-crap.toml and no CARGO_TARGET_DIR
-When  I run `cargo crap --path <dir>`
+When  I run `cargo crap --path <dir>` from <dir>
 Then  the report is the uncached report
-And   no target/ directory is created anywhere
+And   <dir>/target does not exist
 ```
 
 ### Scenario: Triage verdicts follow the same target directory
@@ -284,7 +311,7 @@ Then  the verdicts are cached under <root>/target/cargo-crap/triage/
 And   crates/a/target does not exist
 ```
 
-### Scenario: Excluding a file does not disturb its cache entry
+### Scenario: A file excluded under a walked root drops out of the cache
 
 ```
 Given a populated cache, src/generated.rs's entry planted
@@ -294,8 +321,15 @@ When  I run `cargo crap` without that exclude and without changing the file
 Then  src/generated.rs is parsed afresh and reports its real CC
 ```
 
-The last scenario pins the "read once, written once" rule: the excluded run
-rewrote the cache without the file, so its planted entry is gone.
+### Scenario: A run over one member keeps the other member's entries
+
+```
+Given a workspace with members crates/alpha and crates/beta, analysed once with --workspace
+And   every cached entry planted with a different CC
+When  I run `cargo crap -p alpha`
+And   then `cargo crap -p beta`
+Then  beta's functions report their planted CC
+```
 
 ---
 
@@ -330,12 +364,11 @@ place. `docs/guides/triage.md` gets the new rule.
 {
   "format": 1,
   "crate_version": "0.6.1",
-  "exe": { "len": 12345678, "mtime_ns": 1760000000000000000 },
+  "exe": { "path": "/home/alice/.cargo/bin/cargo-crap", "len": 12345678, "mtime_ns": 1760000000000000000 },
   "try_weight": 1.0,
   "files": {
     "/abs/canonical/src/lib.rs": {
-      "len": 2048, "mtime_ns": 1760000000000000000, "hash": "9f2c0e...",
-      "racy": false,
+      "len": 2048, "hash": "9f2c0e1a7b3d4e5f",
       "functions": [
         { "name": "crappy", "start_line": 24, "end_line": 56, "cyclomatic": 12.0 }
       ]
@@ -345,30 +378,52 @@ place. `docs/guides/triage.md` gets the new rule.
 ```
 
 `try_weight` is compared bit for bit (`f64::to_bits`), so 1.0 and 1.0
-written by a different formatter are the same key. `mtime_ns` is nanoseconds
-since the Unix epoch; a filesystem that cannot report an `mtime` makes the
-file a permanent miss, never an error.
+written by a different formatter are the same key. The executable's
+`mtime_ns` is nanoseconds since the Unix epoch; when it cannot be read the
+cache is off for the run. A walked file whose canonical path is not valid
+UTF-8 cannot be a JSON key: it is parsed every run and never stored, and the
+other files are cached as usual.
 
 ### Flow
 
-`analyze_tree_weighted` gains an `Option<&mut ComplexityCache>` (or a
-cache-aware sibling, keeping the existing signature for library callers).
-Each walked path is looked up in parallel: a hit returns its functions with
-the walk path attached, a miss is parsed and its result recorded. The
-parallel lookup reads a shared, immutable map; fresh entries are collected
-and merged after the parallel phase, so no locking is needed.
+`analyze_tree_weighted` keeps its signature for library callers; a
+cache-aware sibling takes `&ComplexityCache` and returns the functions plus
+the entries it used. Each walked path is read, hashed and looked up in
+parallel: a hit returns its functions with the walk path attached, a miss is
+parsed. Every file analysed, hit or miss, goes into the next cache, which
+replaces the entries under the walked roots and keeps the rest. The parallel lookup reads a shared,
+immutable map and the new entries are merged after the parallel phase, so
+no locking is needed.
+
+Ordering in `analyze_sources`: rayon's global pool is built first (`--jobs`),
+then the cache is resolved and loaded, then the roots are walked. Nothing in
+loading or resolving may touch rayon before the pool is built, or `--jobs N`
+fails. Canonical keys come from canonicalizing each walk root once and
+joining the walk's relative path, not from a `canonicalize` call per file.
+These are real paths from the walk, so this is not the coverage-path
+resolution that `merge.rs` forbids.
+
+Tests: every acceptance test that runs the binary removes
+`CARGO_TARGET_DIR` from its environment or sets it to a temporary
+directory, since a developer's shell often sets it. The existing CLI tests
+that run inside `tests/fixtures/` pass `--no-cache` or a temporary
+`CARGO_TARGET_DIR`, so the fixtures stay clean.
+
+Docs: `--no-cache` in `docs/reference/cli.md`, the `cache` key in
+`docs/reference/config.md`, the resolver in `docs/guides/triage.md`, and a
+CHANGELOG entry.
 
 ### Invariants worth a property test
 
 - **Round trip.** For any set of entries, `save` then `load` under the same
   header returns the same entries.
+- **Content keyed.** For any two byte strings, the lookup hits only when both
+  the lengths and the hashes match; changing any byte of a file is a miss.
 - **Transparency.** For any generated tree of files, the cached analysis
   equals the uncached analysis, in the same order, on the first run, on a
   second run, and after any subset of files is edited.
 - **Header sensitivity.** Changing any header field (format, crate version,
-  exe length, exe mtime, try weight) makes every lookup a miss.
-- **Racy rule.** An entry stored with `mtime` within two seconds of the run
-  start never hits on `(len, mtime)` alone.
+  exe path, exe length, exe mtime, try weight) makes every lookup a miss.
 - **Resolver.** For any directory layout, `CARGO_TARGET_DIR` wins; a
   `[workspace]` ancestor beats a nearer plain `Cargo.toml`; with no
   `Cargo.toml` above, the config directory is used; with neither, `None`.
@@ -376,7 +431,8 @@ and merged after the parallel phase, so no locking is needed.
 ### Non-goals
 
 - Caching the duplicate pass's parse or fingerprints.
-- Evicting or sizing the cache: it holds exactly the files of the last run.
+- Sizing the cache, or evicting entries outside the roots a run walked: a
+  crate that leaves the workspace keeps its entries until `cargo clean`.
 - Sharing a cache across machines, or across CI runs through `actions/cache`.
   Keyed on the executable's `mtime`, a fresh install starts a fresh cache.
 - A user-visible hit/miss count. Nothing new is printed.
