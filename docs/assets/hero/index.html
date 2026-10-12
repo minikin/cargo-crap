@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>cargo-crap hero</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;600&display=block" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fira+Code:wght@400;600&display=block" rel="stylesheet">
 <script>
   document.documentElement.dataset.theme =
     new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
@@ -58,6 +58,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; }
 body {
+  font-variant-ligatures: none;
   width: 1600px;
   height: 1112px;
   padding: 52px 60px;
@@ -123,7 +124,7 @@ h1 {
   font-weight: 600;
 }
 .label code {
-  font: 500 12.5px "JetBrains Mono", monospace;
+  font: 500 12.5px "Fira Code", monospace;
   color: var(--muted);
   font-weight: 400;
 }
@@ -150,7 +151,7 @@ h1 {
 .term pre {
   margin: 0;
   padding: 12px 18px 16px;
-  font: 12.4px/1.02 "JetBrains Mono", monospace;
+  font: 12.4px/1.02 "Fira Code", monospace;
   white-space: pre;
 }
 .term .prompt { color: #a1a1aa; display: inline-block; margin-bottom: 6px; }
@@ -190,7 +191,7 @@ h1 {
 .md th { background: var(--gh-subtle); font-weight: 600; }
 .md tr.travel td:first-child { box-shadow: inset 3px 0 0 var(--travel-edge); }
 .md code {
-  font: 11.5px "JetBrains Mono", monospace;
+  font: 11.5px "Fira Code", monospace;
   background: rgba(129, 139, 152, .15);
   padding: 1px 5px;
   border-radius: 5px;
@@ -205,9 +206,9 @@ h1 {
   padding: 9px 14px;
   border-bottom: 1px solid var(--gh-line);
   background: var(--gh-subtle);
-  font: 600 12px "JetBrains Mono", monospace;
+  font: 600 12px "Fira Code", monospace;
 }
-.dl { display: flex; font: 11.5px/1.62 "JetBrains Mono", monospace; white-space: pre; }
+.dl { display: flex; font: 11.5px/1.62 "Fira Code", monospace; white-space: pre; }
 .dl .ln { width: 42px; padding-right: 10px; text-align: right; color: var(--gh-muted); flex: none; }
 .dl .sg { width: 16px; color: var(--gh-muted); flex: none; }
 .dl.add { background: var(--add); }
@@ -242,7 +243,7 @@ h1 {
   background: var(--warn); color: var(--card);
   font: 700 10px "DM Sans", sans-serif;
 }
-.annot-msg { padding: 7px 10px; font: 11.5px "JetBrains Mono", monospace; color: var(--gh-ink); }
+.annot-msg { padding: 7px 10px; font: 11.5px "Fira Code", monospace; color: var(--gh-ink); }
 
 /* The PR comment's duplicate section */
 .gh-head .cont { color: var(--gh-muted); }
@@ -253,6 +254,8 @@ h1 {
 .md.dups td { padding: 3px 9px; vertical-align: middle; line-height: 1.35; }
 .md.dups td sub, .md.dups p sub { font-size: 11px; color: var(--gh-muted); }
 .md.dups td sub code { font-size: 10.5px; }
+/* Code reads as typed: no ligatures, even where a font shorthand reset them. */
+pre, code, .dl, .label code, .col-head code { font-variant-ligatures: none; }
 </style>
 </head>
 <body>
@@ -262,7 +265,7 @@ h1 {
     <h1>Find the complex code<br>your tests don't cover,<br>and the code you wrote twice</h1>
   </div>
   <div class="side">
-    <p class="tagline">One score per function, from <b>complexity</b> and <b>coverage</b>, wherever you review code. <b>OpenAI</b> or <b>TypeSafe</b> says which duplicates to merge.</p>
+    <p class="tagline">One score per function, from <b>complexity</b> and <b>coverage</b>, wherever you review code. <b>OpenAI</b> or <b>TypeSafe</b> suggests which duplicates to merge.</p>
     <div class="badge-row">
       <span class="label" style="margin:0"><span class="dot"></span>README badge <code>--format shields</code></span>
       {{BADGE}}
