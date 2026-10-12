@@ -13,23 +13,7 @@ use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
 use crate::duplicates::triage::verdict::{Assessment, WorthExtracting};
 
-/// Sort pairs into the one order the tool ever prints them in.
-///
-/// Score descending puts the strongest candidates first; everything after
-/// that is location, so two runs over the same input agree even when the
-/// filesystem hands the files over in a different order.
-pub fn sort_pairs(pairs: &mut [DuplicatePair]) {
-    pairs.sort_by(|a, b| {
-        // `total_cmp`, not `partial_cmp`: a NaN score would silently make the
-        // ordering non-transitive, and sort_by on an inconsistent comparator
-        // is allowed to panic.
-        b.score
-            .total_cmp(&a.score)
-            // Both sides, in the order they print: the tie-break that keeps
-            // two runs over the same input agreeing.
-            .then_with(|| (&a.first, &a.second).cmp(&(&b.first, &b.second)))
-    });
-}
+pub use crate::duplicates::compare::sort_pairs;
 
 /// Render the duplicate section, with each pair's triage line under it when
 /// `triage` carries exactly one assessment per pair, in the pairs' order.
@@ -493,35 +477,6 @@ mod tests {
             rendered(&reversed),
             "input order must not show"
         );
-    }
-
-    #[test]
-    fn stronger_candidates_are_listed_first() {
-        let src = "
-            fn a(v: V) { for x in v { if p(x) { g(x); } } }
-            fn b(v: V) { for x in v { if p(x) { g(x); } } }
-            fn c(v: V) { for x in v { if p(x) { g(x); } } h(v); k(v); }
-        ";
-        let mut pairs = find_pairs(&pairs_from(src, "src/a.rs"), 0.0);
-        sort_pairs(&mut pairs);
-        assert!(pairs.len() >= 2);
-        for w in pairs.windows(2) {
-            assert!(w[0].score >= w[1].score, "scores must not ascend");
-        }
-    }
-
-    #[test]
-    fn equal_scores_are_broken_by_location() {
-        let src = "fn a() -> i32 { 1 } fn b() -> i32 { 1 } fn c() -> i32 { 1 }";
-        let mut pairs = find_pairs(&pairs_from(src, "src/a.rs"), 0.0);
-        sort_pairs(&mut pairs);
-        let keys: Vec<_> = pairs
-            .iter()
-            .map(|p| (p.first.start_line, p.second.start_line))
-            .collect();
-        let mut sorted = keys.clone();
-        sorted.sort_unstable();
-        assert_eq!(keys, sorted, "ties fall back to location order");
     }
 
     /// The section as text, with a triage assessment for each pair.

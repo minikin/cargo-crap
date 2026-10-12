@@ -17,6 +17,35 @@ pub struct DuplicatePair {
     pub score: f64,
 }
 
+/// Sort pairs into the one order the tool ever prints them in.
+///
+/// Score descending puts the strongest candidates first; everything after
+/// that is location, so two runs over the same input agree even when the
+/// filesystem hands the files over in a different order.
+pub fn sort_pairs(pairs: &mut [DuplicatePair]) {
+    // Both sides, in the order they print: the tie-break that keeps two runs
+    // over the same input agreeing.
+    pairs.sort_by(|a, b| {
+        strongest_first(
+            (a.score, (&a.first, &a.second)),
+            (b.score, (&b.first, &b.second)),
+        )
+    });
+}
+
+/// The one order the tool lists duplicates in, pairs and groups alike:
+/// score descending, then by `key` (their locations).
+///
+/// `total_cmp`, not `partial_cmp`: a NaN score would silently make the
+/// ordering non-transitive, and `sort_by` on an inconsistent comparator is
+/// allowed to panic.
+pub fn strongest_first<K: Ord>(
+    (a_score, a_key): (f64, K),
+    (b_score, b_key): (f64, K),
+) -> std::cmp::Ordering {
+    b_score.total_cmp(&a_score).then_with(|| a_key.cmp(&b_key))
+}
+
 /// Jaccard similarity: shared fingerprints over all fingerprints seen.
 ///
 /// Two empty sets are defined as identical (1.0) rather than undefined: a
@@ -252,5 +281,34 @@ mod tests {
             let f = fns(&src);
             prop_assert_eq!(find_pairs(&f, 0.0).len(), n * (n - 1) / 2);
         }
+    }
+
+    #[test]
+    fn stronger_candidates_are_listed_first() {
+        let src = "
+            fn a(v: V) { for x in v { if p(x) { g(x); } } }
+            fn b(v: V) { for x in v { if p(x) { g(x); } } }
+            fn c(v: V) { for x in v { if p(x) { g(x); } } h(v); k(v); }
+        ";
+        let mut pairs = find_pairs(&fns(src), 0.0);
+        sort_pairs(&mut pairs);
+        assert!(pairs.len() >= 2);
+        for w in pairs.windows(2) {
+            assert!(w[0].score >= w[1].score, "scores must not ascend");
+        }
+    }
+
+    #[test]
+    fn equal_scores_are_broken_by_location() {
+        let src = "fn a() -> i32 { 1 } fn b() -> i32 { 1 } fn c() -> i32 { 1 }";
+        let mut pairs = find_pairs(&fns(src), 0.0);
+        sort_pairs(&mut pairs);
+        let keys: Vec<_> = pairs
+            .iter()
+            .map(|p| (p.first.start_line, p.second.start_line))
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(keys, sorted, "ties fall back to location order");
     }
 }

@@ -1470,7 +1470,7 @@ fn duplicate_pairs(
     functions.retain(|f| f.node_count >= settings.min_nodes);
     functions.sort_by(|a, b| a.location.cmp(&b.location));
     let mut pairs = duplicates::compare::find_pairs(&functions, settings.threshold);
-    report::duplicates::sort_pairs(&mut pairs);
+    duplicates::compare::sort_pairs(&mut pairs);
     Ok(Some(pairs))
 }
 
