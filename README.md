@@ -1,9 +1,12 @@
 # cargo-crap
 
-[![crates.io](https://img.shields.io/crates/v/cargo-crap?style=for-the-badge&logo=rust&color=E57300)](https://crates.io/crates/cargo-crap)
-[![docs.rs](https://img.shields.io/docsrs/cargo-crap?style=for-the-badge&logo=docsdotrs)](https://docs.rs/cargo-crap)
-[![CI](https://img.shields.io/github/actions/workflow/status/minikin/cargo-crap/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/minikin/cargo-crap/actions/workflows/ci.yml)
-[![CRAP](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fminikin%2Fcargo-crap%2Fbadges%2Fcrap-badge.json&style=for-the-badge)](docs/guides/badge.md)
+<p align="center">
+  <a href="https://crates.io/crates/cargo-crap"><img src="https://github.com/minikin/cargo-crap/raw/badges/crates.svg" alt="crates.io version"></a>
+  <a href="https://github.com/minikin/cargo-crap/actions/workflows/ci.yml"><img src="https://github.com/minikin/cargo-crap/raw/badges/ci.svg" alt="CI"></a>
+  <a href="https://github.com/minikin/cargo-crap/actions/workflows/ci.yml"><img src="https://github.com/minikin/cargo-crap/raw/badges/coverage.svg" alt="coverage"></a>
+  <a href="docs/guides/badge.md"><img src="https://github.com/minikin/cargo-crap/raw/badges/crap.svg" alt="CRAP score"></a>
+  <a href="LICENSE"><img src="https://github.com/minikin/cargo-crap/raw/badges/license.svg" alt="license"></a>
+</p>
 
 <p align="center">
   <picture>

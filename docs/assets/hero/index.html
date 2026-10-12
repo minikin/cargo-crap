@@ -101,7 +101,9 @@ h1 {
 .tagline { margin: 0; font-size: 21px; line-height: 1.4; color: var(--muted); max-width: 560px; }
 .tagline b { color: var(--ink); font-weight: 600; }
 .badge-row { display: flex; align-items: center; gap: 12px; }
-.badge-row svg { height: 28px; width: auto; display: block; }
+.badge-row img { height: 29px; width: auto; display: block; }
+.badge-row .pill-dark, :root[data-theme="dark"] .badge-row .pill-light { display: none; }
+:root[data-theme="dark"] .badge-row .pill-dark { display: block; }
 
 /* Panels */
 .grid {

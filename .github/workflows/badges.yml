@@ -1,0 +1,84 @@
+name: Badges
+
+# Renders the README's pill badges into the orphan `badges` branch: after
+# every CI run on main, and daily, so the crates.io version follows a
+# release that landed after the last push.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: badges
+
+jobs:
+  render:
+    name: Render badges
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Collect values
+        id: values
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(curl -fsS -A "cargo-crap badges (https://github.com/minikin/cargo-crap)" \
+            https://crates.io/api/v1/crates/cargo-crap | jq -r '.crate.max_stable_version // empty' || true)
+          read -r run conclusion < <(gh run list --workflow ci.yml --branch main --event push \
+            --status completed --limit 20 --json databaseId,conclusion \
+            --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][0] | "\(.databaseId) \(.conclusion)"')
+          ci=$([ "$conclusion" = success ] && echo passing || echo failing)
+          # The CRAP score and coverage of that run. Missing when its
+          # self-score job failed before writing them.
+          gh run download "$run" -n crap-badge -D artifact || echo "No badge artifact in run $run"
+          license=$(sed -n 's/^license = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          echo "version=$version ci=$ci license=$license (run $run)"
+          {
+            echo "version=$version"
+            echo "ci=$ci"
+            echo "license=$license"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Render
+        env:
+          VERSION: ${{ steps.values.outputs.version }}
+          CI_STATUS: ${{ steps.values.outputs.ci }}
+          LICENSE_NAME: ${{ steps.values.outputs.license }}
+        run: |
+          mkdir out
+          # Start from what is published, so a value this run could not
+          # collect keeps its last badge.
+          if git fetch --depth 1 origin badges; then
+            git archive FETCH_HEAD | tar -x -C out
+          fi
+          if [ -f artifact/crap-badge.json ]; then cp artifact/crap-badge.json out/; fi
+          args=(out --ci "$CI_STATUS")
+          if [ -n "$VERSION" ]; then args+=(--version "$VERSION"); fi
+          if [ -n "$LICENSE_NAME" ]; then args+=(--license "$LICENSE_NAME"); fi
+          if [ -s artifact/coverage.txt ]; then args+=(--coverage "$(cat artifact/coverage.txt)"); fi
+          if [ -f out/crap-badge.json ]; then args+=(--crap out/crap-badge.json); fi
+          python3 scripts/badges/render.py "${args[@]}"
+          ls -l out
+
+      # One orphan commit with every badge, force-pushed: the branch never
+      # accumulates history. crap-badge.json stays for Shields.io users.
+      - name: Push to the badges branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          tree=$(for f in $(ls out | sort); do
+            printf '100644 blob %s\t%s\n' "$(git hash-object -w "out/$f")" "$f"
+          done | git mktree)
+          commit=$(git commit-tree "$tree" -m "chore: update badges")
+          git push --force origin "$commit:refs/heads/badges"

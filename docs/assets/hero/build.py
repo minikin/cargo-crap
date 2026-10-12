@@ -8,10 +8,12 @@ duplicate section), github.txt, shields.json, and the shop's sources before
 and after the pull request in base/ and pr/. The PR comment is split at its
 duplicate section into two panels. The PR comment goes
 through GitHub's own Markdown renderer (`gh api /markdown`), and the badge is
-fetched from Shields.io, so the build needs `gh`, `curl` and the network.
+rendered by scripts/badges/render.py, so the build needs `gh` and the network.
 """
 
+import base64
 import difflib
+import importlib.util
 import html
 import json
 import re
@@ -105,11 +107,22 @@ def annotation(github_lines, name):
 
 
 def badge(shields):
-    label = urllib.parse.quote(shields["label"].replace("-", "--"))
-    message = urllib.parse.quote(shields["message"].replace("-", "--"))
-    url = f"https://img.shields.io/badge/{label}-{message}-{shields['color']}?style=for-the-badge"
-    svg = subprocess.run(["curl", "-fsSL", "--max-time", "20", url], capture_output=True, text=True, check=True).stdout
-    return re.sub(r"<title>.*?</title>", "", svg, flags=re.S)
+    """The CRAP pill the README shows, from the run's `--format shields`
+    output, rendered by the same script as the README's badges. The pill
+    follows prefers-color-scheme, which a screenshot cannot pick, so the page
+    gets a light and a dark copy as images and shows the one for its theme."""
+    spec = importlib.util.spec_from_file_location("render", HERE.parents[2] / "scripts" / "badges" / "render.py")
+    render = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(render)
+    svg = render.crap_badge(shields)
+    dark_rules = re.search(r"@media \(prefers-color-scheme:dark\)\{(.*?\})\}", svg)
+    light = svg[: dark_rules.start()] + svg[dark_rules.end():]
+    dark = svg[: dark_rules.start()] + dark_rules.group(1) + svg[dark_rules.end():]
+    image = lambda doc, theme: (
+        f'<img class="pill-{theme}" alt="" src="data:image/svg+xml;base64,'
+        f'{base64.b64encode(doc.encode()).decode()}">'
+    )
+    return image(light, "light") + image(dark, "dark")
 
 
 def main(runs):

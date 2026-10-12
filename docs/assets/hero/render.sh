@@ -9,7 +9,7 @@
 # colour, and pr-comment (with --duplicates, triaged by OpenAI), github and
 # shields against a baseline taken from the main-branch source. Triage reads
 # the verdicts in triage-cache/, so no API key is needed.
-# Needs cargo-llvm-cov, gh (for GitHub's Markdown renderer), curl, Google
+# Needs cargo-llvm-cov, gh (for GitHub's Markdown renderer), Google
 # Chrome and cwebp. HERO_KEEP=<dir> also keeps the runs, hero.html and the
 # PNGs there, for working on the page.
 set -euo pipefail

@@ -41,8 +41,12 @@ it back so the README embed stays current:
     git push
 ```
 
-The badge at the top of the README comes from a different shape: `ci.yml`
-uploads `crap-badge.json` as an artifact and a separate `badge` job pushes it
-to a dedicated `badges` branch, so the default branch never carries a
-generated file. See [`.github/workflows/ci.yml`](https://github.com/minikin/cargo-crap/blob/main/.github/workflows/ci.yml) if
-you want that instead.
+The CRAP badge at the top of the README comes from a different shape:
+`ci.yml` uploads `crap-badge.json` as an artifact, and the
+[Badges workflow](https://github.com/minikin/cargo-crap/blob/main/.github/workflows/badges.yml)
+renders it, with the version, CI status, coverage and license, as pill SVGs
+on a dedicated `badges` branch, so the default branch never carries a
+generated file. `crap-badge.json` stays on that branch too, so a Shields.io
+endpoint badge still works. See
+[`scripts/badges/render.py`](https://github.com/minikin/cargo-crap/blob/main/scripts/badges/render.py)
+if you want the same pills.
