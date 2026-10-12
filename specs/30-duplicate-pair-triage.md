@@ -223,7 +223,7 @@ And   no request contains a function body from any other pair
 
 ```
 Given triage is enabled and the API key is set
-And   the output format is markdown
+And   the output format is sarif
 When  cargo-crap runs
 Then  the existing warning that --duplicates has no effect is printed
 And   no network request is made

@@ -195,7 +195,7 @@ fn a_format_that_cannot_carry_pairs_says_so() {
             dir.path().to_str().expect("utf-8"),
             "--duplicates",
             "--format",
-            "markdown",
+            "sarif",
         ])
         .assert()
         .success();
@@ -1105,11 +1105,11 @@ fn a_request_carries_exactly_the_pair_under_judgment() {
 fn triage_never_runs_for_a_format_that_cannot_carry_duplicates() {
     use support::api_stub::{ApiStub, Reply};
     // Given triage is enabled and the API key is set
-    // And the output format is markdown
+    // And the output format is sarif
     let dir = three_pairs_tree();
     let stub = ApiStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
     // When cargo-crap runs
-    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &["--format", "markdown"]);
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &["--format", "sarif"]);
     // Then the existing warning that --duplicates has no effect is printed
     let stderr = String::from_utf8(out.stderr).expect("utf-8");
     assert!(stderr.contains("--duplicates has no effect"), "{stderr}");

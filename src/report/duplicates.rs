@@ -1,11 +1,12 @@
 //! Rendering candidate duplicate pairs.
 
 use std::io::Write;
+use std::path::Path;
 
 use anyhow::Result;
 use owo_colors::Style;
 
-use super::types::styled;
+use super::types::{cwd_relative, styled};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
 use crate::duplicates::triage::verdict::Assessment;
@@ -45,17 +46,95 @@ pub fn render(
         writeln!(out, "No candidate duplicates found.")?;
         return Ok(());
     }
-    let noun = if pairs.len() == 1 {
-        "candidate"
-    } else {
-        "candidates"
-    };
-    writeln!(out, "{} duplicate {noun}:\n", pairs.len())?;
+    writeln!(out, "{} duplicate {}:\n", pairs.len(), noun(pairs.len()))?;
     let triage = triage.filter(|t| t.len() == pairs.len());
     for (n, pair) in pairs.iter().enumerate() {
         write_pair(pair, triage.and_then(|t| t.get(n)), out)?;
     }
     Ok(())
+}
+
+/// Render the duplicate section as a GFM table, for the markdown and
+/// pr-comment formats: a heading counting every pair, then one row per pair
+/// in the order given, at most `cap` of them, with the PR comment's
+/// truncation footer counting the rest. Paths are shown relative to `cwd`
+/// when they are under it, as every renderer shows them.
+///
+/// # Errors
+///
+/// Returns an error when the writer does.
+pub fn render_table(
+    pairs: &[DuplicatePair],
+    cap: Option<usize>,
+    cwd: &Path,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if pairs.is_empty() {
+        writeln!(out, "No candidate duplicates found.")?;
+        return Ok(());
+    }
+    writeln!(out, "## {} duplicate {}\n", pairs.len(), noun(pairs.len()))?;
+    let shown = cap.unwrap_or(pairs.len());
+    write_table_rows(&pairs[..shown.min(pairs.len())], cwd, out)?;
+    if pairs.len() > shown {
+        super::types::write_truncation_footer(out, pairs.len() - shown)?;
+    }
+    Ok(())
+}
+
+/// The table itself: its header, then one row per pair.
+fn write_table_rows(
+    pairs: &[DuplicatePair],
+    cwd: &Path,
+    out: &mut dyn Write,
+) -> Result<()> {
+    writeln!(out, "| Pair | Similarity |\n|---|---:|")?;
+    for pair in pairs {
+        writeln!(out, "| {} | {:.2} |", pair_cell(pair, cwd), pair.score)?;
+    }
+    Ok(())
+}
+
+/// "candidate" for one pair, "candidates" for any other count.
+fn noun(count: usize) -> &'static str {
+    if count == 1 {
+        "candidate"
+    } else {
+        "candidates"
+    }
+}
+
+/// A pair in one table cell: both names joined by an arrow, and both
+/// locations in small type under them.
+fn pair_cell(
+    pair: &DuplicatePair,
+    cwd: &Path,
+) -> String {
+    format!(
+        "`{}` ↔ `{}`<br><sub>{} · {}</sub>",
+        cell(&pair.first.name),
+        cell(&pair.second.name),
+        location(&pair.first, cwd),
+        location(&pair.second, cwd)
+    )
+}
+
+/// Where one side of a pair is, spelled as the CRAP rows spell paths.
+fn location(
+    at: &Location,
+    cwd: &Path,
+) -> String {
+    format!(
+        "{}:{}-{}",
+        cell(&cwd_relative(&at.file, cwd).display().to_string()),
+        at.start_line,
+        at.end_line
+    )
+}
+
+/// `text` safe inside a table cell: a `|` would end the cell.
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|")
 }
 
 /// One pair: its score, both sides, and its triage line when it has one.
@@ -402,6 +481,224 @@ mod tests {
                 pairs.len(),
                 "one triage line per pair"
             );
+        }
+    }
+
+    // ---- The GFM table (markdown and pr-comment) ----
+
+    /// The GFM section as text, rendered against `/work` as the working
+    /// directory.
+    fn table(
+        pairs: &[DuplicatePair],
+        cap: Option<usize>,
+    ) -> String {
+        let mut buf = Vec::new();
+        render_table(pairs, cap, Path::new("/work"), &mut buf).expect("a Vec writer cannot fail");
+        String::from_utf8(buf).expect("the section is utf-8")
+    }
+
+    /// The table's body rows, without the header and its delimiter row.
+    fn body_rows(section: &str) -> Vec<&str> {
+        section
+            .lines()
+            .filter(|l| l.starts_with('|'))
+            .skip(2)
+            .collect()
+    }
+
+    /// The `|` that separate cells, not the ones escaped inside a cell.
+    fn separators(row: &str) -> usize {
+        let bytes = row.as_bytes();
+        (0..bytes.len())
+            .filter(|&i| bytes[i] == b'|' && (i == 0 || bytes[i - 1] != b'\\'))
+            .count()
+    }
+
+    fn at(
+        file: &str,
+        start_line: usize,
+        name: &str,
+    ) -> Location {
+        Location {
+            file: PathBuf::from(file),
+            start_line,
+            end_line: start_line + 9,
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_table_heading_counts_the_pairs() {
+        assert!(table(&[pair(1, 0.9)], None).starts_with("## 1 duplicate candidate\n"));
+        let three = [pair(1, 0.9), pair(2, 0.9), pair(3, 0.9)];
+        assert!(table(&three, None).starts_with("## 3 duplicate candidates\n"));
+    }
+
+    #[test]
+    fn a_table_row_shows_the_similarity_and_both_sides() {
+        let out = table(&[pair(1, 0.95)], None);
+        assert!(out.contains("| Pair | Similarity |\n|---|---:|\n"), "{out}");
+        assert_eq!(
+            body_rows(&out),
+            ["| `f1_1` ↔ `f1_10`<br><sub>src/f1.rs:1-5 · src/f1.rs:10-14</sub> | 0.95 |"],
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn an_empty_table_says_so() {
+        assert_eq!(table(&[], None), "No candidate duplicates found.\n");
+    }
+
+    #[test]
+    fn table_paths_are_spelled_as_the_crap_rows_spell_them() {
+        let pairs = [DuplicatePair {
+            first: at("/work/src/a.rs", 1, "a"),
+            second: at("./src/b.rs", 20, "b"),
+            score: 1.0,
+        }];
+        let row = table(&pairs, None);
+        assert!(
+            row.contains("<sub>src/a.rs:1-10 · "),
+            "under the working directory: {row}"
+        );
+        assert!(
+            row.contains(" · ./src/b.rs:20-29</sub>"),
+            "a relative path as given: {row}"
+        );
+        let outside = [DuplicatePair {
+            first: at("/elsewhere/a.rs", 1, "a"),
+            second: at("/elsewhere/b.rs", 20, "b"),
+            score: 1.0,
+        }];
+        let row = table(&outside, None);
+        assert!(
+            row.contains("<sub>/elsewhere/a.rs:1-10 · "),
+            "outside it stays whole: {row}"
+        );
+    }
+
+    #[test]
+    fn a_pipe_in_a_path_is_escaped() {
+        let pairs = [DuplicatePair {
+            first: at("src/a|b.rs", 1, "a"),
+            second: at("src/c.rs", 20, "c"),
+            score: 1.0,
+        }];
+        let out = table(&pairs, None);
+        assert!(out.contains(r"<sub>src/a\|b.rs:1-10 · "), "{out}");
+        assert_eq!(separators(body_rows(&out)[0]), 3, "two cells: {out}");
+    }
+
+    #[test]
+    fn pairs_are_listed_in_the_same_order_as_the_human_section() {
+        let src = "
+            fn a(v: V) { for x in v { if p(x) { g(x); } } }
+            fn b(v: V) { for x in v { if p(x) { g(x); } } }
+            fn c(v: V) { for x in v { if p(x) { g(x); } } h(v); k(v); }
+        ";
+        let mut pairs = find_pairs(&pairs_from(src, "src/a.rs"), 0.0);
+        sort_pairs(&mut pairs);
+        let human: Vec<String> = rendered(&pairs)
+            .lines()
+            .filter_map(|l| l.strip_prefix("DUPLICATE score="))
+            .map(str::to_owned)
+            .collect();
+        let gfm: Vec<String> = body_rows(&table(&pairs, None))
+            .iter()
+            .map(|r| {
+                r.trim_end_matches(" |")
+                    .rsplit(" | ")
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(gfm, human, "the same scores in the same order");
+    }
+
+    #[test]
+    fn the_markdown_report_lists_every_pair() {
+        let pairs: Vec<DuplicatePair> = (0..40).map(|n| pair(n, 0.9)).collect();
+        let out = table(&pairs, None);
+        assert_eq!(body_rows(&out).len(), 40);
+        assert!(!out.contains("more, see CI artifact"), "{out}");
+    }
+
+    #[test]
+    fn the_pr_comment_caps_its_duplicate_rows() {
+        let pairs: Vec<DuplicatePair> = (0..5).map(|n| pair(n, 0.9)).collect();
+        let out = table(&pairs, Some(3));
+        assert!(
+            out.starts_with("## 5 duplicate candidates\n"),
+            "the heading counts all: {out}"
+        );
+        let rows = body_rows(&out);
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows[0].contains("`f0_1`") && rows[2].contains("`f2_1`"),
+            "the first three: {out}"
+        );
+        assert!(
+            out.ends_with("\n_…and 2 more, see CI artifact for the full report._\n"),
+            "{out}"
+        );
+        assert!(
+            !table(&pairs, Some(5)).contains("more, see CI artifact"),
+            "no footer at the cap"
+        );
+    }
+
+    /// A sink that accepts everything except a write containing `refused`.
+    struct Refuses(&'static str);
+
+    impl Write for Refuses {
+        fn write(
+            &mut self,
+            buf: &[u8],
+        ) -> std::io::Result<usize> {
+            if String::from_utf8_lossy(buf).contains(self.0) {
+                return Err(std::io::Error::other("disk full"));
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_table_that_cannot_be_written_is_an_error() {
+        let pairs: Vec<DuplicatePair> = (0..3).map(|n| pair(n, 0.9)).collect();
+        for refused in ["f1_1", "more, see CI artifact"] {
+            let result = render_table(&pairs, Some(2), Path::new("/work"), &mut Refuses(refused));
+            assert!(result.is_err(), "a refused {refused:?} write is reported");
+        }
+    }
+
+    proptest! {
+        /// Whatever the pairs and the cap: the heading counts every pair,
+        /// the rows are the first `min(pairs, cap)` in order, and every row
+        /// has exactly two cells.
+        #[test]
+        fn the_table_keeps_count_order_and_shape(
+            scores in proptest::collection::vec(0.0..=1.0f64, 1..30),
+            cap in proptest::option::of(1usize..30),
+        ) {
+            let pairs: Vec<DuplicatePair> =
+                scores.iter().enumerate().map(|(n, s)| pair(n, *s)).collect();
+            let out = table(&pairs, cap);
+            let noun = if pairs.len() == 1 { "candidate" } else { "candidates" };
+            let heading = format!("## {} duplicate {noun}\n", pairs.len());
+            prop_assert!(out.starts_with(&heading));
+            let rows = body_rows(&out);
+            prop_assert_eq!(rows.len(), cap.map_or(pairs.len(), |c| c.min(pairs.len())));
+            for (row, pair) in rows.iter().zip(&pairs) {
+                let first = format!("`{}`", pair.first.name);
+                prop_assert!(row.contains(&first), "row order: {}", row);
+                prop_assert_eq!(separators(row), 3);
+            }
         }
     }
 }

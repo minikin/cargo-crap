@@ -27,7 +27,7 @@ pub(crate) fn render_github(
             continue;
         }
 
-        let file = entry.file.strip_prefix(&cwd).unwrap_or(&entry.file);
+        let file = super::types::cwd_relative(&entry.file, &cwd);
 
         let cov_str = match entry.coverage {
             Some(c) => format!("{c:.1}%"),
@@ -74,7 +74,7 @@ pub(crate) fn render_delta_github(
             continue;
         }
 
-        let file = e.file.strip_prefix(&cwd).unwrap_or(&e.file);
+        let file = super::types::cwd_relative(&e.file, &cwd);
         let delta_str = match de.delta {
             Some(d) => format!(" (Δ{d:+.1})"),
             None => " (new)".to_string(),
@@ -86,7 +86,7 @@ pub(crate) fn render_delta_github(
             .previous_file
             .as_ref()
             .map(|prev| {
-                let prev_disp = prev.strip_prefix(&cwd).unwrap_or(prev);
+                let prev_disp = super::types::cwd_relative(prev, &cwd);
                 format!(" (moved from {})", prev_disp.display())
             })
             .unwrap_or_default();

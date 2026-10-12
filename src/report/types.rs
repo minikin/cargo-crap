@@ -12,7 +12,8 @@ use crate::coverage::LineRange;
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
 use comfy_table::Color;
 use std::borrow::Cow;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use unicode_width::UnicodeWidthStr;
 
@@ -315,6 +316,29 @@ pub(crate) fn shorten_location(
 }
 
 /// What separates a moved row's current location from its previous file.
+/// `path` relative to `cwd` when it is under it, else `path` as given. The
+/// one spelling of a location every renderer shares.
+pub(crate) fn cwd_relative<'a>(
+    path: &'a Path,
+    cwd: &Path,
+) -> &'a Path {
+    path.strip_prefix(cwd).unwrap_or(path)
+}
+
+/// Write the footer of a section capped below its full length, counting the
+/// rows left out.
+pub(crate) fn write_truncation_footer(
+    out: &mut dyn Write,
+    omitted: usize,
+) -> anyhow::Result<()> {
+    writeln!(out)?;
+    writeln!(
+        out,
+        "_…and {omitted} more, see CI artifact for the full report._"
+    )?;
+    Ok(())
+}
+
 pub(crate) const MOVED_ARROW: &str = " ← ";
 
 /// [`shorten_location`] for a bare `<path>:<line>`.
@@ -762,5 +786,22 @@ mod tests {
                 prop_assert!(width <= budget, "{} wider than {}", short, budget);
             }
         }
+    }
+
+    #[test]
+    fn a_path_under_the_working_directory_is_shown_relative_to_it() {
+        let cwd = Path::new("/work");
+        assert_eq!(
+            cwd_relative(Path::new("/work/src/a.rs"), cwd),
+            Path::new("src/a.rs")
+        );
+        assert_eq!(
+            cwd_relative(Path::new("/elsewhere/a.rs"), cwd),
+            Path::new("/elsewhere/a.rs")
+        );
+        assert_eq!(
+            cwd_relative(Path::new("./src/a.rs"), cwd),
+            Path::new("./src/a.rs")
+        );
     }
 }

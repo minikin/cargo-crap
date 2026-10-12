@@ -152,25 +152,12 @@ fn write_pr_comment_abs_row(
     Ok(())
 }
 
-/// Write the truncation footer when a section was capped at `MAX_ROWS_PER_SECTION`.
-fn write_truncation_footer(
-    out: &mut dyn Write,
-    omitted: usize,
-) -> Result<()> {
-    writeln!(out)?;
-    writeln!(
-        out,
-        "_…and {omitted} more, see CI artifact for the full report._"
-    )?;
-    Ok(())
-}
-
 fn write_truncation_if_capped(
     out: &mut dyn Write,
     total: usize,
 ) -> Result<()> {
     if total > MAX_ROWS_PER_SECTION {
-        write_truncation_footer(out, total - MAX_ROWS_PER_SECTION)?;
+        super::types::write_truncation_footer(out, total - MAX_ROWS_PER_SECTION)?;
     }
     Ok(())
 }
