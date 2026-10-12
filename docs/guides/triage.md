@@ -52,7 +52,10 @@ terminal the verdict is coloured by what it asks of you: bold red for
 `--format json` each pair carries the same verdict as a `triage` object: its
 kind, worth-extracting level and score, divergence risk and confidence, or
 only `"kind": "uncertain"` and the confidence when below the floor. The key
-is absent when triage did not run. For the first pair above:
+is absent when triage did not run. `--format markdown` and
+`--format pr-comment` show the same verdicts in a table, see
+[Duplicates in markdown and pr-comment](../reference/output-formats.md#duplicates-in-markdown-and-pr-comment).
+For the first pair above:
 
 ```json
 "triage": {

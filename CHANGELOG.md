@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--duplicates` works with `--format markdown` and `--format pr-comment`.
+  Both end with a table of the duplicate pairs: both names, their
+  locations relative to the working directory, and the similarity, with
+  the names linked to their source under `--repo-url` and `--commit-ref`.
+  When triage answered for every pair, a summary line counts the pairs per
+  level, each row gains a marker (🔴 should-be-one, 🟡 worthwhile, 🔵
+  optional, ⚪ leave-it), the verdict and a confidence bar, and a line
+  under the table names the provider and model. The PR comment lists at
+  most 25 pairs. `github`, `sarif` and `shields` still warn that
+  `--duplicates` has no effect. See
+  [Duplicates in markdown and pr-comment](docs/reference/output-formats.md#duplicates-in-markdown-and-pr-comment)
+  (spec 35).
+
+### Changed
+
+- **BREAKING (library API):** `RenderOptions` gains `cwd` and
+  `triaged_by`. Code that builds it with an exhaustive struct literal must
+  add them or spread `..Default::default()`. `report::TriagedBy`,
+  `report::duplicates::render_table(opts, cap, out)`,
+  `SourceLinks::with_root` and `WorthExtracting::level` are new. The
+  `github` and `pr-comment` renderers now shorten paths against
+  `RenderOptions::cwd` instead of reading the working directory
+  themselves, so a caller that leaves it at its default (empty) gets paths
+  as given. The CLI sets it.
+
 
 ## [0.7.0] - 2026-10-12
 

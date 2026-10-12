@@ -23,8 +23,12 @@ DUPLICATE score=0.92
   src/report/pr_comment.rs:276-287  write_pr_comment_delta_headline
 ```
 
-Only `--format human` and `--format json` carry duplicates. Any other format
-prints a warning and skips the pass, triage included.
+`--format human`, `json`, `markdown` and `pr-comment` carry duplicates.
+Markdown and the PR comment end with a table of the pairs, with the triage
+verdicts when triage ran: see
+[Duplicates in markdown and pr-comment](../reference/output-formats.md#duplicates-in-markdown-and-pr-comment).
+`github`, `sarif` and `shields` print a warning and skip the pass, triage
+included.
 
 How it works: every function is parsed with `syn`, normalized into a
 structural tree, and fingerprinted, one fingerprint per subtree. Two
