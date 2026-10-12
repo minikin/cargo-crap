@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.7.0] - 2026-10-12
+
+Duplicate triage can ask OpenAI as well as TypeSafe (spec 32), and its
+pairs and verdicts now reach pull requests: `--format markdown` and
+`--format pr-comment` carry them with `--duplicates` (spec 35). An analysis
+cache, on by default, re-parses only the files that changed (spec 10). The
+human tables fit the terminal and list only the top 10 functions below the
+threshold. Trait default methods are now scored and compared for
+duplicates, so existing crates can see new rows. Library consumers of
+`RenderOptions`, `report::render_summary` or `duplicates::triage` need
+changes (see Changed).
+
 ### Added
 
 - `--duplicates` works with `--format markdown` and `--format pr-comment`.
@@ -18,37 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   level, each row gains a marker (🔴 should-be-one, 🟡 worthwhile, 🔵
   optional, ⚪ leave-it), the verdict, a confidence bar and the divergence
   risk (⚠️ from 0.5 up), and a line under the table names the provider
-  and model. The PR comment lists at
-  most 25 pairs. `github`, `sarif` and `shields` still warn that
+  and model. The PR comment lists at most 25 pairs. `github`, `sarif` and `shields` still warn that
   `--duplicates` has no effect. See
   [Duplicates in markdown and pr-comment](docs/reference/output-formats.md#duplicates-in-markdown-and-pr-comment)
   (spec 35).
-
-### Changed
-
-- **BREAKING (library API):** `RenderOptions` gains `cwd` and
-  `triaged_by`. Code that builds it with an exhaustive struct literal must
-  add them or spread `..Default::default()`. `report::TriagedBy`,
-  `report::duplicates::render_table(opts, cap, out)`,
-  `SourceLinks::with_root` and `WorthExtracting::level` are new. The
-  `github` and `pr-comment` renderers now shorten paths against
-  `RenderOptions::cwd` instead of reading the working directory
-  themselves, so a caller that leaves it at its default (empty) gets paths
-  as given. The CLI sets it.
-
-
-## [0.7.0] - 2026-10-12
-
-Duplicate triage can ask OpenAI as well as TypeSafe (spec 32), and an
-analysis cache, on by default, re-parses only the files that changed
-(spec 10). The human tables fit the terminal and list only the top 10
-functions below the threshold. Trait default methods are now scored and
-compared for duplicates, so existing crates can see new rows. Library
-consumers of `RenderOptions`, `report::render_summary` or
-`duplicates::triage` need changes (see Changed).
-
-### Added
-
 - Duplicate triage can ask the OpenAI Decisions API as well as TypeSafe.
   `provider = "openai"` in `[duplicates.triage]` reads `OPENAI_API_KEY`
   and `OPENAI_BASE_URL` (which includes `/v1`, as for OpenAI's SDKs) and
@@ -71,6 +57,15 @@ consumers of `RenderOptions`, `report::render_summary` or
 
 ### Changed
 
+- **BREAKING (library API):** `RenderOptions` gains `cwd` and
+  `triaged_by`. Code that builds it with an exhaustive struct literal must
+  add them or spread `..Default::default()`. `report::TriagedBy`,
+  `report::duplicates::render_table(opts, cap, out)`,
+  `SourceLinks::with_root` and `WorthExtracting::level` are new. The
+  `github` and `pr-comment` renderers now shorten paths against
+  `RenderOptions::cwd` instead of reading the working directory
+  themselves, so a caller that leaves it at its default (empty) gets paths
+  as given. The CLI sets it.
 - Duplicate-triage verdicts are cached under the same target directory as
   the analysis cache: with `--workspace` or `-p`, where cargo builds,
   and otherwise `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, then the analysed
@@ -143,6 +138,19 @@ consumers of `RenderOptions`, `report::render_summary` or
   the pair was sent to the model again. A read denied access is now retried
   up to five times, 2 ms apart (#102).
 
+
+### Documentation
+
+- The README opens with a hero image of cargo-crap's output on a demo
+  crate, rebuilt from real runs by `docs/assets/hero/render.sh`, and its
+  badges are pills for the version, CI, coverage, CRAP score and license,
+  drawn by `scripts/badges/render.py`.
+
+### Internal
+
+- CI runs its Rust jobs only when Rust changed, and a pull request's
+  mutation tests cover only the `src/` lines it changed. The full mutation
+  run on main is unchanged.
 
 ## [0.6.1] - 2026-09-29
 

@@ -78,7 +78,7 @@ Set `COLUMNS` to choose the width for a pipe, as in
 
 ## Duplicates in markdown and pr-comment
 
-*Since 0.8.0.*
+*Since 0.7.0.*
 
 With `--duplicates`, `markdown` and `pr-comment` end with a section headed
 by the number of pairs, after the CRAP report, the delta report or the
