@@ -1,6 +1,6 @@
 # Spec 32: A provider seam for duplicate-pair triage
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** `src/duplicates/triage/` (new `provider/` with `typesafe.rs` and `openai.rs`, plus `client.rs`, `request.rs`, `verdict.rs`, `cache.rs`, `mod.rs`), `src/config.rs`, `src/main.rs`, `docs/guides/triage.md`, `docs/reference/config.md`, `README.md`
 
