@@ -121,16 +121,17 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants,cargo-nextest
-      - name: Run mutation tests (changed files only, PRs)
+      # A pull request mutates only the lines it changed, as `just
+      # mutants-diff` does locally. The full run on main measures the rest.
+      - name: Run mutation tests (changed lines only, PRs)
         if: github.event_name == 'pull_request'
         run: |
-          files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'src/*.rs' 2>/dev/null || true)
-          if [ -z "$files" ]; then
-            echo "No changed src/*.rs files — skipping mutants."
+          git diff origin/${{ github.base_ref }}...HEAD -- 'src/*.rs' > "$RUNNER_TEMP/pr.diff" || true
+          if [ ! -s "$RUNNER_TEMP/pr.diff" ]; then
+            echo "No changed src/*.rs lines, skipping mutants."
             exit 0
           fi
-          echo "Running mutants on: $files"
-          cargo mutants $(echo "$files" | sed 's/^/--file /' | tr '\n' ' ')
+          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff"
       - name: Run mutation tests (full, main)
         if: github.event_name == 'push'
         run: cargo mutants
