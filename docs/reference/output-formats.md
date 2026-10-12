@@ -21,6 +21,8 @@
 
 ## The human table's cap
 
+*Since 0.7.0.*
+
 A large project has hundreds of functions below the threshold, and a table
 of all of them buries the few worth a look. So `human` lists every function
 above the threshold, then only the 10 highest-scoring functions below it,
@@ -41,6 +43,8 @@ and ends with one line counting the rest:
   format still count every function.
 
 ## Fitting the width
+
+*Since 0.7.0.*
 
 The `human` tables fit the width they are printed into, so a narrow
 terminal does not wrap their borders.

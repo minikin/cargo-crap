@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.7.0] - 2026-10-12
+
+Duplicate triage can ask OpenAI as well as TypeSafe (spec 32), and an
+analysis cache, on by default, re-parses only the files that changed
+(spec 10). The human tables fit the terminal and list only the top 10
+functions below the threshold. Trait default methods are now scored and
+compared for duplicates, so existing crates can see new rows. Library
+consumers of `RenderOptions`, `report::render_summary` or
+`duplicates::triage` need changes (see Changed).
+
 ### Added
 
 - Duplicate triage can ask the OpenAI Decisions API as well as TypeSafe.
@@ -33,18 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Duplicate-triage verdicts are cached under the same target directory as
-  the analysis cache: with `--workspace` or `-p`, where cargo builds;
-  otherwise `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, then the analysed
+  the analysis cache: with `--workspace` or `-p`, where cargo builds,
+  and otherwise `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, then the analysed
   project's workspace root, then beside `.cargo-crap.toml`. Verdicts move,
   and each pair is asked once more, in three cases: a `.cargo-crap.toml` in
   a member crate under a `[workspace]` root, a configuration at a monorepo
   root above standalone crates, and a `--path` into another Cargo project.
 - **BREAKING (library API):** `duplicates::triage::Settings::from_env` and
   `from_lookup` take the resolved target directory (`Option<&Path>`)
-  instead of a project root, and no longer read `CARGO_TARGET_DIR`;
+  instead of a project root, and no longer read `CARGO_TARGET_DIR`.
   `duplicates::triage::client::TARGET_DIR_VAR` is gone. The resolver is
   `cache::target::target_dir`.
-
 - The `human` tables fit the terminal's width, or `$COLUMNS` when it is
   set: the coverage bar shrinks and then goes, CC goes below 60 columns,
   and long locations and names are cut with `…`, keeping each location's
@@ -94,7 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on them. Required methods, which have no body, still get none (spec 33).
 - `--duplicates` never compared a trait's default methods either: two
   traits carrying the same default logic were never reported. Default
-  methods are now duplicate candidates like any other function; required
+  methods are now duplicate candidates like any other function. Required
   methods still are not (spec 34).
 - With `--baseline`, `--top` and `--min` cut the run before comparing it,
   so every function they left out was listed under "Removed since
@@ -724,7 +734,8 @@ output points at v2.
 
 <!-- Version links -->
 
-[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/minikin/cargo-crap/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/minikin/cargo-crap/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/minikin/cargo-crap/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/minikin/cargo-crap/compare/v0.4.3...v0.5.0
