@@ -134,9 +134,10 @@ fn covering(
 
 /// The table's two header rows without verdicts.
 const UNTRIAGED_HEADER: &str = "| Pair | Similarity |\n|---|---:|";
-/// The table's two header rows with a marker, a verdict and a confidence.
-const TRIAGED_HEADER: &str =
-    "| | Pair | Similarity | Verdict | Confidence |\n|---|---|---:|---|---|";
+/// The table's two header rows with a marker, a verdict, a confidence and a
+/// divergence risk.
+const TRIAGED_HEADER: &str = "| | Pair | Similarity | Verdict | Confidence | Divergence risk |\n\
+     |---|---|---:|---|---|---:|";
 
 /// The table: its header, then one row per pair, with each pair's verdict
 /// when `triage` is given.
@@ -171,10 +172,11 @@ fn table_row(
     };
     let confidence = confidence(assessment);
     format!(
-        "| {} | {shared} | {} | {} {confidence:.2} |",
+        "| {} | {shared} | {} | {} {confidence:.2} | {} |",
         marker(assessment),
         verdict_cell(assessment),
-        confidence_bar(confidence)
+        confidence_bar(confidence),
+        divergence_cell(assessment)
     )
 }
 
@@ -249,6 +251,22 @@ fn confidence(assessment: &Assessment) -> f64 {
     match assessment {
         Assessment::Kind(verdict) => verdict.confidence,
         Assessment::Uncertain { confidence } => *confidence,
+    }
+}
+
+/// The divergence risk at which a pair is flagged: the model thinks the two
+/// functions more likely than not to need different changes.
+const DIVERGENCE_FLAG: f64 = 0.5;
+
+/// The probability that the two functions will need to change differently,
+/// flagged from [`DIVERGENCE_FLAG`] up, or nothing for an uncertain verdict.
+fn divergence_cell(assessment: &Assessment) -> String {
+    match assessment {
+        Assessment::Kind(verdict) if verdict.divergence_risk >= DIVERGENCE_FLAG => {
+            format!("⚠️ {:.2}", verdict.divergence_risk)
+        },
+        Assessment::Kind(verdict) => format!("{:.2}", verdict.divergence_risk),
+        Assessment::Uncertain { .. } => String::new(),
     }
 }
 
@@ -998,14 +1016,15 @@ mod tests {
             out.starts_with(
                 "## 4 duplicate candidates\n\n\
                  🔴 1 should be one · 🟡 1 worthwhile · 🔵 1 optional · ⚪ 1 leave it\n\n\
-                 | | Pair | Similarity | Verdict | Confidence |\n|---|---|---:|---|---|\n"
+                 | | Pair | Similarity | Verdict | Confidence | Divergence risk |\n\
+                 |---|---|---:|---|---|---:|\n"
             ),
             "{out}"
         );
         assert_eq!(
             body_rows(&out)[1],
             "| 🟡 | `f1_1` ↔ `f1_10`<br><sub>`src/f1.rs:1-5` · `src/f1.rs:10-14`</sub> | 1.00 \
-             | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 |",
+             | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 | ⚠️ 0.50 |",
             "{out}"
         );
     }
@@ -1129,6 +1148,37 @@ mod tests {
     }
 
     #[test]
+    fn a_pair_likely_to_diverge_is_flagged() {
+        let at_risk = |risk: f64| {
+            Assessment::Kind(Verdict {
+                kind: Kind::SameLogic,
+                confidence: 0.9,
+                worth_extracting: WorthExtracting::new(3.0).expect("in range"),
+                divergence_risk: risk,
+            })
+        };
+        let pairs: Vec<DuplicatePair> = (0..4).map(|n| pair(n, 1.0)).collect();
+        let triage = [
+            at_risk(0.66),
+            at_risk(0.34),
+            at_risk(0.5),
+            Assessment::Uncertain { confidence: 0.3 },
+        ];
+        let out = triaged_table(&pairs, &triage, None);
+        let rows = body_rows(&out);
+        assert!(rows[0].ends_with(" | ⚠️ 0.66 |"), "{out}");
+        assert!(rows[1].ends_with(" | 0.34 |"), "{out}");
+        assert!(
+            rows[2].ends_with(" | ⚠️ 0.50 |"),
+            "flagged from 0.5 up: {out}"
+        );
+        assert!(
+            rows[3].ends_with(" 0.30 |  |"),
+            "an uncertain verdict has none: {out}"
+        );
+    }
+
+    #[test]
     fn an_uncertain_verdict_says_so() {
         let out = triaged_table(
             &[pair(1, 0.9)],
@@ -1141,7 +1191,7 @@ mod tests {
         );
         let row = body_rows(&out)[0];
         assert!(row.starts_with("|  | `f1_1`"), "no marker: {row}");
-        assert!(row.ends_with(" | uncertain | ▰▰▱▱▱ 0.42 |"), "{row}");
+        assert!(row.ends_with(" | uncertain | ▰▰▱▱▱ 0.42 |  |"), "{row}");
     }
 
     #[test]

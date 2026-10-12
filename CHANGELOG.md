@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the names linked to their source under `--repo-url` and `--commit-ref`.
   When triage answered for every pair, a summary line counts the pairs per
   level, each row gains a marker (🔴 should-be-one, 🟡 worthwhile, 🔵
-  optional, ⚪ leave-it), the verdict and a confidence bar, and a line
-  under the table names the provider and model. The PR comment lists at
+  optional, ⚪ leave-it), the verdict, a confidence bar and the divergence
+  risk (⚠️ from 0.5 up), and a line under the table names the provider
+  and model. The PR comment lists at
   most 25 pairs. `github`, `sarif` and `shields` still warn that
   `--duplicates` has no effect. See
   [Duplicates in markdown and pr-comment](docs/reference/output-formats.md#duplicates-in-markdown-and-pr-comment)

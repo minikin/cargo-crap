@@ -89,6 +89,8 @@ And   each row's verdict cell shows its pair's kind and worth-extracting
       level, labelled as the human section labels them
 And   each row's confidence cell shows a five-segment bar and the confidence
       with two decimals
+And   each row's divergence-risk cell shows the probability that the two
+      functions will need to change differently, with two decimals
 And   a summary line under the heading counts the pairs at each
       worth-extracting level
 And   a line under the table names the provider "OpenAI API" and the
@@ -113,6 +115,17 @@ Then  its marker is 🔴 and its verdict cell is in bold
 And   a worthwhile pair's marker is 🟡, an optional pair's 🔵 and a
       leave-it pair's ⚪
 And   no other row's verdict cell is in bold
+```
+
+### Scenario: A pair likely to diverge is flagged
+
+```
+Given a triaged pair whose divergence risk is 0.66
+And   another whose divergence risk is 0.34
+When  the pairs are rendered in markdown or pr-comment
+Then  the first pair's divergence-risk cell reads "⚠️ 0.66"
+And   the second pair's reads "0.34"
+And   an uncertain verdict's divergence-risk cell is empty
 ```
 
 ### Scenario: An uncertain verdict says so
@@ -244,6 +257,7 @@ each task under its own `Spec 35 · Tn` subheading.
 - [x] **T6 — Source links in the section.** Needs: T4. With `--repo-url` and `--commit-ref`, each function name links to `<repo-url>/blob/<ref>/<path>#L<start>` through the existing `SourceLinks`, and a path that cannot be made repo-relative stays plain. Scenarios: _Function names link to the source_. Tests: unit + acceptance.
 - [x] **T7 — Docs and CHANGELOG.** Needs: T3, T5, T6. `docs/reference/output-formats.md`, `docs/guides/duplicates.md` and `docs/guides/triage.md` say markdown and pr-comment carry the pairs and the verdicts. CHANGELOG under Added, and a **BREAKING (library API)** entry under Changed: `RenderOptions` gains `cwd` and `triaged_by`, `report::TriagedBy` is new, `report::duplicates::render_table(opts, cap, out)` is new, `SourceLinks` gains `with_root`, and `WorthExtracting` gains `level()`. The entry also says that `github` and `pr-comment` shorten paths only when `RenderOptions::cwd` is set, which `RenderOptions::default()` does not. No scenarios. Tests: `tests/docs.rs` stays green.
 
+- [x] **T8 — The divergence-risk column.** Needs: T7. A triaged table gains a `Divergence risk` column after `Confidence`: two decimals, with `⚠️` in front from 0.5 up, empty for an uncertain verdict. The output-formats reference, the triage guide and the CHANGELOG entry mention it. Scenarios: _A pair likely to diverge is flagged_ (and the divergence-risk line of _A triaged run adds the verdict, the worth and the confidence_). Tests: unit + acceptance.
 ---
 
 ## Implementation Notes
@@ -269,11 +283,11 @@ heading is `##`, a peer of each format's CRAP headline. A triaged section:
 
 🔴 1 should be one · 🟡 1 worthwhile · ⚪ 1 leave it
 
-| | Pair | Similarity | Verdict | Confidence |
-|---|---|---:|---|---|
-| 🔴 | `order_total` ↔ `quote_total`<br><sub>`src/lib.rs:22-31` · `src/lib.rs:34-43`</sub> | 1.00 | **same-logic · should-be-one** | ▰▰▰▰▰ 0.99 |
-| 🟡 | `shipped_weight` ↔ `shipped_volume`<br><sub>`src/lib.rs:46-54` · `src/lib.rs:57-65`</sub> | 1.00 | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 |
-| ⚪ | `write_receipt` ↔ `write_shipping_label`<br><sub>`src/lib.rs:68-79` · `src/lib.rs:82-93`</sub> | 0.84 | shared-shape-only · leave-it | ▰▰▰▱▱ 0.64 |
+| | Pair | Similarity | Verdict | Confidence | Divergence risk |
+|---|---|---:|---|---|---:|
+| 🔴 | `order_total` ↔ `quote_total`<br><sub>`src/lib.rs:22-31` · `src/lib.rs:34-43`</sub> | 1.00 | **same-logic · should-be-one** | ▰▰▰▰▰ 0.99 | ⚠️ 0.66 |
+| 🟡 | `shipped_weight` ↔ `shipped_volume`<br><sub>`src/lib.rs:46-54` · `src/lib.rs:57-65`</sub> | 1.00 | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 | 0.34 |
+| ⚪ | `write_receipt` ↔ `write_shipping_label`<br><sub>`src/lib.rs:68-79` · `src/lib.rs:82-93`</sub> | 0.84 | shared-shape-only · leave-it | ▰▰▰▱▱ 0.64 | 0.18 |
 
 <sub>Triaged by OpenAI API (`gpt-6-luna`).</sub>
 ```
@@ -282,7 +296,11 @@ An untriaged section has only the `Pair` and `Similarity` columns, no
 summary line and no provider line. The markers are the one colour GitHub
 keeps in a comment: 🔴 should-be-one, 🟡 worthwhile, 🔵 optional, ⚪
 leave-it, none for an uncertain verdict. The bar has five segments, filled
-to the confidence rounded to the nearest fifth. The summary line lists the
+to the confidence rounded to the nearest fifth. The divergence risk is the
+model's probability that the two functions will need to change
+differently, the reason a merge can be the wrong move even for the same
+logic. From 0.5 up it is flagged with ⚠️. An uncertain verdict carries
+none. The summary line lists the
 levels present in that order, then uncertain. The labels come from the same
 `Kind::label` and `WorthExtracting::label` the human section uses, so a
 verdict reads the same everywhere. The footer follows the PR comment's

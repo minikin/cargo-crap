@@ -87,20 +87,20 @@ locations relative to the working directory, and the similarity. With
 `--repo-url` and `--commit-ref` the names link to their source.
 
 When [triage](../guides/triage.md) answered for every pair, a line under the
-heading counts the pairs at each level, each row gains a marker, the verdict
-and the confidence, and a line under the table names the provider and the
-model asked:
+heading counts the pairs at each level, each row gains a marker, the verdict,
+the confidence and the divergence risk, and a line under the table names the
+provider and the model asked:
 
 ```markdown
 ## 3 duplicate candidates
 
 🔴 1 should be one · 🟡 1 worthwhile · ⚪ 1 leave it
 
-| | Pair | Similarity | Verdict | Confidence |
-|---|---|---:|---|---|
-| 🔴 | `order_total` ↔ `quote_total`<br><sub>`src/lib.rs:22-31` · `src/lib.rs:34-43`</sub> | 1.00 | **same-logic · should-be-one** | ▰▰▰▰▰ 0.99 |
-| 🟡 | `shipped_weight` ↔ `shipped_volume`<br><sub>`src/lib.rs:46-54` · `src/lib.rs:57-65`</sub> | 1.00 | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 |
-| ⚪ | `write_receipt` ↔ `write_shipping_label`<br><sub>`src/lib.rs:68-79` · `src/lib.rs:82-93`</sub> | 0.84 | shared-shape-only · leave-it | ▰▰▰▱▱ 0.64 |
+| | Pair | Similarity | Verdict | Confidence | Divergence risk |
+|---|---|---:|---|---|---:|
+| 🔴 | `order_total` ↔ `quote_total`<br><sub>`src/lib.rs:22-31` · `src/lib.rs:34-43`</sub> | 1.00 | **same-logic · should-be-one** | ▰▰▰▰▰ 0.99 | ⚠️ 0.66 |
+| 🟡 | `shipped_weight` ↔ `shipped_volume`<br><sub>`src/lib.rs:46-54` · `src/lib.rs:57-65`</sub> | 1.00 | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 | 0.34 |
+| ⚪ | `write_receipt` ↔ `write_shipping_label`<br><sub>`src/lib.rs:68-79` · `src/lib.rs:82-93`</sub> | 0.84 | shared-shape-only · leave-it | ▰▰▰▱▱ 0.64 | 0.18 |
 
 <sub>Triaged by OpenAI API (`gpt-6-luna`).</sub>
 ```
@@ -110,6 +110,10 @@ model asked:
   `uncertain`. Only `should-be-one` is in bold.
 - The bar has five segments, filled to the confidence rounded to the
   nearest fifth.
+- The divergence risk is the model's probability that the two functions
+  will need to change differently, the reason a merge can be the wrong
+  move even for the same logic. From 0.5 up it is flagged with ⚠️. An
+  uncertain verdict has none.
 - Without a verdict for every pair (triage off, failed or partial) the
   table has only the pair and its similarity.
 - The PR comment lists at most 25 pairs and says how many it left out, and

@@ -5117,11 +5117,12 @@ fn a_triaged_run_adds_the_verdict_the_worth_and_the_confidence() {
     let section = gfm_section(&out);
     // Then the duplicate table has a marker, a verdict and a confidence column
     assert!(
-        section.contains("| | Pair | Similarity | Verdict | Confidence |\n"),
+        section.contains("| | Pair | Similarity | Verdict | Confidence | Divergence risk |\n"),
         "{section}"
     );
     // And each row's verdict cell shows its pair's kind and worth-extracting level
     // And each row's confidence cell shows a five-segment bar and two decimals
+    // And each row's divergence-risk cell shows the probability with two decimals
     let rows: Vec<&str> = section
         .lines()
         .filter(|l| l.starts_with("| 🟡 |"))
@@ -5129,7 +5130,7 @@ fn a_triaged_run_adds_the_verdict_the_worth_and_the_confidence() {
     assert_eq!(rows.len(), 3, "{section}");
     for row in rows {
         assert!(
-            row.ends_with(" | same-logic · worthwhile | ▰▰▰▰▰ 0.90 |"),
+            row.ends_with(" | same-logic · worthwhile | ▰▰▰▰▰ 0.90 | ⚠️ 0.60 |"),
             "{row}"
         );
     }
