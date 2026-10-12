@@ -4970,3 +4970,66 @@ fn the_exit_code_ignores_the_duplicate_section() {
         }
     }
 }
+
+// ---- Spec 35 · T3 ----
+
+/// The duplicate section must come after `before` in `stdout`, and end it.
+fn assert_section_follows(
+    stdout: &str,
+    before: &str,
+) {
+    let at = stdout
+        .find("## 3 duplicate candidates\n")
+        .unwrap_or_else(|| panic!("a duplicate section: {stdout}"));
+    let report = stdout
+        .find(before)
+        .unwrap_or_else(|| panic!("{before:?} first: {stdout}"));
+    assert!(report < at, "{before:?} comes before the section: {stdout}");
+    assert!(
+        stdout.trim_end().ends_with(" | 1.00 |"),
+        "the section ends the output: {stdout}"
+    );
+}
+
+#[test]
+fn the_section_follows_a_delta_report_too() {
+    // Given a baseline and a tree with duplicate pairs
+    let dir = three_pairs_tree();
+    let baseline = dir.path().join("base.json");
+    let recorded = duplicates_run(
+        dir.path(),
+        "json",
+        &["--output", baseline.to_str().expect("utf-8")],
+    );
+    assert!(recorded.status.success(), "the baseline is written");
+    for format in ["pr-comment", "markdown"] {
+        // When I run `cargo crap --duplicates --baseline base.json --format pr-comment`
+        let out = duplicates_run(
+            dir.path(),
+            format,
+            &[
+                "--duplicates",
+                "--baseline",
+                baseline.to_str().expect("utf-8"),
+            ],
+        );
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        // Then the delta sections come first
+        // And the duplicate section follows them, listing the current run's pairs
+        assert_section_follows(&stdout, "No CRAP regressions");
+    }
+}
+
+#[test]
+fn the_section_follows_the_summary_too() {
+    // Given a tree with duplicate pairs
+    let dir = three_pairs_tree();
+    for format in ["pr-comment", "markdown"] {
+        // When I run `cargo crap --duplicates --summary --format pr-comment`
+        let out = duplicates_run(dir.path(), format, &["--duplicates", "--summary"]);
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        // Then the summary line comes first
+        // And the duplicate section follows it
+        assert_section_follows(&stdout, "Analyzed: 3");
+    }
+}
