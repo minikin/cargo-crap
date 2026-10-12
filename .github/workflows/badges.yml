@@ -39,21 +39,49 @@ jobs:
             --status completed --limit 20 --json databaseId,conclusion \
             --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][0] | "\(.databaseId) \(.conclusion)"')
           ci=$([ "$conclusion" = success ] && echo passing || echo failing)
-          # The CRAP score and coverage of that run. Missing when its
-          # self-score job failed before writing them.
-          gh run download "$run" -n crap-badge -D artifact || echo "No badge artifact in run $run"
+          # The CRAP score and coverage of the newest main run that wrote
+          # them. A run that changed no Rust skipped its self-score job.
+          for id in $(gh run list --workflow ci.yml --branch main --event push \
+              --status completed --limit 30 --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$id" -n crap-badge -D artifact; then
+              echo "Badge artifact from run $id"
+              break
+            fi
+          done
+          coverage=$(cat artifact/coverage.txt 2>/dev/null || true)
           license=$(sed -n 's/^license = "\(.*\)"$/\1/p' Cargo.toml | head -1)
-          echo "version=$version ci=$ci license=$license (run $run)"
+          echo "version=$version ci=$ci coverage=$coverage license=$license (run $run)"
           {
             echo "version=$version"
             echo "ci=$ci"
+            echo "coverage=$coverage"
             echo "license=$license"
           } >> "$GITHUB_OUTPUT"
+
+      # No artifact carried a coverage figure (they predate it, or every
+      # recent run skipped its self-score job): measure it here.
+      - if: steps.values.outputs.coverage == ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - if: steps.values.outputs.coverage == ''
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Measure coverage
+        id: measured
+        if: steps.values.outputs.coverage == ''
+        run: |
+          cargo llvm-cov --lcov --output-path lcov.info --workspace --all-features
+          coverage=$(awk -F: '/^LF:/ { found += $2 } /^LH:/ { hit += $2 }
+            END { if (found) printf "%.1f", 100 * hit / found }' lcov.info)
+          echo "coverage=$coverage" >> "$GITHUB_OUTPUT"
 
       - name: Render
         env:
           VERSION: ${{ steps.values.outputs.version }}
           CI_STATUS: ${{ steps.values.outputs.ci }}
+          COVERAGE: ${{ steps.values.outputs.coverage || steps.measured.outputs.coverage }}
           LICENSE_NAME: ${{ steps.values.outputs.license }}
         run: |
           mkdir out
@@ -66,7 +94,7 @@ jobs:
           args=(out --ci "$CI_STATUS")
           if [ -n "$VERSION" ]; then args+=(--version "$VERSION"); fi
           if [ -n "$LICENSE_NAME" ]; then args+=(--license "$LICENSE_NAME"); fi
-          if [ -s artifact/coverage.txt ]; then args+=(--coverage "$(cat artifact/coverage.txt)"); fi
+          if [ -n "$COVERAGE" ]; then args+=(--coverage "$COVERAGE"); fi
           if [ -f out/crap-badge.json ]; then args+=(--crap out/crap-badge.json); fi
           python3 scripts/badges/render.py "${args[@]}"
           ls -l out
