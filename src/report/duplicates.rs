@@ -6,6 +6,7 @@ use std::path::Path;
 use anyhow::Result;
 use owo_colors::Style;
 
+use super::TriagedBy;
 use super::types::{bar, cwd_relative, styled};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
@@ -60,8 +61,8 @@ pub fn render(
 /// truncation footer counting the rest. Paths are shown relative to `cwd`
 /// when they are under it. With exactly one assessment per pair, a summary
 /// line counts the verdicts and the table gains a marker, a verdict and a
-/// confidence column. Any other count leaves the table untriaged, as the
-/// human section does.
+/// confidence column, and `triaged_by` is named under the table. Any other
+/// count leaves the table untriaged, as the human section does.
 ///
 /// # Errors
 ///
@@ -69,6 +70,7 @@ pub fn render(
 pub fn render_table(
     pairs: &[DuplicatePair],
     triage: Option<&[Assessment]>,
+    triaged_by: Option<TriagedBy<'_>>,
     cap: Option<usize>,
     cwd: &Path,
     out: &mut dyn Write,
@@ -79,15 +81,33 @@ pub fn render_table(
     }
     writeln!(out, "## {} duplicate {}\n", pairs.len(), noun(pairs.len()))?;
     let shown = cap.unwrap_or(pairs.len()).min(pairs.len());
+    let triage = covering(triage, pairs.len());
     write_table_body(pairs, triage, shown, cwd, out)?;
     if pairs.len() > shown {
         super::types::write_truncation_footer(out, pairs.len() - shown)?;
     }
+    write_provider_line(triage.and(triaged_by), out)
+}
+
+/// The line naming who triaged the table, when it is triaged and someone is
+/// named.
+fn write_provider_line(
+    triaged_by: Option<TriagedBy<'_>>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if let Some(by) = triaged_by {
+        writeln!(
+            out,
+            "\n<sub>Triaged by {} ({}).</sub>",
+            by.provider,
+            code_span(by.model)
+        )?;
+    }
     Ok(())
 }
 
-/// The first `shown` pairs as a table, triaged when `triage` covers every
-/// pair, with the summary line above a triaged table.
+/// The first `shown` pairs as a table, triaged when `triage` is given (it
+/// then covers every pair), with the summary line above a triaged table.
 fn write_table_body(
     pairs: &[DuplicatePair],
     triage: Option<&[Assessment]>,
@@ -95,7 +115,6 @@ fn write_table_body(
     cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let triage = covering(triage, pairs.len());
     if let Some(triage) = triage {
         writeln!(out, "{}\n", summary_line(triage))?;
     }
@@ -739,7 +758,7 @@ mod tests {
         cap: Option<usize>,
     ) -> String {
         let mut buf = Vec::new();
-        render_table(pairs, None, cap, Path::new("/work"), &mut buf)
+        render_table(pairs, None, None, cap, Path::new("/work"), &mut buf)
             .expect("a Vec writer cannot fail");
         String::from_utf8(buf).expect("the section is utf-8")
     }
@@ -905,6 +924,7 @@ mod tests {
                 let result = render_table(
                     &pairs,
                     verdicts,
+                    None,
                     Some(2),
                     Path::new("/work"),
                     &mut Refuses::new(refused),
@@ -923,7 +943,7 @@ mod tests {
         cap: Option<usize>,
     ) -> String {
         let mut buf = Vec::new();
-        render_table(pairs, Some(triage), cap, Path::new("/work"), &mut buf)
+        render_table(pairs, Some(triage), None, cap, Path::new("/work"), &mut buf)
             .expect("a Vec writer cannot fail");
         String::from_utf8(buf).expect("the section is utf-8")
     }
@@ -958,6 +978,54 @@ mod tests {
              | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 |",
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_triaged_table_ends_with_the_provider_line() {
+        use crate::report::TriagedBy;
+        let by = TriagedBy {
+            provider: "OpenAI API",
+            model: "gpt-6-luna",
+        };
+        let render = |pairs: &[DuplicatePair], triage: &[Assessment], by: Option<TriagedBy<'_>>| {
+            let mut buf = Vec::new();
+            render_table(
+                pairs,
+                Some(triage),
+                by,
+                Some(2),
+                Path::new("/work"),
+                &mut buf,
+            )
+            .expect("a Vec writer cannot fail");
+            String::from_utf8(buf).expect("utf-8")
+        };
+        let (pairs, triage) = one_per_level();
+        let out = render(&pairs, &triage, Some(by));
+        assert!(
+            out.ends_with(
+                "more, see CI artifact for the full report._\n\n\
+                 <sub>Triaged by OpenAI API (`gpt-6-luna`).</sub>\n"
+            ),
+            "under the table and its footer: {out}"
+        );
+        assert!(
+            !render(&pairs, &triage[..3], Some(by)).contains("Triaged by"),
+            "untriaged"
+        );
+        assert!(
+            !render(&pairs, &triage, None).contains("Triaged by"),
+            "nobody named"
+        );
+        let refused = render_table(
+            &pairs,
+            Some(&triage),
+            Some(by),
+            None,
+            Path::new("/work"),
+            &mut Refuses::new("Triaged by"),
+        );
+        assert!(refused.is_err(), "a refused provider line is reported");
     }
 
     #[test]

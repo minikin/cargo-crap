@@ -24,8 +24,8 @@ Once this ships, `markdown` and `pr-comment` end with a duplicate section: a
 GFM table with one row per pair, the similarity, both functions with their
 locations, and, when triage ran, the verdict, the worth-extracting level and
 the confidence, with a coloured marker per row and a summary line. A line
-under the table names the provider and model that answered, so a comment
-says whether OpenAI or TypeSafe judged it.
+under the table names the provider and the model asked, so a comment says
+whether OpenAI or TypeSafe judged it.
 
 Rejected alternatives:
 
@@ -91,8 +91,8 @@ And   each row's confidence cell shows a five-segment bar and the confidence
       with two decimals
 And   a summary line under the heading counts the pairs at each
       worth-extracting level
-And   a line under the table names the provider "OpenAI Decisions API" and
-      the model that answered
+And   a line under the table names the provider "OpenAI API" and the
+      model it was asked
 ```
 
 ### Scenario: The provider line names whichever provider answered
@@ -100,7 +100,8 @@ And   a line under the table names the provider "OpenAI Decisions API" and
 ```
 Given triage is enabled with provider "typesafe" and every pair is answered
 When  I run `cargo crap --duplicates --format markdown`
-Then  the line under the duplicate table names "TypeSafe" and its model
+Then  the line under the duplicate table names "TypeSafe API" and the model
+      it was asked
 ```
 
 ### Scenario: A verdict worth merging is in bold
@@ -239,9 +240,9 @@ each task under its own `Spec 35 · Tn` subheading.
 - [x] **T2 — markdown and pr-comment carry the pairs.** Needs: T1. `duplicate_pairs` in `src/main.rs` lets `Markdown` and `PrComment` through and keeps the warning for the rest, naming the four carrying formats. `render_duplicates` in `src/report.rs` writes T1's section for both formats: every pair in markdown, capped in pr-comment, nothing in pr-comment for zero pairs. The two acceptance tests that use markdown for the "no effect" warning switch to sarif (the spec 30 amendment). Scenarios: _The markdown report ends with the duplicate pairs; The PR comment ends with the duplicate pairs; No pairs in markdown says so; No pairs in a PR comment adds nothing; Detection off leaves the reports unchanged; Formats with no place for duplicates still say so; The exit code ignores the duplicate section_. Tests: unit + acceptance.
 - [x] **T3 — The section follows the delta report and the summary.** Needs: T2. Both markdown and pr-comment delta renderers, and the `--summary` path, end with the section. Scenarios: _The section follows a delta report too; The section follows the summary too_. Tests: acceptance.
 - [x] **T4 — Verdict columns.** Needs: T2. With exactly one assessment per pair, T1's table gains a marker, a verdict (`kind · worth`, labelled as the human section labels them) and a confidence column (five-segment bar and two decimals), and a summary line under the heading counts the pairs per level. Markers: 🔴 should-be-one (verdict in bold), 🟡 worthwhile, 🔵 optional, ⚪ leave-it, none for `uncertain`. Any other assessment count leaves the table untriaged. Scenarios: _A verdict worth merging is in bold; An uncertain verdict says so; Triage that failed leaves the table untriaged_. Tests: unit + property (the verdict columns and the summary line appear exactly when the assessment count equals the pair count, and the summary counts add up to the pair count) + acceptance (failure against the stub).
-- [ ] **T5 — The provider line.** Needs: T4. `RenderOptions` gains a field with the answering provider's `display_name()` and model, set in `src/main.rs` only when triage produced assessments. The section prints `<sub>Triaged by <provider> (`<model>`).</sub>` under a triaged table. Scenarios: _A triaged run adds the verdict, the worth and the confidence; The provider line names whichever provider answered_. Tests: unit + acceptance (both providers against the stub).
+- [x] **T5 — The provider line.** Needs: T4. `RenderOptions` gains a field with the answering provider's `display_name()` and model, set in `src/main.rs` only when triage produced assessments. The section prints `<sub>Triaged by <provider> (`<model>`).</sub>` under a triaged table. Scenarios: _A triaged run adds the verdict, the worth and the confidence; The provider line names whichever provider answered_. Tests: unit + acceptance (both providers against the stub).
 - [ ] **T6 — Source links in the section.** Needs: T4. With `--repo-url` and `--commit-ref`, each function name links to `<repo-url>/blob/<ref>/<path>#L<start>` through the existing `SourceLinks`, and a path that cannot be made repo-relative stays plain. Scenarios: _Function names link to the source_. Tests: unit + acceptance.
-- [ ] **T7 — Docs and CHANGELOG.** Needs: T3, T5, T6. `docs/reference/output-formats.md`, `docs/guides/duplicates.md` and `docs/guides/triage.md` say markdown and pr-comment carry the pairs and the verdicts. CHANGELOG under Added, and a **BREAKING (library API)** entry under Changed: `RenderOptions` gains `cwd`, `report::duplicates::render_table` is new with a `triage` parameter, and `WorthExtracting` gains `level()`. No scenarios. Tests: `tests/docs.rs` stays green.
+- [ ] **T7 — Docs and CHANGELOG.** Needs: T3, T5, T6. `docs/reference/output-formats.md`, `docs/guides/duplicates.md` and `docs/guides/triage.md` say markdown and pr-comment carry the pairs and the verdicts. CHANGELOG under Added, and a **BREAKING (library API)** entry under Changed: `RenderOptions` gains `cwd` and `triaged_by`, `report::TriagedBy` is new, `report::duplicates::render_table` is new with `triage` and `triaged_by` parameters, and `WorthExtracting` gains `level()`. No scenarios. Tests: `tests/docs.rs` stays green.
 
 ---
 
@@ -274,7 +275,7 @@ heading is `##`, a peer of each format's CRAP headline. A triaged section:
 | 🟡 | `shipped_weight` ↔ `shipped_volume`<br><sub>`src/lib.rs:46-54` · `src/lib.rs:57-65`</sub> | 1.00 | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 |
 | ⚪ | `write_receipt` ↔ `write_shipping_label`<br><sub>`src/lib.rs:68-79` · `src/lib.rs:82-93`</sub> | 0.84 | shared-shape-only · leave-it | ▰▰▰▱▱ 0.64 |
 
-<sub>Triaged by OpenAI Decisions API (`gpt-6-luna`).</sub>
+<sub>Triaged by OpenAI API (`gpt-6-luna`).</sub>
 ```
 
 An untriaged section has only the `Pair` and `Similarity` columns, no

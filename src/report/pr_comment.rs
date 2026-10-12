@@ -56,19 +56,21 @@ pub(crate) fn longest_common_path_prefix(paths: &[PathBuf]) -> PathBuf {
 ///
 /// Multi-entry runs use the longest common path-component prefix. When that
 /// prefix is empty (single-entry, or entries diverging at the root) we fall
-/// back to the current working directory if every rendered path is under it
+/// back to `cwd`, the working directory, if every rendered path is under it
 /// — this is what turns `/home/runner/work/repo/repo/src/lib.rs` into
 /// `src/lib.rs` on a CI run with one new function. Paths that aren't under
-/// CWD pass through unchanged.
-pub(crate) fn compute_render_prefix(paths: &[PathBuf]) -> PathBuf {
+/// it pass through unchanged. An empty `cwd` falls back to nothing.
+pub(crate) fn compute_render_prefix(
+    paths: &[PathBuf],
+    cwd: &Path,
+) -> PathBuf {
     let lcp = longest_common_path_prefix(paths);
     if !lcp.as_os_str().is_empty() {
         return lcp;
     }
-    let cwd = std::env::current_dir().unwrap_or_default();
-    if !cwd.as_os_str().is_empty() && !paths.is_empty() && paths.iter().all(|p| p.starts_with(&cwd))
+    if !cwd.as_os_str().is_empty() && !paths.is_empty() && paths.iter().all(|p| p.starts_with(cwd))
     {
-        return cwd;
+        return cwd.to_path_buf();
     }
     PathBuf::new()
 }
@@ -241,7 +243,10 @@ impl<'a> DeltaBuckets<'a> {
     /// Each rendered entry contributes its current path; moved entries also
     /// contribute their baseline location (`previous_file`) so the LCP
     /// shortens both ends of the `<new> ← <prev>` display string.
-    fn common_prefix(&self) -> PathBuf {
+    fn common_prefix(
+        &self,
+        cwd: &Path,
+    ) -> PathBuf {
         let entry_paths = self
             .regressed
             .iter()
@@ -254,7 +259,7 @@ impl<'a> DeltaBuckets<'a> {
             });
         let removed_paths = self.removed.iter().map(|r| r.file.clone());
         let paths: Vec<PathBuf> = entry_paths.chain(removed_paths).collect();
-        compute_render_prefix(&paths)
+        compute_render_prefix(&paths, cwd)
     }
 }
 
@@ -436,6 +441,7 @@ pub(crate) fn render_delta_pr_comment(
     links: Option<&SourceLinks>,
     uncovered_hints: bool,
     counts: &DeltaCounts,
+    cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
     write_pr_comment_marker(out)?;
@@ -444,7 +450,7 @@ pub(crate) fn render_delta_pr_comment(
         return Ok(());
     }
     let buckets = DeltaBuckets::from_report(report, threshold);
-    let prefix = buckets.common_prefix();
+    let prefix = buckets.common_prefix(cwd);
     write_pr_comment_delta_headline(out, counts.regressed)?;
     write_pr_comment_breakdown(out, counts)?;
     write_pr_comment_primary(out, &buckets, threshold, &prefix, links, uncovered_hints)?;
@@ -501,12 +507,13 @@ fn write_pr_comment_abs_table(
     threshold: f64,
     links: Option<&SourceLinks>,
     uncovered_hints: bool,
+    cwd: &Path,
 ) -> Result<()> {
     if above.is_empty() {
         return Ok(());
     }
     let paths: Vec<PathBuf> = above.iter().map(|e| e.file.clone()).collect();
-    let prefix = compute_render_prefix(&paths);
+    let prefix = compute_render_prefix(&paths, cwd);
     writeln!(out)?;
     write_abs_gfm_header(out, uncovered_hints)?;
     for e in above.iter().take(MAX_ROWS_PER_SECTION) {
@@ -520,6 +527,7 @@ pub(crate) fn render_pr_comment(
     threshold: f64,
     links: Option<&SourceLinks>,
     uncovered_hints: bool,
+    cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
     write_pr_comment_marker(out)?;
@@ -534,7 +542,7 @@ pub(crate) fn render_pr_comment(
         entries.len()
     )?;
     let above = above_threshold_sorted(entries, threshold);
-    write_pr_comment_abs_table(out, &above, threshold, links, uncovered_hints)
+    write_pr_comment_abs_table(out, &above, threshold, links, uncovered_hints, cwd)
 }
 
 #[cfg(test)]
@@ -570,7 +578,9 @@ mod tests {
 
     fn render_delta_pr_to_string(report: &DeltaReport) -> String {
         let mut buf = Vec::new();
-        render_delta_pr_comment(report, 30.0, None, false, &report.counts(), &mut buf).unwrap();
+        let cwd = std::env::current_dir().expect("cwd");
+        render_delta_pr_comment(report, 30.0, None, false, &report.counts(), &cwd, &mut buf)
+            .unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -579,8 +589,9 @@ mod tests {
         links: &SourceLinks,
     ) -> String {
         let mut buf = Vec::new();
-        render_delta_pr_comment(report, 30.0, Some(links), false, &report.counts(), &mut buf)
-            .unwrap();
+        let cwd = std::env::current_dir().expect("cwd");
+        let counts = report.counts();
+        render_delta_pr_comment(report, 30.0, Some(links), false, &counts, &cwd, &mut buf).unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -628,7 +639,10 @@ mod tests {
         // Kills: replacing `&&` with `||` in the CWD-fallback guard chain.
         // With OR semantics, an empty `paths` list combined with a non-empty
         // CWD would return CWD, which is wrong — there's nothing to render.
-        assert_eq!(compute_render_prefix(&[]), PathBuf::new());
+        assert_eq!(
+            compute_render_prefix(&[], Path::new("/work")),
+            PathBuf::new()
+        );
     }
 
     #[test]
@@ -637,15 +651,25 @@ mod tests {
         // `paths.iter().all(starts_with cwd)` clauses. A path that is not
         // under CWD must not trigger CWD stripping.
         let outside = PathBuf::from("/tmp/definitely_not_under_cwd_xyzzy/foo.rs");
-        assert_eq!(compute_render_prefix(&[outside]), PathBuf::new());
+        assert_eq!(
+            compute_render_prefix(&[outside], Path::new("/work")),
+            PathBuf::new()
+        );
     }
 
     #[test]
     fn render_prefix_falls_back_to_cwd_when_path_under_cwd() {
         // Pins the happy path: single under-CWD entry → returns CWD as prefix.
-        let cwd = std::env::current_dir().expect("cwd");
-        let inside = cwd.join("nested").join("foo.rs");
-        assert_eq!(compute_render_prefix(&[inside]), cwd);
+        let inside = PathBuf::from("/work/nested/foo.rs");
+        assert_eq!(
+            compute_render_prefix(std::slice::from_ref(&inside), Path::new("/work")),
+            PathBuf::from("/work")
+        );
+        assert_eq!(
+            compute_render_prefix(&[inside], Path::new("")),
+            PathBuf::new(),
+            "no cwd"
+        );
     }
 
     // --- pr-comment renderer (delta) ---------------------------------------
@@ -1499,7 +1523,7 @@ mod tests {
         // Kills: dropping the header suffix or cell suffix in the abs path.
         let entries = super::super::test_support::sample_with_uncovered();
         let mut buf = Vec::new();
-        render_pr_comment(&entries, 30.0, None, true, &mut buf).unwrap();
+        render_pr_comment(&entries, 30.0, None, true, Path::new(""), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("| | CRAP | CC | Cov % | Function | Location | Uncovered |"),
@@ -1513,7 +1537,7 @@ mod tests {
         // Kills: inverting/hardcoding the uncovered_hints gate.
         let entries = super::super::test_support::sample_with_uncovered();
         let mut buf = Vec::new();
-        render_pr_comment(&entries, 30.0, None, false, &mut buf).unwrap();
+        render_pr_comment(&entries, 30.0, None, false, Path::new(""), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(!s.contains("Uncovered"), "no column when off:\n{s}");
         assert!(!s.contains("12–14"), "no cell when off:\n{s}");
@@ -1528,7 +1552,9 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_pr_comment(&report, 30.0, None, true, &report.counts(), &mut buf).unwrap();
+        let counts = report.counts();
+        render_delta_pr_comment(&report, 30.0, None, true, &counts, Path::new(""), &mut buf)
+            .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("| | CRAP | Δ | CC | Cov % | Function | Location | Uncovered |"),

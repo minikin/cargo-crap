@@ -4971,6 +4971,27 @@ fn the_exit_code_ignores_the_duplicate_section() {
     }
 }
 
+#[test]
+fn duplicate_locations_are_relative_to_the_working_directory() {
+    // Given a tree with three duplicate pairs, analysed by its absolute path
+    // from inside it
+    let dir = three_pairs_tree();
+    let root = dir.path().canonicalize().expect("the tree exists");
+    // When I run `cargo crap --duplicates --format markdown` there
+    let out = crap()
+        .current_dir(&root)
+        .args(["--path", root.to_str().expect("utf-8")])
+        .args(["--duplicates", "--format", "markdown"])
+        .output()
+        .expect("the binary runs");
+    // Then each location is relative to the working directory
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    assert!(
+        stdout.contains("<sub>`three.rs:1-9` · `three.rs:10-18`</sub>"),
+        "{stdout}"
+    );
+}
+
 // ---- Spec 35 · T3 ----
 
 /// The duplicate section must come after `before` in `stdout`, and end it.
@@ -5063,6 +5084,81 @@ fn triage_that_failed_leaves_the_table_untriaged() {
     );
     assert!(
         !section.contains("Verdict") && !section.contains("Triaged by"),
+        "{section}"
+    );
+}
+
+// ---- Spec 35 · T5 ----
+
+/// The duplicate section of a GFM report, from its heading to the end.
+#[cfg(feature = "triage")]
+fn gfm_section(out: &std::process::Output) -> String {
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf-8");
+    let at = stdout
+        .find("## 3 duplicate candidates")
+        .unwrap_or_else(|| panic!("a duplicate section: {stdout}"));
+    stdout[at..].to_owned()
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_triaged_run_adds_the_verdict_the_worth_and_the_confidence() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given triage is enabled with provider "openai" and every pair is answered
+    let dir = three_pairs_tree();
+    let stub = ApiStub::scripted(vec![Reply::json(&openai_answer("same_logic"))]);
+    // When I run `cargo crap --duplicates --format pr-comment`
+    let out = triage_run(dir.path(), &openai_config(""))
+        .env("OPENAI_BASE_URL", format!("{}/v1", stub.base_url()))
+        .env("OPENAI_API_KEY", "openai-key")
+        .args(["--format", "pr-comment"])
+        .output()
+        .expect("cargo-crap runs");
+    let section = gfm_section(&out);
+    // Then the duplicate table has a marker, a verdict and a confidence column
+    assert!(
+        section.contains("| | Pair | Similarity | Verdict | Confidence |\n"),
+        "{section}"
+    );
+    // And each row's verdict cell shows its pair's kind and worth-extracting level
+    // And each row's confidence cell shows a five-segment bar and two decimals
+    let rows: Vec<&str> = section
+        .lines()
+        .filter(|l| l.starts_with("| 🟡 |"))
+        .collect();
+    assert_eq!(rows.len(), 3, "{section}");
+    for row in rows {
+        assert!(
+            row.ends_with(" | same-logic · worthwhile | ▰▰▰▰▰ 0.90 |"),
+            "{row}"
+        );
+    }
+    // And a summary line under the heading counts the pairs at each level
+    assert_eq!(section.lines().nth(2), Some("🟡 3 worthwhile"), "{section}");
+    // And a line under the table names the provider and the model it was asked
+    assert!(
+        section
+            .trim_end()
+            .ends_with("<sub>Triaged by OpenAI API (`gpt-6-luna`).</sub>"),
+        "{section}"
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_provider_line_names_whichever_provider_answered() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given triage is enabled with provider "typesafe" and every pair is answered
+    let dir = three_pairs_tree();
+    let stub = ApiStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When I run `cargo crap --duplicates --format markdown`
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &["--format", "markdown"]);
+    // Then the line under the duplicate table names "TypeSafe API" and the model it was asked
+    let section = gfm_section(&out);
+    assert!(
+        section
+            .trim_end()
+            .ends_with("<sub>Triaged by TypeSafe API (`jev-latest`).</sub>"),
         "{section}"
     );
 }

@@ -148,13 +148,25 @@ pub struct RenderOptions<'a> {
     /// The working directory, resolved once by the caller: the duplicate
     /// table shows paths relative to it. Empty shows every path as given.
     pub cwd: &'a Path,
+    /// Who answered the triage, when it produced assessments. The markdown
+    /// and pr-comment duplicate tables name them under a triaged table.
+    pub triaged_by: Option<TriagedBy<'a>>,
+}
+
+/// The provider and model that judged the duplicate pairs.
+#[derive(Debug, Clone, Copy)]
+pub struct TriagedBy<'a> {
+    /// The provider's display name, such as `OpenAI API`.
+    pub provider: &'a str,
+    /// The model asked, such as `gpt-6-luna`.
+    pub model: &'a str,
 }
 
 impl Default for RenderOptions<'_> {
     /// CLI defaults: threshold 30, human format, no links, no
     /// diagnostics, changed-only delta rows, no uncovered hints, no
-    /// duplicates, the classical `?` weight, a capped human table, and no
-    /// working directory, so paths show as given.
+    /// duplicates, the classical `?` weight, a capped human table, no
+    /// working directory, so paths show as given, and no triage provider.
     fn default() -> Self {
         Self {
             threshold: crate::score::DEFAULT_THRESHOLD,
@@ -170,6 +182,7 @@ impl Default for RenderOptions<'_> {
             delta_counts: None,
             width: None,
             cwd: Path::new(""),
+            triaged_by: None,
         }
     }
 }
@@ -195,13 +208,18 @@ pub fn render(
             opts.width,
             out,
         ),
-        Format::GitHub => github::render_github(entries, threshold, out),
+        Format::GitHub => github::render_github(entries, threshold, opts.cwd, out),
         Format::Markdown => {
             markdown::render_markdown(entries, threshold, opts.links, opts.uncovered_hints, out)
         },
-        Format::PrComment => {
-            pr_comment::render_pr_comment(entries, threshold, opts.links, opts.uncovered_hints, out)
-        },
+        Format::PrComment => pr_comment::render_pr_comment(
+            entries,
+            threshold,
+            opts.links,
+            opts.uncovered_hints,
+            opts.cwd,
+            out,
+        ),
         Format::Sarif => sarif::render_sarif(entries, threshold, out),
         Format::Shields => shields::render_shields(entries, threshold, out),
     }
@@ -227,7 +245,7 @@ pub fn render_delta(
     match opts.format {
         Format::Json => json::render_delta_json(report, opts, out),
         Format::Human => human::render_delta_human(report, opts, &counts, out),
-        Format::GitHub => github::render_delta_github(report, threshold, out),
+        Format::GitHub => github::render_delta_github(report, threshold, opts.cwd, out),
         Format::Markdown => markdown::render_delta_markdown(
             report,
             threshold,
@@ -243,6 +261,7 @@ pub fn render_delta(
             opts.links,
             opts.uncovered_hints,
             &counts,
+            opts.cwd,
             out,
         ),
         // SARIF describes the *current* set of findings, not deltas. The
@@ -294,31 +313,27 @@ fn write_duplicate_section(
             writeln!(out)?;
             duplicates::render(pairs, opts.triage, out)
         },
-        Format::Markdown => duplicate_table(pairs, opts.triage, None, opts.cwd, out),
+        Format::Markdown => duplicate_table(pairs, opts, None, out),
         // A comment with nothing to say about duplicates says nothing.
         Format::PrComment if pairs.is_empty() => Ok(()),
-        Format::PrComment => duplicate_table(
-            pairs,
-            opts.triage,
-            Some(pr_comment::MAX_ROWS_PER_SECTION),
-            opts.cwd,
-            out,
-        ),
+        Format::PrComment => {
+            duplicate_table(pairs, opts, Some(pr_comment::MAX_ROWS_PER_SECTION), out)
+        },
         Format::Json | Format::GitHub | Format::Sarif | Format::Shields => Ok(()),
     }
 }
 
 /// The GFM duplicate section, after a blank line, with each pair's verdict
-/// when `triage` covers every pair and paths relative to `cwd`.
+/// and who gave it when the triage covers every pair, and paths relative to
+/// the working directory.
 fn duplicate_table(
     pairs: &[DuplicatePair],
-    triage: Option<&[Assessment]>,
+    opts: &RenderOptions,
     cap: Option<usize>,
-    cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
     writeln!(out)?;
-    duplicates::render_table(pairs, triage, cap, cwd, out)
+    duplicates::render_table(pairs, opts.triage, opts.triaged_by, cap, opts.cwd, out)
 }
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR

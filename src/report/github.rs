@@ -6,28 +6,28 @@ use crate::delta::{DeltaReport, DeltaStatus};
 use crate::merge::CrapEntry;
 use anyhow::Result;
 use std::io::Write;
+use std::path::Path;
 
 /// Emit one `::warning` annotation per function that exceeds the threshold.
 ///
-/// Paths are made relative to the current working directory so that GitHub
-/// can resolve them to lines in the repository. If `strip_prefix` fails the
-/// absolute path is used as a fallback.
+/// Paths are made relative to `cwd`, the working directory, so that GitHub
+/// can resolve them to lines in the repository. A path outside it is used as
+/// given.
 ///
 /// Special characters (`%`, CR, LF) in the message are percent-encoded per
 /// the GitHub Actions workflow-command spec.
 pub(crate) fn render_github(
     entries: &[CrapEntry],
     threshold: f64,
+    cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let cwd = std::env::current_dir().unwrap_or_default();
-
     for entry in entries {
         if entry.crap <= threshold {
             continue;
         }
 
-        let file = super::types::cwd_relative(&entry.file, &cwd);
+        let file = super::types::cwd_relative(&entry.file, cwd);
 
         let cov_str = match entry.coverage {
             Some(c) => format!("{c:.1}%"),
@@ -58,10 +58,9 @@ pub(crate) fn render_github(
 pub(crate) fn render_delta_github(
     report: &DeltaReport,
     threshold: f64,
+    cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let cwd = std::env::current_dir().unwrap_or_default();
-
     for de in &report.entries {
         let e = &de.current;
         // Annotate regressions and new functions above threshold.
@@ -74,7 +73,7 @@ pub(crate) fn render_delta_github(
             continue;
         }
 
-        let file = super::types::cwd_relative(&e.file, &cwd);
+        let file = super::types::cwd_relative(&e.file, cwd);
         let delta_str = match de.delta {
             Some(d) => format!(" (Δ{d:+.1})"),
             None => " (new)".to_string(),
@@ -86,7 +85,7 @@ pub(crate) fn render_delta_github(
             .previous_file
             .as_ref()
             .map(|prev| {
-                let prev_disp = super::types::cwd_relative(prev, &cwd);
+                let prev_disp = super::types::cwd_relative(prev, cwd);
                 format!(" (moved from {})", prev_disp.display())
             })
             .unwrap_or_default();
@@ -277,7 +276,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_github(&report, 30.0, &mut buf).unwrap();
+        render_delta_github(&report, 30.0, Path::new(""), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("(moved from src/old.rs)"),
@@ -311,7 +310,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_github(&report, 30.0, &mut buf).unwrap();
+        render_delta_github(&report, 30.0, Path::new(""), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.is_empty(),
@@ -338,5 +337,23 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains(" CC=1.5 cov=0.0%25"), "fractional CC:\n{s}");
         assert!(s.contains(" CC=3 cov=0.0%25"), "integral CC:\n{s}");
+    }
+
+    #[test]
+    fn annotation_paths_are_relative_to_the_given_working_directory() {
+        let entry = CrapEntry {
+            file: PathBuf::from("/work/src/a.rs"),
+            function: "hot".into(),
+            line: 3,
+            cyclomatic: 9.0,
+            coverage: Some(0.0),
+            crap: 90.0,
+            crate_name: None,
+            uncovered: Vec::new(),
+        };
+        let mut buf = Vec::new();
+        render_github(&[entry], 30.0, Path::new("/work"), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.starts_with("::warning file=src/a.rs,line=3,"), "{s}");
     }
 }
