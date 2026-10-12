@@ -97,12 +97,17 @@ same score, and the exit code never depends on it. Without a key, a network
 or a working API, the run prints the untriaged section and one warning
 saying why.
 
-Verdicts are cached in `cargo-crap/triage/` under the target directory:
-`CARGO_TARGET_DIR` when it is set, otherwise `target/` beside
+Verdicts are cached in `cargo-crap/triage/` under the target directory,
+the same one the analysis cache uses (see
+[The analysis cache](../explanation/how-it-works.md#the-analysis-cache)):
+with `--workspace` or `-p`, the directory cargo builds into, and otherwise
+`CARGO_TARGET_DIR`, then `CARGO_BUILD_TARGET_DIR`, then `target/` at the
+analysed project's workspace root, then `target/` beside
 `.cargo-crap.toml`. The cache is keyed by both function bodies, the model
-and the provider, so an unchanged pair is never asked about twice, switching
-provider never reuses the other provider's verdicts, and `cargo clean`
-removes it.
+and the provider, so an unchanged pair is never asked about twice,
+switching provider never reuses the other provider's verdicts, and
+`cargo clean` removes it. `--no-cache` and `cache = false` leave it alone:
+each verdict kept is an API call not paid for again.
 
 ## Choosing a provider
 

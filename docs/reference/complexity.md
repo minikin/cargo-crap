@@ -11,6 +11,10 @@ would only add 0%-coverage noise. Pass `--no-default-excludes` to analyze them
 like any other source. Missing test helpers are that filter working, not a
 path-matching failure.
 
+**Every function with a body is scored:** free functions, methods in `impl`
+blocks (named `Type::method`) and a trait's default methods (named
+`Trait::method`). A required trait method has no body and gets no row.
+
 **Cyclomatic complexity starts at 1 and adds one for each of:** `if`
 (including every `else if`), `for`, `while`, `loop`, **every** `match`
 arm, each `&&` and `||`, and each `?`.

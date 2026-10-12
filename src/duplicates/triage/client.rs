@@ -15,8 +15,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Cargo's target directory, where the verdict cache lives.
-pub const TARGET_DIR_VAR: &str = "CARGO_TARGET_DIR";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_ATTEMPTS: u32 = 3;
@@ -74,37 +72,32 @@ impl fmt::Debug for Settings {
 }
 
 impl Settings {
-    /// Settings for asking `provider`'s `model` in the project rooted at
-    /// `project_root`, with the key, base URL and target directory read from
-    /// the process environment.
+    /// Settings for asking `provider`'s `model`, caching under `target_dir`,
+    /// with the key and base URL read from the process environment.
     #[must_use]
     pub fn from_env(
         provider: &'static dyn Provider,
         model: &str,
-        project_root: &Path,
+        target_dir: Option<&Path>,
     ) -> Self {
-        Self::from_lookup(provider, model, project_root, |name| {
-            std::env::var(name).ok()
-        })
+        Self::from_lookup(provider, model, target_dir, |name| std::env::var(name).ok())
     }
 
-    /// Settings for asking `provider`'s `model` in the project rooted at
-    /// `project_root`, with the provider's key and base-URL variables and
-    /// `CARGO_TARGET_DIR` read through `lookup`, so tests can supply an
+    /// Settings for asking `provider`'s `model`, with the provider's key and
+    /// base-URL variables read through `lookup`, so tests can supply an
     /// environment without mutating the process's. No other provider's
     /// variables are read. An empty value counts as unset. Verdicts are
-    /// cached in the project's target directory (`CARGO_TARGET_DIR` when set, as for
-    /// cargo, else `target/` beside the configuration), so `cargo clean`
-    /// sweeps them wherever the command was run from.
+    /// cached under `target_dir`, the directory
+    /// [`target_dir`](crate::cache::target::target_dir) resolves for every
+    /// cache (spec 10), so `cargo clean` sweeps them; `None` caches nothing.
     #[must_use]
     pub fn from_lookup(
         provider: &'static dyn Provider,
         model: &str,
-        project_root: &Path,
+        target_dir: Option<&Path>,
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Self {
         let set = |name| lookup(name).filter(|value: &String| !value.is_empty());
-        let target = set(TARGET_DIR_VAR).map_or_else(|| project_root.join("target"), PathBuf::from);
         Self {
             provider,
             model: model.to_owned(),
@@ -115,7 +108,7 @@ impl Settings {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
             backoff: DEFAULT_BACKOFF,
-            cache_dir: Some(cache::default_dir(&target)),
+            cache_dir: target_dir.map(cache::default_dir),
         }
     }
 
@@ -400,7 +393,7 @@ mod tests {
         let settings = Settings::from_lookup(
             &TypeSafe,
             "jev-1",
-            Path::new("/proj"),
+            Some(Path::new("/proj/target")),
             lookup(&[
                 (typesafe::API_KEY_VAR, "secret"),
                 (typesafe::BASE_URL_VAR, "http://127.0.0.1:9"),
@@ -414,14 +407,15 @@ mod tests {
     #[test]
     fn an_unset_or_empty_key_is_no_key() {
         assert_eq!(
-            Settings::from_lookup(&TypeSafe, "m", Path::new("/proj"), lookup(&[])).api_key,
+            Settings::from_lookup(&TypeSafe, "m", Some(Path::new("/proj/target")), lookup(&[]))
+                .api_key,
             None
         );
         assert_eq!(
             Settings::from_lookup(
                 &TypeSafe,
                 "m",
-                Path::new("/proj"),
+                Some(Path::new("/proj/target")),
                 lookup(&[(typesafe::API_KEY_VAR, "")])
             )
             .api_key,
@@ -434,7 +428,7 @@ mod tests {
         let settings = Settings::from_lookup(
             &TypeSafe,
             "m",
-            Path::new("/proj"),
+            Some(Path::new("/proj/target")),
             lookup(&[(typesafe::BASE_URL_VAR, "")]),
         );
         assert_eq!(settings.base_url, "https://api.typesafe.ai");
@@ -446,7 +440,7 @@ mod tests {
         let settings = Settings::from_lookup(
             &TypeSafe,
             "m",
-            Path::new("/proj"),
+            Some(Path::new("/proj/target")),
             lookup(&[(typesafe::BASE_URL_VAR, "http://stub:1/")]),
         );
         assert_eq!(settings.endpoint(), "http://stub:1/v1/systemone");
@@ -454,7 +448,8 @@ mod tests {
 
     #[test]
     fn the_defaults_bound_every_request() {
-        let settings = Settings::from_lookup(&TypeSafe, "m", Path::new("/proj"), lookup(&[]));
+        let settings =
+            Settings::from_lookup(&TypeSafe, "m", Some(Path::new("/proj/target")), lookup(&[]));
         assert_eq!(settings.timeout, std::time::Duration::from_secs(10));
         assert_eq!(settings.attempts, 3);
     }
@@ -462,7 +457,8 @@ mod tests {
     #[test]
     fn a_connection_attempt_is_bounded_separately() {
         // A host that drops SYNs fails in seconds, not a full request timeout.
-        let settings = Settings::from_lookup(&TypeSafe, "m", Path::new("/proj"), lookup(&[]));
+        let settings =
+            Settings::from_lookup(&TypeSafe, "m", Some(Path::new("/proj/target")), lookup(&[]));
         assert_eq!(settings.connect_timeout, std::time::Duration::from_secs(3));
     }
 
@@ -482,28 +478,21 @@ mod tests {
     }
 
     #[test]
-    fn verdicts_are_cached_under_the_projects_target_directory() {
-        // Beside the configuration that enabled triage, not wherever the
-        // command happened to run; CARGO_TARGET_DIR still wins, as for cargo.
-        let default = Settings::from_lookup(&TypeSafe, "m", Path::new("/proj"), lookup(&[]));
-        assert_eq!(
-            default.cache_dir,
-            Some(
-                PathBuf::from("/proj/target")
-                    .join("cargo-crap")
-                    .join("triage")
-            )
-        );
-        let custom = Settings::from_lookup(
+    fn verdicts_are_cached_under_the_resolved_target_directory() {
+        // The resolver (spec 10) decides the directory; the client only
+        // appends its own corner of it, and reads no target variable itself.
+        let settings = Settings::from_lookup(
             &TypeSafe,
             "m",
-            Path::new("/proj"),
-            lookup(&[(TARGET_DIR_VAR, "/tmp/t")]),
+            Some(Path::new("/proj/target")),
+            lookup(&[("CARGO_TARGET_DIR", "/elsewhere")]),
         );
         assert_eq!(
-            custom.cache_dir,
-            Some(PathBuf::from("/tmp/t").join("cargo-crap").join("triage"))
+            settings.cache_dir,
+            Some(PathBuf::from("/proj/target/cargo-crap/triage"))
         );
+        let nowhere = Settings::from_lookup(&TypeSafe, "m", None, lookup(&[]));
+        assert_eq!(nowhere.cache_dir, None, "no target directory, no cache");
     }
 
     #[test]
@@ -574,7 +563,7 @@ mod tests {
         let settings = Settings::from_lookup(
             &OpenAi,
             "gpt-6-luna",
-            Path::new("/proj"),
+            Some(Path::new("/proj/target")),
             lookup(&[
                 (typesafe::API_KEY_VAR, "typesafe-secret"),
                 (typesafe::BASE_URL_VAR, "http://typesafe:1"),
@@ -589,7 +578,7 @@ mod tests {
         let settings = Settings::from_lookup(
             &OpenAi,
             "gpt-6-luna",
-            Path::new("/proj"),
+            Some(Path::new("/proj/target")),
             lookup(&[
                 ("OPENAI_API_KEY", "openai-secret"),
                 ("OPENAI_BASE_URL", "http://127.0.0.1:9/v1/"),
@@ -625,7 +614,7 @@ mod tests {
                 .filter(|(_, on)| **on)
                 .map(|(var, _)| *var)
                 .collect();
-            let settings = Settings::from_lookup(provider, "m", Path::new("/proj"), |name| {
+            let settings = Settings::from_lookup(provider, "m", Some(Path::new("/proj/target")), |name| {
                 present.contains(&name).then(|| format!("{name}-value"))
             });
             if let Some(key) = &settings.api_key {
@@ -644,7 +633,7 @@ mod tests {
         let settings = Settings::from_lookup(
             &OpenAi,
             "gpt-6-luna",
-            Path::new("/proj"),
+            Some(Path::new("/proj/target")),
             lookup(&[("OPENAI_API_KEY", "sk-very-secret")]),
         );
         let shown = format!("{settings:?}");
@@ -652,7 +641,8 @@ mod tests {
         assert!(shown.contains("<redacted>"), "{shown}");
         assert!(shown.contains("provider: \"openai\""), "{shown}");
         assert!(shown.contains("gpt-6-luna"), "{shown}");
-        let keyless = Settings::from_lookup(&OpenAi, "m", Path::new("/proj"), lookup(&[]));
+        let keyless =
+            Settings::from_lookup(&OpenAi, "m", Some(Path::new("/proj/target")), lookup(&[]));
         assert!(
             format!("{keyless:?}").contains("api_key: None"),
             "{keyless:?}"
@@ -661,7 +651,8 @@ mod tests {
 
     #[test]
     fn a_client_needs_a_key() {
-        let keyless = Settings::from_lookup(&TypeSafe, "m", Path::new("/proj"), lookup(&[]));
+        let keyless =
+            Settings::from_lookup(&TypeSafe, "m", Some(Path::new("/proj/target")), lookup(&[]));
         assert!(Client::new(&keyless).is_none());
         let keyed = Settings {
             api_key: Some("k".into()),
