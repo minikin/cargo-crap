@@ -829,10 +829,13 @@ fn triage_answer_worth(
     )
 }
 
-/// A tree whose three identical functions make three duplicate pairs.
+/// A tree with three duplicate pairs of three different shapes, so no two
+/// pairs share a function and no grouping can merge them: `one`/`two` (a
+/// filtering loop), `three`/`four` (a sum over a range by cases) and
+/// `five`/`six` (string building).
 fn three_pairs_tree() -> TempDir {
     let dir = TempDir::new().expect("temp dir");
-    let body = |name: &str| {
+    let filter = |name: &str| {
         format!(
             "fn {name}(xs: &[i32]) -> Vec<i32> {{
     let mut ys = Vec::new();
@@ -846,10 +849,49 @@ fn three_pairs_tree() -> TempDir {
 "
         )
     };
+    let tally = |name: &str| {
+        format!(
+            "fn {name}(a: i32, b: i32) -> i32 {{
+    let (lo, hi) = if a < b {{ (a, b) }} else {{ (b, a) }};
+    let mut acc = 0;
+    for v in lo..hi {{
+        acc += match v % 4 {{
+            0 => v * 2,
+            1 => -v,
+            _ => 1,
+        }};
+    }}
+    acc.max(0)
+}}
+"
+        )
+    };
+    let words = |name: &str| {
+        format!(
+            "fn {name}(words: &[&str]) -> String {{
+    let mut out = String::new();
+    for w in words.iter().rev() {{
+        out.push_str(&w.to_uppercase());
+        out.push_str(\", \");
+    }}
+    out.truncate(out.len().saturating_sub(2));
+    format!(\"[{{out}}]\")
+}}
+"
+        )
+    };
     write(
         dir.path(),
         "three.rs",
-        &format!("{}{}{}", body("one"), body("two"), body("three")),
+        &[
+            filter("one"),
+            filter("two"),
+            tally("three"),
+            tally("four"),
+            words("five"),
+            words("six"),
+        ]
+        .concat(),
     );
     dir
 }
@@ -1378,11 +1420,11 @@ fn editing_a_function_body_invalidates_that_pairs_cached_verdict() {
     let stub = ApiStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
     run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
     assert_eq!(stub.request_count(), 3);
-    // When one of the two function bodies is edited: `three` gains a
-    // different literal, so every pair still matches structurally
+    // When one of the two function bodies is edited: `two` gains a
+    // different literal, so its pair still matches structurally
     let file = dir.path().join("three.rs");
     let source = fs::read_to_string(&file).expect("read");
-    let at = source.rfind("x + 1").expect("three's body");
+    let at = source.rfind("x + 1").expect("two's body");
     let edited = format!("{}x + 2{}", &source[..at], &source[at + "x + 1".len()..]);
     fs::write(&file, edited).expect("write");
     // And cargo-crap runs
@@ -1391,8 +1433,8 @@ fn editing_a_function_body_invalidates_that_pairs_cached_verdict() {
     // Then a request is made for that pair
     // And the other pairs' cached verdicts are reused
     let second_run: Vec<_> = stub.requests().into_iter().skip(3).collect();
-    assert_eq!(second_run.len(), 2, "the two pairs with `three` in them");
-    assert!(second_run.iter().all(|r| r.body.contains("fn three")));
+    assert_eq!(second_run.len(), 1, "only the pair with `two` in it");
+    assert!(second_run.iter().all(|r| r.body.contains("fn two")));
 }
 
 #[cfg(feature = "triage")]
@@ -5060,7 +5102,7 @@ fn the_section_follows_the_summary_too() {
         let stdout = String::from_utf8(out.stdout).expect("utf-8");
         // Then the summary line comes first
         // And the duplicate section follows it
-        assert_section_follows(&stdout, "Analyzed: 3");
+        assert_section_follows(&stdout, "Analyzed: 6");
     }
 }
 
@@ -5226,4 +5268,35 @@ fn function_names_link_to_the_source() {
         let plain = String::from_utf8(out.stdout).expect("utf-8");
         assert!(plain.contains("| `one` ↔ `two`<br>"), "{format}: {plain}");
     }
+}
+
+// ── Spec 36: duplicate groups ─────────────────────────────────────────────
+
+// ---- Spec 36 · T1 ----
+
+#[test]
+fn three_pairs_tree_holds_three_unrelated_pairs() {
+    // Given the shared three-pair fixture
+    let dir = three_pairs_tree();
+    // When duplicate detection runs as JSON
+    let out = crap()
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .args(["--duplicates", "--format", "json"])
+        .output()
+        .expect("the binary runs");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON document");
+    let pairs = json["duplicates"].as_array().expect("a duplicates array");
+    // Then it reports three pairs over six different functions, so no
+    // grouping can merge them
+    assert_eq!(pairs.len(), 3, "{json:#}");
+    let names: std::collections::BTreeSet<&str> = pairs
+        .iter()
+        .flat_map(|p| [p["first_function"].as_str(), p["second_function"].as_str()])
+        .flatten()
+        .collect();
+    assert_eq!(
+        names.len(),
+        6,
+        "every function in exactly one pair: {names:?}"
+    );
 }
