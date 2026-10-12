@@ -10,36 +10,39 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  # Detect whether any code-relevant files changed.
-  # All other jobs are gated on this output so that markdown-only PRs
-  # skip CI entirely — but the workflow still runs and GitHub sees the
-  # jobs as "skipped" (which satisfies required status checks).
+  # Detect whether any Rust-relevant files changed. Every Rust job is gated
+  # on `rust`, and mutation testing on `src`, so a pull request that touches
+  # only docs, workflows or scripts skips them. The workflow still runs, and
+  # GitHub sees the jobs as "skipped", which satisfies required checks.
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
-      code: ${{ steps.filter.outputs.code }}
+      rust: ${{ steps.filter.outputs.rust }}
+      src: ${{ steps.filter.outputs.src }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
-            code:
+            rust:
               - '**/*.rs'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
-              - '.github/workflows/**'
               - 'tests/fixtures/**'
-              - 'Justfile'
               - 'rust-toolchain.toml'
+              - 'clippy.toml'
+              - 'rustfmt.toml'
               - 'deny.toml'
+            src:
+              - 'src/**/*.rs'
 
   test:
     name: Test (${{ matrix.os }})
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -62,7 +65,7 @@ jobs:
   lints:
     name: Lints
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -80,7 +83,7 @@ jobs:
   msrv:
     name: MSRV (Rust 1.88)
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -97,7 +100,7 @@ jobs:
   audit:
     name: Security audit
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -110,7 +113,7 @@ jobs:
   mutants:
     name: Mutation tests
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.src == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -148,7 +151,7 @@ jobs:
   self_score:
     name: Self-score
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     permissions:
       # Needed to list previous main runs and download their artifacts via
