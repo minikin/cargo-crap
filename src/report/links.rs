@@ -198,14 +198,18 @@ mod tests {
 
     #[test]
     fn an_explicit_root_decides_which_paths_link() {
-        let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into())
-            .with_root(PathBuf::from("/work"));
+        // Absolute on every platform: `/work` has no drive on Windows.
+        let root = std::env::temp_dir().join("work");
+        let links =
+            SourceLinks::new("https://github.com/o/r".into(), "abc".into()).with_root(root.clone());
+        let inside = root.join("src").join("a.rs");
         assert_eq!(
-            linkify("`f`".into(), Some(&links), Path::new("/work/src/a.rs"), 3),
+            linkify("`f`".into(), Some(&links), &inside, 3),
             "[`f`](https://github.com/o/r/blob/abc/src/a.rs#L3)"
         );
+        let outside = std::env::temp_dir().join("elsewhere").join("a.rs");
         assert_eq!(
-            linkify("`f`".into(), Some(&links), Path::new("/elsewhere/a.rs"), 3),
+            linkify("`f`".into(), Some(&links), &outside, 3),
             "`f`",
             "outside the root stays plain"
         );

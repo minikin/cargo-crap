@@ -4,7 +4,7 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -4789,6 +4789,15 @@ fn two_traits_structurally_identical_default_methods_are_reported_as_a_pair() {
 
 // ---- Spec 35 · T2 ----
 
+/// `path` with its symlinks resolved, spelled as the OS reports a working
+/// directory: without the `\\?\` prefix `canonicalize` adds on Windows, so a
+/// run started there sees its files under its own working directory.
+fn os_path(path: &Path) -> PathBuf {
+    let real = path.canonicalize().expect("the path exists");
+    let shown = real.display().to_string();
+    PathBuf::from(shown.strip_prefix(r"\\?\").unwrap_or(&shown))
+}
+
 /// A run over `dir` with duplicate detection on, in `format`, plus `extra`.
 fn duplicates_run(
     dir: &Path,
@@ -4976,7 +4985,7 @@ fn duplicate_locations_are_relative_to_the_working_directory() {
     // Given a tree with three duplicate pairs, analysed by its absolute path
     // from inside it
     let dir = three_pairs_tree();
-    let root = dir.path().canonicalize().expect("the tree exists");
+    let root = os_path(dir.path());
     // When I run `cargo crap --duplicates --format markdown` there
     let out = crap()
         .current_dir(&root)
@@ -5170,7 +5179,7 @@ fn the_provider_line_names_whichever_provider_answered() {
 fn function_names_link_to_the_source() {
     // Given --repo-url and --commit-ref are set
     let dir = three_pairs_tree();
-    let root = dir.path().canonicalize().expect("the tree exists");
+    let root = os_path(dir.path());
     let links = [
         "--repo-url",
         "https://github.com/o/r",

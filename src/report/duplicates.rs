@@ -1077,10 +1077,12 @@ mod tests {
     #[test]
     fn function_names_link_to_the_source() {
         use crate::report::SourceLinks;
-        let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into());
+        let root = std::env::temp_dir().join("work");
+        let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into()).with_root(root);
+        let outside = std::env::temp_dir().join("elsewhere").join("b.rs");
         let pairs = [DuplicatePair {
             first: at("src/a.rs", 1, "a"),
-            second: at("/elsewhere/b.rs", 20, "b"),
+            second: at(&outside.display().to_string(), 20, "b"),
             score: 1.0,
         }];
         let opts = crate::report::RenderOptions {
@@ -1100,21 +1102,25 @@ mod tests {
     #[test]
     fn a_name_links_through_the_same_working_directory_as_its_location() {
         use crate::report::SourceLinks;
-        let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into())
-            .with_root(PathBuf::from("/work"));
+        // Absolute on every platform: `/work` has no drive on Windows.
+        let root = std::env::temp_dir().join("work");
+        let links =
+            SourceLinks::new("https://github.com/o/r".into(), "abc".into()).with_root(root.clone());
+        let file = |name: &str| root.join("src").join(name).display().to_string();
         let pairs = [DuplicatePair {
-            first: at("/work/src/a.rs", 1, "a"),
-            second: at("/work/src/b.rs", 20, "b"),
+            first: at(&file("a.rs"), 1, "a"),
+            second: at(&file("b.rs"), 20, "b"),
             score: 1.0,
         }];
         let opts = crate::report::RenderOptions {
             links: Some(&links),
             duplicates: Some(&pairs),
-            ..at_work()
+            cwd: &root,
+            ..Default::default()
         };
         let mut buf = Vec::new();
         render_table(&opts, None, &mut buf).expect("a Vec writer cannot fail");
-        let out = String::from_utf8(buf).expect("utf-8");
+        let out = String::from_utf8(buf).expect("utf-8").replace('\\', "/");
         assert!(
             out.contains(
                 "| [`a`](https://github.com/o/r/blob/abc/src/a.rs#L1) ↔ \
