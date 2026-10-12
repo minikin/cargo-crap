@@ -1457,12 +1457,15 @@ fn duplicate_pairs(
     if !settings.enabled {
         return Ok(None);
     }
-    // Only two formats can carry the pairs. Paying for a quadratic sweep and
+    // Only four formats can carry the pairs. Paying for a quadratic sweep and
     // then discarding it silently is worse than saying so and skipping it.
-    if !matches!(format, Format::Human | Format::Json) {
+    if !matches!(
+        format,
+        Format::Human | Format::Json | Format::Markdown | Format::PrComment
+    ) {
         eprintln!(
             "warning: --duplicates has no effect with this format; \
-             use --format human or --format json"
+             use --format human, json, markdown or pr-comment"
         );
         return Ok(None);
     }
@@ -1830,6 +1833,7 @@ fn run() -> Result<ExitCode> {
             sliced: is_sliced(min, top),
             delta_counts: None,
             width: output_width(cli.output.is_none()),
+            cwd: &knobs.cwd,
         },
         epsilon,
         summary: cli.summary,

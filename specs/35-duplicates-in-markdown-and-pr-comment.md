@@ -53,7 +53,8 @@ Then  the report ends with a section headed "3 duplicate candidates"
 And   the section is a table with one row per pair
 And   each row shows the similarity with two decimals
 And   each row names both functions joined by `↔`, and gives each one's
-      `<path>:<start>-<end>`, spelled as the report's CRAP rows spell paths
+      `<path>:<start>-<end>`, relative to the working directory when the
+      path is under it
 And   the table has no marker, verdict or confidence column
 And   there is no summary line and no provider line
 And   no "--duplicates has no effect" warning is printed
@@ -234,8 +235,8 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
 Acceptance tests go in `tests/acceptance.rs` under a `Spec 35` heading,
 each task under its own `Spec 35 · Tn` subheading.
 
-- [x] **T1 — The GFM duplicate section, untriaged.** A renderer in `src/report/duplicates.rs` beside the human one: the `## N duplicate candidates` heading, a `Pair` and `Similarity` table with both names joined by `↔` and their `path:start-end` under them, the pairs in `sort_pairs` order, an optional row cap with the existing truncation footer (moved to `report/types.rs`), and "No candidate duplicates found." for an empty list. Paths go through one shared helper that spells them as the CRAP rows do. Scenarios: _Pairs are listed in the same order as the human section; The markdown report lists every pair; The PR comment caps its duplicate rows_. Tests: unit + property (rows equal the pair count, or `min(pairs, cap)` with a cap; the heading counts every pair; row order equals `sort_pairs`; a `|` in a path never adds a column).
-- [ ] **T2 — markdown and pr-comment carry the pairs.** Needs: T1. `duplicate_pairs` in `src/main.rs` lets `Markdown` and `PrComment` through and keeps the warning for the rest, naming the four carrying formats. `render_duplicates` in `src/report.rs` writes T1's section for both formats: every pair in markdown, capped in pr-comment, nothing in pr-comment for zero pairs. The two acceptance tests that use markdown for the "no effect" warning switch to sarif (the spec 30 amendment). Scenarios: _The markdown report ends with the duplicate pairs; The PR comment ends with the duplicate pairs; No pairs in markdown says so; No pairs in a PR comment adds nothing; Detection off leaves the reports unchanged; Formats with no place for duplicates still say so; The exit code ignores the duplicate section_. Tests: unit + acceptance.
+- [x] **T1 — The GFM duplicate section, untriaged.** A renderer in `src/report/duplicates.rs` beside the human one: the `## N duplicate candidates` heading, a `Pair` and `Similarity` table with both names joined by `↔` and their `path:start-end` under them, the pairs in `sort_pairs` order, an optional row cap with the existing truncation footer (moved to `report/types.rs`), and "No candidate duplicates found." for an empty list. Paths go through one shared helper, relative to the working directory. Scenarios: _Pairs are listed in the same order as the human section; The markdown report lists every pair; The PR comment caps its duplicate rows_. Tests: unit + property (rows equal the pair count, or `min(pairs, cap)` with a cap; the heading counts every pair; row order equals `sort_pairs`; a `|` in a path never adds a column).
+- [x] **T2 — markdown and pr-comment carry the pairs.** Needs: T1. `duplicate_pairs` in `src/main.rs` lets `Markdown` and `PrComment` through and keeps the warning for the rest, naming the four carrying formats. `render_duplicates` in `src/report.rs` writes T1's section for both formats: every pair in markdown, capped in pr-comment, nothing in pr-comment for zero pairs. The two acceptance tests that use markdown for the "no effect" warning switch to sarif (the spec 30 amendment). Scenarios: _The markdown report ends with the duplicate pairs; The PR comment ends with the duplicate pairs; No pairs in markdown says so; No pairs in a PR comment adds nothing; Detection off leaves the reports unchanged; Formats with no place for duplicates still say so; The exit code ignores the duplicate section_. Tests: unit + acceptance.
 - [ ] **T3 — The section follows the delta report and the summary.** Needs: T2. Both markdown and pr-comment delta renderers, and the `--summary` path, end with the section. Scenarios: _The section follows a delta report too; The section follows the summary too_. Tests: acceptance.
 - [ ] **T4 — Verdict columns.** Needs: T2. With exactly one assessment per pair, T1's table gains a marker, a verdict (`kind · worth`, labelled as the human section labels them) and a confidence column (five-segment bar and two decimals), and a summary line under the heading counts the pairs per level. Markers: 🔴 should-be-one (verdict in bold), 🟡 worthwhile, 🔵 optional, ⚪ leave-it, none for `uncertain`. Any other assessment count leaves the table untriaged. Scenarios: _A verdict worth merging is in bold; An uncertain verdict says so; Triage that failed leaves the table untriaged_. Tests: unit + property (the verdict columns and the summary line appear exactly when the assessment count equals the pair count, and the summary counts add up to the pair count) + acceptance (failure against the stub).
 - [ ] **T5 — The provider line.** Needs: T4. `RenderOptions` gains a field with the answering provider's `display_name()` and model, set in `src/main.rs` only when triage produced assessments. The section prints `<sub>Triaged by <provider> (`<model>`).</sub>` under a triaged table. Scenarios: _A triaged run adds the verdict, the worth and the confidence; The provider line names whichever provider answered_. Tests: unit + acceptance (both providers against the stub).
@@ -269,9 +270,9 @@ heading is `##`, a peer of each format's CRAP headline. A triaged section:
 
 | | Pair | Similarity | Verdict | Confidence |
 |---|---|---:|---|---|
-| 🔴 | `order_total` ↔ `quote_total`<br><sub>src/lib.rs:22-31 · src/lib.rs:34-43</sub> | 1.00 | **same-logic · should-be-one** | ▰▰▰▰▰ 0.99 |
-| 🟡 | `shipped_weight` ↔ `shipped_volume`<br><sub>src/lib.rs:46-54 · src/lib.rs:57-65</sub> | 1.00 | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 |
-| ⚪ | `write_receipt` ↔ `write_shipping_label`<br><sub>src/lib.rs:68-79 · src/lib.rs:82-93</sub> | 0.84 | shared-shape-only · leave-it | ▰▰▰▱▱ 0.64 |
+| 🔴 | `order_total` ↔ `quote_total`<br><sub>`src/lib.rs:22-31` · `src/lib.rs:34-43`</sub> | 1.00 | **same-logic · should-be-one** | ▰▰▰▰▰ 0.99 |
+| 🟡 | `shipped_weight` ↔ `shipped_volume`<br><sub>`src/lib.rs:46-54` · `src/lib.rs:57-65`</sub> | 1.00 | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 |
+| ⚪ | `write_receipt` ↔ `write_shipping_label`<br><sub>`src/lib.rs:68-79` · `src/lib.rs:82-93`</sub> | 0.84 | shared-shape-only · leave-it | ▰▰▰▱▱ 0.64 |
 
 <sub>Triaged by OpenAI Decisions API (`gpt-6-luna`).</sub>
 ```
@@ -286,10 +287,12 @@ levels present in that order, then uncertain. The labels come from the same
 verdict reads the same everywhere. The footer follows the PR comment's
 existing sections.
 
-**Paths.** Locations are spelled as the report's CRAP rows spell them:
-relative to the working directory when they are under it, as the
-source-link URLs already are (spec 12), through one shared helper. They are
-not stripped by the CRAP table's longest common prefix: a pair's two sides
+**Paths.** Locations are shown relative to the working directory when
+they are under it, as `--format github` and the source-link URLs (spec 12)
+already show them, through one shared helper, and as code spans so no
+character in a path reads as markdown. The caller resolves the working
+directory once and passes it in `RenderOptions`. Locations are not
+stripped by the CRAP table's longest common prefix: a pair's two sides
 often sit in different files, and a bare `:22` would not say which.
 
 **Invariants worth a property test.** For any list of pairs:

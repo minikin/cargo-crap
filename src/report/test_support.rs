@@ -111,3 +111,37 @@ pub(crate) fn fractional_cc_delta() -> DeltaReport {
         removed: vec![],
     }
 }
+
+/// A sink that keeps every write except one containing `refused`, which
+/// fails as a full disk would.
+pub(crate) struct Refuses {
+    refused: &'static str,
+    /// What was written before the refusal.
+    pub(crate) written: Vec<u8>,
+}
+
+impl Refuses {
+    pub(crate) fn new(refused: &'static str) -> Self {
+        Self {
+            refused,
+            written: Vec::new(),
+        }
+    }
+}
+
+impl std::io::Write for Refuses {
+    fn write(
+        &mut self,
+        buf: &[u8],
+    ) -> std::io::Result<usize> {
+        if String::from_utf8_lossy(buf).contains(self.refused) {
+            return Err(std::io::Error::other("disk full"));
+        }
+        self.written.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}

@@ -24,6 +24,7 @@ use crate::merge::{CrapEntry, ScopeDiagnostics};
 use crate::score::Severity;
 use anyhow::{Result, bail};
 use std::io::Write;
+use std::path::Path;
 
 pub mod duplicates;
 mod github;
@@ -117,8 +118,8 @@ pub struct RenderOptions<'a> {
     pub uncovered_hints: bool,
     /// Candidate duplicate pairs, already ordered. `None` means detection
     /// was not asked for. Read by the JSON renderer, which embeds them in
-    /// its envelope, and by [`render_duplicates`], which appends the human
-    /// section; no other format carries duplicates.
+    /// its envelope, and by [`render_duplicates`], which appends the human,
+    /// markdown and pr-comment sections.
     pub duplicates: Option<&'a [DuplicatePair]>,
     /// The `?` weight the entries were analyzed under. Only the JSON
     /// renderers read it, recording it in the envelope when it is not
@@ -143,6 +144,9 @@ pub struct RenderOptions<'a> {
     /// for no limit (see [`output_width`]). Only the human renderer reads
     /// it.
     pub width: Option<usize>,
+    /// The working directory, resolved once by the caller: the duplicate
+    /// table shows paths relative to it. Empty shows every path as given.
+    pub cwd: &'a Path,
 }
 
 impl Default for RenderOptions<'_> {
@@ -163,6 +167,7 @@ impl Default for RenderOptions<'_> {
             sliced: false,
             delta_counts: None,
             width: None,
+            cwd: Path::new(""),
         }
     }
 }
@@ -257,10 +262,11 @@ pub fn render_delta(
 /// second analysis rather than a second view of the same entries — it has to
 /// follow whichever table was printed, including the `--summary` one.
 ///
-/// `None` duplicates means detection was not asked for. Only `human` prints
-/// the section: JSON carries the pairs inside its envelope, where appending
-/// text after the document would leave the output unparseable, and no other
-/// format carries duplicates at all.
+/// `None` duplicates means detection was not asked for. `human` prints the
+/// text section, and `markdown` and `pr-comment` a GFM table, the PR
+/// comment's capped and left out when there is no pair. JSON carries the
+/// pairs inside its envelope, where appending text after the document would
+/// leave the output unparseable, and the other formats carry none.
 ///
 /// # Errors
 ///
@@ -272,11 +278,40 @@ pub fn render_duplicates(
     let Some(pairs) = opts.duplicates else {
         return Ok(());
     };
-    if !matches!(opts.format, Format::Human) {
-        return Ok(());
+    write_duplicate_section(pairs, opts, out)
+}
+
+/// The duplicate section in `opts.format`, for a run that asked for one.
+fn write_duplicate_section(
+    pairs: &[DuplicatePair],
+    opts: &RenderOptions,
+    out: &mut dyn Write,
+) -> Result<()> {
+    match opts.format {
+        Format::Human => {
+            writeln!(out)?;
+            duplicates::render(pairs, opts.triage, out)
+        },
+        Format::Markdown => duplicate_table(pairs, None, opts.cwd, out),
+        // A comment with nothing to say about duplicates says nothing.
+        Format::PrComment if pairs.is_empty() => Ok(()),
+        Format::PrComment => {
+            duplicate_table(pairs, Some(pr_comment::MAX_ROWS_PER_SECTION), opts.cwd, out)
+        },
+        Format::Json | Format::GitHub | Format::Sarif | Format::Shields => Ok(()),
     }
+}
+
+/// The GFM duplicate section, after a blank line, with paths relative to
+/// `cwd`.
+fn duplicate_table(
+    pairs: &[DuplicatePair],
+    cap: Option<usize>,
+    cwd: &Path,
+    out: &mut dyn Write,
+) -> Result<()> {
     writeln!(out)?;
-    duplicates::render(pairs, opts.triage, out)
+    duplicates::render_table(pairs, cap, cwd, out)
 }
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR

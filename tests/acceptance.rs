@@ -1101,20 +1101,31 @@ fn a_request_carries_exactly_the_pair_under_judgment() {
     }
 }
 
-#[test]
-fn triage_never_runs_for_a_format_that_cannot_carry_duplicates() {
+/// A sarif run over three pairs with triage enabled and a key, against a
+/// stub API: its stderr and how many requests reached the API. Shared by
+/// specs 30 and 35, which both say a format with no place for duplicates
+/// warns and asks nothing.
+fn sarif_run_with_triage() -> (String, usize) {
     use support::api_stub::{ApiStub, Reply};
-    // Given triage is enabled and the API key is set
-    // And the output format is sarif
     let dir = three_pairs_tree();
     let stub = ApiStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
-    // When cargo-crap runs
     let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &["--format", "sarif"]);
+    (
+        String::from_utf8(out.stderr).expect("utf-8"),
+        stub.request_count(),
+    )
+}
+
+#[test]
+fn triage_never_runs_for_a_format_that_cannot_carry_duplicates() {
+    // Given triage is enabled and the API key is set
+    // And the output format is sarif
+    // When cargo-crap runs
+    let (stderr, requests) = sarif_run_with_triage();
     // Then the existing warning that --duplicates has no effect is printed
-    let stderr = String::from_utf8(out.stderr).expect("utf-8");
     assert!(stderr.contains("--duplicates has no effect"), "{stderr}");
     // And no network request is made
-    assert_eq!(stub.request_count(), 0);
+    assert_eq!(requests, 0);
 }
 
 #[cfg(not(feature = "triage"))]
@@ -4772,4 +4783,190 @@ fn two_traits_structurally_identical_default_methods_are_reported_as_a_pair() {
         !section.contains("need_first") && !section.contains("need_second"),
         "{stdout}"
     );
+}
+
+// ── Spec 35: duplicate candidates in markdown and pr-comment ─────────────
+
+// ---- Spec 35 · T2 ----
+
+/// A run over `dir` with duplicate detection on, in `format`, plus `extra`.
+fn duplicates_run(
+    dir: &Path,
+    format: &str,
+    extra: &[&str],
+) -> std::process::Output {
+    crap()
+        .args(["--path", dir.to_str().expect("utf-8"), "--format", format])
+        .args(extra)
+        .output()
+        .expect("the binary runs")
+}
+
+/// A tree with one function and so no pair.
+fn no_pairs_tree() -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    write(
+        dir.path(),
+        "only.rs",
+        "fn solo(xs: &[i32]) -> Vec<i32> {
+    let mut ys = Vec::new();
+    for x in xs {
+        if x % 2 == 1 {
+            ys.push(x + 1);
+        }
+    }
+    ys
+}
+",
+    );
+    dir
+}
+
+/// Assert `stdout` ends with an untriaged three-pair section after the CRAP
+/// report, and `stderr` has no "no effect" warning.
+fn assert_ends_with_three_pairs(out: &std::process::Output) {
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf-8");
+    let stderr = String::from_utf8(out.stderr.clone()).expect("utf-8");
+    let at = stdout
+        .find("## 3 duplicate candidates\n")
+        .unwrap_or_else(|| panic!("a section headed with the count: {stdout}"));
+    assert!(
+        stdout[..at].contains("CRAP"),
+        "after the CRAP report: {stdout}"
+    );
+    let section = &stdout[at..];
+    let rows: Vec<&str> = section
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .skip(2)
+        .collect();
+    assert_eq!(rows.len(), 3, "one row per pair: {section}");
+    for row in &rows {
+        assert!(
+            row.ends_with(" | 1.00 |"),
+            "the similarity with two decimals: {row}"
+        );
+        assert!(
+            row.contains("` ↔ `") && row.contains("three.rs:"),
+            "both sides: {row}"
+        );
+    }
+    assert_eq!(
+        section.trim_end().lines().last(),
+        rows.last().copied(),
+        "the report ends with the section: {stdout}"
+    );
+    assert!(section.contains("| Pair | Similarity |\n"), "{section}");
+    assert!(
+        !section.contains("Verdict") && !section.contains("Triaged by"),
+        "{section}"
+    );
+    assert!(!stderr.contains("--duplicates has no effect"), "{stderr}");
+}
+
+#[test]
+fn the_markdown_report_ends_with_the_duplicate_pairs() {
+    // Given a tree with three duplicate pairs
+    // And duplicate detection is on and triage is off
+    let dir = three_pairs_tree();
+    // When I run `cargo crap --duplicates --format markdown`
+    let out = duplicates_run(dir.path(), "markdown", &["--duplicates"]);
+    // Then the report ends with a section headed "3 duplicate candidates",
+    // one row per pair, the similarity, both sides, and no verdict columns
+    assert_ends_with_three_pairs(&out);
+}
+
+#[test]
+fn the_pr_comment_ends_with_the_duplicate_pairs() {
+    // Given a tree with three duplicate pairs
+    // And duplicate detection is on and triage is off
+    let dir = three_pairs_tree();
+    // When I run `cargo crap --duplicates --format pr-comment`
+    let out = duplicates_run(dir.path(), "pr-comment", &["--duplicates"]);
+    // Then the comment ends with the same section as markdown
+    assert_ends_with_three_pairs(&out);
+}
+
+#[test]
+fn no_pairs_in_markdown_says_so() {
+    // Given a tree with no duplicate pairs
+    let dir = no_pairs_tree();
+    // When I run `cargo crap --duplicates --format markdown`
+    let out = duplicates_run(dir.path(), "markdown", &["--duplicates"]);
+    // Then the report ends with "No candidate duplicates found."
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    assert!(
+        stdout
+            .trim_end()
+            .ends_with("No candidate duplicates found."),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn no_pairs_in_a_pr_comment_adds_nothing() {
+    // Given a tree with no duplicate pairs
+    let dir = no_pairs_tree();
+    // When I run `cargo crap --duplicates --format pr-comment`
+    let with = duplicates_run(dir.path(), "pr-comment", &["--duplicates"]);
+    let without = duplicates_run(dir.path(), "pr-comment", &[]);
+    // Then the comment is the same as a run without --duplicates
+    assert_eq!(
+        String::from_utf8(with.stdout).expect("utf-8"),
+        String::from_utf8(without.stdout).expect("utf-8")
+    );
+}
+
+#[test]
+fn detection_off_leaves_the_reports_unchanged() {
+    // Given duplicate detection is off
+    let dir = three_pairs_tree();
+    for format in ["markdown", "pr-comment"] {
+        // When I run cargo crap in markdown and in pr-comment
+        let out = duplicates_run(dir.path(), format, &[]);
+        // Then neither output has a duplicate section
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        assert!(
+            !stdout.contains("duplicate candidate"),
+            "{format}: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn formats_with_no_place_for_duplicates_still_say_so() {
+    // Given duplicate detection is on and triage is enabled with a key
+    // When I run `cargo crap --duplicates --format sarif`
+    let (stderr, requests) = sarif_run_with_triage();
+    // Then the warning names the four formats that carry duplicates
+    assert!(
+        stderr.contains(
+            "--duplicates has no effect with this format; use --format human, json, markdown or pr-comment"
+        ),
+        "{stderr}"
+    );
+    // And no network request is made
+    assert_eq!(requests, 0);
+}
+
+#[test]
+fn the_exit_code_ignores_the_duplicate_section() {
+    let dir = three_pairs_tree();
+    for format in ["markdown", "pr-comment"] {
+        for threshold in ["1000", "0"] {
+            // Given a run that passes, or fails, the CRAP gate
+            let gate = ["--threshold", threshold, "--fail-above"];
+            let plain = duplicates_run(dir.path(), format, &gate);
+            // When the same run adds --duplicates
+            let mut extra = gate.to_vec();
+            extra.push("--duplicates");
+            let with = duplicates_run(dir.path(), format, &extra);
+            // Then the exit code is the same
+            assert_eq!(
+                with.status.code(),
+                plain.status.code(),
+                "{format} at {threshold}"
+            );
+        }
+    }
 }

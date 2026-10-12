@@ -250,6 +250,7 @@ mod tests {
     use super::super::{Format, RenderOptions, render};
     use super::*;
     use crate::delta::DeltaStatus;
+    use crate::report::test_support::Refuses;
     use std::path::PathBuf;
 
     #[test]
@@ -601,26 +602,6 @@ mod tests {
         );
     }
 
-    /// A sink that accepts everything except a line naming `refused_row`.
-    struct RefusesRow(Vec<u8>);
-
-    impl Write for RefusesRow {
-        fn write(
-            &mut self,
-            buf: &[u8],
-        ) -> std::io::Result<usize> {
-            if String::from_utf8_lossy(buf).contains("refused_row") {
-                return Err(std::io::Error::other("disk full"));
-            }
-            self.0.extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     #[test]
     fn a_delta_row_that_cannot_be_written_is_an_error() {
         let report = DeltaReport {
@@ -642,7 +623,7 @@ mod tests {
             }],
             removed: vec![],
         };
-        let mut sink = RefusesRow(Vec::new());
+        let mut sink = Refuses::new("refused_row");
         let result = render_delta_markdown(
             &report,
             30.0,
@@ -653,7 +634,7 @@ mod tests {
             &mut sink,
         );
         assert!(result.is_err(), "the write failure must surface");
-        let written = String::from_utf8(sink.0).unwrap();
+        let written = String::from_utf8(sink.written).unwrap();
         assert!(!written.contains("regressed ·"), "{written}");
     }
 }

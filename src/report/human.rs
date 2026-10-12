@@ -628,7 +628,7 @@ fn delta_cell(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{opts, sample};
+    use super::super::test_support::{Refuses, opts, sample};
     use super::super::{Format, RenderOptions, render};
     use super::*;
     use crate::coverage::LineRange;
@@ -1636,32 +1636,12 @@ mod tests {
         }
     }
 
-    /// A sink that accepts everything except the footer line.
-    struct RefusesFooter(Vec<u8>);
-
-    impl Write for RefusesFooter {
-        fn write(
-            &mut self,
-            buf: &[u8],
-        ) -> std::io::Result<usize> {
-            if String::from_utf8_lossy(buf).contains("more below threshold") {
-                return Err(std::io::Error::other("disk full"));
-            }
-            self.0.extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     #[test]
     fn a_footer_that_cannot_be_written_is_an_error() {
-        let mut sink = RefusesFooter(Vec::new());
+        let mut sink = Refuses::new("more below threshold");
         let result = render(&scoring(&[1.0; 11]), &opts(30.0, Format::Human), &mut sink);
         assert!(result.is_err(), "the write failure must surface");
-        let written = String::from_utf8(sink.0).unwrap();
+        let written = String::from_utf8(sink.written).unwrap();
         assert!(!written.contains("function(s) analyzed"), "{written}");
     }
 
@@ -1692,11 +1672,11 @@ mod tests {
 
     #[test]
     fn a_delta_footer_that_cannot_be_written_is_an_error() {
-        let mut sink = RefusesFooter(Vec::new());
+        let mut sink = Refuses::new("more below threshold");
         let report = delta_scoring(&[(1.0, DeltaStatus::New); 11]);
         let result = super::super::render_delta(&report, &opts(30.0, Format::Human), &mut sink);
         assert!(result.is_err(), "the write failure must surface");
-        let written = String::from_utf8(sink.0).unwrap();
+        let written = String::from_utf8(sink.written).unwrap();
         assert!(!written.contains("regressed"), "{written}");
     }
 

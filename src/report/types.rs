@@ -315,16 +315,6 @@ pub(crate) fn shorten_location(
     Cow::Owned(format!("{current}{tail}"))
 }
 
-/// What separates a moved row's current location from its previous file.
-/// `path` relative to `cwd` when it is under it, else `path` as given. The
-/// one spelling of a location every renderer shares.
-pub(crate) fn cwd_relative<'a>(
-    path: &'a Path,
-    cwd: &Path,
-) -> &'a Path {
-    path.strip_prefix(cwd).unwrap_or(path)
-}
-
 /// Write the footer of a section capped below its full length, counting the
 /// rows left out.
 pub(crate) fn write_truncation_footer(
@@ -339,6 +329,15 @@ pub(crate) fn write_truncation_footer(
     Ok(())
 }
 
+/// `path` relative to `cwd` when it is under it, else `path` as given.
+pub(crate) fn cwd_relative<'a>(
+    path: &'a Path,
+    cwd: &Path,
+) -> &'a Path {
+    path.strip_prefix(cwd).unwrap_or(path)
+}
+
+/// What separates a moved row's current location from its previous file.
 pub(crate) const MOVED_ARROW: &str = " ← ";
 
 /// [`shorten_location`] for a bare `<path>:<line>`.

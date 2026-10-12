@@ -58,7 +58,7 @@ pub fn render(
 /// pr-comment formats: a heading counting every pair, then one row per pair
 /// in the order given, at most `cap` of them, with the PR comment's
 /// truncation footer counting the rest. Paths are shown relative to `cwd`
-/// when they are under it, as every renderer shows them.
+/// when they are under it.
 ///
 /// # Errors
 ///
@@ -119,13 +119,14 @@ fn pair_cell(
     )
 }
 
-/// Where one side of a pair is, spelled as the CRAP rows spell paths.
+/// Where one side of a pair is, as a code span so no character in the path
+/// reads as markdown.
 fn location(
     at: &Location,
     cwd: &Path,
 ) -> String {
     format!(
-        "{}:{}-{}",
+        "`{}:{}-{}`",
         cell(&cwd_relative(&at.file, cwd).display().to_string()),
         at.start_line,
         at.end_line
@@ -206,6 +207,7 @@ mod tests {
     use crate::duplicates::compare::find_pairs;
     use crate::duplicates::extract::{FunctionPrint, functions_in_source};
     use crate::duplicates::triage::verdict::{Assessment, Kind, Verdict, WorthExtracting};
+    use crate::report::test_support::Refuses;
     use proptest::prelude::*;
     use std::path::{Path, PathBuf};
 
@@ -447,6 +449,100 @@ mod tests {
         );
     }
 
+    /// `render_duplicates` in `format`, as text.
+    fn dispatched(
+        format: crate::report::Format,
+        pairs: &[DuplicatePair],
+    ) -> String {
+        use crate::report::{RenderOptions, render_duplicates};
+        let mut buf = Vec::new();
+        render_duplicates(
+            &RenderOptions {
+                format,
+                duplicates: Some(pairs),
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .expect("a Vec writer cannot fail");
+        String::from_utf8(buf).expect("utf-8")
+    }
+
+    #[test]
+    fn markdown_and_pr_comment_get_the_table_after_a_blank_line() {
+        use crate::report::Format;
+        for format in [Format::Markdown, Format::PrComment] {
+            let out = dispatched(format, &[pair(1, 0.9)]);
+            assert!(
+                out.starts_with("\n## 1 duplicate candidate\n"),
+                "{format:?}: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_dispatcher_shows_paths_relative_to_the_given_working_directory() {
+        use crate::report::{Format, RenderOptions, render_duplicates};
+        let pairs = [DuplicatePair {
+            first: at("/work/src/a.rs", 1, "a"),
+            second: at("/work/src/b.rs", 20, "b"),
+            score: 1.0,
+        }];
+        let mut buf = Vec::new();
+        render_duplicates(
+            &RenderOptions {
+                format: Format::Markdown,
+                duplicates: Some(&pairs),
+                cwd: Path::new("/work"),
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .expect("a Vec writer cannot fail");
+        let out = String::from_utf8(buf).expect("utf-8");
+        assert!(
+            out.contains("<sub>`src/a.rs:1-10` · `src/b.rs:20-29`</sub>"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn only_markdown_reports_an_empty_result() {
+        use crate::report::Format;
+        assert_eq!(
+            dispatched(Format::Markdown, &[]),
+            "\nNo candidate duplicates found.\n"
+        );
+        assert_eq!(
+            dispatched(Format::PrComment, &[]),
+            "",
+            "a PR comment adds nothing"
+        );
+    }
+
+    #[test]
+    fn the_pr_comment_caps_the_table_and_markdown_does_not() {
+        use crate::report::Format;
+        use crate::report::pr_comment::MAX_ROWS_PER_SECTION;
+        let pairs: Vec<DuplicatePair> = (0..MAX_ROWS_PER_SECTION + 2)
+            .map(|n| pair(n, 0.9))
+            .collect();
+        let rows = |out: &str| body_rows(out).len();
+        assert_eq!(
+            rows(&dispatched(Format::PrComment, &pairs)),
+            MAX_ROWS_PER_SECTION
+        );
+        assert_eq!(rows(&dispatched(Format::Markdown, &pairs)), pairs.len());
+    }
+
+    #[test]
+    fn other_formats_get_no_section() {
+        use crate::report::Format;
+        for format in [Format::GitHub, Format::Sarif, Format::Shields, Format::Json] {
+            assert_eq!(dispatched(format, &[pair(1, 0.9)]), "", "{format:?}");
+        }
+    }
+
     fn assessments() -> impl Strategy<Value = Assessment> {
         prop_oneof![
             (0..Kind::ALL.len(), 0.0..=1.0f64, 0.0..=3.0f64)
@@ -540,7 +636,7 @@ mod tests {
         assert!(out.contains("| Pair | Similarity |\n|---|---:|\n"), "{out}");
         assert_eq!(
             body_rows(&out),
-            ["| `f1_1` ↔ `f1_10`<br><sub>src/f1.rs:1-5 · src/f1.rs:10-14</sub> | 0.95 |"],
+            ["| `f1_1` ↔ `f1_10`<br><sub>`src/f1.rs:1-5` · `src/f1.rs:10-14`</sub> | 0.95 |"],
             "{out}"
         );
     }
@@ -551,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn table_paths_are_spelled_as_the_crap_rows_spell_them() {
+    fn table_paths_are_relative_to_the_working_directory() {
         let pairs = [DuplicatePair {
             first: at("/work/src/a.rs", 1, "a"),
             second: at("./src/b.rs", 20, "b"),
@@ -559,11 +655,11 @@ mod tests {
         }];
         let row = table(&pairs, None);
         assert!(
-            row.contains("<sub>src/a.rs:1-10 · "),
+            row.contains("<sub>`src/a.rs:1-10` · "),
             "under the working directory: {row}"
         );
         assert!(
-            row.contains(" · ./src/b.rs:20-29</sub>"),
+            row.contains(" · `./src/b.rs:20-29`</sub>"),
             "a relative path as given: {row}"
         );
         let outside = [DuplicatePair {
@@ -573,7 +669,7 @@ mod tests {
         }];
         let row = table(&outside, None);
         assert!(
-            row.contains("<sub>/elsewhere/a.rs:1-10 · "),
+            row.contains("<sub>`/elsewhere/a.rs:1-10` · "),
             "outside it stays whole: {row}"
         );
     }
@@ -586,7 +682,7 @@ mod tests {
             score: 1.0,
         }];
         let out = table(&pairs, None);
-        assert!(out.contains(r"<sub>src/a\|b.rs:1-10 · "), "{out}");
+        assert!(out.contains(r"<sub>`src/a\|b.rs:1-10` · "), "{out}");
         assert_eq!(separators(body_rows(&out)[0]), 3, "two cells: {out}");
     }
 
@@ -649,30 +745,16 @@ mod tests {
         );
     }
 
-    /// A sink that accepts everything except a write containing `refused`.
-    struct Refuses(&'static str);
-
-    impl Write for Refuses {
-        fn write(
-            &mut self,
-            buf: &[u8],
-        ) -> std::io::Result<usize> {
-            if String::from_utf8_lossy(buf).contains(self.0) {
-                return Err(std::io::Error::other("disk full"));
-            }
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     #[test]
     fn a_table_that_cannot_be_written_is_an_error() {
         let pairs: Vec<DuplicatePair> = (0..3).map(|n| pair(n, 0.9)).collect();
         for refused in ["f1_1", "more, see CI artifact"] {
-            let result = render_table(&pairs, Some(2), Path::new("/work"), &mut Refuses(refused));
+            let result = render_table(
+                &pairs,
+                Some(2),
+                Path::new("/work"),
+                &mut Refuses::new(refused),
+            );
             assert!(result.is_err(), "a refused {refused:?} write is reported");
         }
     }
