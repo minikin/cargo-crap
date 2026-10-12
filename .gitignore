@@ -102,3 +102,6 @@ mutants.out*/
 
 # insta snapshots awaiting review (`cargo insta review`)
 *.snap.new
+
+# Python bytecode from the scripts under scripts/ and docs/assets/hero/
+__pycache__/
