@@ -6,8 +6,9 @@ use std::path::Path;
 use anyhow::Result;
 use owo_colors::Style;
 
-use super::TriagedBy;
+use super::links::linkify;
 use super::types::{bar, cwd_relative, styled};
+use super::{RenderOptions, SourceLinks, TriagedBy};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
 use crate::duplicates::triage::verdict::{Assessment, WorthExtracting};
@@ -55,38 +56,38 @@ pub fn render(
     Ok(())
 }
 
-/// Render the duplicate section as a GFM table, for the markdown and
+/// Render `opts.duplicates` as a GFM table, for the markdown and
 /// pr-comment formats: a heading counting every pair, then one row per pair
-/// in the order given, at most `cap` of them, with the PR comment's
-/// truncation footer counting the rest. Paths are shown relative to `cwd`
-/// when they are under it. With exactly one assessment per pair, a summary
+/// in the order given, at most `cap` of them (a positive count, or `None`
+/// for every pair), with the PR comment's
+/// truncation footer counting the rest. Paths are shown relative to
+/// `opts.cwd` when they are under it, and names link to their source when
+/// `opts.links` is set. With exactly one assessment per pair, a summary
 /// line counts the verdicts and the table gains a marker, a verdict and a
-/// confidence column, and `triaged_by` is named under the table. Any other
+/// confidence column, and `opts.triaged_by` is named under the table. Any other
 /// count leaves the table untriaged, as the human section does.
 ///
 /// # Errors
 ///
 /// Returns an error when the writer does.
 pub fn render_table(
-    pairs: &[DuplicatePair],
-    triage: Option<&[Assessment]>,
-    triaged_by: Option<TriagedBy<'_>>,
+    opts: &RenderOptions,
     cap: Option<usize>,
-    cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
+    let pairs = opts.duplicates.unwrap_or_default();
     if pairs.is_empty() {
         writeln!(out, "No candidate duplicates found.")?;
         return Ok(());
     }
     writeln!(out, "## {} duplicate {}\n", pairs.len(), noun(pairs.len()))?;
     let shown = cap.unwrap_or(pairs.len()).min(pairs.len());
-    let triage = covering(triage, pairs.len());
-    write_table_body(pairs, triage, shown, cwd, out)?;
+    let triage = covering(opts.triage, pairs.len());
+    write_table_body(pairs, triage, shown, opts, out)?;
     if pairs.len() > shown {
         super::types::write_truncation_footer(out, pairs.len() - shown)?;
     }
-    write_provider_line(triage.and(triaged_by), out)
+    write_provider_line(triage.and(opts.triaged_by), out)
 }
 
 /// The line naming who triaged the table, when it is triaged and someone is
@@ -100,7 +101,7 @@ fn write_provider_line(
             out,
             "\n<sub>Triaged by {} ({}).</sub>",
             by.provider,
-            code_span(by.model)
+            fenced(by.model)
         )?;
     }
     Ok(())
@@ -112,13 +113,13 @@ fn write_table_body(
     pairs: &[DuplicatePair],
     triage: Option<&[Assessment]>,
     shown: usize,
-    cwd: &Path,
+    opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
     if let Some(triage) = triage {
         writeln!(out, "{}\n", summary_line(triage))?;
     }
-    write_rows(&pairs[..shown], triage.map(|t| &t[..shown]), cwd, out)
+    write_rows(&pairs[..shown], triage.map(|t| &t[..shown]), opts, out)
 }
 
 /// `triage` when it has exactly one assessment per pair, else nothing: all
@@ -142,7 +143,7 @@ const TRIAGED_HEADER: &str =
 fn write_rows(
     pairs: &[DuplicatePair],
     triage: Option<&[Assessment]>,
-    cwd: &Path,
+    opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
     let header = if triage.is_some() {
@@ -152,7 +153,7 @@ fn write_rows(
     };
     writeln!(out, "{header}")?;
     for (n, pair) in pairs.iter().enumerate() {
-        writeln!(out, "{}", table_row(pair, triage.map(|t| &t[n]), cwd))?;
+        writeln!(out, "{}", table_row(pair, triage.map(|t| &t[n]), opts))?;
     }
     Ok(())
 }
@@ -162,9 +163,9 @@ fn write_rows(
 fn table_row(
     pair: &DuplicatePair,
     assessment: Option<&Assessment>,
-    cwd: &Path,
+    opts: &RenderOptions,
 ) -> String {
-    let shared = format!("{} | {:.2}", pair_cell(pair, cwd), pair.score);
+    let shared = format!("{} | {:.2}", pair_cell(pair, opts), pair.score);
     let Some(assessment) = assessment else {
         return format!("| {shared} |");
     };
@@ -265,19 +266,29 @@ fn noun(count: usize) -> &'static str {
     }
 }
 
-/// A pair in one table cell: both names joined by an arrow, and both
-/// locations in small type under them.
+/// A pair in one table cell: both names joined by an arrow, each linked to
+/// its source when links are configured, and both locations in small type
+/// under them.
 fn pair_cell(
     pair: &DuplicatePair,
-    cwd: &Path,
+    opts: &RenderOptions,
 ) -> String {
     format!(
         "{} ↔ {}<br><sub>{} · {}</sub>",
-        code_span(&pair.first.name),
-        code_span(&pair.second.name),
-        location(&pair.first, cwd),
-        location(&pair.second, cwd)
+        name(&pair.first, opts.links),
+        name(&pair.second, opts.links),
+        location(&pair.first, opts.cwd),
+        location(&pair.second, opts.cwd)
     )
+}
+
+/// One side's name as a code span, linked to its first line when `links` is
+/// set and its path can be made repo-relative.
+fn name(
+    at: &Location,
+    links: Option<&SourceLinks>,
+) -> String {
+    linkify(code_span(&at.name), links, &at.file, at.start_line)
 }
 
 /// Where one side of a pair is, as a code span so no character in the path
@@ -295,10 +306,15 @@ fn location(
 }
 
 /// `text` as a GFM code span that is safe inside a table cell: its `|`
-/// escaped, and fenced with more backticks than its longest run of them, so
-/// a backtick in the text cannot close the span.
+/// escaped, then [`fenced`].
 fn code_span(text: &str) -> String {
-    let text = text.replace('|', "\\|");
+    fenced(&text.replace('|', "\\|"))
+}
+
+/// `text` as a GFM code span, fenced with more backticks than its longest
+/// run of them, so a backtick in the text cannot close the span. Outside a
+/// table no other escaping is needed.
+fn fenced(text: &str) -> String {
     let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
     if longest == 0 {
         return format!("`{text}`");
@@ -751,6 +767,15 @@ mod tests {
 
     // ---- The GFM table (markdown and pr-comment) ----
 
+    /// Render options for the GFM table, against `/work` as the working
+    /// directory.
+    fn at_work<'a>() -> crate::report::RenderOptions<'a> {
+        crate::report::RenderOptions {
+            cwd: Path::new("/work"),
+            ..Default::default()
+        }
+    }
+
     /// The GFM section as text, rendered against `/work` as the working
     /// directory.
     fn table(
@@ -758,8 +783,11 @@ mod tests {
         cap: Option<usize>,
     ) -> String {
         let mut buf = Vec::new();
-        render_table(pairs, None, None, cap, Path::new("/work"), &mut buf)
-            .expect("a Vec writer cannot fail");
+        let opts = crate::report::RenderOptions {
+            duplicates: Some(pairs),
+            ..at_work()
+        };
+        render_table(&opts, cap, &mut buf).expect("a Vec writer cannot fail");
         String::from_utf8(buf).expect("the section is utf-8")
     }
 
@@ -921,14 +949,12 @@ mod tests {
         let triage = [asserted(Kind::SameLogic, 0.9, 3.0); 3];
         for refused in ["Similarity", "f1_1", "more, see CI artifact"] {
             for verdicts in [None, Some(&triage[..])] {
-                let result = render_table(
-                    &pairs,
-                    verdicts,
-                    None,
-                    Some(2),
-                    Path::new("/work"),
-                    &mut Refuses::new(refused),
-                );
+                let opts = crate::report::RenderOptions {
+                    duplicates: Some(&pairs),
+                    triage: verdicts,
+                    ..at_work()
+                };
+                let result = render_table(&opts, Some(2), &mut Refuses::new(refused));
                 assert!(result.is_err(), "a refused {refused:?} write is reported");
             }
         }
@@ -943,8 +969,12 @@ mod tests {
         cap: Option<usize>,
     ) -> String {
         let mut buf = Vec::new();
-        render_table(pairs, Some(triage), None, cap, Path::new("/work"), &mut buf)
-            .expect("a Vec writer cannot fail");
+        let opts = crate::report::RenderOptions {
+            duplicates: Some(pairs),
+            triage: Some(triage),
+            ..at_work()
+        };
+        render_table(&opts, cap, &mut buf).expect("a Vec writer cannot fail");
         String::from_utf8(buf).expect("the section is utf-8")
     }
 
@@ -989,15 +1019,13 @@ mod tests {
         };
         let render = |pairs: &[DuplicatePair], triage: &[Assessment], by: Option<TriagedBy<'_>>| {
             let mut buf = Vec::new();
-            render_table(
-                pairs,
-                Some(triage),
-                by,
-                Some(2),
-                Path::new("/work"),
-                &mut buf,
-            )
-            .expect("a Vec writer cannot fail");
+            let opts = crate::report::RenderOptions {
+                duplicates: Some(pairs),
+                triage: Some(triage),
+                triaged_by: by,
+                ..at_work()
+            };
+            render_table(&opts, Some(2), &mut buf).expect("a Vec writer cannot fail");
             String::from_utf8(buf).expect("utf-8")
         };
         let (pairs, triage) = one_per_level();
@@ -1017,15 +1045,65 @@ mod tests {
             !render(&pairs, &triage, None).contains("Triaged by"),
             "nobody named"
         );
-        let refused = render_table(
-            &pairs,
-            Some(&triage),
-            Some(by),
-            None,
-            Path::new("/work"),
-            &mut Refuses::new("Triaged by"),
-        );
+        let opts = crate::report::RenderOptions {
+            duplicates: Some(&pairs),
+            triage: Some(&triage),
+            triaged_by: Some(by),
+            ..at_work()
+        };
+        let refused = render_table(&opts, None, &mut Refuses::new("Triaged by"));
         assert!(refused.is_err(), "a refused provider line is reported");
+    }
+
+    #[test]
+    fn function_names_link_to_the_source() {
+        use crate::report::SourceLinks;
+        let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into());
+        let pairs = [DuplicatePair {
+            first: at("src/a.rs", 1, "a"),
+            second: at("/elsewhere/b.rs", 20, "b"),
+            score: 1.0,
+        }];
+        let opts = crate::report::RenderOptions {
+            links: Some(&links),
+            duplicates: Some(&pairs),
+            ..at_work()
+        };
+        let mut buf = Vec::new();
+        render_table(&opts, None, &mut buf).expect("a Vec writer cannot fail");
+        let out = String::from_utf8(buf).expect("utf-8");
+        assert!(
+            out.contains("| [`a`](https://github.com/o/r/blob/abc/src/a.rs#L1) ↔ `b`<br>"),
+            "a repo-relative path links, one outside the repo stays plain: {out}"
+        );
+    }
+
+    #[test]
+    fn a_name_links_through_the_same_working_directory_as_its_location() {
+        use crate::report::SourceLinks;
+        let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into())
+            .with_root(PathBuf::from("/work"));
+        let pairs = [DuplicatePair {
+            first: at("/work/src/a.rs", 1, "a"),
+            second: at("/work/src/b.rs", 20, "b"),
+            score: 1.0,
+        }];
+        let opts = crate::report::RenderOptions {
+            links: Some(&links),
+            duplicates: Some(&pairs),
+            ..at_work()
+        };
+        let mut buf = Vec::new();
+        render_table(&opts, None, &mut buf).expect("a Vec writer cannot fail");
+        let out = String::from_utf8(buf).expect("utf-8");
+        assert!(
+            out.contains(
+                "| [`a`](https://github.com/o/r/blob/abc/src/a.rs#L1) ↔ \
+                 [`b`](https://github.com/o/r/blob/abc/src/b.rs#L20)<br>\
+                 <sub>`src/a.rs:1-10` · `src/b.rs:20-29`</sub>"
+            ),
+            "{out}"
+        );
     }
 
     #[test]
@@ -1130,6 +1208,8 @@ mod tests {
             "longer than the longest run"
         );
         assert_eq!(code_span("plain"), "`plain`");
+        assert_eq!(code_span("a|b"), r"`a\|b`", "a table cell escapes the pipe");
+        assert_eq!(fenced("a|b"), "`a|b`", "outside a table it stays");
     }
 
     proptest! {

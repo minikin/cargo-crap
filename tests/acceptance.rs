@@ -5162,3 +5162,58 @@ fn the_provider_line_names_whichever_provider_answered() {
         "{section}"
     );
 }
+
+// ---- Spec 35 · T6 ----
+
+#[test]
+fn function_names_link_to_the_source() {
+    // Given --repo-url and --commit-ref are set
+    let dir = three_pairs_tree();
+    let root = dir.path().canonicalize().expect("the tree exists");
+    let links = [
+        "--repo-url",
+        "https://github.com/o/r",
+        "--commit-ref",
+        "abc",
+    ];
+    for format in ["markdown", "pr-comment"] {
+        // When the duplicate section is rendered from inside the repository
+        let out = crap()
+            .current_dir(&root)
+            .args([
+                "--path",
+                root.to_str().expect("utf-8"),
+                "--duplicates",
+                "--format",
+                format,
+            ])
+            .args(links)
+            .output()
+            .expect("the binary runs");
+        // Then each function name links to <repo-url>/blob/<ref>/<path>#L<start>
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        assert!(
+            stdout.contains(
+                "| [`one`](https://github.com/o/r/blob/abc/three.rs#L1) ↔ \
+                 [`two`](https://github.com/o/r/blob/abc/three.rs#L10)<br>"
+            ),
+            "{format}: {stdout}"
+        );
+        // And a path that cannot be made repo-relative is shown without a link
+        let elsewhere = TempDir::new().expect("temp dir");
+        let out = crap()
+            .current_dir(elsewhere.path())
+            .args([
+                "--path",
+                root.to_str().expect("utf-8"),
+                "--duplicates",
+                "--format",
+                format,
+            ])
+            .args(links)
+            .output()
+            .expect("the binary runs");
+        let plain = String::from_utf8(out.stdout).expect("utf-8");
+        assert!(plain.contains("| `one` ↔ `two`<br>"), "{format}: {plain}");
+    }
+}

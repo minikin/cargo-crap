@@ -27,6 +27,9 @@ const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
 pub struct SourceLinks {
     repo_url: String,
     commit_ref: String,
+    /// The repository root on disk, which absolute paths are made relative
+    /// to. `None` uses the process's working directory.
+    root: Option<PathBuf>,
 }
 
 impl SourceLinks {
@@ -44,7 +47,20 @@ impl SourceLinks {
         Self {
             repo_url: repo_url.trim_end_matches('/').to_string(),
             commit_ref,
+            root: None,
         }
+    }
+
+    /// The same links, with absolute paths made relative to `root` rather
+    /// than the process's working directory. The CLI passes the working
+    /// directory it resolved once, so links and displayed locations agree.
+    #[must_use]
+    pub fn with_root(
+        mut self,
+        root: PathBuf,
+    ) -> Self {
+        self.root = Some(root);
+        self
     }
 
     /// Build a deep link to `file` at `line` on the configured ref.
@@ -77,17 +93,30 @@ impl SourceLinks {
 ///
 /// Returns the repo-relative form when `path` is already relative (cargo
 /// crap reports relative paths when not invoked with `--workspace`) or
-/// absolute under CWD. Returns `None` otherwise — those rows fall back to
+/// absolute under `root` (the process's working directory when `None`).
+/// Returns `None` otherwise — those rows fall back to
 /// plain code spans rather than emit a broken
 /// `host/repo/blob/<sha>//abs/...` URL.
-fn link_path(path: &Path) -> Option<PathBuf> {
+fn link_path(
+    path: &Path,
+    root: Option<&Path>,
+) -> Option<PathBuf> {
     if path.is_relative() {
         return Some(path.to_path_buf());
     }
-    let cwd = std::env::current_dir().ok()?;
+    let cwd = root_or_cwd(root)?;
     path.strip_prefix(&cwd)
         .ok()
         .map(std::path::Path::to_path_buf)
+}
+
+/// `root` when given, else the process's working directory, or `None` when
+/// that cannot be read.
+fn root_or_cwd(root: Option<&Path>) -> Option<PathBuf> {
+    root.map_or_else(
+        || std::env::current_dir().ok(),
+        |root| Some(root.to_path_buf()),
+    )
 }
 
 /// Wrap `inner` (already-formatted, e.g. with backticks) in a markdown link
@@ -99,9 +128,12 @@ pub(crate) fn linkify(
     file: &Path,
     line: usize,
 ) -> String {
-    match (links, link_path(file)) {
-        (Some(l), Some(p)) => format!("[{inner}]({})", l.url_for(&p, line)),
-        _ => inner,
+    let Some(links) = links else {
+        return inner;
+    };
+    match link_path(file, links.root.as_deref()) {
+        Some(path) => format!("[{inner}]({})", links.url_for(&path, line)),
+        None => inner,
     }
 }
 
@@ -161,6 +193,21 @@ mod tests {
         assert_eq!(
             url,
             "https://github.com/o/r/blob/sha/src/%E6%95%B0%E6%8D%AE.rs#L9"
+        );
+    }
+
+    #[test]
+    fn an_explicit_root_decides_which_paths_link() {
+        let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into())
+            .with_root(PathBuf::from("/work"));
+        assert_eq!(
+            linkify("`f`".into(), Some(&links), Path::new("/work/src/a.rs"), 3),
+            "[`f`](https://github.com/o/r/blob/abc/src/a.rs#L3)"
+        );
+        assert_eq!(
+            linkify("`f`".into(), Some(&links), Path::new("/elsewhere/a.rs"), 3),
+            "`f`",
+            "outside the root stays plain"
         );
     }
 }

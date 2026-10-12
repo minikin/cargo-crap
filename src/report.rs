@@ -313,12 +313,10 @@ fn write_duplicate_section(
             writeln!(out)?;
             duplicates::render(pairs, opts.triage, out)
         },
-        Format::Markdown => duplicate_table(pairs, opts, None, out),
+        Format::Markdown => duplicate_table(opts, None, out),
         // A comment with nothing to say about duplicates says nothing.
         Format::PrComment if pairs.is_empty() => Ok(()),
-        Format::PrComment => {
-            duplicate_table(pairs, opts, Some(pr_comment::MAX_ROWS_PER_SECTION), out)
-        },
+        Format::PrComment => duplicate_table(opts, Some(pr_comment::MAX_ROWS_PER_SECTION), out),
         Format::Json | Format::GitHub | Format::Sarif | Format::Shields => Ok(()),
     }
 }
@@ -327,13 +325,12 @@ fn write_duplicate_section(
 /// and who gave it when the triage covers every pair, and paths relative to
 /// the working directory.
 fn duplicate_table(
-    pairs: &[DuplicatePair],
     opts: &RenderOptions,
     cap: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
     writeln!(out)?;
-    duplicates::render_table(pairs, opts.triage, opts.triaged_by, cap, opts.cwd, out)
+    duplicates::render_table(opts, cap, out)
 }
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR

@@ -962,9 +962,9 @@ fn resolve_color(
     }
 }
 
-/// Open the output destination: a file when `--output` is given, stdout
-/// otherwise, with colour on or off for that destination.
-fn open_output(path: Option<&PathBuf>) -> Result<Box<dyn Write>> {
+/// Prepare the output destination: set the process-wide colour policy for
+/// it, then open it, a file when `--output` is given and stdout otherwise.
+fn prepare_output(path: Option<&PathBuf>) -> Result<Box<dyn Write>> {
     apply_color_policy(path.is_some());
     Ok(match path {
         Some(p) => {
@@ -1617,6 +1617,7 @@ fn do_render(
 fn resolve_source_links(
     cli_repo_url: Option<String>,
     cli_commit_ref: Option<String>,
+    root: &Path,
 ) -> Option<SourceLinks> {
     let repo_url = cli_repo_url.or_else(|| {
         let server = std::env::var("GITHUB_SERVER_URL").ok()?;
@@ -1628,7 +1629,7 @@ fn resolve_source_links(
         ))
     })?;
     let commit_ref = cli_commit_ref.or_else(|| std::env::var("GITHUB_SHA").ok())?;
-    Some(SourceLinks::new(repo_url, commit_ref))
+    Some(SourceLinks::new(repo_url, commit_ref).with_root(root.to_path_buf()))
 }
 
 /// Parse argv, validate flag combinations, and load the optional
@@ -1826,8 +1827,8 @@ fn run() -> Result<ExitCode> {
     )?;
 
     // --- Render ---
-    let mut out_box = open_output(cli.output.as_ref())?;
-    let links = resolve_source_links(cli.repo_url, cli.commit_ref);
+    let mut out_box = prepare_output(cli.output.as_ref())?;
+    let links = resolve_source_links(cli.repo_url, cli.commit_ref, &knobs.cwd);
     let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref())?;
     let opts = RenderOpts {
         render: RenderOptions {
