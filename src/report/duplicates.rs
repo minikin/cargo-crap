@@ -6,10 +6,10 @@ use std::path::Path;
 use anyhow::Result;
 use owo_colors::Style;
 
-use super::types::{cwd_relative, styled};
+use super::types::{bar, cwd_relative, styled};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
-use crate::duplicates::triage::verdict::Assessment;
+use crate::duplicates::triage::verdict::{Assessment, WorthExtracting};
 
 /// Sort pairs into the one order the tool ever prints them in.
 ///
@@ -47,7 +47,7 @@ pub fn render(
         return Ok(());
     }
     writeln!(out, "{} duplicate {}:\n", pairs.len(), noun(pairs.len()))?;
-    let triage = triage.filter(|t| t.len() == pairs.len());
+    let triage = covering(triage, pairs.len());
     for (n, pair) in pairs.iter().enumerate() {
         write_pair(pair, triage.and_then(|t| t.get(n)), out)?;
     }
@@ -58,13 +58,17 @@ pub fn render(
 /// pr-comment formats: a heading counting every pair, then one row per pair
 /// in the order given, at most `cap` of them, with the PR comment's
 /// truncation footer counting the rest. Paths are shown relative to `cwd`
-/// when they are under it.
+/// when they are under it. With exactly one assessment per pair, a summary
+/// line counts the verdicts and the table gains a marker, a verdict and a
+/// confidence column. Any other count leaves the table untriaged, as the
+/// human section does.
 ///
 /// # Errors
 ///
 /// Returns an error when the writer does.
 pub fn render_table(
     pairs: &[DuplicatePair],
+    triage: Option<&[Assessment]>,
     cap: Option<usize>,
     cwd: &Path,
     out: &mut dyn Write,
@@ -74,25 +78,163 @@ pub fn render_table(
         return Ok(());
     }
     writeln!(out, "## {} duplicate {}\n", pairs.len(), noun(pairs.len()))?;
-    let shown = cap.unwrap_or(pairs.len());
-    write_table_rows(&pairs[..shown.min(pairs.len())], cwd, out)?;
+    let shown = cap.unwrap_or(pairs.len()).min(pairs.len());
+    write_table_body(pairs, triage, shown, cwd, out)?;
     if pairs.len() > shown {
         super::types::write_truncation_footer(out, pairs.len() - shown)?;
     }
     Ok(())
 }
 
-/// The table itself: its header, then one row per pair.
-fn write_table_rows(
+/// The first `shown` pairs as a table, triaged when `triage` covers every
+/// pair, with the summary line above a triaged table.
+fn write_table_body(
     pairs: &[DuplicatePair],
+    triage: Option<&[Assessment]>,
+    shown: usize,
     cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
-    writeln!(out, "| Pair | Similarity |\n|---|---:|")?;
-    for pair in pairs {
-        writeln!(out, "| {} | {:.2} |", pair_cell(pair, cwd), pair.score)?;
+    let triage = covering(triage, pairs.len());
+    if let Some(triage) = triage {
+        writeln!(out, "{}\n", summary_line(triage))?;
+    }
+    write_rows(&pairs[..shown], triage.map(|t| &t[..shown]), cwd, out)
+}
+
+/// `triage` when it has exactly one assessment per pair, else nothing: all
+/// or nothing, so no pair's missing verdict can be read as a verdict. Every
+/// section that prints verdicts goes through it.
+fn covering(
+    triage: Option<&[Assessment]>,
+    pairs: usize,
+) -> Option<&[Assessment]> {
+    triage.filter(|t| t.len() == pairs)
+}
+
+/// The table's two header rows without verdicts.
+const UNTRIAGED_HEADER: &str = "| Pair | Similarity |\n|---|---:|";
+/// The table's two header rows with a marker, a verdict and a confidence.
+const TRIAGED_HEADER: &str =
+    "| | Pair | Similarity | Verdict | Confidence |\n|---|---|---:|---|---|";
+
+/// The table: its header, then one row per pair, with each pair's verdict
+/// when `triage` is given.
+fn write_rows(
+    pairs: &[DuplicatePair],
+    triage: Option<&[Assessment]>,
+    cwd: &Path,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let header = if triage.is_some() {
+        TRIAGED_HEADER
+    } else {
+        UNTRIAGED_HEADER
+    };
+    writeln!(out, "{header}")?;
+    for (n, pair) in pairs.iter().enumerate() {
+        writeln!(out, "{}", table_row(pair, triage.map(|t| &t[n]), cwd))?;
     }
     Ok(())
+}
+
+/// One row: the pair and its similarity, framed by the verdict cells when
+/// there is an assessment.
+fn table_row(
+    pair: &DuplicatePair,
+    assessment: Option<&Assessment>,
+    cwd: &Path,
+) -> String {
+    let shared = format!("{} | {:.2}", pair_cell(pair, cwd), pair.score);
+    let Some(assessment) = assessment else {
+        return format!("| {shared} |");
+    };
+    let confidence = confidence(assessment);
+    format!(
+        "| {} | {shared} | {} | {} {confidence:.2} |",
+        marker(assessment),
+        verdict_cell(assessment),
+        confidence_bar(confidence)
+    )
+}
+
+/// The marker each worth-extracting level's rows carry, indexed by
+/// [`WorthExtracting::level`]: the one colour GitHub keeps in a comment.
+const MARKERS: [&str; WorthExtracting::LABELS.len()] = ["⚪", "🔵", "🟡", "🔴"];
+/// The level whose pairs should be one function: the top one.
+const SHOULD_BE_ONE: usize = WorthExtracting::LABELS.len() - 1;
+/// The level worth a parameter: the one below the top.
+const WORTHWHILE: usize = SHOULD_BE_ONE - 1;
+/// The level to leave alone: the bottom one.
+const LEAVE_IT: usize = 0;
+
+/// The worth-extracting level an assessment asserts, or `None` when it is
+/// uncertain.
+fn level(assessment: &Assessment) -> Option<usize> {
+    match assessment {
+        Assessment::Kind(verdict) => Some(verdict.worth_extracting.level()),
+        Assessment::Uncertain { .. } => None,
+    }
+}
+
+/// The pairs at each level present, most urgent first, then the uncertain
+/// ones: "🔴 1 should be one · ⚪ 2 leave it · 1 uncertain".
+fn summary_line(triage: &[Assessment]) -> String {
+    let mut counts = [0usize; MARKERS.len()];
+    let mut uncertain = 0;
+    for assessment in triage {
+        match level(assessment) {
+            Some(level) => counts[level] += 1,
+            None => uncertain += 1,
+        }
+    }
+    let mut parts: Vec<String> = (0..MARKERS.len())
+        .rev()
+        .filter(|&level| counts[level] > 0)
+        .map(|level| {
+            let label = WorthExtracting::LABELS[level].replace('-', " ");
+            format!("{} {} {label}", MARKERS[level], counts[level])
+        })
+        .collect();
+    if uncertain > 0 {
+        parts.push(format!("{uncertain} uncertain"));
+    }
+    parts.join(" · ")
+}
+
+/// The row's marker: its level's, or none for an uncertain verdict.
+fn marker(assessment: &Assessment) -> &'static str {
+    level(assessment).map_or("", |level| MARKERS[level])
+}
+
+/// "kind · worth", in bold when the pair should be one function, or
+/// "uncertain".
+fn verdict_cell(assessment: &Assessment) -> String {
+    match assessment {
+        Assessment::Kind(verdict) => {
+            let worth = verdict.worth_extracting;
+            let text = format!("{} · {}", verdict.kind.label(), worth.label());
+            if worth.level() == SHOULD_BE_ONE {
+                format!("**{text}**")
+            } else {
+                text
+            }
+        },
+        Assessment::Uncertain { .. } => "uncertain".to_owned(),
+    }
+}
+
+/// How sure the model was, asserted or not.
+fn confidence(assessment: &Assessment) -> f64 {
+    match assessment {
+        Assessment::Kind(verdict) => verdict.confidence,
+        Assessment::Uncertain { confidence } => *confidence,
+    }
+}
+
+/// Five segments, filled to `confidence` rounded to the nearest fifth.
+fn confidence_bar(confidence: f64) -> String {
+    bar(confidence, 5, "▰", "▱")
 }
 
 /// "candidate" for one pair, "candidates" for any other count.
@@ -111,9 +253,9 @@ fn pair_cell(
     cwd: &Path,
 ) -> String {
     format!(
-        "`{}` ↔ `{}`<br><sub>{} · {}</sub>",
-        cell(&pair.first.name),
-        cell(&pair.second.name),
+        "{} ↔ {}<br><sub>{} · {}</sub>",
+        code_span(&pair.first.name),
+        code_span(&pair.second.name),
         location(&pair.first, cwd),
         location(&pair.second, cwd)
     )
@@ -125,17 +267,25 @@ fn location(
     at: &Location,
     cwd: &Path,
 ) -> String {
-    format!(
-        "`{}:{}-{}`",
-        cell(&cwd_relative(&at.file, cwd).display().to_string()),
+    code_span(&format!(
+        "{}:{}-{}",
+        cwd_relative(&at.file, cwd).display(),
         at.start_line,
         at.end_line
-    )
+    ))
 }
 
-/// `text` safe inside a table cell: a `|` would end the cell.
-fn cell(text: &str) -> String {
-    text.replace('|', "\\|")
+/// `text` as a GFM code span that is safe inside a table cell: its `|`
+/// escaped, and fenced with more backticks than its longest run of them, so
+/// a backtick in the text cannot close the span.
+fn code_span(text: &str) -> String {
+    let text = text.replace('|', "\\|");
+    let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    if longest == 0 {
+        return format!("`{text}`");
+    }
+    let fence = "`".repeat(longest + 1);
+    format!("{fence} {text} {fence}")
 }
 
 /// One pair: its score, both sides, and its triage line when it has one.
@@ -159,11 +309,11 @@ fn write_pair(
 fn triage_line(assessment: &Assessment) -> String {
     match assessment {
         Assessment::Kind(verdict) => {
-            let worth = verdict.worth_extracting.label();
-            let text = format!("{}, {worth}", verdict.kind.label());
+            let worth = verdict.worth_extracting;
+            let text = format!("{}, {}", verdict.kind.label(), worth.label());
             format!(
                 "{} (conf {:.2})",
-                emphasis(&text, worth),
+                emphasis(&text, worth.level()),
                 verdict.confidence
             )
         },
@@ -179,12 +329,12 @@ fn triage_line(assessment: &Assessment) -> String {
 /// alone. `optional` stays plain.
 fn emphasis(
     text: &str,
-    worth: &str,
+    level: usize,
 ) -> String {
-    let style = match worth {
-        "should-be-one" => Style::new().bold().red(),
-        "worthwhile" => Style::new().yellow(),
-        "leave-it" => Style::new().dimmed(),
+    let style = match level {
+        SHOULD_BE_ONE => Style::new().bold().red(),
+        WORTHWHILE => Style::new().yellow(),
+        LEAVE_IT => Style::new().dimmed(),
         _ => return text.to_owned(),
     };
     styled(text, style)
@@ -589,7 +739,8 @@ mod tests {
         cap: Option<usize>,
     ) -> String {
         let mut buf = Vec::new();
-        render_table(pairs, cap, Path::new("/work"), &mut buf).expect("a Vec writer cannot fail");
+        render_table(pairs, None, cap, Path::new("/work"), &mut buf)
+            .expect("a Vec writer cannot fail");
         String::from_utf8(buf).expect("the section is utf-8")
     }
 
@@ -748,14 +899,196 @@ mod tests {
     #[test]
     fn a_table_that_cannot_be_written_is_an_error() {
         let pairs: Vec<DuplicatePair> = (0..3).map(|n| pair(n, 0.9)).collect();
-        for refused in ["f1_1", "more, see CI artifact"] {
-            let result = render_table(
-                &pairs,
-                Some(2),
-                Path::new("/work"),
-                &mut Refuses::new(refused),
+        let triage = [asserted(Kind::SameLogic, 0.9, 3.0); 3];
+        for refused in ["Similarity", "f1_1", "more, see CI artifact"] {
+            for verdicts in [None, Some(&triage[..])] {
+                let result = render_table(
+                    &pairs,
+                    verdicts,
+                    Some(2),
+                    Path::new("/work"),
+                    &mut Refuses::new(refused),
+                );
+                assert!(result.is_err(), "a refused {refused:?} write is reported");
+            }
+        }
+    }
+
+    // ---- The GFM table's verdict columns ----
+
+    /// The GFM section with `triage`, rendered against `/work`.
+    fn triaged_table(
+        pairs: &[DuplicatePair],
+        triage: &[Assessment],
+        cap: Option<usize>,
+    ) -> String {
+        let mut buf = Vec::new();
+        render_table(pairs, Some(triage), cap, Path::new("/work"), &mut buf)
+            .expect("a Vec writer cannot fail");
+        String::from_utf8(buf).expect("the section is utf-8")
+    }
+
+    /// One pair at each worth-extracting level, highest first.
+    fn one_per_level() -> (Vec<DuplicatePair>, Vec<Assessment>) {
+        let pairs = (0..4).map(|n| pair(n, 1.0)).collect();
+        let triage = vec![
+            asserted(Kind::SameLogic, 0.99, 3.0),
+            asserted(Kind::Parameterisable, 0.85, 2.0),
+            asserted(Kind::Parameterisable, 0.7, 1.0),
+            asserted(Kind::SharedShapeOnly, 0.64, 0.0),
+        ];
+        (pairs, triage)
+    }
+
+    #[test]
+    fn a_triaged_table_has_a_summary_line_and_verdict_columns() {
+        let (pairs, triage) = one_per_level();
+        let out = triaged_table(&pairs, &triage, None);
+        assert!(
+            out.starts_with(
+                "## 4 duplicate candidates\n\n\
+                 🔴 1 should be one · 🟡 1 worthwhile · 🔵 1 optional · ⚪ 1 leave it\n\n\
+                 | | Pair | Similarity | Verdict | Confidence |\n|---|---|---:|---|---|\n"
+            ),
+            "{out}"
+        );
+        assert_eq!(
+            body_rows(&out)[1],
+            "| 🟡 | `f1_1` ↔ `f1_10`<br><sub>`src/f1.rs:1-5` · `src/f1.rs:10-14`</sub> | 1.00 \
+             | parameterisable · worthwhile | ▰▰▰▰▱ 0.85 |",
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_verdict_worth_merging_is_in_bold() {
+        let (pairs, triage) = one_per_level();
+        let out = triaged_table(&pairs, &triage, None);
+        let rows = body_rows(&out);
+        let markers: Vec<&str> = rows
+            .iter()
+            .map(|r| {
+                r.split(" | ")
+                    .next()
+                    .unwrap_or_default()
+                    .trim_start_matches("| ")
+            })
+            .collect();
+        assert_eq!(markers, ["🔴", "🟡", "🔵", "⚪"], "{out}");
+        assert!(
+            rows[0].contains(" | **same-logic · should-be-one** | "),
+            "{out}"
+        );
+        assert_eq!(rows.iter().filter(|r| r.contains("**")).count(), 1, "{out}");
+    }
+
+    #[test]
+    fn an_uncertain_verdict_says_so() {
+        let out = triaged_table(
+            &[pair(1, 0.9)],
+            &[Assessment::Uncertain { confidence: 0.42 }],
+            None,
+        );
+        assert!(
+            out.contains("\n\n1 uncertain\n\n"),
+            "the summary counts it: {out}"
+        );
+        let row = body_rows(&out)[0];
+        assert!(row.starts_with("|  | `f1_1`"), "no marker: {row}");
+        assert!(row.ends_with(" | uncertain | ▰▰▱▱▱ 0.42 |"), "{row}");
+    }
+
+    #[test]
+    fn the_confidence_bar_rounds_to_fifths() {
+        for (confidence, bar) in [
+            (0.0, "▱▱▱▱▱"),
+            (0.09, "▱▱▱▱▱"),
+            (0.1, "▰▱▱▱▱"),
+            (0.64, "▰▰▰▱▱"),
+            (0.85, "▰▰▰▰▱"),
+            (0.99, "▰▰▰▰▰"),
+            (1.0, "▰▰▰▰▰"),
+        ] {
+            assert_eq!(confidence_bar(confidence), bar, "{confidence}");
+        }
+    }
+
+    #[test]
+    fn a_triage_that_does_not_cover_every_pair_leaves_the_table_untriaged() {
+        let pairs = [pair(1, 0.9), pair(2, 0.9)];
+        let out = triaged_table(&pairs, &[asserted(Kind::SameLogic, 0.9, 3.0)], None);
+        assert_eq!(out, table(&pairs, None), "all or nothing");
+    }
+
+    #[test]
+    fn the_dispatcher_passes_the_triage_to_the_table() {
+        use crate::report::{Format, RenderOptions, render_duplicates};
+        let (pairs, triage) = one_per_level();
+        for format in [Format::Markdown, Format::PrComment] {
+            let mut buf = Vec::new();
+            render_duplicates(
+                &RenderOptions {
+                    format,
+                    duplicates: Some(&pairs),
+                    triage: Some(&triage),
+                    ..Default::default()
+                },
+                &mut buf,
+            )
+            .expect("a Vec writer cannot fail");
+            let out = String::from_utf8(buf).expect("utf-8");
+            assert!(
+                out.contains("| Verdict | Confidence |"),
+                "{format:?}: {out}"
             );
-            assert!(result.is_err(), "a refused {refused:?} write is reported");
+        }
+    }
+
+    #[test]
+    fn a_backtick_in_a_name_or_path_keeps_its_code_span() {
+        let pairs = [DuplicatePair {
+            first: at("src/we`ird.rs", 1, "a"),
+            second: at("src/b.rs", 20, "b"),
+            score: 1.0,
+        }];
+        let out = table(&pairs, None);
+        assert!(
+            out.contains("<sub>`` src/we`ird.rs:1-10 `` · `src/b.rs:20-29`</sub>"),
+            "{out}"
+        );
+        assert_eq!(
+            code_span("a``b"),
+            "``` a``b ```",
+            "longer than the longest run"
+        );
+        assert_eq!(code_span("plain"), "`plain`");
+    }
+
+    proptest! {
+        /// The verdict columns and the summary line appear exactly when there
+        /// is one assessment per pair, and the summary counts every pair,
+        /// shown or capped.
+        #[test]
+        fn verdicts_appear_only_for_a_full_triage_and_count_every_pair(
+            scored in proptest::collection::vec((0.0..=1.0f64, assessments()), 1..30),
+            drop_one in any::<bool>(),
+            cap in proptest::option::of(1usize..30),
+        ) {
+            let pairs: Vec<DuplicatePair> =
+                scored.iter().enumerate().map(|(n, (s, _))| pair(n, *s)).collect();
+            let mut triage: Vec<Assessment> = scored.iter().map(|(_, a)| *a).collect();
+            if drop_one {
+                triage.pop();
+            }
+            let out = triaged_table(&pairs, &triage, cap);
+            let full = triage.len() == pairs.len();
+            prop_assert_eq!(out.contains("| Verdict | Confidence |"), full);
+            let summary = out.lines().nth(2).unwrap_or_default();
+            let counted: usize = summary
+                .split(" · ")
+                .filter_map(|part| part.split_whitespace().find_map(|w| w.parse::<usize>().ok()))
+                .sum();
+            prop_assert_eq!(counted == pairs.len(), full, "{}", out);
         }
     }
 

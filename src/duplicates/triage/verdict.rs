@@ -89,16 +89,22 @@ impl WorthExtracting {
         self.0
     }
 
-    /// The label of the level nearest the score.
+    /// The level nearest the score, an index into [`Self::LABELS`].
     #[must_use]
-    pub fn label(self) -> &'static str {
+    pub fn level(self) -> usize {
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "the score is range-checked to 0.0..=3.0, so the rounded level is 0..=3"
         )]
         let level = self.0.round() as usize;
-        Self::LABELS[level]
+        level
+    }
+
+    /// The label of the level nearest the score.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        Self::LABELS[self.level()]
     }
 }
 
@@ -362,6 +368,27 @@ mod tests {
             verdict.assessment(0.82),
             Assessment::Uncertain { confidence: 0.81 }
         );
+    }
+
+    #[test]
+    fn the_worth_level_indexes_its_label() {
+        for (score, level) in [
+            (0.0, 0),
+            (0.49, 0),
+            (0.5, 1),
+            (1.6, 2),
+            (2.49, 2),
+            (2.6, 3),
+            (3.0, 3),
+        ] {
+            let worth = WorthExtracting::new(score).expect("in range");
+            assert_eq!(worth.level(), level, "{score}");
+            assert_eq!(
+                WorthExtracting::LABELS[worth.level()],
+                worth.label(),
+                "{score}"
+            );
+        }
     }
 
     #[test]

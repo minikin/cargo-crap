@@ -128,7 +128,8 @@ pub struct RenderOptions<'a> {
     /// One triage assessment per duplicate pair, in the pairs' order, or
     /// `None` when triage did not run. Read by the JSON renderer, which puts
     /// each verdict beside its pair, and by [`render_duplicates`], which
-    /// prints the human triage lines; no other format carries it.
+    /// prints the human triage lines and the markdown and pr-comment verdict
+    /// columns.
     pub triage: Option<&'a [Assessment]>,
     /// The user asked for a slice of the entries with `top` or `min`, on the
     /// command line or in config. The human table then draws every entry it
@@ -152,7 +153,8 @@ pub struct RenderOptions<'a> {
 impl Default for RenderOptions<'_> {
     /// CLI defaults: threshold 30, human format, no links, no
     /// diagnostics, changed-only delta rows, no uncovered hints, no
-    /// duplicates, the classical `?` weight, a capped human table.
+    /// duplicates, the classical `?` weight, a capped human table, and no
+    /// working directory, so paths show as given.
     fn default() -> Self {
         Self {
             threshold: crate::score::DEFAULT_THRESHOLD,
@@ -292,26 +294,31 @@ fn write_duplicate_section(
             writeln!(out)?;
             duplicates::render(pairs, opts.triage, out)
         },
-        Format::Markdown => duplicate_table(pairs, None, opts.cwd, out),
+        Format::Markdown => duplicate_table(pairs, opts.triage, None, opts.cwd, out),
         // A comment with nothing to say about duplicates says nothing.
         Format::PrComment if pairs.is_empty() => Ok(()),
-        Format::PrComment => {
-            duplicate_table(pairs, Some(pr_comment::MAX_ROWS_PER_SECTION), opts.cwd, out)
-        },
+        Format::PrComment => duplicate_table(
+            pairs,
+            opts.triage,
+            Some(pr_comment::MAX_ROWS_PER_SECTION),
+            opts.cwd,
+            out,
+        ),
         Format::Json | Format::GitHub | Format::Sarif | Format::Shields => Ok(()),
     }
 }
 
-/// The GFM duplicate section, after a blank line, with paths relative to
-/// `cwd`.
+/// The GFM duplicate section, after a blank line, with each pair's verdict
+/// when `triage` covers every pair and paths relative to `cwd`.
 fn duplicate_table(
     pairs: &[DuplicatePair],
+    triage: Option<&[Assessment]>,
     cap: Option<usize>,
     cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
     writeln!(out)?;
-    duplicates::render_table(pairs, cap, cwd, out)
+    duplicates::render_table(pairs, triage, cap, cwd, out)
 }
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR

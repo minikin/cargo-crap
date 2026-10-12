@@ -5033,3 +5033,36 @@ fn the_section_follows_the_summary_too() {
         assert_section_follows(&stdout, "Analyzed: 3");
     }
 }
+
+// ---- Spec 35 · T4 ----
+
+#[cfg(feature = "triage")]
+#[test]
+fn triage_that_failed_leaves_the_table_untriaged() {
+    // Given triage is enabled and the API cannot be reached
+    let dir = three_pairs_tree();
+    // When I run `cargo crap --duplicates --format pr-comment`
+    let out = run_against(
+        dir.path(),
+        TRIAGE_ON,
+        UNREACHABLE_API,
+        true,
+        &["--format", "pr-comment"],
+    );
+    // Then the one triage warning is printed, as for the human format
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert_eq!(stderr.matches(TRIAGE_SKIPPED).count(), 1, "{stderr}");
+    // And the duplicate table has no marker, verdict or confidence column
+    // And no summary line and no provider line are printed
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let section = &stdout[stdout.find("## 3 duplicate candidates").expect("a section")..];
+    assert_eq!(
+        section.lines().nth(2),
+        Some("| Pair | Similarity |"),
+        "the table header follows the heading, with no summary line: {section}"
+    );
+    assert!(
+        !section.contains("Verdict") && !section.contains("Triaged by"),
+        "{section}"
+    );
+}
