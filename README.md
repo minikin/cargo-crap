@@ -5,6 +5,13 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/minikin/cargo-crap/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/minikin/cargo-crap/actions/workflows/ci.yml)
 [![CRAP](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fminikin%2Fcargo-crap%2Fbadges%2Fcrap-badge.json&style=for-the-badge)](docs/guides/badge.md)
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/minikin/cargo-crap/main/docs/assets/hero-dark.webp">
+    <img src="https://raw.githubusercontent.com/minikin/cargo-crap/main/docs/assets/hero-light.webp" alt="cargo-crap output on a demo crate: the CRAP table in a terminal, a pull request comment with a regression and duplicate pairs triaged by OpenAI, and a diff annotation on the regressed function">
+  </picture>
+</p>
+
 <p>
   <a href="https://minikin.me/blog/cargo-crap"><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.com/minikin/cargo-crap/raw/HEAD/docs/assets/link-blog-untested-complexity-dark.svg?sanitize=true"><img alt="Blog post: cargo-crap: Finding Untested Complexity in AI-Generated Rust Code" src="docs/assets/link-blog-untested-complexity.svg"></picture></a>
   <a href="https://minikin.me/blog/cargo-crap-triage"><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.com/minikin/cargo-crap/raw/HEAD/docs/assets/link-blog-triaging-duplicates-dark.svg?sanitize=true"><img alt="Blog post: cargo-crap: Triaging Duplicates with TypeSafe" src="docs/assets/link-blog-triaging-duplicates.svg"></picture></a>

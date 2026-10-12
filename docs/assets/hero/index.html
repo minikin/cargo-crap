@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cargo-crap hero</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;600&display=block" rel="stylesheet">
+<script>
+  document.documentElement.dataset.theme =
+    new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
+</script>
+<style>
+:root {
+  --paper: #f4f4f6;
+  --card: #ffffff;
+  --ink: #18181b;
+  --muted: #71717a;
+  --line: #e4e4e7;
+  --accent: #5046e5;
+  --shadow: 0 1px 2px rgba(80, 70, 229, .06), 0 8px 28px rgba(24, 24, 27, .07);
+  --travel: rgba(245, 158, 11, .16);
+  --travel-edge: #f59e0b;
+  --term: #101217;
+  --term-ink: #d4d4d8;
+  --red: #f87171;
+  --green: #4ade80;
+  --yellow: #facc15;
+  --gh-ink: #1f2328;
+  --gh-muted: #59636e;
+  --gh-line: #d1d9e0;
+  --gh-subtle: #f6f8fa;
+  --add: #dafbe1;
+  --add-num: #aceebb;
+  --warn: #9a6700;
+  --warn-bg: #fff8c5;
+  --warn-line: #d4a72c;
+}
+:root[data-theme="dark"] {
+  --paper: #0b0d12;
+  --card: #161b22;
+  --ink: #e6edf3;
+  --muted: #8b949e;
+  --line: #30363d;
+  --accent: #8b84ff;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .35);
+  --travel: rgba(245, 158, 11, .18);
+  --term: #0d1015;
+  --gh-ink: #e6edf3;
+  --gh-muted: #8b949e;
+  --gh-line: #30363d;
+  --gh-subtle: #151b23;
+  --add: rgba(46, 160, 67, .15);
+  --add-num: rgba(63, 185, 80, .3);
+  --warn: #d29922;
+  --warn-bg: rgba(187, 128, 9, .15);
+  --warn-line: rgba(187, 128, 9, .4);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  width: 1600px;
+  height: 1112px;
+  padding: 52px 60px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.45 "DM Sans", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+/* Header */
+header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 40px;
+  margin-bottom: 30px;
+}
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  font-size: 19px;
+  margin-bottom: 18px;
+}
+.eyebrow b { font-weight: 700; }
+.eyebrow span { color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+h1 {
+  margin: 0;
+  font-size: 54px;
+  line-height: 1.04;
+  letter-spacing: -.035em;
+  font-weight: 700;
+}
+.side { text-align: right; display: grid; justify-items: end; gap: 16px; }
+.tagline { margin: 0; font-size: 21px; line-height: 1.4; color: var(--muted); max-width: 560px; }
+.tagline b { color: var(--ink); font-weight: 600; }
+.badge-row { display: flex; align-items: center; gap: 12px; }
+.badge-row svg { height: 28px; width: auto; display: block; }
+
+/* Panels */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-template-rows: 402px 352px;
+  gap: 22px 22px;
+}
+.slot { display: flex; flex-direction: column; min-height: 0; }
+.t-human { grid-column: span 6; }
+.t-comment { grid-column: span 6; }
+.t-diff { grid-column: span 5; }
+.t-triage { grid-column: span 7; }
+.label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 9px 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.label code {
+  font: 500 12.5px "JetBrains Mono", monospace;
+  color: var(--muted);
+  font-weight: 400;
+}
+.card {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+/* Terminal */
+.term {
+  background: var(--term);
+  border-color: transparent;
+  color: var(--term-ink);
+  display: flex;
+  flex-direction: column;
+}
+.term-bar { display: flex; gap: 7px; padding: 12px 14px 0; }
+.term-bar i { width: 11px; height: 11px; border-radius: 50%; background: #3f3f46; }
+.term pre {
+  margin: 0;
+  padding: 12px 18px 16px;
+  font: 12.4px/1.02 "JetBrains Mono", monospace;
+  white-space: pre;
+}
+.term .prompt { color: #a1a1aa; display: inline-block; margin-bottom: 6px; }
+.term .prompt b { color: #e4e4e7; font-weight: 600; }
+.red { color: var(--red); }
+.green { color: var(--green); }
+.yellow { color: var(--yellow); }
+.bold { font-weight: 600; }
+.dim { opacity: .55; }
+.travel {
+  background: var(--travel);
+  box-shadow: inset 3px 0 0 var(--travel-edge);
+}
+.term .travel { display: inline-block; }
+
+:root[data-theme="dark"] .term { border-color: var(--line); }
+
+/* GitHub comment */
+.gh { color: var(--gh-ink); font-size: 13px; }
+.gh-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--gh-subtle);
+  border-bottom: 1px solid var(--gh-line);
+  color: var(--gh-muted);
+}
+.gh-head b { color: var(--gh-ink); }
+.avatar { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); opacity: .85; }
+.md { padding: 6px 16px 14px; }
+.md h2 { font-size: 18px; margin: 8px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--gh-line); }
+.md h2 .anchor, .md .octicon { display: none; }
+.md p { margin: 0 0 10px; }
+.md table { border-collapse: collapse; width: 100%; margin: 0 0 10px; font-size: 12.5px; }
+.md th, .md td { border: 1px solid var(--gh-line); padding: 4px 9px; }
+.md th { background: var(--gh-subtle); font-weight: 600; }
+.md tr.travel td:first-child { box-shadow: inset 3px 0 0 var(--travel-edge); }
+.md code {
+  font: 11.5px "JetBrains Mono", monospace;
+  background: rgba(129, 139, 152, .15);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+.md a { color: inherit; text-decoration: none; }
+.md details summary { font-weight: 600; margin: 4px 0 8px; }
+.md .markdown-heading { display: block; }
+
+/* Diff with an annotation */
+.diff { font-size: 12px; color: var(--gh-ink); }
+.diff-head {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--gh-line);
+  background: var(--gh-subtle);
+  font: 600 12px "JetBrains Mono", monospace;
+}
+.dl { display: flex; font: 11.5px/1.62 "JetBrains Mono", monospace; white-space: pre; }
+.dl .ln { width: 42px; padding-right: 10px; text-align: right; color: var(--gh-muted); flex: none; }
+.dl .sg { width: 16px; color: var(--gh-muted); flex: none; }
+.dl.add { background: var(--add); }
+.dl.hunk { background: var(--gh-subtle); color: var(--gh-muted); }
+.diff { position: relative; }
+.diff::after {
+  content: ""; position: absolute; inset: auto 0 0 0; height: 48px;
+  background: linear-gradient(to bottom, transparent, var(--card));
+}
+.dl.add .ln { background: var(--add-num); }
+.annot {
+  margin: 4px 12px 6px 58px;
+  border: 1px solid var(--warn-line);
+  border-radius: 7px;
+  background: var(--card);
+  overflow: hidden;
+  box-shadow: inset 3px 0 0 var(--travel-edge);
+}
+.annot-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 12px;
+}
+.annot-title { color: var(--gh-ink); font-weight: 600; }
+.warn-icon {
+  width: 15px; height: 15px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--warn); color: var(--card);
+  font: 700 10px "DM Sans", sans-serif;
+}
+.annot-msg { padding: 7px 10px; font: 11.5px "JetBrains Mono", monospace; color: var(--gh-ink); }
+
+/* The PR comment's duplicate section */
+.gh-head .cont { color: var(--gh-muted); }
+.md.dups { padding-top: 2px; }
+.md.dups h2 { margin: 4px 0 6px; font-size: 17px; }
+.md.dups p { margin: 0 0 7px; }
+.md.dups table { margin-bottom: 6px; }
+.md.dups td { padding: 3px 9px; vertical-align: middle; line-height: 1.35; }
+.md.dups td sub, .md.dups p sub { font-size: 11px; color: var(--gh-muted); }
+.md.dups td sub code { font-size: 10.5px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="eyebrow"><span class="dot"></span><b>cargo-crap</b><span>for Rust</span></div>
+    <h1>Find the complex code<br>your tests don't cover,<br>and the code you wrote twice</h1>
+  </div>
+  <div class="side">
+    <p class="tagline">One score per function, from <b>complexity</b> and <b>coverage</b>, wherever you review code. <b>OpenAI</b> or <b>TypeSafe</b> says which duplicates to merge.</p>
+    <div class="badge-row">
+      <span class="label" style="margin:0"><span class="dot"></span>README badge <code>--format shields</code></span>
+      {{BADGE}}
+    </div>
+  </div>
+</header>
+
+<main class="grid">
+  <section class="slot t-human">
+    <div class="label"><span class="dot"></span>Terminal <code>cargo crap</code></div>
+    <div class="card term">
+      <div class="term-bar"><i></i><i></i><i></i></div>
+<pre><span class="prompt">$ <b>cargo crap --threshold 15</b></span>
+{{HUMAN}}</pre>
+    </div>
+  </section>
+
+  <section class="slot t-comment">
+    <div class="label"><span class="dot"></span>Pull request comment <code>--format pr-comment --baseline main.json</code></div>
+    <div class="card gh">
+      <div class="gh-head"><span class="avatar"></span><b>github-actions</b> bot commented</div>
+      <div class="md">{{COMMENT}}</div>
+    </div>
+  </section>
+
+  <section class="slot t-diff">
+    <div class="label"><span class="dot"></span>Diff annotation <code>--format github</code></div>
+    <div class="card diff">
+      <div class="diff-head">{{FILE}}</div>
+      {{DIFF}}
+    </div>
+  </section>
+
+  <section class="slot t-triage">
+    <div class="label"><span class="dot"></span>Duplicates, triaged by OpenAI or TypeSafe <code>--duplicates</code> <code>provider = "openai"</code></div>
+    <div class="card gh">
+      <div class="gh-head"><span class="avatar"></span><b>github-actions</b> bot commented <span class="cont">· same comment, further down</span></div>
+      <div class="md dups">{{DUPLICATES}}</div>
+    </div>
+  </section>
+</main>
+</body>
+</html>
