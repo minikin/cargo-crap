@@ -183,9 +183,10 @@ mod tests {
 
     #[test]
     fn styled_emits_ansi_only_when_color_enabled() {
-        // Global toggle: keep the on- and off-assertions in ONE test so the
-        // brief enabled window cannot race parallel tests. Colour defaults to
-        // off; this is the only test that flips it, and it restores off.
+        // Global toggle: colour defaults to off, this is the only test that
+        // flips it, and it restores off. Under `cargo test` other tests share
+        // the process and can render inside the enabled window, so a test
+        // that measures output must not count escape sequences.
         use super::super::types::set_color_enabled;
         let entries = vec![entry(None, "a1", 1.0)];
         let render = |entries: &[CrapEntry]| {

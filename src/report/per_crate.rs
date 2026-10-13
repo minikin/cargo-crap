@@ -231,12 +231,35 @@ mod tests {
         String::from_utf8(buf).unwrap()
     }
 
+    /// The widest table line as the terminal shows it. Escape sequences
+    /// are dropped first: under `cargo test` another test can switch colour
+    /// on while this one renders, and the bytes of a bold header take no
+    /// columns on screen.
     fn widest(text: &str) -> usize {
         text.lines()
             .filter(|line| line.starts_with(['┌', '│', '╞', '├', '└']))
-            .map(unicode_width::UnicodeWidthStr::width)
+            .map(|line| unicode_width::UnicodeWidthStr::width(visible(line).as_str()))
             .max()
             .unwrap_or(0)
+    }
+
+    fn visible(line: &str) -> String {
+        let mut out = String::new();
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                chars.by_ref().find(|&c| c == 'm');
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_styled_line_is_as_wide_as_its_plain_text() {
+        assert_eq!(widest("│\u{1b}[1m Crate \u{1b}[0m│"), widest("│ Crate │"));
+        assert_eq!(widest("│ Crate │"), 9);
     }
 
     #[test]
