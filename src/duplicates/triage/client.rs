@@ -48,6 +48,10 @@ pub struct Settings {
     pub backoff: Duration,
     /// Where verdicts are cached; `None` asks about every pair every time.
     pub cache_dir: Option<PathBuf>,
+    /// The most pairs one run asks about, cached verdicts aside; `None` for
+    /// no limit. Each asked pair is one request, retried up to `attempts`
+    /// times when it fails transiently.
+    pub max_requests: Option<u32>,
 }
 
 /// Shows which provider and model, never the key: settings end up in panic
@@ -66,6 +70,7 @@ impl fmt::Debug for Settings {
             .field("connect_timeout", &self.connect_timeout)
             .field("attempts", &self.attempts)
             .field("backoff", &self.backoff)
+            .field("max_requests", &self.max_requests)
             .field("cache_dir", &self.cache_dir)
             .finish()
     }
@@ -109,6 +114,7 @@ impl Settings {
             attempts: DEFAULT_ATTEMPTS,
             backoff: DEFAULT_BACKOFF,
             cache_dir: target_dir.map(cache::default_dir),
+            max_requests: None,
         }
     }
 

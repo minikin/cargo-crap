@@ -26,6 +26,24 @@ pub fn plan(
     }
 }
 
+/// The warning for a run whose budget of `max_requests` left `skipped`
+/// pairs unasked, when it left any. Each pair stands for one duplicate
+/// group.
+#[must_use]
+pub fn warning(
+    max_requests: u32,
+    skipped: usize,
+) -> Option<String> {
+    (skipped > 0).then(|| {
+        let groups = if skipped == 1 { "group" } else { "groups" };
+        format!(
+            "warning: the triage budget (max-requests = {max_requests}) left {skipped} \
+             duplicate {groups} untriaged. Raise [duplicates.triage] max-requests to judge \
+             them."
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +109,17 @@ mod tests {
                 skipped: 0
             }
         );
+    }
+
+    #[test]
+    fn the_warning_counts_the_skipped_groups() {
+        assert_eq!(warning(2, 0), None);
+        let many = warning(2, 3).expect("a warning");
+        assert!(many.contains("max-requests = 2"), "{many}");
+        assert!(many.contains("left 3 duplicate groups untriaged"), "{many}");
+        assert!(!many.contains(';'), "{many}");
+        let one = warning(0, 1).expect("a warning");
+        assert!(one.contains("left 1 duplicate group untriaged"), "{one}");
     }
 
     proptest! {

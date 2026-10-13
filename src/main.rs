@@ -1436,6 +1436,8 @@ struct DupSettings {
     /// range-checked with the threshold, so the triage pass reads the value
     /// that was validated rather than re-resolving its own.
     triage_floor: f64,
+    /// The most paid triage requests the run may send; `None` for no limit.
+    triage_max_requests: Option<u32>,
 }
 
 impl DupSettings {
@@ -1467,6 +1469,7 @@ impl DupSettings {
             triage_floor: triage
                 .confidence_floor
                 .unwrap_or(cargo_crap::config::DEFAULT_TRIAGE_CONFIDENCE_FLOOR),
+            triage_max_requests: triage.max_requests,
         }
     }
 }
@@ -1604,6 +1607,26 @@ fn duplicate_section<'a>(
     })
 }
 
+/// Each answer held to the confidence floor, `None` where the budget asked
+/// nothing, with the budget's one warning when it left groups unasked.
+#[cfg(feature = "triage")]
+fn assessments(
+    triaged: cargo_crap::duplicates::triage::Triaged,
+    settings: &DupSettings,
+) -> Vec<Option<Assessment>> {
+    let warning = settings.triage_max_requests.and_then(|budget| {
+        cargo_crap::duplicates::triage::budget::warning(budget, triaged.skipped)
+    });
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
+    }
+    triaged
+        .verdicts
+        .into_iter()
+        .map(|verdict| verdict.map(|v| v.assessment(settings.triage_floor)))
+        .collect()
+}
+
 /// The groups triage asks about, by index: every group, or on a delta run
 /// with a duplicate record the ones it reports.
 fn asked(
@@ -1617,13 +1640,13 @@ fn asked(
 /// index among `groups`, with `None` for the groups nobody asked about.
 fn spread(
     asked: &[usize],
-    verdicts: Vec<Assessment>,
+    verdicts: Vec<Option<Assessment>>,
     groups: usize,
 ) -> Vec<Option<Assessment>> {
-    debug_assert_eq!(asked.len(), verdicts.len(), "one verdict per question");
+    debug_assert_eq!(asked.len(), verdicts.len(), "one answer per question");
     let mut spread = vec![None; groups];
     for (&n, verdict) in asked.iter().zip(verdicts) {
-        spread[n] = Some(verdict);
+        spread[n] = verdict;
     }
     spread
 }
@@ -1674,15 +1697,17 @@ fn triage_assessments(
     settings: &DupSettings,
     pairs: &[DuplicatePair],
     target: Option<&Path>,
-) -> Option<Vec<Assessment>> {
+) -> Option<Vec<Option<Assessment>>> {
     if !settings.triage_enabled {
         return None;
     }
     #[cfg(feature = "triage")]
     {
         use cargo_crap::duplicates::triage;
-        let api_settings =
-            triage::Settings::from_env(settings.triage_provider, &settings.triage_model, target);
+        let api_settings = triage::Settings {
+            max_requests: settings.triage_max_requests,
+            ..triage::Settings::from_env(settings.triage_provider, &settings.triage_model, target)
+        };
         triage::run(pairs, &api_settings)
             .inspect_err(|e| {
                 eprintln!(
@@ -1690,16 +1715,11 @@ fn triage_assessments(
                 );
             })
             .ok()
-            .map(|verdicts| {
-                verdicts
-                    .into_iter()
-                    .map(|verdict| verdict.assessment(settings.triage_floor))
-                    .collect()
-            })
+            .map(|triaged| assessments(triaged, settings))
     }
     #[cfg(not(feature = "triage"))]
     {
-        let _ = (pairs, target);
+        let _ = (pairs, target, settings.triage_max_requests);
         eprintln!(
             "warning: [duplicates.triage] is enabled, but this cargo-crap was built without \
              the `triage` feature; reinstall with `cargo install cargo-crap --features triage` \
@@ -2388,6 +2408,7 @@ mod tests {
             triage_provider: default_provider(),
             triage_model: default_provider().default_model().to_owned(),
             triage_floor,
+            triage_max_requests: None,
         }
     }
 
@@ -2947,8 +2968,13 @@ mod tests {
     fn verdicts_go_back_to_the_groups_that_were_asked_about() {
         let verdict = |confidence| Assessment::Uncertain { confidence };
         assert_eq!(
-            spread(&[1, 2], vec![verdict(0.1), verdict(0.2)], 4),
+            spread(&[1, 2], vec![Some(verdict(0.1)), Some(verdict(0.2))], 4),
             [None, Some(verdict(0.1)), Some(verdict(0.2)), None]
+        );
+        // A group the budget left unasked keeps its place, without a verdict.
+        assert_eq!(
+            spread(&[0, 3], vec![None, Some(verdict(0.3))], 4),
+            [None, None, None, Some(verdict(0.3))]
         );
     }
 

@@ -3583,7 +3583,12 @@ fn a_refused_question_discards_the_whole_triage() {
     let base = format!("{}/v1", stub.base_url());
     let out = run_openai_at(dir.path(), &openai_config(""), &base, &[]);
     let plain = untriaged(dir.path(), &[]);
-    assert_eq!(stub.request_count(), 3);
+    // Two or three: the refusal can stop the third request before it starts.
+    assert!(
+        (2..=3).contains(&stub.request_count()),
+        "{}",
+        stub.request_count()
+    );
     // Then no pair carries a triage line
     assert_eq!(out.stdout, plain.stdout);
     assert!(!String::from_utf8_lossy(&out.stdout).contains("triage:"));
@@ -6375,4 +6380,249 @@ fn a_negative_budget_is_a_configuration_error() {
     assert!(stderr.contains("max-requests"), "{stderr}");
     assert!(stderr.contains("expected u32"), "{stderr}");
     assert!(!stderr.contains("unknown field"), "{stderr}");
+}
+
+/// A triage config pairing only identical shapes, with `budget` as its
+/// `max-requests` line, or none.
+#[cfg(feature = "triage")]
+fn budget_config(budget: &str) -> String {
+    format!(
+        "[duplicates]\nenabled = true\nthreshold = 1.0\n\n[duplicates.triage]\nenabled = true\n{budget}"
+    )
+}
+
+/// Which duplicate groups of a JSON report carry a verdict, in order.
+#[cfg(feature = "triage")]
+fn triaged_groups(stdout: &[u8]) -> Vec<bool> {
+    let doc: serde_json::Value = serde_json::from_slice(stdout).expect("one JSON document");
+    doc["duplicate_groups"]
+        .as_array()
+        .expect("groups")
+        .iter()
+        .map(|g| g.get("triage").is_some())
+        .collect()
+}
+
+#[cfg(feature = "triage")]
+fn same_logic_stub() -> support::api_stub::ApiStub {
+    use support::api_stub::{ApiStub, Reply};
+    ApiStub::scripted(vec![Reply::json(&triage_answer_worth(
+        "same_logic",
+        0.9,
+        3.0,
+    ))])
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn groups_past_the_budget_stay_untriaged() {
+    // Given triage is enabled with `max-requests = 2`
+    // And a tree with five duplicate groups, none of them cached
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), "pairs.rs", &shaped_pairs(0..5));
+    let stub = same_logic_stub();
+    // When I run `cargo crap --duplicates`
+    let out = run_with_config(
+        dir.path(),
+        &budget_config("max-requests = 2\n"),
+        &stub,
+        &["--format", "json"],
+    );
+    let stderr = String::from_utf8(out.stderr.clone()).expect("utf-8");
+    // Then exactly two triage requests are made
+    assert_eq!(stub.request_count(), 2, "{stderr}");
+    // And the two strongest groups carry a verdict and the other three do not
+    assert_eq!(
+        triaged_groups(&out.stdout),
+        [true, true, false, false, false]
+    );
+    // And stderr warns once that 3 groups were left untriaged and names
+    // `max-requests`
+    assert_eq!(
+        stderr.matches("left 3 duplicate groups untriaged").count(),
+        1,
+        "{stderr}"
+    );
+    assert!(stderr.contains("max-requests"), "{stderr}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn cached_verdicts_do_not_count_against_the_budget() {
+    // Given triage is enabled with `max-requests = 1`
+    // And three duplicate groups whose verdicts are cached
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), "pairs.rs", &shaped_pairs(0..3));
+    let warm = same_logic_stub();
+    run_with_config(dir.path(), &budget_config(""), &warm, &["--format", "json"]);
+    assert_eq!(warm.request_count(), 3, "the three are cached");
+    // And two new groups that are not
+    write(dir.path(), "more.rs", &shaped_pairs(3..5));
+    let stub = same_logic_stub();
+    // When I run `cargo crap --duplicates`
+    let out = run_with_config(
+        dir.path(),
+        &budget_config("max-requests = 1\n"),
+        &stub,
+        &["--format", "json"],
+    );
+    let stderr = String::from_utf8(out.stderr.clone()).expect("utf-8");
+    // Then exactly one triage request is made
+    assert_eq!(stub.request_count(), 1, "{stderr}");
+    // And four groups carry a verdict
+    let triaged = triaged_groups(&out.stdout);
+    assert_eq!(triaged.iter().filter(|t| **t).count(), 4, "{triaged:?}");
+    // And stderr warns that 1 group was left untriaged
+    assert!(
+        stderr.contains("left 1 duplicate group untriaged"),
+        "{stderr}"
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_budget_of_0_asks_nothing_and_needs_no_key() {
+    // Given triage is enabled with `max-requests = 0`
+    // And one duplicate group whose verdict is cached and one that is not
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), "pairs.rs", &shaped_pairs(0..1));
+    let warm = same_logic_stub();
+    run_with_config(dir.path(), &budget_config(""), &warm, &["--format", "json"]);
+    assert_eq!(warm.request_count(), 1, "the first group is cached");
+    write(dir.path(), "more.rs", &shaped_pairs(1..2));
+    // And no API key is set
+    let stub = same_logic_stub();
+    // When I run `cargo crap --duplicates`
+    let out = triage_run(dir.path(), &budget_config("max-requests = 0\n"))
+        .env("TYPESAFE_BASE_URL", stub.base_url())
+        .args(["--format", "json"])
+        .output()
+        .expect("cargo-crap runs");
+    let stderr = String::from_utf8(out.stderr.clone()).expect("utf-8");
+    // Then no triage request is made
+    assert_eq!(stub.request_count(), 0, "{stderr}");
+    // And the cached group carries its verdict
+    let triaged = triaged_groups(&out.stdout);
+    assert_eq!(
+        triaged.iter().filter(|t| **t).count(),
+        1,
+        "{triaged:?} {stderr}"
+    );
+    // And stderr warns that 1 group was left untriaged, and says nothing
+    // about a missing key
+    assert!(
+        stderr.contains("left 1 duplicate group untriaged"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("API_KEY"), "{stderr}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn without_a_budget_every_group_is_asked() {
+    // Given triage is enabled with no `max-requests`
+    // And a tree with five duplicate groups, none of them cached
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), "pairs.rs", &shaped_pairs(0..5));
+    let stub = same_logic_stub();
+    // When I run `cargo crap --duplicates`
+    let out = run_with_config(dir.path(), &budget_config(""), &stub, &["--format", "json"]);
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    // Then five triage requests are made
+    assert_eq!(stub.request_count(), 5, "{stderr}");
+    // And stderr has no budget warning
+    assert!(!stderr.contains("budget"), "{stderr}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_budget_that_covers_every_group_says_nothing() {
+    // Given triage is enabled with `max-requests = 10`
+    // And a tree with five duplicate groups, none of them cached
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), "pairs.rs", &shaped_pairs(0..5));
+    let stub = same_logic_stub();
+    // When I run `cargo crap --duplicates`
+    let out = run_with_config(
+        dir.path(),
+        &budget_config("max-requests = 10\n"),
+        &stub,
+        &["--format", "json"],
+    );
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    // Then five triage requests are made
+    assert_eq!(stub.request_count(), 5, "{stderr}");
+    // And stderr has no budget warning
+    assert!(!stderr.contains("budget"), "{stderr}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_budget_goes_to_the_strongest_group_first() {
+    // Given a budget of 1 and two groups, the stronger one last by location
+    let dir = TempDir::new().expect("temp dir");
+    write(
+        dir.path(),
+        "a.rs",
+        r"fn tally_a(a: i32, b: i32) -> i32 {
+    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+    let mut acc = 0;
+    for v in lo..hi {
+        acc += match v % 4 {
+            0 => v * 2,
+            1 => -v,
+            _ => 1,
+        };
+    }
+    acc.max(0)
+}
+fn tally_b(a: i32, b: i32) -> i32 {
+    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+    let mut acc = 0;
+    for v in lo..hi {
+        acc += match v % 4 {
+            0 => v * 2,
+            1 => -v,
+            2 => v,
+            _ => 1,
+        };
+    }
+    acc.max(0)
+}
+",
+    );
+    write(
+        dir.path(),
+        "z.rs",
+        r#"fn shout_a(words: &[&str]) -> String {
+    let mut out = String::new();
+    for w in words.iter().rev() {
+        out.push_str(&w.to_uppercase());
+        out.push_str(", ");
+    }
+    out.truncate(out.len().saturating_sub(2));
+    format!("[{out}]")
+}
+fn shout_b(words: &[&str]) -> String {
+    let mut out = String::new();
+    for w in words.iter().rev() {
+        out.push_str(&w.to_uppercase());
+        out.push_str(", ");
+    }
+    out.truncate(out.len().saturating_sub(2));
+    format!("[{out}]")
+}
+"#,
+    );
+    let config = "[duplicates]\nenabled = true\nthreshold = 0.5\n\n[duplicates.triage]\nenabled = true\nmax-requests = 1\n";
+    let stub = same_logic_stub();
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), config, &stub, &["--format", "json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON document");
+    // Then the one request is about the stronger group, wherever it sits
+    assert_eq!(stub.request_count(), 1);
+    for group in doc["duplicate_groups"].as_array().expect("groups") {
+        let strong = group["members"][0]["function"] == "shout_a";
+        assert_eq!(group.get("triage").is_some(), strong, "{group}");
+    }
 }

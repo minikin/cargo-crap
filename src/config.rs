@@ -193,10 +193,11 @@ pub struct TriageConfig {
     #[serde(alias = "confidence_floor")]
     pub confidence_floor: Option<f64>,
 
-    /// The most paid requests one run may send. Cached verdicts are free and
-    /// never count, and the groups past the budget stay untriaged. Unlimited
-    /// when absent. Accepted as `max-requests` (house style) or
-    /// `max_requests`.
+    /// The most duplicate groups one run asks about, one request each.
+    /// Cached verdicts are free and never count, the groups past the budget
+    /// stay untriaged, and a request that fails transiently is retried as
+    /// usual. Unlimited when absent. Accepted as `max-requests` (house
+    /// style) or `max_requests`.
     #[serde(alias = "max_requests")]
     pub max_requests: Option<u32>,
 }

@@ -14,7 +14,7 @@ use cargo_crap::duplicates::compare::DuplicatePair;
 use cargo_crap::duplicates::extract::Location;
 use cargo_crap::duplicates::triage::provider::{by_id, default_provider};
 use cargo_crap::duplicates::triage::verdict::{Kind, Verdict};
-use cargo_crap::duplicates::triage::{Settings, TriageError, run};
+use cargo_crap::duplicates::triage::{Settings, TriageError, Triaged, run};
 use support::api_stub::{ApiStub, Reply};
 use tempfile::TempDir;
 
@@ -68,6 +68,7 @@ fn settings(base_url: String) -> Settings {
         backoff: Duration::from_millis(1),
         // No cache: every test here counts the requests it causes.
         cache_dir: None,
+        max_requests: None,
     }
 }
 
@@ -143,6 +144,20 @@ fn run_within(
     pairs: Vec<DuplicatePair>,
     settings: Settings,
 ) -> Result<Vec<Verdict>, TriageError> {
+    run_budgeted(pairs, settings).map(|triaged| {
+        triaged
+            .verdicts
+            .into_iter()
+            .map(|v| v.expect("without a budget every pair is judged"))
+            .collect()
+    })
+}
+
+/// [`run_within`] keeping what a budget left unasked.
+fn run_budgeted(
+    pairs: Vec<DuplicatePair>,
+    settings: Settings,
+) -> Result<Triaged, TriageError> {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = sender.send(run(&pairs, &settings));
@@ -201,6 +216,95 @@ fn a_missing_key_errs_naming_it_with_zero_requests_made() {
     let err = run_within(pairs(dir.path(), 2), settings).expect_err("no key");
     assert!(err.to_string().contains("TYPESAFE_API_KEY"), "{err}");
     assert_eq!(stub.request_count(), 0);
+}
+
+#[test]
+fn a_budget_asks_only_the_first_pairs() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::json(&answer("same_logic"))]);
+    let settings = Settings {
+        max_requests: Some(2),
+        ..settings(stub.base_url())
+    };
+    let triaged = run_budgeted(pairs(dir.path(), 4), settings).expect("triaged");
+    assert_eq!(stub.request_count(), 2);
+    let answered: Vec<bool> = triaged.verdicts.iter().map(Option::is_some).collect();
+    assert_eq!(answered, [true, true, false, false]);
+    assert_eq!(triaged.skipped, 2);
+}
+
+#[test]
+fn cached_verdicts_do_not_spend_the_budget() {
+    let dir = TempDir::new().expect("temp dir");
+    let cache = TempDir::new().expect("cache dir");
+    let stub = ApiStub::scripted(vec![Reply::json(&answer("same_logic"))]);
+    let cached = Settings {
+        cache_dir: Some(cache.path().to_path_buf()),
+        ..settings(stub.base_url())
+    };
+    let all = pairs(dir.path(), 4);
+    run_budgeted(all[..2].to_vec(), cached.clone()).expect("the first two are cached");
+    assert_eq!(stub.request_count(), 2);
+    let budgeted = Settings {
+        max_requests: Some(1),
+        ..cached
+    };
+    let triaged = run_budgeted(all, budgeted).expect("triaged");
+    assert_eq!(stub.request_count(), 3, "one more request, not two");
+    let answered: Vec<bool> = triaged.verdicts.iter().map(Option::is_some).collect();
+    assert_eq!(answered, [true, true, true, false]);
+    assert_eq!(triaged.skipped, 1);
+}
+
+#[test]
+fn a_failure_discards_the_cached_verdicts_too() {
+    // The first pair is cached, the second fails: the run returns no verdict
+    // at all, so none stands beside an error.
+    let dir = TempDir::new().expect("temp dir");
+    let cache = TempDir::new().expect("cache dir");
+    let warm = ApiStub::scripted(vec![Reply::json(&answer("same_logic"))]);
+    let all = pairs(dir.path(), 2);
+    let cached = Settings {
+        cache_dir: Some(cache.path().to_path_buf()),
+        ..settings(warm.base_url())
+    };
+    run_budgeted(all[..1].to_vec(), cached.clone()).expect("the first is cached");
+    let failing = ApiStub::scripted(vec![Reply::status(500)]);
+    let settings = Settings {
+        base_url: failing.base_url(),
+        ..cached
+    };
+    let err = run_budgeted(all, settings).expect_err("all or nothing");
+    assert!(err.to_string().contains("500"), "{err}");
+    assert!(failing.request_count() >= 1);
+}
+
+#[test]
+fn a_budget_of_zero_needs_no_key() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::json(&answer("same_logic"))]);
+    let settings = Settings {
+        api_key: None,
+        max_requests: Some(0),
+        ..settings(stub.base_url())
+    };
+    let triaged = run_budgeted(pairs(dir.path(), 2), settings).expect("nothing to ask");
+    assert_eq!(stub.request_count(), 0);
+    assert_eq!(triaged.verdicts, [None, None]);
+    assert_eq!(triaged.skipped, 2);
+}
+
+#[test]
+fn a_budget_that_asks_still_needs_the_key() {
+    let dir = TempDir::new().expect("temp dir");
+    let stub = ApiStub::scripted(vec![Reply::json(&answer("same_logic"))]);
+    let settings = Settings {
+        api_key: None,
+        max_requests: Some(1),
+        ..settings(stub.base_url())
+    };
+    let err = run_budgeted(pairs(dir.path(), 2), settings).expect_err("no key");
+    assert!(err.to_string().contains("TYPESAFE_API_KEY"), "{err}");
 }
 
 /// An `OpenAI` Decisions answer naming `kind`.
