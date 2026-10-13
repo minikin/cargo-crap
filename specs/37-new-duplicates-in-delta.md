@@ -223,7 +223,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   existing group shows the group as grown_, _A pull request that removes a
   copy is credited_, _Nothing new prints nothing in the PR comment_.
   Tests: unit + acceptance.
-- [ ] **T4 — Triage asks only about new and grown groups.**
+- [x] **T4 — Triage asks only about new and grown groups.**
   `RenderOptions::triage` holds one optional verdict per group, and every
   format prints a verdict only where there is one. Needs: T3. Scenarios:
   _Triage asks only about new and grown groups_, _The human section lists
