@@ -3,20 +3,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::delta::path_key;
 use crate::duplicates::extract::Location;
 use crate::duplicates::group::DuplicateGroup;
+use crate::merge::path_key;
 
 /// What a current group is, measured against the baseline's groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Novelty {
-    /// No two of its members were in one baseline group.
+    /// No baseline group held two of its members.
     New,
-    /// Some two of its members were in one baseline group and some were
-    /// not. `from` is the size of the largest baseline group it shares a
-    /// pair with.
+    /// A baseline group held two or more of its members, none held all.
+    /// `from` is the most members one baseline group held, always below
+    /// the group's size.
     Grown { from: usize },
-    /// Every two of its members were in one baseline group.
+    /// One baseline group held every member.
     Unchanged,
 }
 
@@ -29,142 +29,147 @@ pub struct Comparison {
     pub resolved: usize,
 }
 
+/// A function's identity across the two runs: its file, separators
+/// unified, and its name.
+type Id = (String, String);
+
 /// Compare the `current` groups with the member lists of the `baseline`'s.
 ///
 /// A function is the same on both sides when its name matches in the same
-/// file, whatever its lines, or when its name is unique among the functions
-/// left over on each side, wherever it moved. A baseline group with fewer
-/// than two members has no pair and is ignored.
+/// file, whatever its lines. Among the functions whose file and name are on
+/// one side only, a name found once on each side is a move and keeps its
+/// groups. Same-named functions in one file cannot be told apart, so each
+/// stands for any of its namesakes. A baseline group with fewer than two
+/// members has no pair and is ignored.
 #[must_use]
 pub fn compare(
     current: &[DuplicateGroup],
     baseline: &[Vec<Location>],
 ) -> Comparison {
-    let baseline: Vec<&[Location]> = baseline
+    let recorded: Vec<&[Location]> = baseline
         .iter()
         .map(Vec::as_slice)
         .filter(|g| g.len() >= 2)
         .collect();
-    let before: BTreeSet<&Location> = baseline.iter().copied().flatten().collect();
-    let now: BTreeSet<&Location> = current.iter().flat_map(|g| &g.members).collect();
-    let before: Vec<&Location> = before.into_iter().collect();
-    let now: Vec<&Location> = now.into_iter().collect();
-    let same: BTreeMap<&Location, &Location> = same_functions(&before, &now).into_iter().collect();
-    let then: Vec<Vec<&Location>> = baseline
-        .iter()
-        .map(|g| g.iter().filter_map(|m| same.get(m).copied()).collect())
+    let before: Vec<&Location> = distinct(recorded.iter().copied().flatten());
+    let now: Vec<&Location> = distinct(current.iter().flat_map(|g| &g.members));
+    let moved: BTreeMap<&Location, &Location> = moves(&before, &now)
+        .into_iter()
+        .map(|(b, n)| (n, b))
         .collect();
-    let known = known_pairs(&baseline, &then);
-    let together: BTreeSet<_> = current.iter().flat_map(|g| pairs(&g.members)).collect();
+    let then: Vec<Vec<Id>> = recorded
+        .iter()
+        .map(|g| g.iter().map(id).collect())
+        .collect();
+    let groups: Vec<Vec<Id>> = current
+        .iter()
+        .map(|g| {
+            g.members
+                .iter()
+                .map(|m| id(moved.get(m).copied().unwrap_or(m)))
+                .collect()
+        })
+        .collect();
+    let together: BTreeSet<(&Id, &Id)> = groups.iter().flat_map(|g| pairs(g)).collect();
     Comparison {
-        novelty: current.iter().map(|g| novelty(g, &known)).collect(),
+        novelty: groups.iter().map(|g| novelty(g, &then)).collect(),
         resolved: then
             .iter()
-            .filter(|g| {
-                !pairs(g.iter().copied())
-                    .iter()
-                    .any(|p| together.contains(p))
-            })
+            .filter(|g| pairs(g).iter().all(|p| !together.contains(p)))
             .count(),
     }
 }
 
-/// Every pair of current functions that was in one baseline group, with the
-/// size of the largest such group.
-fn known_pairs<'n>(
-    baseline: &[&[Location]],
-    then: &[Vec<&'n Location>],
-) -> BTreeMap<(&'n Location, &'n Location), usize> {
-    let mut known = BTreeMap::new();
-    for (group, members) in baseline.iter().zip(then) {
-        for pair in pairs(members.iter().copied()) {
-            let size = known.entry(pair).or_insert(0);
-            *size = group.len().max(*size);
-        }
-    }
-    known
+fn id(l: &Location) -> Id {
+    (path_key(&l.file), l.name.clone())
 }
 
-fn novelty(
-    group: &DuplicateGroup,
-    known: &BTreeMap<(&Location, &Location), usize>,
-) -> Novelty {
-    let sizes: Vec<Option<usize>> = pairs(&group.members)
-        .iter()
-        .map(|p| known.get(p).copied())
-        .collect();
-    if sizes.iter().all(Option::is_some) {
-        Novelty::Unchanged
-    } else if let Some(from) = sizes.iter().flatten().max() {
-        Novelty::Grown { from: *from }
-    } else {
-        Novelty::New
-    }
-}
-
-/// Every two of `members`, each pair in location order.
-fn pairs<'a>(members: impl IntoIterator<Item = &'a Location>) -> Vec<(&'a Location, &'a Location)> {
-    let members: Vec<&Location> = members.into_iter().collect();
-    let mut out = Vec::new();
-    for (i, a) in members.iter().enumerate() {
-        for b in &members[i + 1..] {
-            out.push((*a.min(b), *a.max(b)));
-        }
-    }
-    out
-}
-
-/// The functions that are the same on both sides, as `(before, now)`.
-///
-/// First by name within a file: same-named functions in one file pair in
-/// source order, and the side with more keeps its last ones unpaired. Then,
-/// among the functions still unpaired, a name found once on each side pairs
-/// across files. `before` and `now` are in location order.
-fn same_functions<'b, 'n>(
-    before: &[&'b Location],
-    now: &[&'n Location],
-) -> Vec<(&'b Location, &'n Location)> {
-    let now_by_file = by_file_and_name(now);
-    let mut matched: Vec<(usize, usize)> = Vec::new();
-    for (key, olds) in by_file_and_name(before) {
-        if let Some(news) = now_by_file.get(&key) {
-            matched.extend(olds.into_iter().zip(news.iter().copied()));
-        }
-    }
-    let paired_before: BTreeSet<usize> = matched.iter().map(|(b, _)| *b).collect();
-    let paired_now: BTreeSet<usize> = matched.iter().map(|(_, n)| *n).collect();
-    let moved_now = unique_names(now, &paired_now);
-    for (name, old) in unique_names(before, &paired_before) {
-        if let Some(new) = moved_now.get(&name) {
-            matched.push((old, *new));
-        }
-    }
-    matched
+fn distinct<'a>(functions: impl IntoIterator<Item = &'a Location>) -> Vec<&'a Location> {
+    functions
         .into_iter()
-        .map(|(b, n)| (before[b], now[n]))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
-/// Each function's index under its file and name, in `side`'s order.
-fn by_file_and_name(side: &[&Location]) -> BTreeMap<(String, String), Vec<usize>> {
-    let mut out: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
-    for (i, l) in side.iter().enumerate() {
-        out.entry((path_key(&l.file), l.name.clone()))
-            .or_default()
-            .push(i);
+/// What `group` is, judged by the baseline group that held the most of its
+/// members.
+fn novelty(
+    group: &[Id],
+    then: &[Vec<Id>],
+) -> Novelty {
+    let held = then
+        .iter()
+        .map(|b| together_in(group, b))
+        .max()
+        .unwrap_or(0);
+    if held < 2 {
+        Novelty::New
+    } else if held == group.len() {
+        Novelty::Unchanged
+    } else {
+        Novelty::Grown { from: held }
+    }
+}
+
+/// How many of `group`'s members `baseline` held: per identity, the fewer
+/// of the two counts.
+fn together_in(
+    group: &[Id],
+    baseline: &[Id],
+) -> usize {
+    let mut left: BTreeMap<&Id, usize> = BTreeMap::new();
+    for i in baseline {
+        *left.entry(i).or_default() += 1;
+    }
+    let mut held = 0;
+    for i in group {
+        if let Some(n) = left.get_mut(i)
+            && *n > 0
+        {
+            *n -= 1;
+            held += 1;
+        }
+    }
+    held
+}
+
+/// Every two of `members`, each pair in order.
+fn pairs<T: Ord>(members: &[T]) -> Vec<(&T, &T)> {
+    let mut out = Vec::new();
+    for (i, a) in members.iter().enumerate() {
+        for b in &members[i + 1..] {
+            out.push((a.min(b), a.max(b)));
+        }
     }
     out
 }
 
-/// The index of each name found exactly once among `side`'s functions
-/// outside `paired`.
-fn unique_names(
-    side: &[&Location],
-    paired: &BTreeSet<usize>,
-) -> BTreeMap<String, usize> {
-    let mut seen: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (i, l) in side.iter().enumerate().filter(|(i, _)| !paired.contains(i)) {
-        seen.entry(l.name.clone()).or_default().push(i);
+/// The functions that moved, as `(before, now)`: among the functions whose
+/// file and name are on one side only, those whose name is found once on
+/// each side.
+fn moves<'b, 'n>(
+    before: &[&'b Location],
+    now: &[&'n Location],
+) -> Vec<(&'b Location, &'n Location)> {
+    let before_ids: BTreeSet<Id> = before.iter().map(|l| id(l)).collect();
+    let now_ids: BTreeSet<Id> = now.iter().map(|l| id(l)).collect();
+    let arrived = unique_names(now, &before_ids);
+    unique_names(before, &now_ids)
+        .into_iter()
+        .filter_map(|(name, b)| arrived.get(&name).map(|n| (b, *n)))
+        .collect()
+}
+
+/// Each name found exactly once among `side`'s functions whose identity is
+/// not in `other`, with that function.
+fn unique_names<'a>(
+    side: &[&'a Location],
+    other: &BTreeSet<Id>,
+) -> BTreeMap<String, &'a Location> {
+    let mut seen: BTreeMap<String, Vec<&Location>> = BTreeMap::new();
+    for l in side.iter().filter(|l| !other.contains(&id(l))) {
+        seen.entry(l.name.clone()).or_default().push(l);
     }
     seen.into_iter()
         .filter_map(|(name, at)| (at.len() == 1).then(|| (name, at[0])))
@@ -277,9 +282,8 @@ mod tests {
     }
 
     #[test]
-    fn same_named_functions_in_one_file_pair_in_source_order() {
-        // Two `fmt`s in one file, each in its own group. Paired in source
-        // order both groups are unchanged, paired the other way both are new.
+    fn same_named_functions_in_one_file_keep_their_groups() {
+        // Two `fmt`s in one file, each in its own group, both shifted.
         let before = [
             vec![at("src/a.rs", "fmt", 10), at("src/b.rs", "x", 1)],
             vec![at("src/a.rs", "fmt", 30), at("src/c.rs", "y", 1)],
@@ -291,6 +295,209 @@ mod tests {
         assert_eq!(
             statuses(&now, &before),
             [Novelty::Unchanged, Novelty::Unchanged]
+        );
+    }
+
+    #[test]
+    fn a_sibling_leaving_the_duplicates_misaligns_no_other() {
+        // `x` is deleted, so the first `fmt` is in no group any more. The
+        // second `fmt` still stands for its own group, not the first's.
+        let before = [
+            vec![at("src/a.rs", "fmt", 10), at("src/b.rs", "x", 1)],
+            vec![at("src/a.rs", "fmt", 30), at("src/c.rs", "y", 1)],
+        ];
+        let now = [group(&[at("src/a.rs", "fmt", 30), at("src/c.rs", "y", 1)])];
+        assert_eq!(
+            compare(&now, &before),
+            Comparison {
+                novelty: vec![Novelty::Unchanged],
+                resolved: 1
+            }
+        );
+    }
+
+    #[test]
+    fn three_siblings_survive_the_loss_of_one_partner() {
+        let before = [
+            vec![at("src/a.rs", "fmt", 10), at("src/b.rs", "x", 1)],
+            vec![at("src/a.rs", "fmt", 30), at("src/c.rs", "y", 1)],
+            vec![at("src/a.rs", "fmt", 50), at("src/d.rs", "z", 1)],
+        ];
+        let now = [
+            group(&[at("src/a.rs", "fmt", 30), at("src/c.rs", "y", 1)]),
+            group(&[at("src/a.rs", "fmt", 50), at("src/d.rs", "z", 1)]),
+        ];
+        assert_eq!(
+            compare(&now, &before),
+            Comparison {
+                novelty: vec![Novelty::Unchanged; 2],
+                resolved: 1
+            }
+        );
+    }
+
+    #[test]
+    fn two_namesakes_were_together_only_if_a_baseline_group_held_two() {
+        let both = vec![at("src/a.rs", "fmt", 10), at("src/a.rs", "fmt", 30)];
+        let now = [group(&[
+            at("src/a.rs", "fmt", 12),
+            at("src/a.rs", "fmt", 32),
+        ])];
+        assert_eq!(statuses(&now, &[both]), [Novelty::Unchanged]);
+        let one = vec![at("src/a.rs", "fmt", 10), at("src/b.rs", "x", 1)];
+        let now = [group(&[
+            at("src/a.rs", "fmt", 10),
+            at("src/a.rs", "fmt", 30),
+        ])];
+        assert_eq!(statuses(&now, &[one]), [Novelty::New]);
+    }
+
+    #[test]
+    fn grown_counts_the_members_already_together() {
+        // Two of four left and one copy came: two were together before.
+        let four = vec![
+            at("src/a.rs", "f", 1),
+            at("src/b.rs", "g", 1),
+            at("src/c.rs", "h", 1),
+            at("src/d.rs", "k", 1),
+        ];
+        let now = [group(&[
+            at("src/a.rs", "f", 1),
+            at("src/b.rs", "g", 1),
+            at("src/z.rs", "zz", 1),
+        ])];
+        assert_eq!(statuses(&now, &[four]), [Novelty::Grown { from: 2 }]);
+    }
+
+    #[test]
+    fn grown_takes_the_largest_count_whichever_group_comes_first() {
+        let big = vec![
+            at("src/a.rs", "f", 1),
+            at("src/b.rs", "g", 1),
+            at("src/c.rs", "h", 1),
+            at("src/d.rs", "k", 1),
+        ];
+        let small = big[..2].to_vec();
+        let now = [group(&[
+            at("src/a.rs", "f", 1),
+            at("src/b.rs", "g", 1),
+            at("src/c.rs", "h", 1),
+            at("src/z.rs", "zz", 1),
+        ])];
+        for before in [[big.clone(), small.clone()], [small, big]] {
+            assert_eq!(statuses(&now, &before), [Novelty::Grown { from: 3 }]);
+        }
+    }
+
+    #[test]
+    fn a_lone_survivor_does_not_keep_its_old_group() {
+        // `g` is deleted: `f` survives, but only in its other group.
+        let before = [
+            vec![at("src/a.rs", "f", 1), at("src/b.rs", "g", 1)],
+            vec![at("src/a.rs", "f", 1), at("src/c.rs", "h", 1)],
+        ];
+        let now = [group(&[at("src/a.rs", "f", 1), at("src/c.rs", "h", 1)])];
+        assert_eq!(
+            compare(&now, &before),
+            Comparison {
+                novelty: vec![Novelty::Unchanged],
+                resolved: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_group_of_one_is_new() {
+        let lone = at("src/a.rs", "f", 1);
+        let mut one = group(&[lone.clone(), at("src/b.rs", "g", 1)]);
+        one.members = vec![lone];
+        assert_eq!(statuses(&[one], &[]), [Novelty::New]);
+    }
+
+    #[test]
+    fn a_third_namesake_pasted_beside_two_has_grown() {
+        let two = vec![at("src/a.rs", "fmt", 10), at("src/a.rs", "fmt", 30)];
+        let three = [group(&[
+            at("src/a.rs", "fmt", 10),
+            at("src/a.rs", "fmt", 30),
+            at("src/a.rs", "fmt", 50),
+        ])];
+        assert_eq!(statuses(&three, &[two]), [Novelty::Grown { from: 2 }]);
+    }
+
+    #[test]
+    fn baseline_groups_merged_into_one_have_grown() {
+        let (f, g, h) = (
+            at("src/a.rs", "f", 1),
+            at("src/b.rs", "g", 1),
+            at("src/c.rs", "h", 1),
+        );
+        let before = [
+            vec![f.clone(), g.clone()],
+            vec![f.clone(), h.clone()],
+            vec![g.clone(), h.clone()],
+        ];
+        assert_eq!(
+            statuses(&[group(&[f, g, h])], &before),
+            [Novelty::Grown { from: 2 }]
+        );
+    }
+
+    #[test]
+    fn more_namesakes_than_the_baseline_group_held_have_grown() {
+        let before = vec![
+            at("src/a.rs", "fmt", 10),
+            at("src/a.rs", "fmt", 30),
+            at("src/c.rs", "z", 1),
+        ];
+        let now = [group(&[
+            at("src/a.rs", "fmt", 10),
+            at("src/a.rs", "fmt", 30),
+            at("src/a.rs", "fmt", 50),
+            at("src/b.rs", "y", 1),
+        ])];
+        assert_eq!(statuses(&now, &[before]), [Novelty::Grown { from: 2 }]);
+    }
+
+    #[test]
+    fn a_replaced_namesake_reads_unchanged() {
+        // The cost of namesakes sharing an identity: `fmt@10` went, a new
+        // `fmt` copying `y` came, and the two cannot be told apart.
+        let before = vec![at("src/a.rs", "fmt", 10), at("src/c.rs", "y", 1)];
+        let now = [group(&[at("src/a.rs", "fmt", 70), at("src/c.rs", "y", 1)])];
+        assert_eq!(statuses(&now, &[before]), [Novelty::Unchanged]);
+    }
+
+    #[test]
+    fn members_listed_in_another_order_are_the_same_group() {
+        // By location `g` now comes first, by identity `fmt` does.
+        let before = vec![at("src/a.rs", "fmt", 1), at("src/a.rs", "g", 32)];
+        let now = [group(&[at("src/a.rs", "g", 1), at("src/a.rs", "fmt", 17)])];
+        assert_eq!(
+            compare(&now, &[before]),
+            Comparison {
+                novelty: vec![Novelty::Unchanged],
+                resolved: 0
+            }
+        );
+    }
+
+    #[test]
+    fn a_function_in_two_groups_is_followed_when_it_moves() {
+        let before = [
+            vec![at("src/a.rs", "f", 1), at("src/b.rs", "g", 1)],
+            vec![at("src/a.rs", "f", 1), at("src/c.rs", "h", 1)],
+        ];
+        let now = [
+            group(&[at("src/z.rs", "f", 1), at("src/b.rs", "g", 1)]),
+            group(&[at("src/z.rs", "f", 1), at("src/c.rs", "h", 1)]),
+        ];
+        assert_eq!(
+            compare(&now, &before),
+            Comparison {
+                novelty: vec![Novelty::Unchanged; 2],
+                resolved: 0
+            }
         );
     }
 
@@ -401,13 +608,13 @@ mod tests {
 
     proptest! {
         #[test]
-        fn matching_is_one_to_one_and_keeps_names(
+        fn a_move_pairs_one_function_with_one_of_its_name(
             before in prop::collection::btree_set(location(), 0..12),
             now in prop::collection::btree_set(location(), 0..12),
         ) {
             let before: Vec<&Location> = before.iter().collect();
             let now: Vec<&Location> = now.iter().collect();
-            let pairs = same_functions(&before, &now);
+            let pairs = moves(&before, &now);
             let olds: std::collections::BTreeSet<_> = pairs.iter().map(|(b, _)| *b).collect();
             let news: std::collections::BTreeSet<_> = pairs.iter().map(|(_, n)| *n).collect();
             prop_assert_eq!(olds.len(), pairs.len());
@@ -433,6 +640,18 @@ mod tests {
             let result = compare(&now, &[]);
             prop_assert!(result.novelty.iter().all(|n| *n == Novelty::New), "{:?}", result);
             prop_assert_eq!(result.resolved, 0);
+        }
+
+        #[test]
+        fn grown_from_is_at_least_two_and_below_the_group_size(
+            now in groups(),
+            before in records(),
+        ) {
+            for (g, n) in now.iter().zip(compare(&now, &before).novelty) {
+                if let Novelty::Grown { from } = n {
+                    prop_assert!((2..g.members.len()).contains(&from), "{} of {:?}", from, g);
+                }
+            }
         }
 
         #[test]

@@ -13,7 +13,7 @@
 //! cargo crap --lcov lcov.info --baseline baseline.json --fail-regression
 //! ```
 
-use crate::merge::{CrapEntry, SortOrder};
+use crate::merge::{CrapEntry, SortOrder, path_key};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -214,12 +214,6 @@ pub fn load_baseline_with_weight(path: &Path) -> Result<Baseline> {
             .try_weight
             .unwrap_or(crate::config::DEFAULT_TRY_WEIGHT),
     })
-}
-
-/// A path with its separators unified, so a baseline written on Windows
-/// matches a run on Unix.
-pub(crate) fn path_key(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
 }
 
 /// File-order key for a current entry: `(file, function, line)` ascending,
@@ -699,7 +693,7 @@ mod tests {
         // side gets paired by name during the second-pass matcher. Same
         // CC + coverage + crap → status `Moved`, not `New`/`Removed`.
         //
-        // Also kills: `path_key -> String` collapsing to a constant.
+        // Also kills: `merge::path_key -> String` collapsing to a constant.
         // Under that mutation, pass 1 would falsely match these as
         // Unchanged with previous_file = None — distinguishable from the
         // correct (Moved, Some(src/main.rs)) outcome.

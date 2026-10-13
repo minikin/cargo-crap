@@ -80,14 +80,16 @@ pub enum SortOrder {
     File,
 }
 
+/// A path with its separators unified, so a baseline written on Windows
+/// matches a run on Unix.
+pub(crate) fn path_key(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// Stable `(file, function, line)` sort key. The file path is normalized to
 /// forward slashes so baselines written on different platforms sort the same.
 pub(crate) fn file_order_key(e: &CrapEntry) -> (String, &str, usize) {
-    (
-        e.file.to_string_lossy().replace('\\', "/"),
-        e.function.as_str(),
-        e.line,
-    )
+    (path_key(&e.file), e.function.as_str(), e.line)
 }
 
 /// Apply the user-requested [`SortOrder`] to an entry slice in place.

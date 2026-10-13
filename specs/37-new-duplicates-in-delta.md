@@ -24,23 +24,27 @@ one is, so a consumer can filter for itself.
 
 Two functions are the same function on both sides when they have the same
 name in the same file, line numbers aside. Same-named functions in one file,
-such as two `fmt` impls, pair in source order. A function whose name is
-unique among the unmatched on both sides pairs across files, so a moved
-function keeps its groups. A renamed function is a new function, as it is
-in the CRAP delta.
+such as two `fmt` impls, cannot be told apart, so each counts as any of its
+baseline namesakes. A function whose name is unique among the unmatched on
+both sides pairs across files, so a moved function keeps its groups. A
+renamed function is a new function, as it is in the CRAP delta.
 
-A group is judged by its pairs. A pair of its members is known when the
-baseline had both functions in one group. A group whose pairs are all
-known is unchanged, a group with no known pair is new, and a group with
-both is grown. A baseline group none of whose pairs survive in one current
-group is resolved.
+A group is judged by the baseline group that held the most of its
+members. A group one baseline group held entirely is unchanged, even when
+that group had more members. A group of which a baseline group held at
+least two members is grown, and any other group is new. A baseline group
+none of whose pairs are together in one current group is resolved.
 
 Rejected alternatives:
 
 - **Matching groups by their exact member list.** A group that loses a
   member, or one where complete linkage splits differently after an
-  unrelated edit, would read as new and be triaged again. Pairs survive
-  those changes.
+  unrelated edit, would read as new and be triaged again. Asking whether
+  one baseline group held every member survives both.
+- **Judging a group by its pairs alone.** Same-named functions in one file
+  share an identity, so a third `fmt` pasted beside two makes only the
+  pair already known, and two baseline groups merged into one make only
+  known pairs too. Both would read as unchanged.
 - **A content fingerprint per function in the JSON.** It would follow a
   renamed function, but it grows every baseline and changes the schema for
   a case the CRAP delta does not handle either.
@@ -196,11 +200,11 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   core in `src/duplicates/novelty.rs`: the two-pass identity matcher and
   `compare`, giving one `Novelty` per group and the resolved count. No
   scenario reaches it end to end yet. Tests: unit (each status, same-named
-  members in source order, a move, a baseline group left with one member
-  ignored) + property (pairing is a partial bijection, a run against
-  itself is all unchanged with nothing resolved, an empty record makes all
-  new, shifting every line changes no status, the statuses add up to the
-  group count).
+  members of one file, a move, a baseline group left with one member
+  ignored) + property (a move pairs one function with one, by name, a run
+  against itself is all unchanged with nothing resolved, an empty record
+  makes all new, shifting every line changes no status, the statuses add
+  up to the group count).
 - [ ] **T2 — Markdown and pr-comment show the new groups.** `load_baseline`
   keeps `duplicate_groups` as `Option`, filtered like its entries.
   `main.rs` runs `compare` and sets `RenderOptions::novelty`. The table
@@ -252,11 +256,19 @@ the fallback and the warning.
 delta's exact key includes the line and its fallbacks need unique names,
 which same-named methods are not. Two passes:
 
-1. Same path key (`path_key`, separators unified) and same name. When a
-   file has k same-named functions on one side and j on the other, the
-   first min(k, j) pair in source order, the rest are unmatched.
-2. Among the unmatched, a name that appears exactly once on each side
-   pairs across files (a move).
+1. Same path key (separators unified) and same name. Every function with
+   that key on one side is the same as every one on the other, so a
+   function's identity is its key. Pairing same-named functions by
+   position would misalign them whenever one of them leaves the duplicate
+   set, and announce groups nobody added. The cost runs the other way: a
+   pull request that deletes `fmt ~ y` and adds another `fmt` in the same
+   file that also copies `y` reads as unchanged.
+2. Among the functions whose key is on one side only, a name that appears
+   exactly once on each side pairs across files (a move), and the moved
+   function takes its baseline key.
+
+Members are counted by identity: a baseline group that held one `fmt` of
+a file accounts for one current `fmt` of that file, not two.
 
 Both runs are expected to use the same `--path` or `--workspace`, as the
 demo and CI do. A baseline member the current run's filters exclude
@@ -274,12 +286,14 @@ pub struct Comparison {
     pub resolved: usize,
 }
 
-pub fn compare(current: &[DuplicateGroup], baseline: &[BaselineGroup],
-               same: impl Fn(&Location, &BaselineMember) -> bool) -> Comparison
+// `baseline` is each recorded group's member list.
+pub fn compare(current: &[DuplicateGroup], baseline: &[Vec<Location>]) -> Comparison
 ```
 
-`Grown { from }` is the size of the largest baseline group that shares a
-known pair with it, which is what "grew from N" prints.
+`Grown { from }` is the most of the group's members one baseline group
+held, which is what "grew from N" prints. It is always below the group's
+size, since a group one baseline group held entirely is unchanged. A group
+with fewer than two members is new.
 
 **Triage** runs after classification and asks only about `New` and
 `Grown` groups. `RenderOptions::triage` becomes one optional verdict per
@@ -316,8 +330,9 @@ cached on the showcase branch, so the workflow still needs no API key.
 
 **Invariants worth a property test:**
 
-- Pairing is a partial bijection: no current function pairs with two
-  baseline functions or the reverse.
+- A move pairs one baseline function with one current function, of the
+  same name.
+- `Grown { from }` is at least 2 and below the group's size.
 - Comparing a run with itself makes every group `Unchanged` and resolves
   nothing.
 - Against an empty record every group is `New` and nothing is resolved.

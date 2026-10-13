@@ -2689,7 +2689,7 @@ mod tests {
     #[test]
     fn baseline_filter_normalizes_backslash_paths() {
         // Baseline written on Windows: separators must be normalized before
-        // glob matching, as in delta's path_key.
+        // glob matching, as in merge's path_key.
         let filter =
             BaselineFilter::new(&strs(&["tests/**"]), &[], vec![PathBuf::from(".")]).unwrap();
         let mut entries = vec![baseline_entry("tests\\integration.rs", "test_helper")];
