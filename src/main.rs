@@ -1582,6 +1582,7 @@ fn duplicate_section<'a>(
     let groups = pairs
         .as_deref()
         .map(|pairs| duplicates::group::group_pairs(pairs, settings.threshold));
+    warn_on_missing_record(groups.as_deref(), baseline);
     let novelty = novelty_against(groups.as_deref(), baseline);
     // One request per group asked about, about its most similar pair.
     let triage = groups.as_deref().and_then(|groups| {
@@ -1625,6 +1626,30 @@ fn spread(
         spread[n] = Some(verdict);
     }
     spread
+}
+
+/// The warning for a delta run that found duplicate groups against a
+/// baseline recorded without `--duplicates`, which leaves nothing to tell
+/// the new groups from the old.
+fn missing_record_warning(
+    groups: Option<&[duplicates::group::DuplicateGroup]>,
+    baseline: Option<&Baseline>,
+) -> Option<&'static str> {
+    let found = groups.is_some_and(|g| !g.is_empty());
+    (found && baseline.is_some_and(|b| b.duplicate_groups.is_none())).then_some(
+        "warning: the baseline has no duplicate record, so the new duplicates cannot be \
+         told from the old. Record the baseline with --duplicates to tell them apart.",
+    )
+}
+
+/// Print [`missing_record_warning`] when it applies.
+fn warn_on_missing_record(
+    groups: Option<&[duplicates::group::DuplicateGroup]>,
+    baseline: Option<&Baseline>,
+) {
+    if let Some(warning) = missing_record_warning(groups, baseline) {
+        eprintln!("{warning}");
+    }
 }
 
 /// The current groups measured against the baseline's duplicate record,
@@ -2863,6 +2888,39 @@ mod tests {
             Some(Assessment::Uncertain { confidence: 0.4 }),
         ]));
         assert!(answered.triaged_by().is_some());
+    }
+
+    #[test]
+    fn only_a_baseline_without_a_duplicate_record_is_warned_about() {
+        let baseline = |duplicate_groups| Baseline {
+            entries: vec![],
+            try_weight: cargo_crap::config::DEFAULT_TRY_WEIGHT,
+            duplicate_groups,
+        };
+        let at = |name: &str| duplicates::extract::Location {
+            file: PathBuf::from("src/a.rs"),
+            start_line: 1,
+            end_line: 9,
+            name: name.to_string(),
+        };
+        let found = [duplicates::group::DuplicateGroup::of_pair(&DuplicatePair {
+            first: at("f"),
+            second: at("g"),
+            score: 0.9,
+        })];
+        let warning =
+            missing_record_warning(Some(&found), Some(&baseline(None))).expect("a warning");
+        assert!(warning.contains("no duplicate record"), "{warning}");
+        assert!(warning.contains("--duplicates"), "{warning}");
+        assert!(!warning.contains(';'), "{warning}");
+        let record = baseline(Some(vec![]));
+        assert_eq!(missing_record_warning(Some(&found), Some(&record)), None);
+        assert_eq!(missing_record_warning(Some(&found), None), None);
+        assert_eq!(
+            missing_record_warning(Some(&[]), Some(&baseline(None))),
+            None
+        );
+        assert_eq!(missing_record_warning(None, Some(&baseline(None))), None);
     }
 
     #[test]

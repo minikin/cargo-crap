@@ -6269,3 +6269,86 @@ fn delta_json_keeps_every_group_and_labels_it() {
     // And the document validates against the delta schema
     assert_matches_schema("schemas/delta-v2.json", &doc);
 }
+
+#[test]
+fn a_baseline_with_no_duplicate_record_shows_every_group() {
+    // Given a baseline recorded with `--format json` and no `--duplicates`
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    write(
+        dir.path(),
+        "a.rs",
+        &[filter_copy("one"), filter_copy("two")].concat(),
+    );
+    write(
+        dir.path(),
+        "b.rs",
+        &[tally_copy("three"), tally_copy("four")].concat(),
+    );
+    let baseline = store.path().join("base.json");
+    let recorded = run_inside(
+        dir.path(),
+        "json",
+        &["--output", baseline.to_str().expect("utf-8")],
+    );
+    assert!(recorded.status.success(), "the baseline is written");
+    // When I run `cargo crap --duplicates --baseline base.json --format pr-comment`
+    let out = run_inside(
+        dir.path(),
+        "pr-comment",
+        &[
+            "--duplicates",
+            "--baseline",
+            baseline.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(out.status.success(), "the run succeeds: {out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    // Then the duplicate section lists every group, as without a baseline
+    let (section, rows) = duplicate_rows(&stdout);
+    assert!(
+        section.starts_with("## 2 duplicate candidates\n"),
+        "{section}"
+    );
+    assert_eq!(rows.len(), 2, "{section}");
+    // And stderr warns once that the baseline has no duplicate record and
+    // names `--duplicates` as the fix
+    assert_eq!(stderr.matches("no duplicate record").count(), 1, "{stderr}");
+    assert!(stderr.contains("--duplicates"), "{stderr}");
+    // Delta JSON labels no group: there is nothing to label it against.
+    let json = delta_duplicates(dir.path(), &baseline, "json");
+    let doc: serde_json::Value = serde_json::from_str(&json).expect("one JSON document");
+    for group in doc["duplicate_groups"].as_array().expect("groups") {
+        assert!(group.get("status").is_none(), "{group}");
+    }
+    assert_matches_schema("schemas/delta-v2.json", &doc);
+    // And every group is triaged when triage is enabled
+    #[cfg(feature = "triage")]
+    {
+        use support::api_stub::{ApiStub, Reply};
+        let stub = ApiStub::scripted(vec![Reply::json(&triage_answer_worth(
+            "same_logic",
+            0.9,
+            3.0,
+        ))]);
+        let out = run_with_config(
+            dir.path(),
+            TRIAGE_ON,
+            &stub,
+            &[
+                "--baseline",
+                baseline.to_str().expect("utf-8"),
+                "--format",
+                "pr-comment",
+            ],
+        );
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        assert_eq!(stub.request_count(), 2, "{stdout}");
+        let (section, rows) = duplicate_rows(&stdout);
+        assert_eq!(rows.len(), 2, "{section}");
+        assert!(rows.iter().all(|r| r.starts_with("| 🔴 |")), "{section}");
+    }
+}
