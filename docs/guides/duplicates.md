@@ -23,9 +23,31 @@ DUPLICATE score=0.92
   src/report/pr_comment.rs:276-287  write_pr_comment_delta_headline
 ```
 
+Functions that all resemble each other are reported as one group, not as
+every pair between them. Three copies of one function and a separate pair
+are two candidates:
+
+```
+2 duplicate candidates:
+
+DUPLICATE GROUP of 3, score=1.00
+  src/odd.rs:1-9  bump_odd_a
+  src/odd.rs:10-18  bump_odd_b
+  src/odd.rs:19-27  bump_odd_c
+DUPLICATE score=1.00
+  src/words.rs:1-9  shout_list
+  src/words.rs:10-18  loud_join
+```
+
+Every member of a group scores at or above the threshold with every other
+member, and the group's score is its weakest pair. Pairs that only chain (A
+like B, B like C, A unlike C) stay separate pairs, since one finding could
+not speak for both ends. A group of two prints exactly as a pair. Thirty
+copies are one group of thirty instead of 435 pairs.
+
 `--format human`, `json`, `markdown` and `pr-comment` carry duplicates.
-Markdown and the PR comment end with a table of the pairs, with the triage
-verdicts when triage ran: see
+Markdown and the PR comment end with a table, one row per group, with the
+triage verdicts when triage ran: see
 [Duplicates in markdown and pr-comment](../reference/output-formats.md#duplicates-in-markdown-and-pr-comment).
 `github`, `sarif` and `shields` print a warning and skip the pass, triage
 included.
@@ -77,8 +99,8 @@ Limits of the comparison:
 
 ## Triage
 
-Since 0.6.0 a model can judge each reported pair: what kind of duplication
-it is, whether it is worth merging, and whether a fix to one side would be
-missed in the other. TypeSafe is the default provider, and OpenAI the other
-since 0.7.0.
-See [Triaging duplicates](triage.md).
+Since 0.6.0 a model can judge each reported candidate, one request per
+group: what kind of duplication it is, whether it is worth merging, and
+whether a fix to one side would be missed in the other. TypeSafe is the
+default provider, and OpenAI the other since 0.7.0. See
+[Triaging duplicates](triage.md).

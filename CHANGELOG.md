@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--format json` carries `duplicate_groups` beside `duplicates` on
+  `--duplicates` runs: one entry per candidate, groups of two included,
+  each with its members, its weakest score and, with triage on, its
+  verdict. The duplicate definitions both schemas share moved to
+  `schemas/duplicates-v1.json`. A validator that does not follow
+  references needs that file beside `report-v1.json` or `delta-v2.json`.
+  See [JSON output schema](docs/reference/json.md) (spec 36).
+
+### Changed
+
+- `--duplicates` reports functions that all resemble each other as one
+  group instead of every pair between them: thirty copies of one function
+  print one candidate, not 435. The human section prints
+  `DUPLICATE GROUP of N, score=S` and the members, and markdown and the PR
+  comment give a group one row naming its first five members. The
+  heading, the summary line and the PR comment's 25-row cap count
+  candidates. A group of two prints exactly as a pair did, so a project
+  with only pairs sees no change outside JSON. See
+  [Finding duplicates](docs/guides/duplicates.md) (spec 36).
+- Triage asks one request per group, about its most similar pair, and the
+  verdict prints once under the group. In JSON each of the group's pairs
+  carries that verdict (spec 36).
+- **BREAKING (library API):** `RenderOptions` gains `groups`, and
+  `RenderOptions::triage` holds one assessment per group when it is set.
+  `duplicates::group` (`DuplicateGroup`, `group_pairs`, `pair_groups`),
+  `RenderOptions::duplicate_groups`, `RenderOptions::pair_triage` and
+  `report::duplicates::render_grouped` are new.
+
 
 ## [0.7.0] - 2026-10-12
 

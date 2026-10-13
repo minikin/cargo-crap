@@ -5,9 +5,10 @@
 Structural similarity cannot tell *the same logic written twice* from *two
 unrelated functions that share a Rust idiom*. Two functions that are each a
 run of `writeln!` calls score as high as a real copy-paste. Triage asks a
-model three narrow questions about each reported pair and prints the answers
-beside it. The model is [TypeSafe](https://docs.typesafe.ai) System One by
-default, or the [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions)
+model three narrow questions about each reported candidate and prints the
+answers beside it. The model is [TypeSafe](https://docs.typesafe.ai) System
+One by default, or the
+[OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions)
 ([Choosing a provider](#choosing-a-provider)). On
 [a small shop backend](../../examples/triage-demo) with three look-alike
 pairs, a real run prints:
@@ -17,6 +18,12 @@ pairs, a real run prints:
 The first pair is one routine pasted and renamed. The second differs only in
 the field it adds up. The last pair scores 0.84 on structure because both are
 a run of `writeln!` calls, and triage says to leave it.
+
+A group of functions that all resemble each other (see
+[Finding duplicates](duplicates.md)) costs one request, not one per pair:
+the model is asked about the group's most similar pair, and its verdict
+prints once, under the group. Thirty copies of one function are one paid
+request instead of 435.
 
 ## Why turn it on
 
@@ -49,10 +56,11 @@ default) the line says `triage: uncertain` and names no kind. On a colour
 terminal the verdict is coloured by what it asks of you: bold red for
 `should-be-one`, yellow for `worthwhile`, dim for `leave-it` and
 `uncertain`. `NO_COLOR`, pipes and `--output` files get plain text. With
-`--format json` each pair carries the same verdict as a `triage` object: its
-kind, worth-extracting level and score, divergence risk and confidence, or
-only `"kind": "uncertain"` and the confidence when below the floor. The key
-is absent when triage did not run. `--format markdown` and
+`--format json` each group in `duplicate_groups` carries the same verdict as
+a `triage` object, and so does each of its pairs in `duplicates`: its kind,
+worth-extracting level and score, divergence risk and confidence, or only
+`"kind": "uncertain"` and the confidence when below the floor. The key is
+absent when triage did not run. `--format markdown` and
 `--format pr-comment` show the same verdicts in a table, see
 [Duplicates in markdown and pr-comment](../reference/output-formats.md#duplicates-in-markdown-and-pr-comment).
 For the first pair above:
@@ -69,8 +77,8 @@ For the first pair above:
 
 ## Turning it on
 
-It is opt-in twice over, because it sends each pair's two function bodies to
-a third-party API:
+It is opt-in twice over, because it sends two function bodies per group to a
+third-party API:
 
 1. **Build it in.** The HTTP client sits behind the `triage` Cargo feature.
    The release binaries, from `cargo binstall` or the release downloads, are
@@ -95,10 +103,10 @@ a third-party API:
    cargo crap --path src --duplicates
    ```
 
-Triage only annotates: every pair still prints in the same order with the
-same score, and the exit code never depends on it. Without a key, a network
-or a working API, the run prints the untriaged section and one warning
-saying why.
+Triage only annotates: every candidate still prints in the same order with
+the same score, and the exit code never depends on it. Without a key, a
+network or a working API, the run prints the untriaged section and one
+warning saying why.
 
 Verdicts are cached in `cargo-crap/triage/` under the target directory,
 the same one the analysis cache uses (see

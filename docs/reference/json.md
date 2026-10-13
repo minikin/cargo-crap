@@ -9,6 +9,12 @@ generate types from the schema.
 | Absolute (no `--baseline`) | [`schemas/report-v1.json`](https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json) |
 | Delta (with `--baseline`)  | [`schemas/delta-v2.json`](https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json)   |
 
+Both reference the definitions they share, the duplicate pairs, groups and
+triage verdicts, in
+[`schemas/duplicates-v1.json`](https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/duplicates-v1.json).
+A validator that follows references fetches it on its own. One that does
+not needs it beside the envelope schema.
+
 ```jsonc
 // cargo crap --format json
 {
@@ -51,7 +57,7 @@ unrelated 0%-coverage entries), a warning with the same numbers is printed
 to stderr before the report, and CI wrappers can gate on the JSON counts.
 
 On `--duplicates` runs both envelopes grow a `duplicates` array, one object
-per candidate pair, in the same order as the human section:
+per candidate pair, strongest first:
 
 ```jsonc
 "duplicates": [
@@ -69,5 +75,27 @@ per candidate pair, in the same order as the human section:
 ]
 ```
 
-The key is absent, not empty, when detection was not requested, so "not
+They also carry `duplicate_groups`, one object per candidate, in the same
+order as the human section: every group of functions that all resemble each
+other, groups of two included, so each pair in `duplicates` lies inside
+exactly one group.
+
+```jsonc
+"duplicate_groups": [
+  {
+    "members": [
+      { "file": "src/odd.rs", "function": "bump_odd_a", "start_line": 1, "end_line": 9 },
+      { "file": "src/odd.rs", "function": "bump_odd_b", "start_line": 10, "end_line": 18 },
+      { "file": "src/odd.rs", "function": "bump_odd_c", "start_line": 19, "end_line": 27 }
+    ],
+    "score": 1.0,          // the weakest pair's similarity
+    "triage": { /* present when triage ran */ }
+  }
+]
+```
+
+With [triage](../guides/triage.md) on, a group's verdict is its `triage`
+object, and each of its pairs in `duplicates` carries the same one.
+
+Both keys are absent, not empty, when detection was not requested, so "not
 asked" stays distinguishable from "asked, found nothing".

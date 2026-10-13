@@ -11,11 +11,11 @@
   [JSON output schema](json.md).
 - `github`: `::warning` annotations for a GitHub Actions log.
 - `markdown`: an exhaustive GFM table. With `--duplicates` it ends with the
-  duplicate pairs, see
+  duplicate candidates, see
   [Duplicates in markdown and pr-comment](#duplicates-in-markdown-and-pr-comment).
 - `pr-comment`: the opinionated PR-bot variant, which hides unchanged rows,
   caps each section and collapses non-critical information into `<details>`
-  blocks. With `--duplicates` it ends with the duplicate pairs too.
+  blocks. With `--duplicates` it ends with the duplicate candidates too.
 - `sarif`: SARIF 2.1.0 for GitHub Code Scanning, VS Code and other
   static-analysis tooling. See [SARIF output](#sarif-output).
 - `shields`: Shields.io endpoint-badge JSON for a README badge. See
@@ -81,15 +81,29 @@ Set `COLUMNS` to choose the width for a pipe, as in
 *Since 0.7.0.*
 
 With `--duplicates`, `markdown` and `pr-comment` end with a section headed
-by the number of pairs, after the CRAP report, the delta report or the
-`--summary` line. Each row is one pair: both function names, their
-locations relative to the working directory, and the similarity. With
-`--repo-url` and `--commit-ref` the names link to their source.
+by the number of candidates, after the CRAP report, the delta report or the
+`--summary` line. Each row is one candidate: a pair, or a
+[group](../guides/duplicates.md) of functions that all resemble each other.
+A pair's row shows both function names, their locations relative to the
+working directory, and the similarity. A group's row names its first five
+members joined by `·`, says how many more it has, lists their locations
+under them, and shows the group's weakest similarity:
 
-When [triage](../guides/triage.md) answered for every pair, a line under the
-heading counts the pairs at each level, each row gains a marker, the verdict,
-the confidence and the divergence risk, and a line under the table names the
-provider and the model asked:
+```markdown
+| Functions | Similarity |
+|---|---:|
+| `bump_odd_00` · `bump_odd_01` · `bump_odd_02` · `bump_odd_03` · `bump_odd_04` and 7 more<br><sub>`src/odd.rs:1-9` · `src/odd.rs:10-18` · `src/odd.rs:19-27` · `src/odd.rs:28-36` · `src/odd.rs:37-45`</sub> | 1.00 |
+| `shout_list` ↔ `loud_join`<br><sub>`src/words.rs:1-9` · `src/words.rs:10-18`</sub> | 1.00 |
+```
+
+The first column is headed `Pair` while every row shown is a pair, and
+`Functions` once one is a group. With `--repo-url` and `--commit-ref` the
+names link to their source.
+
+When [triage](../guides/triage.md) answered for every candidate, a line
+under the heading counts the candidates at each level, each row gains a
+marker, the verdict, the confidence and the divergence risk, and a line
+under the table names the provider and the model asked:
 
 ```markdown
 ## 3 duplicate candidates
@@ -114,11 +128,11 @@ provider and the model asked:
   will need to change differently, the reason a merge can be the wrong
   move even for the same logic. From 0.5 up it is flagged with ⚠️. An
   uncertain verdict has none.
-- Without a verdict for every pair (triage off, failed or partial) the
-  table has only the pair and its similarity.
-- The PR comment lists at most 25 pairs and says how many it left out, and
-  a PR comment with no pair has no section. Markdown lists every pair, or
-  says that none was found.
+- Without a verdict for every candidate (triage off, failed or partial)
+  the table has only the candidates and their similarity.
+- The PR comment lists at most 25 candidates and says how many it left
+  out, and a PR comment with no candidate has no section. Markdown lists
+  every candidate, or says that none was found.
 
 ## SARIF output
 

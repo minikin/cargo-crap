@@ -148,17 +148,18 @@ delta as a pull-request comment.
 
 *Since 0.6.0. OpenAI as a provider since 0.7.0.*
 
-`--duplicates` lists pairs of functions with the same structure, and it needs
-no coverage. Structure alone cannot tell the same logic written twice from
-two functions that only share a Rust idiom. With triage on, a model from
-[TypeSafe](https://docs.typesafe.ai) (the default) or the
+`--duplicates` lists functions with the same structure, and it needs no
+coverage. Functions that all resemble each other are one group, so thirty
+copies are one finding, not 435 pairs. Structure alone cannot tell the same
+logic written twice from two functions that only share a Rust idiom. With
+triage on, a model from [TypeSafe](https://docs.typesafe.ai) (the default)
+or the
 [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions)
-answers three questions about each pair: what kind of duplication it is,
-whether it is worth merging, and whether a fix to one side would be missed
-in the other. The kind and the
-verdict on merging print under the pair, and `--format json` carries all
-three answers. A real run over the three pairs of the triage demo, all high
-on structure:
+answers three questions about each pair or group, one request each: what
+kind of duplication it is, whether it is worth merging, and whether a fix to
+one side would be missed in the other. The kind and the verdict on merging
+print under the pair, and `--format json` carries all three answers. A real
+run over the three pairs of the triage demo, all high on structure:
 
 <img width="729" alt="cargo crap --summary on the triage demo. order_total and quote_total: same-logic, should-be-one, in bold red. shipped_weight and shipped_volume: parameterisable, worthwhile, in yellow. write_receipt and write_shipping_label: shared-shape-only, leave-it, dimmed." src="docs/assets/triage-demo-output.png">
 
