@@ -12,8 +12,11 @@ env:
 jobs:
   # Detect whether any Rust-relevant files changed. Every Rust job is gated
   # on `rust`, and mutation testing on `src`, so a pull request that touches
-  # only docs, workflows or scripts skips them. The workflow still runs, and
-  # GitHub sees the jobs as "skipped", which satisfies required checks.
+  # only docs, scripts or other workflows skips them. The workflow still
+  # runs, and GitHub sees the jobs as "skipped", which satisfies required
+  # checks. This file is in both filters: a change to a job runs that job,
+  # on the pull request and again on main. The tests read the schemas and
+  # the proptest seeds, so those count as Rust too.
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
@@ -36,8 +39,12 @@ jobs:
               - 'clippy.toml'
               - 'rustfmt.toml'
               - 'deny.toml'
+              - 'schemas/**'
+              - 'proptest-regressions/**'
+              - '.github/workflows/ci.yml'
             src:
               - 'src/**/*.rs'
+              - '.github/workflows/ci.yml'
 
   test:
     name: Test (${{ matrix.os }})
