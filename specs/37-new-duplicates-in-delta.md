@@ -229,7 +229,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   _Triage asks only about new and grown groups_, _The human section lists
   every group_. Tests: unit + acceptance (the `triage` build's stub counts
   requests).
-- [ ] **T5 — Delta JSON labels every group.** `status` on each
+- [x] **T5 — Delta JSON labels every group.** `status` on each
   `duplicate_groups` entry and `grown_from` on grown ones, in the delta
   schema only. Needs: T4. Scenarios: _Delta JSON keeps every group and
   labels it_. Tests: unit + acceptance (schema-validated).
