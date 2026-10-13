@@ -27,21 +27,27 @@ pub(crate) const MAX_ROWS_PER_SECTION: usize = 25;
 
 // ─── Path-prefix stripping for visible Location text ────────────────────────
 
-/// Compute the longest common path-component prefix across `paths`.
+/// Compute the longest common path-component prefix across the directories
+/// of `paths`.
 ///
 /// Operates on path *components*, never byte prefixes — so `/a/foo` and
-/// `/a/foobar` share `/a`, not `/a/foo`. Returns an empty `PathBuf` when
+/// `/a/foobar` share `/a`, not `/a/foo`. Only directories count, so rows
+/// that are all in one file keep its name. Returns an empty `PathBuf` when
 /// fewer than two paths are supplied or when the paths share no prefix.
 pub(crate) fn longest_common_path_prefix(paths: &[PathBuf]) -> PathBuf {
     if paths.len() < 2 {
         return PathBuf::new();
     }
-    let first: Vec<_> = paths[0].components().collect();
+    let dirs: Vec<&Path> = paths
+        .iter()
+        .map(|p| p.parent().unwrap_or(Path::new("")))
+        .collect();
+    let first: Vec<_> = dirs[0].components().collect();
     let mut common_len = first.len();
-    for p in &paths[1..] {
+    for dir in &dirs[1..] {
         let matched = first
             .iter()
-            .zip(p.components())
+            .zip(dir.components())
             .take_while(|(a, b)| **a == *b)
             .count();
         common_len = common_len.min(matched);
@@ -627,6 +633,48 @@ mod tests {
     }
 
     #[test]
+    fn lcp_of_one_file_stops_at_its_directory() {
+        // Every row in one file: the prefix is the file's directory, so the
+        // location keeps the file name instead of shrinking to `:68`.
+        let paths = vec![
+            PathBuf::from("/r/examples/shop/src/lib.rs"),
+            PathBuf::from("/r/examples/shop/src/lib.rs"),
+        ];
+        assert_eq!(
+            longest_common_path_prefix(&paths),
+            PathBuf::from("/r/examples/shop/src")
+        );
+    }
+
+    proptest::proptest! {
+        /// Whatever the rows, a shortened location still names its file.
+        #[test]
+        fn a_shortened_location_keeps_its_file_name(
+            dirs in proptest::collection::vec(
+                proptest::collection::vec("[a-c]", 0..3),
+                1..5,
+            ),
+            files in proptest::collection::vec("[a-c]\\.rs", 1..5),
+        ) {
+            let paths: Vec<PathBuf> = dirs
+                .iter()
+                .zip(files.iter().cycle())
+                .map(|(dir, file)| {
+                    let mut path = PathBuf::from("/r");
+                    path.extend(dir);
+                    path.join(file)
+                })
+                .collect();
+            let prefix = compute_render_prefix(&paths, Path::new("/r"));
+            for path in &paths {
+                let shown = strip_to_display(path, &prefix);
+                let name = path.file_name().unwrap().to_string_lossy();
+                proptest::prop_assert!(shown.ends_with(name.as_ref()), "{} shown as {:?}", path.display(), shown);
+            }
+        }
+    }
+
+    #[test]
     fn lcp_no_overlap_returns_empty() {
         let paths = vec![PathBuf::from("src/a.rs"), PathBuf::from("tests/b.rs")];
         assert_eq!(longest_common_path_prefix(&paths), PathBuf::new());
@@ -977,6 +1025,32 @@ mod tests {
             !s.contains("/home/runner"),
             "common prefix must be stripped:\n{s}"
         );
+    }
+
+    #[test]
+    fn pr_comment_rows_in_one_file_keep_its_name() {
+        let report = DeltaReport {
+            entries: vec![
+                delta_entry(
+                    "/home/runner/work/repo/src/lib.rs",
+                    "fn_a",
+                    12.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+                delta_entry(
+                    "/home/runner/work/repo/src/lib.rs",
+                    "fn_b",
+                    14.0,
+                    Some(5.0),
+                    DeltaStatus::Regressed,
+                ),
+            ],
+            removed: vec![],
+        };
+        let s = render_delta_pr_to_string(&report);
+        assert!(s.contains("`lib.rs:1`"), "the file name stays:\n{s}");
+        assert!(!s.contains("`:1`"), "never an empty location:\n{s}");
     }
 
     #[test]
