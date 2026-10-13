@@ -15,7 +15,9 @@ when several functions share one shape.
 Once this ships, functions that all resemble each other are reported as
 one group: one entry with every member and the group's similarity, and
 one triage request for the group. A group of two looks exactly as a pair
-does today, so a project with only pairs sees no change.
+does today in the human, markdown and pr-comment reports, so a project with
+only pairs sees no change there. The JSON lists every group, groups of two
+included, so a consumer reads one entry per finding.
 
 A group holds functions that are each similar, at or above the threshold,
 to every other member. That is stricter than linking chains of similar
@@ -205,8 +207,8 @@ from them.
 group, so the cache key, the request body and the provider seam are
 unchanged. Each group's verdict is the verdict of its representative.
 
-**Rendering.** A group of two renders exactly as a pair does today, in
-every format. A group of three or more:
+**Rendering.** A group of two renders exactly as a pair does today in the
+human, markdown and pr-comment reports. A group of three or more:
 
 - human: `DUPLICATE GROUP of N, score=S`, then one line per member, then
   the triage line,
@@ -214,6 +216,9 @@ every format. A group of three or more:
   named, then "and K more",
 - JSON: a `duplicate_groups` entry, and the group's verdict copied onto
   each of its pairs in `duplicates`.
+
+`duplicate_groups` lists every group, groups of two included, each with its
+members, score and verdict.
 
 **Fixtures.** `three_pairs_tree` in `tests/acceptance.rs` holds three
 identical functions, which this spec turns into one group of three. It
