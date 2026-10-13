@@ -1,0 +1,113 @@
+name: Demo
+
+# The live version of the README hero: a pull request that changes
+# examples/hero-shop gets the comment cargo-crap would post on that shop's
+# own pull request. The CRAP delta compares the shop on the base branch with
+# the shop in the pull request, and the duplicate section is triaged by
+# OpenAI. Verdicts for the hero's pairs are committed under
+# docs/assets/hero/triage-cache, so the demo needs no key. With an
+# OPENAI_API_KEY secret, a pair missing from that cache is asked about;
+# without one it shows untriaged.
+#
+# The showcase pull request is a draft from demo/hero-shop-pr that copies
+# examples/hero-shop/pr/*.rs over src/. It is never merged.
+
+on:
+  pull_request:
+    paths:
+      - 'examples/hero-shop/**'
+      - '.github/workflows/demo.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  comment:
+    name: Demo PR comment
+    runs-on: ubuntu-latest
+    env:
+      SHOP: examples/hero-shop
+      CRAP: ${{ github.workspace }}/target/release/cargo-crap
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Build cargo-crap
+        run: cargo build --release --features triage
+
+      # Both runs score from the repository root with the same --path, so
+      # the baseline's keys match the pull request's and the comment's
+      # links point at examples/hero-shop/src/... on the head commit.
+      - name: Score the shop on the base branch
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          rm -rf "$SHOP/src"
+          git checkout "origin/$BASE_REF" -- "$SHOP/src"
+          cargo llvm-cov --manifest-path "$SHOP/Cargo.toml" --lcov --output-path "$RUNNER_TEMP/base.lcov"
+          "$CRAP" --path "$SHOP/src" --lcov "$RUNNER_TEMP/base.lcov" --format json \
+            --output "$RUNNER_TEMP/baseline.json"
+          rm -rf "$SHOP/src"
+          git checkout HEAD -- "$SHOP/src"
+
+      - name: Write the comment
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/demo-target
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          cargo llvm-cov --manifest-path "$SHOP/Cargo.toml" --lcov --output-path "$RUNNER_TEMP/pr.lcov"
+          mkdir -p "$CARGO_TARGET_DIR/cargo-crap/triage"
+          cp docs/assets/hero/triage-cache/*.json "$CARGO_TARGET_DIR/cargo-crap/triage/"
+          printf '[duplicates]\nenabled = true\n\n[duplicates.triage]\nenabled = true\nprovider = "openai"\n' \
+            > .cargo-crap.toml
+          {
+            echo '<!-- cargo-crap-demo -->'
+            "$CRAP" --path "$SHOP/src" --lcov "$RUNNER_TEMP/pr.lcov" --threshold 15 \
+              --baseline "$RUNNER_TEMP/baseline.json" --format pr-comment --commit-ref "$HEAD_SHA"
+          } > "$RUNNER_TEMP/comment.md"
+          cat "$RUNNER_TEMP/comment.md"
+
+      # Its own marker first, so the self-score comment, found by
+      # <!-- cargo-crap-report --> at the start, is never this one.
+      - name: Post or update the comment
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(`${process.env.RUNNER_TEMP}/comment.md`, 'utf8');
+            const marker = '<!-- cargo-crap-demo -->';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
