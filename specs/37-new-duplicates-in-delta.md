@@ -196,7 +196,7 @@ property / acceptance), and, when it depends on earlier tasks, a
 `Needs:` naming them. A task with no `Needs:` is a root. A task whose
 needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
 
-- [ ] **T1 — Classify current groups against a baseline record.** The pure
+- [x] **T1 — Classify current groups against a baseline record.** The pure
   core in `src/duplicates/novelty.rs`: the two-pass identity matcher and
   `compare`, giving one `Novelty` per group and the resolved count. No
   scenario reaches it end to end yet. Tests: unit (each status, same-named
