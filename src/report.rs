@@ -19,6 +19,7 @@
 
 use crate::delta::{DeltaCounts, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
+use crate::duplicates::group::DuplicateGroup;
 use crate::duplicates::triage::verdict::Assessment;
 use crate::merge::{CrapEntry, ScopeDiagnostics};
 use crate::score::Severity;
@@ -151,6 +152,10 @@ pub struct RenderOptions<'a> {
     /// Who answered the triage, when it produced assessments. The markdown
     /// and pr-comment duplicate tables name them under a triaged table.
     pub triaged_by: Option<TriagedBy<'a>>,
+    /// The duplicate pairs grouped into functions that all resemble each
+    /// other, or `None` to report each pair on its own. The human section
+    /// reads it.
+    pub groups: Option<&'a [DuplicateGroup]>,
 }
 
 /// The provider and model that judged the duplicate pairs.
@@ -166,7 +171,8 @@ impl Default for RenderOptions<'_> {
     /// CLI defaults: threshold 30, human format, no links, no
     /// diagnostics, changed-only delta rows, no uncovered hints, no
     /// duplicates, the classical `?` weight, a capped human table, no
-    /// working directory, so paths show as given, and no triage provider.
+    /// working directory, so paths show as given, no triage provider, and
+    /// every pair reported on its own.
     fn default() -> Self {
         Self {
             threshold: crate::score::DEFAULT_THRESHOLD,
@@ -183,6 +189,7 @@ impl Default for RenderOptions<'_> {
             width: None,
             cwd: Path::new(""),
             triaged_by: None,
+            groups: None,
         }
     }
 }
@@ -309,15 +316,26 @@ fn write_duplicate_section(
     out: &mut dyn Write,
 ) -> Result<()> {
     match opts.format {
-        Format::Human => {
-            writeln!(out)?;
-            duplicates::render(pairs, opts.triage, out)
-        },
+        Format::Human => human_duplicates(pairs, opts, out),
         Format::Markdown => duplicate_table(opts, None, out),
         // A comment with nothing to say about duplicates says nothing.
         Format::PrComment if pairs.is_empty() => Ok(()),
         Format::PrComment => duplicate_table(opts, Some(pr_comment::MAX_ROWS_PER_SECTION), out),
         Format::Json | Format::GitHub | Format::Sarif | Format::Shields => Ok(()),
+    }
+}
+
+/// The human duplicate section, after a blank line: grouped when the run
+/// grouped its pairs, each pair on its own otherwise.
+fn human_duplicates(
+    pairs: &[DuplicatePair],
+    opts: &RenderOptions,
+    out: &mut dyn Write,
+) -> Result<()> {
+    writeln!(out)?;
+    match opts.groups {
+        Some(groups) => duplicates::render_grouped(pairs, groups, opts.triage, out),
+        None => duplicates::render(pairs, opts.triage, out),
     }
 }
 

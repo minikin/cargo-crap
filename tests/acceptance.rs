@@ -5300,3 +5300,81 @@ fn three_pairs_tree_holds_three_unrelated_pairs() {
         "every function in exactly one pair: {names:?}"
     );
 }
+
+// ---- Spec 36 · T3 ----
+
+/// A tree with `n` copies of one function, under different names.
+fn copies_tree(n: usize) -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    let source = (0..n).fold(String::new(), |mut source, i| {
+        writeln!(
+            source,
+            "fn copy_{i:02}(xs: &[i32]) -> Vec<i32> {{
+    let mut ys = Vec::new();
+    for x in xs {{
+        if x % 2 == 1 {{
+            ys.push(x + 1);
+        }}
+    }}
+    ys
+}}"
+        )
+        .expect("write to a String");
+        source
+    });
+    write(dir.path(), "copies.rs", &source);
+    dir
+}
+
+#[test]
+fn thirty_copies_make_one_group() {
+    // Given a tree with thirty functions that are structural duplicates of
+    // each other
+    let dir = copies_tree(30);
+    // When I run `cargo crap --duplicates`
+    let out = duplicates_run(dir.path(), "human", &["--duplicates"]);
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    // Then the section reports one duplicate candidate
+    assert!(stdout.contains("\n1 duplicate candidate:\n"), "{stdout}");
+    assert!(
+        stdout.contains("DUPLICATE GROUP of 30, score=1.00\n"),
+        "{stdout}"
+    );
+    // And that candidate lists all thirty functions with their locations
+    for i in 0..30 {
+        assert!(
+            stdout.contains(&format!(
+                "copies.rs:{}-{}  copy_{i:02}\n",
+                9 * i + 1,
+                9 * i + 9
+            )),
+            "{i}: {stdout}"
+        );
+    }
+    assert!(
+        !stdout.contains("DUPLICATE score="),
+        "no pair besides the group: {stdout}"
+    );
+}
+
+#[test]
+fn two_look_alikes_still_print_as_a_pair() {
+    // Given a tree with exactly two functions that are structural duplicates
+    let dir = alpha_beta_tree();
+    // When I run `cargo crap --duplicates`
+    let out = duplicates_run(dir.path(), "human", &["--duplicates"]);
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    // Then the duplicate section is the same as before this spec
+    let alpha = dir.path().join("alpha.rs");
+    let beta = dir.path().join("beta.rs");
+    let section = &stdout[stdout.find("1 duplicate candidate:").expect("a section")..];
+    assert_eq!(
+        section,
+        format!(
+            "1 duplicate candidate:\n\nDUPLICATE score=1.00\n  {}:1-9  alpha\n  {}:1-9  beta\n",
+            alpha.display(),
+            beta.display()
+        ),
+        "{stdout}"
+    );
+}

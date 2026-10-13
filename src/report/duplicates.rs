@@ -11,6 +11,7 @@ use super::types::{bar, cwd_relative, styled};
 use super::{RenderOptions, SourceLinks, TriagedBy};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
+use crate::duplicates::group::DuplicateGroup;
 use crate::duplicates::triage::verdict::{Assessment, WorthExtracting};
 
 pub use crate::duplicates::compare::sort_pairs;
@@ -36,6 +37,66 @@ pub fn render(
     let triage = covering(triage, pairs.len());
     for (n, pair) in pairs.iter().enumerate() {
         write_pair(pair, triage.and_then(|t| t.get(n)), out)?;
+    }
+    Ok(())
+}
+
+/// Render the duplicate section over `groups` of `pairs`: a group of two
+/// prints exactly as its pair does in [`render`], with the pair's triage line
+/// when `triage` covers every pair, and a larger group prints its size, its
+/// weakest score and its members by location.
+///
+/// # Errors
+///
+/// Returns an error when the writer does.
+pub fn render_grouped(
+    pairs: &[DuplicatePair],
+    groups: &[DuplicateGroup],
+    triage: Option<&[Assessment]>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if groups.is_empty() {
+        writeln!(out, "No candidate duplicates found.")?;
+        return Ok(());
+    }
+    writeln!(out, "{} duplicate {}:\n", groups.len(), noun(groups.len()))?;
+    let triage = covering(triage, pairs.len());
+    for group in groups {
+        match pair_of(group, pairs) {
+            Some(n) => write_pair(&pairs[n], triage.and_then(|t| t.get(n)), out)?,
+            None => write_group(group, out)?,
+        }
+    }
+    Ok(())
+}
+
+/// The index in `pairs` of a group of two's pair, or `None` for a larger
+/// group.
+fn pair_of(
+    group: &DuplicateGroup,
+    pairs: &[DuplicatePair],
+) -> Option<usize> {
+    let [first, second] = group.members.as_slice() else {
+        return None;
+    };
+    pairs.iter().position(|p| {
+        (&p.first, &p.second) == (first, second) || (&p.first, &p.second) == (second, first)
+    })
+}
+
+/// A group of three or more: its size and weakest score, then its members.
+fn write_group(
+    group: &DuplicateGroup,
+    out: &mut dyn Write,
+) -> Result<()> {
+    writeln!(
+        out,
+        "DUPLICATE GROUP of {}, score={:.2}",
+        group.members.len(),
+        group.score
+    )?;
+    for member in &group.members {
+        writeln!(out, "  {}", side(member))?;
     }
     Ok(())
 }
@@ -393,6 +454,7 @@ mod tests {
     use super::*;
     use crate::duplicates::compare::find_pairs;
     use crate::duplicates::extract::{FunctionPrint, functions_in_source};
+    use crate::duplicates::group::DuplicateGroup;
     use crate::duplicates::triage::verdict::{Assessment, Kind, Verdict, WorthExtracting};
     use crate::report::test_support::Refuses;
     use proptest::prelude::*;
@@ -735,6 +797,88 @@ mod tests {
                 pairs.len(),
                 "one triage line per pair"
             );
+        }
+    }
+
+    // ---- Groups in the human section ----
+
+    /// The human section over `groups` of `pairs`, untriaged.
+    fn grouped(
+        pairs: &[DuplicatePair],
+        groups: &[DuplicateGroup],
+    ) -> String {
+        let mut buf = Vec::new();
+        render_grouped(pairs, groups, None, &mut buf).expect("a Vec writer cannot fail");
+        String::from_utf8(buf).expect("utf-8")
+    }
+
+    /// Three functions of `src/f9.rs`, pairwise similar at 1.00, 0.95, 0.90.
+    fn trio() -> (Vec<DuplicatePair>, Vec<DuplicateGroup>) {
+        let at = |line: usize| Location {
+            file: PathBuf::from("src/f9.rs"),
+            start_line: line,
+            end_line: line + 4,
+            name: format!("g{line}"),
+        };
+        let pair_of = |a: usize, b: usize, score: f64| DuplicatePair {
+            first: at(a),
+            second: at(b),
+            score,
+        };
+        let pairs = vec![
+            pair_of(1, 10, 1.0),
+            pair_of(10, 20, 0.95),
+            pair_of(1, 20, 0.9),
+        ];
+        let groups = crate::duplicates::group::group_pairs(&pairs, 0.82);
+        (pairs, groups)
+    }
+
+    #[test]
+    fn a_group_of_three_prints_its_members_under_one_heading() {
+        let (pairs, groups) = trio();
+        assert_eq!(
+            grouped(&pairs, &groups),
+            "1 duplicate candidate:\n\n\
+             DUPLICATE GROUP of 3, score=0.90\n  \
+             src/f9.rs:1-5  g1\n  \
+             src/f9.rs:10-14  g10\n  \
+             src/f9.rs:20-24  g20\n"
+        );
+    }
+
+    #[test]
+    fn a_group_of_two_prints_as_its_pair_with_the_pairs_verdict() {
+        let pairs = [pair(1, 0.95), pair(2, 0.9)];
+        let groups = crate::duplicates::group::group_pairs(&pairs, 0.82);
+        assert_eq!(
+            grouped(&pairs, &groups),
+            rendered(&pairs),
+            "the same text as pairs"
+        );
+        let triage = [
+            asserted(Kind::SameLogic, 0.91, 2.2),
+            asserted(Kind::SameLogic, 0.8, 0.0),
+        ];
+        let mut buf = Vec::new();
+        render_grouped(&pairs, &groups, Some(&triage), &mut buf).expect("a Vec writer cannot fail");
+        assert_eq!(
+            String::from_utf8(buf).expect("utf-8"),
+            triaged(&pairs, &triage)
+        );
+    }
+
+    #[test]
+    fn no_groups_say_so() {
+        assert_eq!(grouped(&[], &[]), "No candidate duplicates found.\n");
+    }
+
+    #[test]
+    fn a_group_that_cannot_be_written_is_an_error() {
+        let (pairs, groups) = trio();
+        for refused in ["DUPLICATE GROUP", "g10"] {
+            let result = render_grouped(&pairs, &groups, None, &mut Refuses::new(refused));
+            assert!(result.is_err(), "a refused {refused:?} write is reported");
         }
     }
 

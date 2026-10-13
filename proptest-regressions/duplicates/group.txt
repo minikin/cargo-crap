@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 50bf5cd101a4484a17c2f3f9812a4dd1f3bad5467058237b08991bf7d9fc85da # shrinks to n = 2
+cc c68781ab1148603af44b39db50f3489776f4818fbb5ab7e791e642ee3a619530 # shrinks to pairs = [DuplicatePair { first: Location { file: "src/a.rs", start_line: 1, end_line: 9, name: "f0" }, second: Location { file: "src/a.rs", start_line: 11, end_line: 19, name: "f1" }, score: 0.82 }]

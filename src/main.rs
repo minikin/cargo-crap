@@ -1150,6 +1150,18 @@ fn resolve_bool(
     cli_flag || config_value.unwrap_or(false)
 }
 
+/// Resolve the missing-coverage policy: the CLI flag wins when given, then
+/// the config value, then pessimistic, the default a CI gate wants.
+fn resolve_missing(
+    cli_flag: Option<MissingPolicy>,
+    config_value: Option<MissingCoveragePolicy>,
+) -> MissingCoveragePolicy {
+    cli_flag
+        .map(Into::into)
+        .or(config_value)
+        .unwrap_or(MissingCoveragePolicy::Pessimistic)
+}
+
 /// Whether the user asked for a slice of the entries with `top` or `min`,
 /// which turns off the human table's cap. Keeps the `||` out of `run`.
 fn is_sliced(
@@ -1477,6 +1489,8 @@ fn duplicate_pairs(
 /// The duplicate section's content: the pairs, and their triage when it ran.
 struct DuplicateSection<'a> {
     pairs: Option<Vec<DuplicatePair>>,
+    /// The pairs grouped into functions that all resemble each other.
+    groups: Option<Vec<duplicates::group::DuplicateGroup>>,
     triage: Option<Vec<Assessment>>,
     /// The display name of the provider asked, named when triage answered.
     provider: &'static str,
@@ -1508,8 +1522,12 @@ fn duplicate_section<'a>(
     let triage = pairs
         .as_deref()
         .and_then(|pairs| triage_assessments(settings, pairs, target));
+    let groups = pairs
+        .as_deref()
+        .map(|pairs| duplicates::group::group_pairs(pairs, settings.threshold));
     Ok(DuplicateSection {
         pairs,
+        groups,
         triage,
         provider: settings.triage_provider.display_name(),
         model: &settings.triage_model,
@@ -1760,11 +1778,7 @@ fn run() -> Result<ExitCode> {
         .or(config.threshold)
         .unwrap_or(DEFAULT_THRESHOLD);
 
-    let missing_policy: MissingCoveragePolicy = cli
-        .missing
-        .map(Into::into)
-        .or(config.missing)
-        .unwrap_or(MissingCoveragePolicy::Pessimistic);
+    let missing_policy = resolve_missing(cli.missing, config.missing);
 
     let fail_above = resolve_bool(cli.fail_above, config.fail_above);
     let fail_regression = resolve_bool(cli.fail_regression, config.fail_regression);
@@ -1844,6 +1858,7 @@ fn run() -> Result<ExitCode> {
             width: output_width(cli.output.is_none()),
             cwd: &knobs.cwd,
             duplicates: dups.pairs.as_deref(),
+            groups: dups.groups.as_deref(),
             triage: dups.triage.as_deref(),
             triaged_by: dups.triaged_by(),
         },
@@ -2478,6 +2493,25 @@ mod tests {
         assert!(is_sliced(Some(5.0), None));
         assert!(is_sliced(None, Some(50)));
         assert!(is_sliced(Some(5.0), Some(50)));
+    }
+
+    #[test]
+    fn resolve_missing_cli_wins_then_config_then_pessimistic() {
+        assert_eq!(
+            resolve_missing(
+                Some(MissingPolicy::Optimistic),
+                Some(MissingCoveragePolicy::Skip)
+            ),
+            MissingCoveragePolicy::Optimistic
+        );
+        assert_eq!(
+            resolve_missing(None, Some(MissingCoveragePolicy::Skip)),
+            MissingCoveragePolicy::Skip
+        );
+        assert_eq!(
+            resolve_missing(None, None),
+            MissingCoveragePolicy::Pessimistic
+        );
     }
 
     #[test]
