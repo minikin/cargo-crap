@@ -23,9 +23,9 @@ DUPLICATE score=0.92
   src/report/pr_comment.rs:276-287  write_pr_comment_delta_headline
 ```
 
-Functions that all resemble each other are reported as one group, not as
-every pair between them. Three copies of one function and a separate pair
-are two candidates:
+Since 0.8.0, functions that all resemble each other are reported as one
+group, not as every pair between them. Three copies of one function and a
+separate pair are two candidates:
 
 ```
 2 duplicate candidates:

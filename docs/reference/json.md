@@ -19,7 +19,7 @@ not needs it beside the envelope schema.
 // cargo crap --format json
 {
   "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
-  "version": "0.7.0",     // the cargo-crap version that produced the report
+  "version": "0.8.0",     // the cargo-crap version that produced the report
   "entries": [
     {
       "file": "src/lib.rs",
@@ -40,7 +40,7 @@ not needs it beside the envelope schema.
 // cargo crap --format json --baseline baseline.json
 {
   "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json",
-  "version": "0.7.0",     // the cargo-crap version that produced the report
+  "version": "0.8.0",     // the cargo-crap version that produced the report
   "entries": [ /* DeltaEntry — current + baseline_crap + delta + status (+ optional previous_file when moved) */ ],
   "removed": [ /* RemovedEntry — function, file, baseline_crap */ ]
 }
@@ -75,10 +75,10 @@ per candidate pair, strongest first:
 ]
 ```
 
-They also carry `duplicate_groups`, one object per candidate, in the same
-order as the human section: every group of functions that all resemble each
-other, groups of two included, so each pair in `duplicates` lies inside
-exactly one group.
+Since 0.8.0 they also carry `duplicate_groups`, one object per candidate,
+in the same order as the human section: every group of functions that all
+resemble each other, groups of two included, so each pair in `duplicates`
+lies inside exactly one group.
 
 ```jsonc
 "duplicate_groups": [

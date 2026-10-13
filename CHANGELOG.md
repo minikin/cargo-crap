@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.8.0] - 2026-10-13
+
+`--duplicates` reports functions that all resemble each other as one
+group instead of every pair between them, and triage asks one request per
+group: thirty copies of one function are one candidate and one paid
+request, not 435. A project with only pairs sees no change outside JSON,
+which gains `duplicate_groups`. The PR comment keeps the file name in a
+location when every row is in one file. Library consumers of
+`RenderOptions` need changes (see Changed).
+
 ### Added
 
 - `--format json` carries `duplicate_groups` beside `duplicates` on
@@ -806,7 +817,8 @@ output points at v2.
 
 <!-- Version links -->
 
-[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/minikin/cargo-crap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/minikin/cargo-crap/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/minikin/cargo-crap/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/minikin/cargo-crap/compare/v0.5.0...v0.6.0

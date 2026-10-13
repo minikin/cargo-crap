@@ -19,7 +19,7 @@ The first pair is one routine pasted and renamed. The second differs only in
 the field it adds up. The last pair scores 0.84 on structure because both are
 a run of `writeln!` calls, and triage says to leave it.
 
-A group of functions that all resemble each other (see
+Since 0.8.0, a group of functions that all resemble each other (see
 [Finding duplicates](duplicates.md)) costs one request, not one per pair:
 the model is asked about the group's most similar pair, and its verdict
 prints once, under the group. Thirty copies of one function are one paid
