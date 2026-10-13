@@ -233,7 +233,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   `duplicate_groups` entry and `grown_from` on grown ones, in the delta
   schema only. Needs: T4. Scenarios: _Delta JSON keeps every group and
   labels it_. Tests: unit + acceptance (schema-validated).
-- [ ] **T6 — A baseline with no duplicate record falls back.** Every group
+- [x] **T6 — A baseline with no duplicate record falls back.** Every group
   shown and triaged as without a baseline, and one stderr warning naming
   `--duplicates`. Needs: T5. Scenarios: _A baseline with no duplicate
   record shows every group_. Tests: unit + acceptance.
