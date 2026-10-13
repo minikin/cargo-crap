@@ -119,7 +119,7 @@ And   the line under it reads "1 existing candidate unchanged."
 Given a baseline with two duplicate groups
 And   the current tree deletes one member of a pair, so that group is gone
 When  I run `cargo crap --duplicates --baseline base.json --format pr-comment`
-Then  the section reads "No new duplicate candidates."
+Then  the section is headed "## No new duplicate candidates"
 And   the line under it reads "1 existing candidate unchanged, 1 resolved."
 ```
 
@@ -131,7 +131,8 @@ And   none was resolved
 When  I run `cargo crap --duplicates --baseline base.json --format pr-comment`
 Then  the comment has no duplicate section
 When  I run the same with `--format markdown`
-Then  the section reads "No new duplicate candidates." and the count line
+Then  the section is headed "## No new duplicate candidates" and has the
+      count line
 ```
 
 ### Scenario: Triage asks only about new and grown groups
@@ -210,8 +211,8 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   member scope. `main.rs` runs `compare` and sets
   `RenderOptions::novelty`. The table takes the new and grown groups,
   under `## N new duplicate candidate(s)`, with the unchanged count line.
-  With none new, pr-comment prints no section and markdown prints `No new
-  duplicate candidates.` Needs: T1. Scenarios: _A copy the pull
+  With none new, pr-comment prints no section and markdown prints the
+  heading `## No new duplicate candidates`. Needs: T1. Scenarios: _A copy the pull
   request adds is the only one shown_, _Shifted lines do not make a group
   new_, _A moved function keeps its group_, _Same-named members keep their
   group when lines shift_, _The cap counts the groups shown_. Tests: unit
@@ -315,8 +316,9 @@ only on a delta run whose baseline has a duplicate record. With it:
   with `, K resolved` before the period when K > 0. It is omitted when
   both are zero.
 - pr-comment prints no section when no group is new or grown and none was
-  resolved. Otherwise, with nothing new, it prints `No new duplicate
-  candidates.` and the count line, as markdown always does.
+  resolved. Otherwise, with nothing new, it prints the heading `## No new
+  duplicate candidates` and the count line, as markdown always does, so
+  the line reads as its own section and not as part of the one above.
 - delta JSON adds `status` (`"new"`, `"grown"`, `"unchanged"`) to each
   `duplicate_groups` entry and `grown_from` to grown ones. The plain
   report schema is untouched. `delta-v2.json` gains the two optional

@@ -5888,7 +5888,7 @@ fn a_moved_function_keeps_its_group() {
     let stdout = delta_duplicates(dir.path(), &baseline, "markdown");
     // Then the section reports no new duplicate candidates
     assert!(
-        stdout.contains("\nNo new duplicate candidates.\n"),
+        stdout.contains("\n## No new duplicate candidates\n"),
         "{stdout}"
     );
     // And the line under it reads "1 existing candidate unchanged."
@@ -5935,7 +5935,7 @@ fn same_named_members_keep_their_group_when_lines_shift() {
     let stdout = delta_duplicates(dir.path(), &baseline, "markdown");
     // Then the section reports no new duplicate candidates
     assert!(
-        stdout.contains("\nNo new duplicate candidates.\n"),
+        stdout.contains("\n## No new duplicate candidates\n"),
         "{stdout}"
     );
     // And the line under it reads "1 existing candidate unchanged."
@@ -5995,5 +5995,96 @@ fn the_cap_counts_the_groups_shown() {
     assert!(
         section.contains("\n30 existing candidates unchanged.\n"),
         "{section}"
+    );
+}
+
+#[test]
+fn a_copy_added_to_an_existing_group_shows_the_group_as_grown() {
+    // Given a baseline whose only group has three members
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    let three = [filter_copy("one"), filter_copy("two"), filter_copy("three")].concat();
+    write(dir.path(), "a.rs", &three);
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree adds a fourth copy of that function
+    write(dir.path(), "b.rs", &filter_copy("four"));
+    // When I run `cargo crap --duplicates --baseline base.json --format pr-comment`
+    let stdout = delta_duplicates(dir.path(), &baseline, "pr-comment");
+    let (section, rows) = duplicate_rows(&stdout);
+    // Then the section is headed "## 1 new duplicate candidate"
+    assert!(
+        section.starts_with("## 1 new duplicate candidate\n"),
+        "{section}"
+    );
+    // And its one row lists all four members
+    assert_eq!(rows.len(), 1, "{section}");
+    for name in ["`one`", "`two`", "`three`", "`four`"] {
+        assert!(rows[0].contains(name), "{name} in {section}");
+    }
+    // And the row says the group grew from 3 functions
+    assert!(rows[0].contains("grew from 3"), "{section}");
+}
+
+#[test]
+fn a_pull_request_that_removes_a_copy_is_credited() {
+    // Given a baseline with two duplicate groups
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    write(
+        dir.path(),
+        "a.rs",
+        &[filter_copy("one"), filter_copy("two")].concat(),
+    );
+    write(
+        dir.path(),
+        "b.rs",
+        &[tally_copy("three"), tally_copy("four")].concat(),
+    );
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree deletes one member of a pair, so that group is gone
+    write(dir.path(), "b.rs", &tally_copy("three"));
+    // When I run `cargo crap --duplicates --baseline base.json --format pr-comment`
+    let stdout = delta_duplicates(dir.path(), &baseline, "pr-comment");
+    // Then the section is headed "## No new duplicate candidates"
+    assert!(
+        stdout.contains("\n## No new duplicate candidates\n"),
+        "{stdout}"
+    );
+    // And the line under it reads "1 existing candidate unchanged, 1 resolved."
+    assert!(
+        stdout.contains("\n1 existing candidate unchanged, 1 resolved.\n"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn nothing_new_prints_nothing_in_the_pr_comment() {
+    // Given a baseline whose duplicate groups are all still present, unchanged
+    // And none was resolved
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    write(
+        dir.path(),
+        "a.rs",
+        &[filter_copy("one"), filter_copy("two")].concat(),
+    );
+    let baseline = record_duplicates(dir.path(), store.path());
+    // When I run `cargo crap --duplicates --baseline base.json --format pr-comment`
+    let stdout = delta_duplicates(dir.path(), &baseline, "pr-comment");
+    // Then the comment has no duplicate section
+    assert!(!stdout.contains("duplicate candidate"), "{stdout}");
+    // When I run the same with `--format markdown`
+    let stdout = delta_duplicates(dir.path(), &baseline, "markdown");
+    // Then the section is headed "## No new duplicate candidates" and has the
+    // count line
+    assert!(
+        stdout.contains("\n## No new duplicate candidates\n\n1 existing candidate unchanged.\n"),
+        "{stdout}"
     );
 }

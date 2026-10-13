@@ -13,7 +13,7 @@ use super::{RenderOptions, SourceLinks, TriagedBy};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
 use crate::duplicates::group::DuplicateGroup;
-use crate::duplicates::novelty::Novelty;
+use crate::duplicates::novelty::{Comparison, Novelty};
 use crate::duplicates::triage::verdict::{Assessment, WorthExtracting};
 
 pub use crate::duplicates::compare::sort_pairs;
@@ -113,8 +113,9 @@ fn write_group(
 /// With `opts.novelty` covering every group, on a delta run, the table
 /// holds only the new and grown groups under `## N new duplicate
 /// candidate(s)`, the heading, the cap and the summary line count those,
-/// and a line under the table counts the unchanged groups. With none new
-/// it says so instead of printing a table.
+/// a grown group's row says what it grew from, and a line under the table
+/// counts the unchanged groups and the resolved ones. With none new it
+/// says so instead of printing a table.
 ///
 /// # Errors
 ///
@@ -126,8 +127,8 @@ pub fn render_table(
 ) -> Result<()> {
     let groups = opts.duplicate_groups().unwrap_or_default();
     let triage = covering(opts.triage, groups.len());
-    if let Some(novelty) = covering_novelty(opts, groups.len()) {
-        return render_new_table(&groups, novelty, triage, cap, opts, out);
+    if let Some(comparison) = covering_comparison(opts, groups.len()) {
+        return render_new_table(&groups, comparison, triage, cap, opts, out);
     }
     if groups.is_empty() {
         writeln!(out, "No candidate duplicates found.")?;
@@ -139,35 +140,41 @@ pub fn render_table(
         groups.len(),
         noun(groups.len())
     )?;
-    write_capped(&groups, triage, cap, opts, out)?;
+    write_capped(&groups, triage, None, cap, opts, out)?;
     write_provider_line(triage.and(opts.triaged_by), out)
 }
 
-/// The statuses in `opts.novelty` when there is one per group, else none.
-pub(crate) fn covering_novelty<'a>(
+/// `opts.novelty` when it has one status per group, else none.
+pub(crate) fn covering_comparison<'a>(
     opts: &RenderOptions<'a>,
     groups: usize,
-) -> Option<&'a [Novelty]> {
-    covering(opts.novelty.map(|c| c.novelty.as_slice()), groups)
+) -> Option<&'a Comparison> {
+    opts.novelty
+        .filter(|c| covering(Some(c.novelty.as_slice()), groups).is_some())
 }
 
 /// The delta run's table: the new and grown `groups`, each with its own
-/// verdict when `triage` covers every group, then the unchanged count.
+/// verdict when `triage` covers every group and a grown one saying what it
+/// grew from, then the count of unchanged and resolved groups.
 fn render_new_table(
     groups: &[DuplicateGroup],
-    novelty: &[Novelty],
+    comparison: &Comparison,
     triage: Option<&[Assessment]>,
     cap: Option<usize>,
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
     let kept: Vec<usize> = (0..groups.len())
-        .filter(|&n| novelty[n] != Novelty::Unchanged)
+        .filter(|&n| comparison.novelty[n] != Novelty::Unchanged)
         .collect();
-    let shown: Vec<DuplicateGroup> = kept.iter().map(|&n| groups[n].clone()).collect();
+    // Each shown group with its note, from one pass, so neither can drift.
+    let (shown, grew): (Vec<DuplicateGroup>, Vec<Option<usize>>) = kept
+        .iter()
+        .map(|&n| (groups[n].clone(), grown_from(comparison.novelty[n])))
+        .unzip();
     let verdicts: Option<Vec<Assessment>> = triage.map(|t| kept.iter().map(|&n| t[n]).collect());
     if shown.is_empty() {
-        writeln!(out, "No new duplicate candidates.")?;
+        writeln!(out, "## No new duplicate candidates")?;
     } else {
         writeln!(
             out,
@@ -175,34 +182,55 @@ fn render_new_table(
             shown.len(),
             noun(shown.len())
         )?;
-        write_capped(&shown, verdicts.as_deref(), cap, opts, out)?;
+        write_capped(&shown, verdicts.as_deref(), Some(&grew), cap, opts, out)?;
     }
-    write_unchanged_line(groups.len() - shown.len(), out)?;
+    write_count_line(groups.len() - shown.len(), comparison.resolved, out)?;
     write_provider_line(verdicts.filter(|v| !v.is_empty()).and(opts.triaged_by), out)
 }
 
-/// The line counting the groups a delta run left unchanged, when any.
-fn write_unchanged_line(
+/// What a grown group grew from, or nothing for any other status.
+fn grown_from(novelty: Novelty) -> Option<usize> {
+    match novelty {
+        Novelty::Grown { from } => Some(from),
+        Novelty::New | Novelty::Unchanged => None,
+    }
+}
+
+/// The line counting the groups a delta run left unchanged and the
+/// baseline groups it resolved, when there are any.
+fn write_count_line(
     unchanged: usize,
+    resolved: usize,
     out: &mut dyn Write,
 ) -> Result<()> {
-    if unchanged > 0 {
-        writeln!(out, "\n{unchanged} existing {} unchanged.", noun(unchanged))?;
+    if unchanged + resolved == 0 {
+        return Ok(());
     }
+    let credit = match resolved {
+        0 => String::new(),
+        n => format!(", {n} resolved"),
+    };
+    writeln!(
+        out,
+        "\n{unchanged} existing {} unchanged{credit}.",
+        noun(unchanged)
+    )?;
     Ok(())
 }
 
 /// The table over `groups`, at most `cap` rows, and the truncation footer
-/// counting the rest.
+/// counting the rest. `grew` holds, on a delta run, what each group grew
+/// from when it did.
 fn write_capped(
     groups: &[DuplicateGroup],
     triage: Option<&[Assessment]>,
+    grew: Option<&[Option<usize>]>,
     cap: Option<usize>,
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
     let shown = cap.unwrap_or(groups.len()).min(groups.len());
-    write_table_body(groups, triage, shown, opts, out)?;
+    write_table_body(groups, triage, grew, shown, opts, out)?;
     if groups.len() > shown {
         super::types::write_truncation_footer(out, groups.len() - shown)?;
     }
@@ -231,6 +259,7 @@ fn write_provider_line(
 fn write_table_body(
     groups: &[DuplicateGroup],
     triage: Option<&[Assessment]>,
+    grew: Option<&[Option<usize>]>,
     shown: usize,
     opts: &RenderOptions,
     out: &mut dyn Write,
@@ -238,7 +267,7 @@ fn write_table_body(
     if let Some(triage) = triage {
         writeln!(out, "{}\n", summary_line(triage))?;
     }
-    write_rows(groups, shown, triage, opts, out)
+    write_rows(groups, shown, triage, grew, opts, out)
 }
 
 /// `per_item` when it has exactly one entry per item (pair or group), else
@@ -280,30 +309,35 @@ fn header(
 }
 
 /// The table: its header, then a row for each of the first `shown` groups,
-/// with each group's verdict when `triage` is given.
+/// with each group's verdict when `triage` is given and what it grew from
+/// when `grew` says.
 fn write_rows(
     groups: &[DuplicateGroup],
     shown: usize,
     triage: Option<&[Assessment]>,
+    grew: Option<&[Option<usize>]>,
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
     let shown = &groups[..shown];
     writeln!(out, "{}", header(triage.is_some(), shown))?;
     for (n, group) in shown.iter().enumerate() {
-        writeln!(out, "{}", table_row(group, triage.map(|t| &t[n]), opts))?;
+        let row = table_row(group, triage.map(|t| &t[n]), grew.and_then(|g| g[n]), opts);
+        writeln!(out, "{row}")?;
     }
     Ok(())
 }
 
-/// One row: the group and its similarity, framed by the verdict cells when
-/// there is an assessment.
+/// One row: the group, what it grew from when it did, and its similarity,
+/// framed by the verdict cells when there is an assessment.
 fn table_row(
     group: &DuplicateGroup,
     assessment: Option<&Assessment>,
+    grew_from: Option<usize>,
     opts: &RenderOptions,
 ) -> String {
-    let shared = format!("{} | {:.2}", group_cell(group, opts), group.score);
+    let grew = grew_from.map_or(String::new(), |n| format!("<br><sub>grew from {n}</sub>"));
+    let shared = format!("{}{grew} | {:.2}", group_cell(group, opts), group.score);
     let Some(assessment) = assessment else {
         return format!("| {shared} |");
     };
@@ -1725,9 +1759,21 @@ mod tests {
             triage: Option<&[Assessment]>,
             cap: Option<usize>,
         ) -> String {
+            resolving_table(groups, novelty, 0, triage, cap)
+        }
+
+        /// [`delta_table`] for a comparison that resolved `resolved`
+        /// baseline groups.
+        fn resolving_table(
+            groups: &[DuplicateGroup],
+            novelty: &[Novelty],
+            resolved: usize,
+            triage: Option<&[Assessment]>,
+            cap: Option<usize>,
+        ) -> String {
             let comparison = Comparison {
                 novelty: novelty.to_vec(),
-                resolved: 0,
+                resolved,
             };
             let mut buf = Vec::new();
             let opts = crate::report::RenderOptions {
@@ -1774,7 +1820,7 @@ mod tests {
             let out = delta_table(&groups, &[Unchanged, Unchanged], None, None);
             assert_eq!(
                 out,
-                "No new duplicate candidates.\n\n2 existing candidates unchanged.\n"
+                "## No new duplicate candidates\n\n2 existing candidates unchanged.\n"
             );
         }
 
@@ -1852,6 +1898,11 @@ mod tests {
             let rows = body_rows(&out);
             assert_eq!(rows.len(), 1, "{out}");
             assert!(rows[0].contains("m00") && rows[0].contains("0.64"), "{out}");
+            // Behind an unchanged group, the note is still this row's.
+            assert!(
+                rows[0].contains("<br><sub>grew from 2</sub> | 0.90 |"),
+                "{out}"
+            );
             assert!(out.contains("\n1 existing candidate unchanged.\n"), "{out}");
         }
 
@@ -1876,6 +1927,45 @@ mod tests {
                 .find("1 existing candidate unchanged.")
                 .expect("a count");
             assert!(footer < unchanged, "the count follows the footer: {out}");
+        }
+
+        #[test]
+        fn a_grown_row_says_what_it_grew_from() {
+            let groups = [group_of(4), pair_group(1)];
+            let out = delta_table(&groups, &[Novelty::Grown { from: 3 }, New], None, None);
+            let rows = body_rows(&out);
+            assert!(
+                rows[0].ends_with("<br><sub>grew from 3</sub> | 0.90 |"),
+                "{out}"
+            );
+            assert!(
+                !rows[1].contains("grew from"),
+                "a new row says nothing: {out}"
+            );
+        }
+
+        #[test]
+        fn the_count_line_credits_resolved_groups() {
+            let groups = [pair_group(1), pair_group(2)];
+            let out = resolving_table(&groups, &[New, Unchanged], 1, None, None);
+            assert!(
+                out.contains("\n1 existing candidate unchanged, 1 resolved.\n"),
+                "{out}"
+            );
+            let out = resolving_table(&groups[..1], &[New], 2, None, None);
+            assert!(
+                out.contains("\n0 existing candidates unchanged, 2 resolved.\n"),
+                "{out}"
+            );
+        }
+
+        #[test]
+        fn a_run_that_resolved_its_last_group_is_credited() {
+            let out = resolving_table(&[], &[], 1, None, None);
+            assert_eq!(
+                out,
+                "## No new duplicate candidates\n\n0 existing candidates unchanged, 1 resolved.\n"
+            );
         }
 
         #[test]

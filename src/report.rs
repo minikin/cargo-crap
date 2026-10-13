@@ -369,15 +369,16 @@ fn write_duplicate_section(
 }
 
 /// True when no group is worth a PR comment: there are none, or a delta
-/// run's baseline already had every one.
+/// run's baseline already had every one and none was resolved.
 fn nothing_new(
     groups: &[DuplicateGroup],
     opts: &RenderOptions,
 ) -> bool {
-    duplicates::covering_novelty(opts, groups.len()).map_or(groups.is_empty(), |novelty| {
-        novelty
-            .iter()
-            .all(|n| *n == crate::duplicates::novelty::Novelty::Unchanged)
+    duplicates::covering_comparison(opts, groups.len()).map_or(groups.is_empty(), |c| {
+        c.resolved == 0
+            && c.novelty
+                .iter()
+                .all(|n| *n == crate::duplicates::novelty::Novelty::Unchanged)
     })
 }
 
@@ -462,11 +463,8 @@ mod tests {
             use crate::duplicates::novelty::{Comparison, Novelty};
             let pairs = [pair(0), pair(1)];
             let groups: Vec<DuplicateGroup> = pairs.iter().map(DuplicateGroup::of_pair).collect();
-            let render_with = |format: Format, novelty: Vec<Novelty>| {
-                let comparison = Comparison {
-                    novelty,
-                    resolved: 0,
-                };
+            let render_resolving = |format: Format, novelty: Vec<Novelty>, resolved: usize| {
+                let comparison = Comparison { novelty, resolved };
                 let mut buf = Vec::new();
                 let opts = RenderOptions {
                     format,
@@ -478,16 +476,25 @@ mod tests {
                 render_duplicates(&opts, &mut buf).unwrap();
                 String::from_utf8(buf).unwrap()
             };
+            let render_with =
+                |format: Format, novelty: Vec<Novelty>| render_resolving(format, novelty, 0);
             let unchanged = vec![Novelty::Unchanged; 2];
             assert_eq!(render_with(Format::PrComment, unchanged.clone()), "");
             assert!(
-                render_with(Format::Markdown, unchanged).contains("No new duplicate candidates."),
+                render_with(Format::Markdown, unchanged)
+                    .contains("## No new duplicate candidates\n"),
                 "markdown still says it looked"
             );
             let one_new = vec![Novelty::Unchanged, Novelty::New];
             assert!(
                 render_with(Format::PrComment, one_new).contains("## 1 new duplicate candidate"),
                 "a new group is shown"
+            );
+            let credited = render_resolving(Format::PrComment, vec![Novelty::Unchanged; 2], 1);
+            assert!(
+                credited.contains("## No new duplicate candidates\n")
+                    && credited.contains("2 existing candidates unchanged, 1 resolved."),
+                "a resolved group is credited: {credited}"
             );
         }
 
