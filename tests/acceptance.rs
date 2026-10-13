@@ -6352,3 +6352,27 @@ fn a_baseline_with_no_duplicate_record_shows_every_group() {
         assert!(rows.iter().all(|r| r.starts_with("| 🔴 |")), "{section}");
     }
 }
+
+// ── Spec 38: a triage budget ──────────────────────────────────────────────
+
+#[test]
+fn a_negative_budget_is_a_configuration_error() {
+    // Given `.cargo-crap.toml` sets `max-requests = -1` under
+    // `[duplicates.triage]`
+    let dir = TempDir::new().expect("temp dir");
+    write(
+        dir.path(),
+        ".cargo-crap.toml",
+        "[duplicates.triage]\nmax-requests = -1\n",
+    );
+    // When I run `cargo crap --duplicates`
+    let out = run_inside(dir.path(), "human", &["--duplicates"]);
+    // Then the run exits 2
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    // And stderr names `max-requests`, rejected as a value rather than as
+    // an unknown key
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(stderr.contains("max-requests"), "{stderr}");
+    assert!(stderr.contains("expected u32"), "{stderr}");
+    assert!(!stderr.contains("unknown field"), "{stderr}");
+}

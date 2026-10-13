@@ -192,6 +192,13 @@ pub struct TriageConfig {
     /// `confidence_floor`.
     #[serde(alias = "confidence_floor")]
     pub confidence_floor: Option<f64>,
+
+    /// The most paid requests one run may send. Cached verdicts are free and
+    /// never count, and the groups past the budget stay untriaged. Unlimited
+    /// when absent. Accepted as `max-requests` (house style) or
+    /// `max_requests`.
+    #[serde(alias = "max_requests")]
+    pub max_requests: Option<u32>,
 }
 
 /// The triage confidence floor, absent any configuration.
@@ -462,6 +469,7 @@ allow = ["Foo::*"]
         assert!(cfg.duplicates.triage.enabled.is_none());
         assert!(cfg.duplicates.triage.model.is_none());
         assert!(cfg.duplicates.triage.confidence_floor.is_none());
+        assert!(cfg.duplicates.triage.max_requests.is_none());
         // What an unset key resolves to.
         assert!((DEFAULT_TRIAGE_CONFIDENCE_FLOOR - 0.5).abs() < f64::EPSILON);
     }
@@ -489,6 +497,31 @@ allow = ["Foo::*"]
             load(dir.path()).unwrap().duplicates.triage.confidence_floor,
             Some(0.25)
         );
+    }
+
+    #[test]
+    fn a_triage_budget_is_parsed_under_either_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "[duplicates.triage]\nmax-requests = 25\n");
+        assert_eq!(
+            load(dir.path()).unwrap().duplicates.triage.max_requests,
+            Some(25)
+        );
+        write_config(dir.path(), "[duplicates.triage]\nmax_requests = 0\n");
+        assert_eq!(
+            load(dir.path()).unwrap().duplicates.triage.max_requests,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_negative_triage_budget_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "[duplicates.triage]\nmax-requests = -1\n");
+        // Rejected as a value, not as an unknown key: both quote the line.
+        let err = format!("{:#}", load(dir.path()).unwrap_err());
+        assert!(err.contains("expected u32"), "{err}");
+        assert!(!err.contains("unknown field"), "{err}");
     }
 
     #[test]

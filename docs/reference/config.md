@@ -56,6 +56,7 @@ enabled          = false
 provider         = "typesafe"   # or "openai" (TYPESAFE_API_KEY or OPENAI_API_KEY)
 model            = "jev-latest" # default: the provider's own
 confidence-floor = 0.5   # below this a verdict says "uncertain"; 0.0..=1.0
+max-requests     = 100   # paid requests per run; cached verdicts are free; default: no limit
 ```
 
 All keys are optional. Unknown keys are rejected to catch typos.
