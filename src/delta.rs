@@ -216,7 +216,9 @@ pub fn load_baseline_with_weight(path: &Path) -> Result<Baseline> {
     })
 }
 
-fn path_key(p: &Path) -> String {
+/// A path with its separators unified, so a baseline written on Windows
+/// matches a run on Unix.
+pub(crate) fn path_key(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
