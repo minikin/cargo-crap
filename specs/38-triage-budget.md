@@ -170,7 +170,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   the budget is asked, and nothing is skipped without one; only misses are
   asked and every hit keeps its verdict; the asked ones are the first
   misses in order; asked plus skipped is the number of misses).
-- [ ] **T3 — Triage spends the budget and warns.** `triage::run` looks
+- [x] **T3 — Triage spends the budget and warns.** `triage::run` looks
   every pair up first and asks only what T2 chose, returning one optional
   verdict per pair and the number skipped, with a client built only when
   something is asked. `main.rs` passes the budget through `Settings`,
