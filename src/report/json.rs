@@ -221,10 +221,11 @@ impl DuplicateJson {
 }
 
 /// Flatten pairs for either envelope, preserving their order, each with its
-/// triage verdict when `triage` holds exactly one per pair.
+/// triage verdict when `triage` holds one entry per pair and that pair's
+/// entry is a verdict.
 fn wire(
     pairs: Option<&[DuplicatePair]>,
-    triage: Option<&[Assessment]>,
+    triage: Option<&[Option<Assessment>]>,
 ) -> Option<Vec<DuplicateJson>> {
     pairs.map(|pairs| {
         let verdict = verdicts(triage, pairs.len());
@@ -240,10 +241,11 @@ fn wire(
 }
 
 /// Flatten groups for either envelope, preserving their order, each with its
-/// triage verdict when `triage` holds exactly one per group.
+/// triage verdict when `triage` holds one entry per group and that group's
+/// entry is a verdict.
 fn wire_groups(
     groups: Option<&[DuplicateGroup]>,
-    triage: Option<&[Assessment]>,
+    triage: Option<&[Option<Assessment>]>,
 ) -> Option<Vec<DuplicateGroupJson>> {
     groups.map(|groups| {
         let verdict = verdicts(triage, groups.len());
@@ -263,17 +265,17 @@ fn wire_groups(
     })
 }
 
-/// The flattened verdict of item `n` of `count`. All or nothing, as in the
-/// human section: unless `triage` holds exactly one assessment per item, no
-/// item gets one, so a missing verdict is never read as another item's.
+/// The flattened verdict of item `n` of `count`, when it has one. Unless
+/// `triage` holds exactly one entry per item, no item gets one, so a
+/// missing verdict is never read as another item's.
 fn verdicts(
-    triage: Option<&[Assessment]>,
+    triage: Option<&[Option<Assessment>]>,
     count: usize,
 ) -> impl Fn(usize) -> Option<TriageJson> + '_ {
     let triage = triage.filter(|t| t.len() == count);
     move |n| {
         triage
-            .and_then(|t| t.get(n))
+            .and_then(|t| t[n].as_ref())
             .map(TriageJson::from_assessment)
     }
 }
@@ -523,13 +525,14 @@ mod tests {
         pairs: &[DuplicatePair],
         triage: Option<&[crate::duplicates::triage::verdict::Assessment]>,
     ) -> serde_json::Value {
+        let triage = triage.map(super::super::test_support::every);
         let mut buf = Vec::new();
         render(
             &sample(),
             &RenderOptions {
                 format: Format::Json,
                 duplicates: Some(pairs),
-                triage,
+                triage: triage.as_deref(),
                 ..Default::default()
             },
             &mut buf,
@@ -594,7 +597,7 @@ mod tests {
         use super::super::test_support::fractional_cc_delta;
         use crate::duplicates::triage::verdict::Assessment;
         let pairs = one_pair();
-        let triage = [Assessment::Uncertain { confidence: 0.4 }];
+        let triage = [Some(Assessment::Uncertain { confidence: 0.4 })];
         let mut buf = Vec::new();
         render_delta(
             &fractional_cc_delta(),
@@ -667,11 +670,12 @@ mod tests {
         triage: Option<&[Assessment]>,
     ) -> serde_json::Value {
         let (pairs, groups) = two_groups();
+        let triage = triage.map(super::super::test_support::every);
         let opts = RenderOptions {
             format: Format::Json,
             duplicates: Some(&pairs),
             groups: Some(&groups),
-            triage,
+            triage: triage.as_deref(),
             ..Default::default()
         };
         let mut buf = Vec::new();
@@ -733,6 +737,31 @@ mod tests {
                 "one verdict, two groups: {short}"
             );
         }
+    }
+
+    #[test]
+    fn a_group_nobody_asked_about_has_no_verdict_and_neither_do_its_pairs() {
+        let (pairs, groups) = two_groups();
+        let triage = [None, Some(SECOND)];
+        let opts = RenderOptions {
+            format: Format::Json,
+            duplicates: Some(&pairs),
+            groups: Some(&groups),
+            triage: Some(&triage),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        render(&sample(), &opts, &mut buf).unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert!(doc["duplicate_groups"][0].get("triage").is_none(), "{doc}");
+        assert_eq!(doc["duplicate_groups"][1]["triage"]["confidence"], 0.7);
+        let confidences: Vec<Option<f64>> = doc["duplicates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["triage"]["confidence"].as_f64())
+            .collect();
+        assert_eq!(confidences, [None, None, None, Some(0.7)]);
     }
 
     #[test]

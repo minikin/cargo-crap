@@ -1801,9 +1801,15 @@ fn the_json_envelope_carries_the_verdict_beside_the_pair() {
     assert_eq!(stripped, plain["duplicates"]);
     assert!(plain["duplicates"][0].get("triage").is_none());
 
-    // The delta envelope carries it the same way
+    // The delta envelope carries it the same way. The baseline keeps no
+    // duplicate record, so every group is triaged again rather than only
+    // the ones it lacks.
     let baseline = dir.path().join("baseline.json");
-    fs::write(&baseline, plain.to_string()).expect("write baseline");
+    let mut entries_only = plain.clone();
+    for key in ["duplicates", "duplicate_groups"] {
+        entries_only.as_object_mut().expect("an object").remove(key);
+    }
+    fs::write(&baseline, entries_only.to_string()).expect("write baseline");
     let delta = run_with_config(
         dir.path(),
         TRIAGE_ON,
@@ -6087,4 +6093,126 @@ fn nothing_new_prints_nothing_in_the_pr_comment() {
         stdout.contains("\n## No new duplicate candidates\n\n1 existing candidate unchanged.\n"),
         "{stdout}"
     );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn triage_asks_only_about_new_and_grown_groups() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given triage is enabled
+    // And a baseline with two duplicate groups that are still present
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    let two_groups = [
+        filter_copy("one"),
+        filter_copy("two"),
+        tally_copy("three"),
+        tally_copy("four"),
+    ]
+    .concat();
+    write(dir.path(), "a.rs", &two_groups);
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree adds one new pair
+    write(
+        dir.path(),
+        "b.rs",
+        &[words_copy("five"), words_copy("six")].concat(),
+    );
+    let stub = ApiStub::scripted(vec![Reply::json(&triage_answer_worth(
+        "same_logic",
+        0.9,
+        3.0,
+    ))]);
+    // When I run `cargo crap --duplicates --baseline base.json --format pr-comment`
+    let out = run_with_config(
+        dir.path(),
+        TRIAGE_ON,
+        &stub,
+        &[
+            "--baseline",
+            baseline.to_str().expect("utf-8"),
+            "--format",
+            "pr-comment",
+        ],
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let (section, rows) = duplicate_rows(&stdout);
+    // Then exactly one triage request is made
+    assert_eq!(stub.request_count(), 1, "{section}");
+    // And the new pair's row carries its verdict
+    assert_eq!(rows.len(), 1, "{section}");
+    assert!(
+        rows[0].contains("five") && rows[0].starts_with("| 🔴 |"),
+        "{section}"
+    );
+    // And in delta JSON only the new pair's group has a verdict, from the
+    // cache this time
+    let out = run_with_config(
+        dir.path(),
+        TRIAGE_ON,
+        &stub,
+        &[
+            "--baseline",
+            baseline.to_str().expect("utf-8"),
+            "--format",
+            "json",
+        ],
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON document");
+    assert_eq!(stub.request_count(), 1, "the verdict comes from the cache");
+    for group in doc["duplicate_groups"].as_array().expect("groups") {
+        let new = group["members"][0]["function"] == "five";
+        assert_eq!(group.get("triage").is_some(), new, "{group}");
+    }
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_human_section_lists_every_group() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given a baseline with one duplicate group that is still present
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    write(
+        dir.path(),
+        "a.rs",
+        &[filter_copy("one"), filter_copy("two")].concat(),
+    );
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree adds one new pair
+    write(
+        dir.path(),
+        "b.rs",
+        &[words_copy("five"), words_copy("six")].concat(),
+    );
+    let stub = ApiStub::scripted(vec![Reply::json(&triage_answer_worth(
+        "same_logic",
+        0.9,
+        3.0,
+    ))]);
+    // When I run `cargo crap --duplicates --baseline base.json`
+    let out = run_with_config(
+        dir.path(),
+        TRIAGE_ON,
+        &stub,
+        &["--baseline", baseline.to_str().expect("utf-8")],
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let section = &stdout[stdout.find("2 duplicate candidates:").expect("both groups")..];
+    // Then the human duplicate section lists both groups
+    let blocks: Vec<&str> = section.split("DUPLICATE").skip(1).collect();
+    assert_eq!(blocks.len(), 2, "{section}");
+    let block = |name: &str| {
+        *blocks
+            .iter()
+            .find(|b| b.contains(&format!(" {name}\n")))
+            .unwrap_or_else(|| panic!("{name} in {section}"))
+    };
+    // And with triage on, only the new pair carries a verdict
+    assert!(block("five").contains("triage:"), "{section}");
+    assert!(!block("one").contains("triage:"), "{section}");
 }

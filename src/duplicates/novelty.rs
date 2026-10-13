@@ -33,6 +33,18 @@ pub struct Comparison {
 /// unified, and its name.
 type Id = (String, String);
 
+impl Comparison {
+    /// The groups a delta report shows, by index: the new and grown ones.
+    /// Triage asks about exactly these.
+    pub fn reported(&self) -> impl Iterator<Item = usize> + '_ {
+        self.novelty
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n != Novelty::Unchanged)
+            .map(|(n, _)| n)
+    }
+}
+
 /// Compare the `current` groups with the member lists of the `baseline`'s.
 ///
 /// A function is the same on both sides when its name matches in the same
@@ -214,6 +226,20 @@ mod tests {
         baseline: &[Vec<Location>],
     ) -> Vec<Novelty> {
         compare(current, baseline).novelty
+    }
+
+    #[test]
+    fn the_reported_groups_are_the_new_and_grown_ones() {
+        let comparison = Comparison {
+            novelty: vec![
+                Novelty::Unchanged,
+                Novelty::New,
+                Novelty::Unchanged,
+                Novelty::Grown { from: 2 },
+            ],
+            resolved: 3,
+        };
+        assert_eq!(comparison.reported().collect::<Vec<_>>(), [1, 3]);
     }
 
     #[test]

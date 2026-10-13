@@ -7,6 +7,7 @@
 use super::{Format, RenderOptions};
 use crate::coverage::LineRange;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
+use crate::duplicates::triage::verdict::Assessment;
 use crate::merge::CrapEntry;
 use std::path::PathBuf;
 
@@ -144,4 +145,9 @@ impl std::io::Write for Refuses {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// A verdict for every group, as triage gives when it asked about each.
+pub(crate) fn every(triage: &[Assessment]) -> Vec<Option<Assessment>> {
+    triage.iter().copied().map(Some).collect()
 }

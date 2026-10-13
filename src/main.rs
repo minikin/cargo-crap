@@ -1541,8 +1541,12 @@ struct DuplicateSection<'a> {
     pairs: Option<Vec<DuplicatePair>>,
     /// The pairs grouped into functions that all resemble each other.
     groups: Option<Vec<duplicates::group::DuplicateGroup>>,
-    /// One assessment per group, in the groups' order.
-    triage: Option<Vec<Assessment>>,
+    /// The groups measured against the baseline's duplicate record, on a
+    /// delta run whose baseline has one.
+    novelty: Option<duplicates::novelty::Comparison>,
+    /// One verdict per group, in the groups' order, `None` for a group
+    /// nobody asked about.
+    triage: Option<Vec<Option<Assessment>>>,
     /// The display name of the provider asked, named when triage answered.
     provider: &'static str,
     /// The model asked.
@@ -1551,42 +1555,76 @@ struct DuplicateSection<'a> {
 
 impl DuplicateSection<'_> {
     /// Who answered the triage: the provider and the model asked, when
-    /// triage produced assessments.
+    /// triage gave at least one verdict.
     fn triaged_by(&self) -> Option<TriagedBy<'_>> {
-        self.triage.as_ref().map(|_| TriagedBy {
+        let answered = |t: &&Vec<Option<Assessment>>| t.iter().any(Option::is_some);
+        self.triage.as_ref().filter(answered).map(|_| TriagedBy {
             provider: self.provider,
             model: self.model,
         })
     }
 }
 
-/// Find the duplicate pairs and group them, then triage each group's most
-/// similar pair when configured to. Triage only ever sees groups that will
-/// be reported, so a format that cannot carry duplicates never triggers a
+/// Find the duplicate pairs and group them, measure the groups against the
+/// baseline's duplicate record when there is one, then triage each group's
+/// most similar pair when configured to: every group, or on a delta run only
+/// the new and grown ones. Triage only ever sees groups that will be
+/// reported, so a format that cannot carry duplicates never triggers a
 /// request.
 fn duplicate_section<'a>(
     settings: &'a DupSettings,
     roots: &[ScanRoot],
     format: Format,
     target: Option<&Path>,
+    baseline: Option<&Baseline>,
 ) -> Result<DuplicateSection<'a>> {
     let pairs = duplicate_pairs(settings, roots, format)?;
     let groups = pairs
         .as_deref()
         .map(|pairs| duplicates::group::group_pairs(pairs, settings.threshold));
-    // One request per group, about its most similar pair.
+    let novelty = novelty_against(groups.as_deref(), baseline);
+    // One request per group asked about, about its most similar pair.
     let triage = groups.as_deref().and_then(|groups| {
-        let representatives: Vec<DuplicatePair> =
-            groups.iter().map(|g| g.representative.clone()).collect();
+        let asked = asked(novelty.as_ref(), groups.len());
+        let representatives: Vec<DuplicatePair> = asked
+            .iter()
+            .map(|&n| groups[n].representative.clone())
+            .collect();
         triage_assessments(settings, &representatives, target)
+            .map(|verdicts| spread(&asked, verdicts, groups.len()))
     });
     Ok(DuplicateSection {
         pairs,
         groups,
+        novelty,
         triage,
         provider: settings.triage_provider.display_name(),
         model: &settings.triage_model,
     })
+}
+
+/// The groups triage asks about, by index: every group, or on a delta run
+/// with a duplicate record the ones it reports.
+fn asked(
+    novelty: Option<&duplicates::novelty::Comparison>,
+    groups: usize,
+) -> Vec<usize> {
+    novelty.map_or_else(|| (0..groups).collect(), |c| c.reported().collect())
+}
+
+/// The `verdicts` for the `asked` groups, each put back at its group's
+/// index among `groups`, with `None` for the groups nobody asked about.
+fn spread(
+    asked: &[usize],
+    verdicts: Vec<Assessment>,
+    groups: usize,
+) -> Vec<Option<Assessment>> {
+    debug_assert_eq!(asked.len(), verdicts.len(), "one verdict per question");
+    let mut spread = vec![None; groups];
+    for (&n, verdict) in asked.iter().zip(verdicts) {
+        spread[n] = Some(verdict);
+    }
+    spread
 }
 
 /// The current groups measured against the baseline's duplicate record,
@@ -1908,8 +1946,8 @@ fn run() -> Result<ExitCode> {
     // --- Render ---
     let mut out_box = prepare_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref, &knobs.cwd);
-    let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref())?;
-    let novelty = novelty_against(dups.groups.as_deref(), baseline_data.as_ref());
+    let baseline = baseline_data.as_ref();
+    let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref(), baseline)?;
     let opts = RenderOpts {
         render: RenderOptions {
             threshold,
@@ -1927,7 +1965,7 @@ fn run() -> Result<ExitCode> {
             groups: dups.groups.as_deref(),
             triage: dups.triage.as_deref(),
             triaged_by: dups.triaged_by(),
-            novelty: novelty.as_ref(),
+            novelty: dups.novelty.as_ref(),
         },
         epsilon,
         summary: cli.summary,
@@ -1936,7 +1974,7 @@ fn run() -> Result<ExitCode> {
     let (has_crappy, has_regression) = do_render(
         sliced_rows.as_deref().unwrap_or(&entries),
         &entries,
-        baseline_data.as_ref().map(|b| b.entries.as_slice()),
+        baseline.map(|b| b.entries.as_slice()),
         &opts,
         out_box.as_mut(),
     )?;
@@ -2805,6 +2843,54 @@ mod tests {
                     at("/ws/crates/alpha/src/b.rs", "k"),
                 ],
             ]
+        );
+    }
+
+    #[test]
+    fn nobody_is_named_when_triage_gave_no_verdict() {
+        let section = |triage| DuplicateSection {
+            pairs: None,
+            groups: None,
+            novelty: None,
+            triage,
+            provider: "OpenAI API",
+            model: "gpt-x",
+        };
+        assert!(section(Some(vec![None, None])).triaged_by().is_none());
+        assert!(section(None).triaged_by().is_none());
+        let answered = section(Some(vec![
+            None,
+            Some(Assessment::Uncertain { confidence: 0.4 }),
+        ]));
+        assert!(answered.triaged_by().is_some());
+    }
+
+    #[test]
+    fn triage_asks_about_every_group_without_a_record() {
+        assert_eq!(asked(None, 3), [0, 1, 2]);
+    }
+
+    #[test]
+    fn triage_asks_only_about_new_and_grown_groups() {
+        use duplicates::novelty::{Comparison, Novelty};
+        let comparison = Comparison {
+            novelty: vec![
+                Novelty::Unchanged,
+                Novelty::New,
+                Novelty::Grown { from: 2 },
+                Novelty::Unchanged,
+            ],
+            resolved: 0,
+        };
+        assert_eq!(asked(Some(&comparison), 4), [1, 2]);
+    }
+
+    #[test]
+    fn verdicts_go_back_to_the_groups_that_were_asked_about() {
+        let verdict = |confidence| Assessment::Uncertain { confidence };
+        assert_eq!(
+            spread(&[1, 2], vec![verdict(0.1), verdict(0.2)], 4),
+            [None, Some(verdict(0.1)), Some(verdict(0.2)), None]
         );
     }
 

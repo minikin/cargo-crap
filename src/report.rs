@@ -127,13 +127,15 @@ pub struct RenderOptions<'a> {
     /// renderers read it, recording it in the envelope when it is not
     /// [`DEFAULT_TRY_WEIGHT`](crate::config::DEFAULT_TRY_WEIGHT).
     pub try_weight: f64,
-    /// One triage assessment per duplicate group, in the groups' order, when
+    /// One triage verdict per duplicate group, in the groups' order, when
     /// `groups` is set, else one per pair in the pairs' order, or `None` when
-    /// triage did not run. The human section and the markdown and
-    /// pr-comment tables print one verdict per group. The JSON renderer
-    /// puts each beside its group, and beside each pair through
+    /// triage did not run. A group nobody asked about, such as one a delta
+    /// run's baseline already had, holds `None`. The human section prints
+    /// each verdict there is, and the markdown and pr-comment tables print
+    /// theirs when every row they show has one. The JSON renderer puts each
+    /// beside its group, and beside each pair through
     /// [`RenderOptions::pair_triage`].
-    pub triage: Option<&'a [Assessment]>,
+    pub triage: Option<&'a [Option<Assessment>]>,
     /// The user asked for a slice of the entries with `top` or `min`, on the
     /// command line or in config. The human table then draws every entry it
     /// is given instead of capping the rows below the threshold. Only the
@@ -192,7 +194,7 @@ impl<'a> RenderOptions<'a> {
     /// in. `None` when triage did not run, or when it does not cover every
     /// group or every pair, so no pair is shown another pair's verdict.
     #[must_use]
-    pub fn pair_triage(&self) -> Option<std::borrow::Cow<'a, [Assessment]>> {
+    pub fn pair_triage(&self) -> Option<std::borrow::Cow<'a, [Option<Assessment>]>> {
         let triage = self.triage?;
         let Some(groups) = self.groups else {
             return Some(std::borrow::Cow::Borrowed(triage));
@@ -369,16 +371,13 @@ fn write_duplicate_section(
 }
 
 /// True when no group is worth a PR comment: there are none, or a delta
-/// run's baseline already had every one and none was resolved.
+/// run reports none and resolved none.
 fn nothing_new(
     groups: &[DuplicateGroup],
     opts: &RenderOptions,
 ) -> bool {
     duplicates::covering_comparison(opts, groups.len()).map_or(groups.is_empty(), |c| {
-        c.resolved == 0
-            && c.novelty
-                .iter()
-                .all(|n| *n == crate::duplicates::novelty::Novelty::Unchanged)
+        c.resolved == 0 && c.reported().next().is_none()
     })
 }
 
@@ -561,7 +560,7 @@ mod tests {
             let pairs = [pair(0, 1), pair(0, 2), pair(1, 2), pair(5, 6)];
             let groups = group_pairs(&pairs, 0.82);
             assert_eq!(groups.len(), 2);
-            let triage = [sure(0.1), sure(0.2)];
+            let triage = [sure(0.1), sure(0.2)].map(Some);
             let opts = RenderOptions {
                 duplicates: Some(&pairs),
                 groups: Some(&groups),
@@ -569,14 +568,14 @@ mod tests {
                 ..RenderOptions::default()
             };
             let by_pair = opts.pair_triage().expect("every pair covered");
-            let expected = [sure(0.1), sure(0.1), sure(0.1), sure(0.2)];
+            let expected = [sure(0.1), sure(0.1), sure(0.1), sure(0.2)].map(Some);
             assert_eq!(by_pair.as_ref(), expected);
         }
 
         #[test]
         fn without_groups_the_triage_is_already_per_pair() {
             let pairs = [pair(0, 1)];
-            let triage = [sure(0.4)];
+            let triage = [sure(0.4)].map(Some);
             let opts = RenderOptions {
                 duplicates: Some(&pairs),
                 triage: Some(&triage),
@@ -589,7 +588,7 @@ mod tests {
         fn a_triage_that_misses_a_group_or_a_pair_gives_none() {
             let pairs = [pair(0, 1), pair(5, 6)];
             let groups = group_pairs(&pairs, 0.82);
-            let one = [sure(0.3)];
+            let one = [sure(0.3)].map(Some);
             let short = RenderOptions {
                 duplicates: Some(&pairs),
                 groups: Some(&groups),
@@ -598,7 +597,7 @@ mod tests {
             };
             assert_eq!(short.pair_triage(), None, "one verdict, two groups");
             let stray = [pair(0, 1), pair(5, 6), pair(8, 9)];
-            let two = [sure(0.3), sure(0.4)];
+            let two = [sure(0.3), sure(0.4)].map(Some);
             let unmatched = RenderOptions {
                 duplicates: Some(&stray),
                 groups: Some(&groups),
