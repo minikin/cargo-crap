@@ -1,6 +1,6 @@
 # Spec 36: Duplicate groups
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/duplicates/group.rs` (new), `src/duplicates/compare.rs`, `src/report/duplicates.rs`, `src/report/json.rs`, `src/main.rs`, `schemas/`
 
