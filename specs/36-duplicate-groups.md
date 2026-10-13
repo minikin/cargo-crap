@@ -213,7 +213,9 @@ human, markdown and pr-comment reports. A group of three or more:
 - human: `DUPLICATE GROUP of N, score=S`, then one line per member, then
   the triage line,
 - markdown and pr-comment: one row, the names joined by `·`, at most five
-  named, then "and K more",
+  named, then "and K more". The table's first column is headed `Pair`
+  while every row shown is a pair, and `Functions` once one is a larger
+  group,
 - JSON: a `duplicate_groups` entry, and the group's verdict copied onto
   each of its pairs in `duplicates`.
 
