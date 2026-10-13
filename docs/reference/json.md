@@ -99,3 +99,14 @@ object, and each of its pairs in `duplicates` carries the same one.
 
 Both keys are absent, not empty, when detection was not requested, so "not
 asked" stays distinguishable from "asked, found nothing".
+
+In a delta report whose baseline was recorded with `--duplicates`, each
+group in `duplicate_groups` also carries `status`: `new`, `unchanged`, or
+`grown` with `grown_from`, the most of its members one baseline group
+held. Only the new and grown groups are triaged, so an unchanged group and
+its pairs have no `triage`. `delta-v2.json` validates the labels through
+the `DeltaDuplicateGroup` definition in `duplicates-v1.json`.
+
+```jsonc
+{ "members": [ /* four members */ ], "score": 1.0, "status": "grown", "grown_from": 3 }
+```

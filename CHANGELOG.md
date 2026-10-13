@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A delta run with `--duplicates`, against a baseline recorded with
+  `--duplicates`, shows only the duplicate candidates the change made in
+  markdown and the PR comment: new ones, and groups that gained members,
+  each saying what it grew from. A line counts the unchanged candidates
+  and the resolved ones when there are any, and a PR comment with nothing
+  new and nothing resolved has no duplicate section. Delta JSON keeps every group and labels it with
+  `status` (`new`, `grown`, `unchanged`) and `grown_from`. A baseline
+  recorded without `--duplicates` shows every candidate, as before, with
+  one warning. See
+  [On a delta run](docs/reference/output-formats.md#on-a-delta-run)
+  (spec 37).
+
+### Changed
+
+- On such a delta run triage asks only about the candidates it shows, so
+  an unchanged candidate is not paid for on every pull request (spec 37).
+- A triaged markdown or pr-comment table gives a candidate without a
+  verdict empty verdict cells instead of dropping every verdict (spec 37).
+- `delta-v2.json` accepts `status` and `grown_from` on a duplicate group,
+  through the new `DeltaDuplicateGroup` definition in
+  `duplicates-v1.json`. A validator holding an older copy of the schema
+  rejects them.
+- **BREAKING (library API):** `RenderOptions::triage` holds one
+  `Option<Assessment>` per group, `None` for a group triage was not asked
+  about, `duplicates::render_grouped` takes the same, and
+  `RenderOptions::pair_triage` returns one per pair. `RenderOptions`
+  gains `novelty` and `delta::Baseline` gains `duplicate_groups`.
+  `duplicates::novelty` (`compare`, `Comparison`, `Novelty`) is new.
+
 
 ## [0.8.0] - 2026-10-13
 

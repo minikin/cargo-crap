@@ -100,10 +100,10 @@ The first column is headed `Pair` while every row shown is a pair, and
 `Functions` once one is a group. With `--repo-url` and `--commit-ref` the
 names link to their source.
 
-When [triage](../guides/triage.md) answered for every candidate, a line
-under the heading counts the candidates at each level, each row gains a
-marker, the verdict, the confidence and the divergence risk, and a line
-under the table names the provider and the model asked:
+When [triage](../guides/triage.md) answered, a line under the heading
+counts the verdicts at each level, each row gains a marker, the verdict,
+the confidence and the divergence risk, and a line under the table names
+the provider and the model asked:
 
 ```markdown
 ## 3 duplicate candidates
@@ -128,11 +128,53 @@ under the table names the provider and the model asked:
   will need to change differently, the reason a merge can be the wrong
   move even for the same logic. From 0.5 up it is flagged with ⚠️. An
   uncertain verdict has none.
-- Without a verdict for every candidate (triage off, failed or partial)
-  the table has only the candidates and their similarity.
+- With triage off or failed, the table has only the candidates and their
+  similarity. A candidate triage was not asked about keeps empty verdict
+  cells in a triaged table.
 - The PR comment lists at most 25 candidates and says how many it left
   out, and a PR comment with no candidate has no section. Markdown lists
   every candidate, or says that none was found.
+
+### On a delta run
+
+When the `--baseline` was recorded with `--duplicates`, the section shows
+only what the change made: new candidates, and groups that gained members.
+The heading counts those, and a line under the table counts the rest when
+there is any:
+
+```markdown
+## 1 new duplicate candidate
+
+| Functions | Similarity |
+|---|---:|
+| `one` · `two` · `three` · `four`<br><sub>`src/a.rs:1-9` · `src/a.rs:10-18` · `src/a.rs:19-27` · `src/b.rs:1-9`</sub><br><sub>grew from 3</sub> | 1.00 |
+
+2 existing candidates unchanged, 1 resolved.
+```
+
+- Record the baseline with the same `--path` or `--workspace` as the run
+  that compares against it: files are matched by the paths both runs
+  print.
+- A function is the same on both sides when its name matches in the same
+  file, whatever its lines, so inserting lines above a candidate does not
+  make it new. A function moved to another file keeps its candidates when
+  no other function of that name left or arrived. A renamed function is
+  new.
+- A group is unchanged when one baseline group held every member, and
+  grown when one held two or more. `grew from N` gives the most of its
+  members one baseline group held, so a group that lost one member and
+  gained another says `grew from 2` beside three. A group that only lost
+  a member is unchanged.
+- A baseline candidate none of whose pairs is still together is resolved.
+- With nothing new, markdown prints `## No new duplicate candidates` and
+  the count line. The PR comment prints no section, unless a candidate was
+  resolved.
+- Triage asks only about new and grown candidates, those past the PR
+  comment's 25-row cap included, so an unchanged candidate is not paid for
+  again.
+- A baseline recorded without `--duplicates` has nothing to compare with:
+  every candidate is shown, as without a baseline, and stderr says to
+  record the baseline with `--duplicates`.
 
 ## SARIF output
 

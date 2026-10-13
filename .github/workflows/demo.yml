@@ -3,8 +3,9 @@ name: Demo
 # The live version of the README hero: a pull request that changes
 # examples/hero-shop gets the comment cargo-crap would post on that shop's
 # own pull request. The CRAP delta compares the shop on the base branch with
-# the shop in the pull request, and the duplicate section is triaged by
-# OpenAI. Verdicts for the hero's pairs are committed under
+# the shop in the pull request, and the duplicate section lists the
+# look-alikes the pull request adds, triaged by OpenAI. Verdicts for the
+# hero's pairs are committed under
 # docs/assets/hero/triage-cache, so the demo needs no key. With an
 # OPENAI_API_KEY secret, a pair missing from that cache is asked about;
 # without one it shows untriaged.
@@ -49,7 +50,9 @@ jobs:
 
       # Both runs score from the repository root with the same --path, so
       # the baseline's keys match the pull request's and the comment's
-      # links point at examples/hero-shop/src/... on the head commit.
+      # links point at examples/hero-shop/src/... on the head commit. The
+      # base run records its duplicates, so the comment lists only the
+      # look-alikes the pull request adds.
       - name: Score the shop on the base branch
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -57,7 +60,10 @@ jobs:
           rm -rf "$SHOP/src"
           git checkout "origin/$BASE_REF" -- "$SHOP/src"
           cargo llvm-cov --manifest-path "$SHOP/Cargo.toml" --lcov --output-path "$RUNNER_TEMP/base.lcov"
-          "$CRAP" --path "$SHOP/src" --lcov "$RUNNER_TEMP/base.lcov" --format json \
+          # The duplicate settings both runs share. The comment step adds
+          # triage to them, so the base run sends no request.
+          printf '[duplicates]\nenabled = true\n' > .cargo-crap.toml
+          "$CRAP" --path "$SHOP/src" --lcov "$RUNNER_TEMP/base.lcov" --duplicates --format json \
             --output "$RUNNER_TEMP/baseline.json"
           rm -rf "$SHOP/src"
           git checkout HEAD -- "$SHOP/src"

@@ -20,6 +20,8 @@ Elsewhere, pass a base URL such as `https://github.com/owner/repo`.
 `--commit-ref` alone does nothing without it.
 
 The job below expects `lcov.info` and a baseline, produced as in [Regression gate](regression-gate.md).
+With `--duplicates`, record the baseline with `--duplicates` too, so the
+comment lists only the duplicates the pull request adds.
 
 ```yaml
 self_score:

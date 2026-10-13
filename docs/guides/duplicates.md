@@ -52,6 +52,11 @@ triage verdicts when triage ran: see
 `github`, `sarif` and `shields` print a warning and skip the pass, triage
 included.
 
+In a pull request, compare against a baseline recorded with
+`--duplicates`: markdown and the PR comment then show only the candidates
+the change added or grew, and triage asks only about those. See
+[On a delta run](../reference/output-formats.md#on-a-delta-run).
+
 How it works: every function is parsed with `syn`, normalized into a
 structural tree, and fingerprinted, one fingerprint per subtree. Two
 functions are compared by Jaccard similarity over their fingerprint sets

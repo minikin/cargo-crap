@@ -25,6 +25,11 @@ the model is asked about the group's most similar pair, and its verdict
 prints once, under the group. Thirty copies of one function are one paid
 request instead of 435.
 
+On a delta run whose baseline was recorded with `--duplicates`, the model
+is asked only about the candidates the change added or grew. An unchanged
+candidate is not asked about again, and no format shows a verdict for it.
+See [On a delta run](../reference/output-formats.md#on-a-delta-run).
+
 ## Why turn it on
 
 Without triage, `--duplicates` gives a similarity score and nothing else, and
