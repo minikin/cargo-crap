@@ -399,6 +399,70 @@ fn both_schemas_enforce_the_shared_duplicate_definitions() {
 }
 
 #[test]
+fn only_the_delta_schema_labels_groups_and_grown_from_goes_with_grown() {
+    let member = |function: &str| serde_json::json!({"file": "src/a.rs", "function": function, "start_line": 1, "end_line": 5});
+    let group = |extra: serde_json::Value| {
+        let mut group = serde_json::json!({"members": [member("f"), member("g")], "score": 0.9});
+        group
+            .as_object_mut()
+            .expect("an object")
+            .extend(extra.as_object().expect("an object").clone());
+        group
+    };
+    let delta = |g: serde_json::Value| serde_json::json!({"version": "0.9.0", "entries": [], "removed": [], "duplicate_groups": [g]});
+    let validator = compile_schema("schemas/delta-v2.json");
+    for good in [
+        serde_json::json!({"status": "new"}),
+        serde_json::json!({"status": "unchanged"}),
+        serde_json::json!({}),
+    ] {
+        assert_valid(&validator, &delta(group(good)));
+    }
+    // A grown group has more members than it grew from.
+    let mut grown = group(serde_json::json!({"status": "grown", "grown_from": 2}));
+    grown["members"]
+        .as_array_mut()
+        .expect("members")
+        .push(member("h"));
+    assert_valid(&validator, &delta(grown));
+    for bad in [
+        serde_json::json!({"grown_from": 2}),
+        serde_json::json!({"status": "grown"}),
+        serde_json::json!({"status": "new", "grown_from": 2}),
+        serde_json::json!({"status": "grown", "grown_from": 1}),
+        serde_json::json!({"status": "removed"}),
+    ] {
+        let doc = delta(group(bad));
+        assert!(!validator.is_valid(&doc), "the delta schema accepted {doc}");
+    }
+    let report = serde_json::json!({
+        "version": "0.9.0",
+        "entries": [],
+        "duplicate_groups": [group(serde_json::json!({"status": "new"}))],
+    });
+    let plain = compile_schema("schemas/report-v1.json");
+    assert!(!plain.is_valid(&report), "a plain report has no statuses");
+}
+
+#[test]
+fn the_delta_group_definition_keeps_every_field_of_the_shared_one() {
+    // draft-07 cannot extend a definition closed by `additionalProperties`,
+    // so `DeltaDuplicateGroup` repeats `DuplicateGroup`: this keeps the copy
+    // from drifting.
+    let raw = std::fs::read_to_string("schemas/duplicates-v1.json").expect("the schema");
+    let schema: serde_json::Value = serde_json::from_str(&raw).expect("JSON");
+    let (shared, delta) = (
+        &schema["definitions"]["DuplicateGroup"],
+        &schema["definitions"]["DeltaDuplicateGroup"],
+    );
+    assert_eq!(shared["required"], delta["required"]);
+    assert_eq!(delta["additionalProperties"], false);
+    for (name, definition) in shared["properties"].as_object().expect("properties") {
+        assert_eq!(&delta["properties"][name], definition, "{name}");
+    }
+}
+
+#[test]
 fn duplicates_delta_json_output_validates_against_delta_schema() {
     let dir = duplicate_tree();
     let baseline_dir = tempfile::tempdir().expect("tempdir");

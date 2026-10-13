@@ -20,6 +20,17 @@ pub enum Novelty {
     Unchanged,
 }
 
+impl Novelty {
+    /// What a grown group grew from, or nothing for any other status.
+    #[must_use]
+    pub fn grown_from(self) -> Option<usize> {
+        match self {
+            Self::Grown { from } => Some(from),
+            Self::New | Self::Unchanged => None,
+        }
+    }
+}
+
 /// The current groups measured against a baseline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Comparison {
@@ -226,6 +237,13 @@ mod tests {
         baseline: &[Vec<Location>],
     ) -> Vec<Novelty> {
         compare(current, baseline).novelty
+    }
+
+    #[test]
+    fn only_a_grown_group_grew_from_anything() {
+        assert_eq!(Novelty::Grown { from: 3 }.grown_from(), Some(3));
+        assert_eq!(Novelty::New.grown_from(), None);
+        assert_eq!(Novelty::Unchanged.grown_from(), None);
     }
 
     #[test]

@@ -36,8 +36,8 @@
     },
     "duplicate_groups": {
       "type": "array",
-      "description": "The duplicate pairs grouped into functions that each resemble every other member, ordered by descending score, then by members. A pair whose functions share no larger group is a group of two, so every pair in `duplicates` lies inside one group. Present only on `--duplicates` runs, like `duplicates`.",
-      "items": { "$ref": "duplicates-v1.json#/definitions/DuplicateGroup" }
+      "description": "The duplicate pairs grouped into functions that each resemble every other member, ordered by descending score, then by members. A pair whose functions share no larger group is a group of two, so every pair in `duplicates` lies inside one group. Present only on `--duplicates` runs, like `duplicates`. When the baseline recorded its duplicates, each group carries its `status` against them.",
+      "items": { "$ref": "duplicates-v1.json#/definitions/DeltaDuplicateGroup" }
     },
     "try_weight": {
       "type": "number",

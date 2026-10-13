@@ -894,6 +894,23 @@ mod tests {
     }
 
     #[test]
+    fn a_delta_report_reused_as_a_baseline_still_loads() {
+        // Its groups carry delta-only labels, one from a later release.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("delta.json");
+        std::fs::write(
+            &path,
+            r#"{"version":"0.9.0","entries":[],"duplicate_groups":[{"members":[
+                {"file":"src/a.rs","function":"f","start_line":1,"end_line":9},
+                {"file":"src/b.rs","function":"g","start_line":3,"end_line":11}],
+                "score":0.9,"status":"shrunk","grown_from":2}]}"#,
+        )
+        .expect("write");
+        let baseline = load_baseline_with_weight(&path).expect("a lenient read");
+        assert_eq!(baseline.duplicate_groups.map(|g| g.len()), Some(1));
+    }
+
+    #[test]
     fn an_empty_duplicate_record_is_a_record() {
         // `--duplicates` ran and found nothing: every group now is new.
         let dir = tempfile::tempdir().expect("tempdir");

@@ -13,7 +13,7 @@ use super::{RenderOptions, SourceLinks, TriagedBy};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
 use crate::duplicates::group::DuplicateGroup;
-use crate::duplicates::novelty::{Comparison, Novelty};
+use crate::duplicates::novelty::Comparison;
 use crate::duplicates::triage::verdict::{Assessment, WorthExtracting};
 
 pub use crate::duplicates::compare::sort_pairs;
@@ -171,7 +171,7 @@ fn render_new_table(
     // Each shown group with its note, from one pass, so neither can drift.
     let (shown, grew): (Vec<DuplicateGroup>, Vec<Option<usize>>) = kept
         .iter()
-        .map(|&n| (groups[n].clone(), grown_from(comparison.novelty[n])))
+        .map(|&n| (groups[n].clone(), comparison.novelty[n].grown_from()))
         .unzip();
     let kept_triage: Option<Vec<Option<Assessment>>> =
         triage.map(|t| kept.iter().map(|&n| t[n]).collect());
@@ -189,14 +189,6 @@ fn render_new_table(
     }
     write_count_line(groups.len() - shown.len(), comparison.resolved, out)?;
     write_provider_line(verdicts.and(opts.triaged_by), out)
-}
-
-/// What a grown group grew from, or nothing for any other status.
-fn grown_from(novelty: Novelty) -> Option<usize> {
-    match novelty {
-        Novelty::Grown { from } => Some(from),
-        Novelty::New | Novelty::Unchanged => None,
-    }
 }
 
 /// The line counting the groups a delta run left unchanged and the

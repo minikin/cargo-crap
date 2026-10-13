@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/duplicates-v1.json",
   "title": "cargo-crap duplicate definitions (v1)",
-  "description": "Definitions that `report-v1.json` and `delta-v2.json` share: duplicate pairs, duplicate groups and triage verdicts.",
+  "description": "The duplicate definitions behind `report-v1.json` and `delta-v2.json`: duplicate pairs, duplicate groups and triage verdicts, which both share, and the labelled group only a delta report carries.",
   "definitions": {
     "DuplicatePair": {
       "type": "object",
@@ -91,6 +91,47 @@
           "$ref": "#/definitions/Triage"
         }
       }
+    },
+    "DeltaDuplicateGroup": {
+      "type": "object",
+      "description": "A duplicate group in a delta report: a `DuplicateGroup` that, when the baseline recorded its duplicates, says what it is against them.",
+      "required": ["members", "score"],
+      "additionalProperties": false,
+      "properties": {
+        "members": {
+          "type": "array",
+          "minItems": 2,
+          "description": "The members, by location.",
+          "items": {
+            "$ref": "#/definitions/DuplicateMember"
+          }
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The weakest pair's Jaccard similarity: every two members score at least this."
+        },
+        "triage": {
+          "$ref": "#/definitions/Triage"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["new", "grown", "unchanged"],
+          "description": "`unchanged` when one baseline group held every member, `grown` when one held two or more, `new` otherwise. Absent when the baseline has no duplicate record."
+        },
+        "grown_from": {
+          "type": "integer",
+          "minimum": 2,
+          "description": "On a grown group, the most of its members one baseline group held."
+        }
+      },
+      "if": {
+        "properties": { "status": { "const": "grown" } },
+        "required": ["status"]
+      },
+      "then": { "required": ["grown_from"] },
+      "else": { "not": { "required": ["grown_from"] } }
     },
     "DuplicateMember": {
       "type": "object",

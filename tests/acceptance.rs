@@ -6216,3 +6216,56 @@ fn the_human_section_lists_every_group() {
     assert!(block("five").contains("triage:"), "{section}");
     assert!(!block("one").contains("triage:"), "{section}");
 }
+
+#[test]
+fn delta_json_keeps_every_group_and_labels_it() {
+    // Given a baseline with two duplicate groups
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    write(
+        dir.path(),
+        "a.rs",
+        &[filter_copy("one"), filter_copy("two")].concat(),
+    );
+    write(
+        dir.path(),
+        "b.rs",
+        &[tally_copy("three"), tally_copy("four")].concat(),
+    );
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree keeps one, adds a member to the other, and adds a
+    // new pair
+    write(dir.path(), "c.rs", &tally_copy("five"));
+    write(
+        dir.path(),
+        "d.rs",
+        &[words_copy("six"), words_copy("seven")].concat(),
+    );
+    // When I run `cargo crap --duplicates --baseline base.json --format json`
+    let stdout = delta_duplicates(dir.path(), &baseline, "json");
+    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("one JSON document");
+    // Then `duplicate_groups` has three entries
+    let groups = doc["duplicate_groups"].as_array().expect("groups");
+    assert_eq!(groups.len(), 3, "{doc:#}");
+    // And their `status` fields are "unchanged", "grown" and "new"
+    let status_of = |name: &str| {
+        groups
+            .iter()
+            .find(|g| {
+                g["members"]
+                    .as_array()
+                    .expect("members")
+                    .iter()
+                    .any(|m| m["function"] == name)
+            })
+            .unwrap_or_else(|| panic!("{name} in {doc:#}"))["status"]
+            .clone()
+    };
+    assert_eq!(status_of("one"), "unchanged");
+    assert_eq!(status_of("five"), "grown");
+    assert_eq!(status_of("six"), "new");
+    // And the document validates against the delta schema
+    assert_matches_schema("schemas/delta-v2.json", &doc);
+}
