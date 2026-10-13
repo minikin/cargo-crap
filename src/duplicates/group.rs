@@ -15,6 +15,27 @@ pub struct DuplicateGroup {
     pub representative: DuplicatePair,
 }
 
+impl DuplicateGroup {
+    /// `pair` on its own, as a group of two: its two functions by location,
+    /// its score, and the pair itself as the representative.
+    #[must_use]
+    pub fn of_pair(pair: &DuplicatePair) -> Self {
+        let (first, second) = ordered_sides(pair);
+        Self {
+            members: vec![first.clone(), second.clone()],
+            score: pair.score,
+            representative: pair.clone(),
+        }
+    }
+
+    /// The group's one pair, when it has exactly two members: a group of
+    /// two is reported as that pair.
+    #[must_use]
+    pub fn as_pair(&self) -> Option<&DuplicatePair> {
+        (self.members.len() == 2).then_some(&self.representative)
+    }
+}
+
 /// Group the pairs that score at or above `threshold`.
 ///
 /// Pairs are taken strongest first, and two clusters merge only when every
@@ -444,6 +465,28 @@ mod tests {
             group.representative.first.name.clone(),
             group.representative.second.name.clone(),
         )
+    }
+
+    #[test]
+    fn a_pair_on_its_own_is_a_group_of_two() {
+        let swapped = DuplicatePair {
+            first: f(4),
+            second: f(2),
+            score: 0.87,
+        };
+        let group = DuplicateGroup::of_pair(&swapped);
+        assert_eq!(names(&group), ["f2", "f4"], "members by location");
+        assert!((group.score - 0.87).abs() < f64::EPSILON);
+        assert_eq!(group.representative, swapped, "the pair as given");
+        assert_eq!(group.as_pair(), Some(&swapped));
+    }
+
+    #[test]
+    fn only_a_group_of_two_is_a_pair() {
+        let groups = group_pairs_at(&[pair(0, 1, 1.0), pair(0, 2, 1.0), pair(1, 2, 1.0)]);
+        assert_eq!(groups[0].as_pair(), None, "a group of three");
+        let lone = group_pairs_at(&[pair(3, 7, 0.9)]);
+        assert_eq!(lone[0].as_pair(), Some(&pair(3, 7, 0.9)));
     }
 
     #[test]

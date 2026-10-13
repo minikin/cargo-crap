@@ -5496,3 +5496,211 @@ fn the_json_keeps_its_pairs_and_adds_the_groups() {
     // And the document validates against the report schema
     assert_matches_schema("schemas/report-v1.json", &doc);
 }
+
+// ---- Spec 36 · T6 ----
+
+/// A function unlike the [`copies_tree`] ones: two copies of it are a
+/// pair of their own.
+fn words_copy(name: &str) -> String {
+    format!(
+        "fn {name}(words: &[&str]) -> String {{
+    let mut out = String::new();
+    for w in words.iter().rev() {{
+        out.push_str(&w.to_uppercase());
+        out.push_str(\", \");
+    }}
+    out.truncate(out.len().saturating_sub(2));
+    format!(\"[{{out}}]\")
+}}
+"
+    )
+}
+
+/// The section of a markdown or pr-comment report from its duplicate
+/// heading (`## N duplicate candidate(s)`) on, and the body rows of the
+/// first table under it, up to the first line that is not a row.
+fn duplicate_rows(stdout: &str) -> (&str, Vec<&str>) {
+    let at = stdout
+        .match_indices("## ")
+        .map(|(n, _)| n)
+        .find(|&n| {
+            let line = stdout[n..].lines().next().unwrap_or_default();
+            line.split_once(' ')
+                .and_then(|(_, rest)| rest.split_once(' '))
+                .is_some_and(|(count, rest)| {
+                    count.parse::<usize>().is_ok() && rest.starts_with("duplicate candidate")
+                })
+        })
+        .unwrap_or_else(|| panic!("a duplicate heading: {stdout}"));
+    let section = &stdout[at..];
+    let rows = section
+        .lines()
+        .skip_while(|l| !l.starts_with('|'))
+        .take_while(|l| l.starts_with('|'))
+        .skip(2)
+        .collect();
+    (section, rows)
+}
+
+#[test]
+fn a_group_is_one_row_in_markdown_and_pr_comment() {
+    // Given a tree with one group of three and one pair
+    let dir = copies_tree(3);
+    write(
+        dir.path(),
+        "words.rs",
+        &[words_copy("left"), words_copy("right")].concat(),
+    );
+    for format in ["pr-comment", "markdown"] {
+        // When I run `cargo crap --duplicates --format pr-comment`
+        let out = duplicates_run(dir.path(), format, &["--duplicates"]);
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        let (section, rows) = duplicate_rows(&stdout);
+        // Then the section is headed "2 duplicate candidates"
+        assert!(
+            section.starts_with("## 2 duplicate candidates\n"),
+            "{section}"
+        );
+        assert_eq!(rows.len(), 2, "{section}");
+        // And the group's row names its three functions joined by `·`, with
+        // their locations under them
+        assert!(
+            rows[0].contains("`copy_00` · `copy_01` · `copy_02`<br><sub>`"),
+            "{format}: {}",
+            rows[0]
+        );
+        for lines in ["copies.rs:1-9`", "copies.rs:10-18`", "copies.rs:19-27`"] {
+            assert!(rows[0].contains(lines), "{format}: {lines} in {}", rows[0]);
+        }
+        assert!(rows[0].ends_with(" | 1.00 |"), "{}", rows[0]);
+        // And the pair's row is the same as before this spec
+        assert!(
+            rows[1].starts_with("| `left` ↔ `right`<br><sub>`")
+                && rows[1].contains("words.rs:1-9` · `")
+                && rows[1].ends_with("words.rs:10-18`</sub> | 1.00 |"),
+            "{format}: {}",
+            rows[1]
+        );
+    }
+}
+
+#[test]
+fn a_large_group_names_its_first_members() {
+    // Given one group of thirty functions
+    let dir = copies_tree(30);
+    for format in ["markdown", "pr-comment"] {
+        // When it is rendered in markdown or pr-comment
+        let out = duplicates_run(dir.path(), format, &["--duplicates"]);
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        let (section, rows) = duplicate_rows(&stdout);
+        assert!(
+            section.starts_with("## 1 duplicate candidate\n"),
+            "{section}"
+        );
+        assert_eq!(rows.len(), 1, "{section}");
+        // Then its row names the first five members by location
+        assert!(
+            rows[0].contains("`copy_00` · `copy_01` · `copy_02` · `copy_03` · `copy_04`"),
+            "{format}: {}",
+            rows[0]
+        );
+        assert!(rows[0].contains("copies.rs:37-45`</sub>"), "{}", rows[0]);
+        assert!(!rows[0].contains("copy_05"), "{}", rows[0]);
+        // And says how many more the group has
+        assert!(
+            rows[0].contains(" and 25 more<br>"),
+            "{format}: {}",
+            rows[0]
+        );
+    }
+}
+
+/// More groups than the PR comment's row cap: 26 shapes, each a body one
+/// statement longer than the last, the first in three copies and the rest
+/// in two, under a threshold that pairs only identical shapes. That is 26
+/// groups but 28 pairs. `config` is appended to the `[duplicates]` table.
+fn twenty_six_groups_tree(config: &str) -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    let source: String = (0..26)
+        .flat_map(|k| {
+            let sides: &[&str] = if k == 0 {
+                &["a", "b", "c"]
+            } else {
+                &["a", "b"]
+            };
+            sides.iter().map(move |side| {
+                let pushes = "    ys.push(0);\n".repeat(k + 1);
+                format!(
+                    "fn p{k:02}_{side}(xs: &[i32]) -> Vec<i32> {{
+    let mut ys = Vec::new();
+    for x in xs {{
+        if x % 2 == 1 {{
+            ys.push(x + 1);
+        }}
+    }}
+{pushes}    ys
+}}
+"
+                )
+            })
+        })
+        .collect();
+    write(dir.path(), "pairs.rs", &source);
+    write(
+        dir.path(),
+        ".cargo-crap.toml",
+        &format!("[duplicates]\nenabled = true\nthreshold = 1.0\n{config}"),
+    );
+    dir
+}
+
+#[test]
+fn counts_and_the_cap_are_in_groups() {
+    // Given a tree with more groups than the PR comment's row cap
+    let dir = twenty_six_groups_tree("");
+    // When I run `cargo crap --duplicates --format pr-comment`
+    let out = crap()
+        .current_dir(dir.path())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .args(["--format", "pr-comment"])
+        .output()
+        .expect("the binary runs");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let (section, rows) = duplicate_rows(&stdout);
+    // Then the heading counts groups
+    assert!(
+        section.starts_with("## 26 duplicate candidates\n"),
+        "{section}"
+    );
+    // And the table shows the first groups up to the cap, with the existing
+    // truncation footer counting the groups left out
+    assert_eq!(rows.len(), 25, "{section}");
+    assert!(
+        section.contains("\n_…and 1 more, see CI artifact for the full report._\n"),
+        "{section}"
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_triaged_summary_line_counts_groups() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given triage is enabled over a tree of 26 groups and 28 pairs
+    let triage = "[duplicates.triage]\nenabled = true\n";
+    let dir = twenty_six_groups_tree(triage);
+    let stub = ApiStub::scripted(vec![Reply::json(&triage_answer_worth(
+        "same_logic",
+        0.9,
+        3.0,
+    ))]);
+    // When I run `cargo crap --duplicates --format pr-comment`
+    let config = format!("[duplicates]\nenabled = true\nthreshold = 1.0\n{triage}");
+    let out = run_with_config(dir.path(), &config, &stub, &["--format", "pr-comment"]);
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let (section, rows) = duplicate_rows(&stdout);
+    // Then one request is made per group
+    assert_eq!(stub.request_count(), 26, "{section}");
+    // And the summary line counts groups
+    assert!(section.contains("\n🔴 26 should be one\n"), "{section}");
+    assert_eq!(rows.len(), 25, "{section}");
+}

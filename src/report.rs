@@ -128,9 +128,10 @@ pub struct RenderOptions<'a> {
     pub try_weight: f64,
     /// One triage assessment per duplicate group, in the groups' order, when
     /// `groups` is set, else one per pair in the pairs' order, or `None` when
-    /// triage did not run. The human section prints it under each group.
-    /// The JSON renderer and the markdown and pr-comment tables read it
-    /// through [`RenderOptions::pair_triage`], one verdict per pair.
+    /// triage did not run. The human section and the markdown and
+    /// pr-comment tables print one verdict per group. The JSON renderer
+    /// puts each beside its group, and beside each pair through
+    /// [`RenderOptions::pair_triage`].
     pub triage: Option<&'a [Assessment]>,
     /// The user asked for a slice of the entries with `top` or `min`, on the
     /// command line or in config. The human table then draws every entry it
@@ -153,8 +154,8 @@ pub struct RenderOptions<'a> {
     /// and pr-comment duplicate tables name them under a triaged table.
     pub triaged_by: Option<TriagedBy<'a>>,
     /// The duplicate pairs grouped into functions that all resemble each
-    /// other, or `None` to report each pair on its own. The human section
-    /// reads it.
+    /// other, or `None` to report each pair on its own. Every section that
+    /// shows duplicates reads it.
     pub groups: Option<&'a [DuplicateGroup]>,
 }
 
@@ -168,6 +169,18 @@ pub struct TriagedBy<'a> {
 }
 
 impl<'a> RenderOptions<'a> {
+    /// The duplicates as groups, the one answer every duplicate section
+    /// reads: `groups` when set, else each pair in `duplicates` as a group
+    /// of two. `None` when neither is set: detection was not asked for.
+    #[must_use]
+    pub fn duplicate_groups(&self) -> Option<std::borrow::Cow<'a, [DuplicateGroup]>> {
+        match (self.groups, self.duplicates) {
+            (Some(groups), _) => Some(std::borrow::Cow::Borrowed(groups)),
+            (None, Some(pairs)) => Some(pairs.iter().map(DuplicateGroup::of_pair).collect()),
+            (None, None) => None,
+        }
+    }
+
     /// One assessment per pair in `duplicates`, in the pairs' order: with
     /// `groups` set, each pair gets the verdict of the group it is reported
     /// in. `None` when triage did not run, or when it does not cover every
@@ -309,11 +322,12 @@ pub fn render_delta(
 /// second analysis rather than a second view of the same entries — it has to
 /// follow whichever table was printed, including the `--summary` one.
 ///
-/// `None` duplicates means detection was not asked for. `human` prints the
-/// text section, and `markdown` and `pr-comment` a GFM table, the PR
-/// comment's capped and left out when there is no pair. JSON carries the
-/// pairs inside its envelope, where appending text after the document would
-/// leave the output unparseable, and the other formats carry none.
+/// No duplicates and no groups means detection was not asked for (see
+/// [`RenderOptions::duplicate_groups`]). `human` prints the text section,
+/// and `markdown` and `pr-comment` a GFM table, the PR comment's capped and
+/// left out when there is no group. JSON carries the duplicates inside its
+/// envelope, where appending text after the document would leave the
+/// output unparseable, and the other formats carry none.
 ///
 /// # Errors
 ///
@@ -322,45 +336,34 @@ pub fn render_duplicates(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let Some(pairs) = opts.duplicates else {
+    let Some(groups) = opts.duplicate_groups() else {
         return Ok(());
     };
-    write_duplicate_section(pairs, opts, out)
+    write_duplicate_section(&groups, opts, out)
 }
 
 /// The duplicate section in `opts.format`, for a run that asked for one.
 fn write_duplicate_section(
-    pairs: &[DuplicatePair],
+    groups: &[DuplicateGroup],
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
     match opts.format {
-        Format::Human => human_duplicates(pairs, opts, out),
+        Format::Human => {
+            writeln!(out)?;
+            duplicates::render_grouped(groups, opts.triage, out)
+        },
         Format::Markdown => duplicate_table(opts, None, out),
         // A comment with nothing to say about duplicates says nothing.
-        Format::PrComment if pairs.is_empty() => Ok(()),
+        Format::PrComment if groups.is_empty() => Ok(()),
         Format::PrComment => duplicate_table(opts, Some(pr_comment::MAX_ROWS_PER_SECTION), out),
         Format::Json | Format::GitHub | Format::Sarif | Format::Shields => Ok(()),
     }
 }
 
-/// The human duplicate section, after a blank line: grouped when the run
-/// grouped its pairs, each pair on its own otherwise.
-fn human_duplicates(
-    pairs: &[DuplicatePair],
-    opts: &RenderOptions,
-    out: &mut dyn Write,
-) -> Result<()> {
-    writeln!(out)?;
-    match opts.groups {
-        Some(groups) => duplicates::render_grouped(groups, opts.triage, out),
-        None => duplicates::render(pairs, opts.triage, out),
-    }
-}
-
-/// The GFM duplicate section, after a blank line, with each pair's verdict
-/// and who gave it when the triage covers every pair, and paths relative to
-/// the working directory.
+/// The GFM duplicate section, after a blank line, with each group's
+/// verdict and who gave it when the triage covers every group, and paths
+/// relative to the working directory.
 fn duplicate_table(
     opts: &RenderOptions,
     cap: Option<usize>,
@@ -396,6 +399,71 @@ mod tests {
     use super::*;
     use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
     use test_support::sample;
+
+    mod duplicate_groups {
+        use super::*;
+        use crate::duplicates::extract::Location;
+
+        fn pair(n: usize) -> DuplicatePair {
+            let at = |line: usize| Location {
+                file: std::path::PathBuf::from("src/a.rs"),
+                start_line: line,
+                end_line: line + 4,
+                name: format!("f{line}"),
+            };
+            DuplicatePair {
+                first: at(10 * n + 1),
+                second: at(10 * n + 5),
+                score: 0.9,
+            }
+        }
+
+        #[test]
+        fn groups_win_then_each_pair_is_a_group_of_two() {
+            let pairs = [pair(0), pair(1)];
+            let groups = [DuplicateGroup::of_pair(&pairs[1])];
+            let grouped = RenderOptions {
+                duplicates: Some(&pairs),
+                groups: Some(&groups),
+                ..RenderOptions::default()
+            };
+            assert_eq!(grouped.duplicate_groups().as_deref(), Some(&groups[..]));
+            let paired = RenderOptions {
+                duplicates: Some(&pairs),
+                ..RenderOptions::default()
+            };
+            let expected: Vec<DuplicateGroup> = pairs.iter().map(DuplicateGroup::of_pair).collect();
+            assert_eq!(paired.duplicate_groups().as_deref(), Some(&expected[..]));
+            assert_eq!(RenderOptions::default().duplicate_groups(), None);
+        }
+
+        #[test]
+        fn every_text_section_reads_the_same_groups() {
+            // No groups beside some pairs: each text format says there are
+            // none, rather than one listing the pairs.
+            let pairs = [pair(0)];
+            let render_with = |format: Format| {
+                let mut buf = Vec::new();
+                let opts = RenderOptions {
+                    format,
+                    duplicates: Some(&pairs),
+                    groups: Some(&[]),
+                    ..RenderOptions::default()
+                };
+                render_duplicates(&opts, &mut buf).unwrap();
+                String::from_utf8(buf).unwrap()
+            };
+            assert_eq!(
+                render_with(Format::Human),
+                "\nNo candidate duplicates found.\n"
+            );
+            assert_eq!(
+                render_with(Format::Markdown),
+                "\nNo candidate duplicates found.\n"
+            );
+            assert_eq!(render_with(Format::PrComment), "");
+        }
+    }
 
     mod pair_triage {
         use super::*;

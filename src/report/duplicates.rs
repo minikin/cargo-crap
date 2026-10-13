@@ -1,4 +1,5 @@
-//! Rendering candidate duplicate pairs.
+//! Rendering candidate duplicates: pairs, and groups of functions that all
+//! resemble each other.
 
 use std::io::Write;
 use std::path::Path;
@@ -76,8 +77,8 @@ fn write_group(
     assessment: Option<&Assessment>,
     out: &mut dyn Write,
 ) -> Result<()> {
-    if group.members.len() == 2 {
-        return write_pair(&group.representative, assessment, out);
+    if let Some(pair) = group.as_pair() {
+        return write_pair(pair, assessment, out);
     }
     writeln!(
         out,
@@ -94,16 +95,19 @@ fn write_group(
     Ok(())
 }
 
-/// Render `opts.duplicates` as a GFM table, for the markdown and
-/// pr-comment formats: a heading counting every pair, then one row per pair
-/// in the order given, at most `cap` of them (a positive count, or `None`
-/// for every pair), with the PR comment's
-/// truncation footer counting the rest. Paths are shown relative to
-/// `opts.cwd` when they are under it, and names link to their source when
-/// `opts.links` is set. With exactly one assessment per pair, a summary
-/// line counts the verdicts and the table gains a marker, a verdict and a
-/// confidence column, and `opts.triaged_by` is named under the table. Any other
-/// count leaves the table untriaged, as the human section does.
+/// Render the duplicates as a GFM table, for the markdown and pr-comment
+/// formats: a heading counting every group, then one row per group in the
+/// order given, at most `cap` of them (a positive count, or `None` for
+/// every group), with the PR comment's truncation footer counting the rest.
+/// The groups are [`RenderOptions::duplicate_groups`]: `opts.groups`, or
+/// each pair in `opts.duplicates` as a group of two. A group of two is a pair's row; a
+/// larger group names its first five members and counts the rest.
+/// Paths are shown relative to `opts.cwd` when they are under it, and
+/// names link to their source when `opts.links` is set. With exactly one
+/// assessment per group, a summary line counts the verdicts and the table
+/// gains a marker, a verdict and a confidence column, and
+/// `opts.triaged_by` is named under the table. Any other count leaves the
+/// table untriaged, as the human section does.
 ///
 /// # Errors
 ///
@@ -113,18 +117,22 @@ pub fn render_table(
     cap: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let pairs = opts.duplicates.unwrap_or_default();
-    if pairs.is_empty() {
+    let groups = opts.duplicate_groups().unwrap_or_default();
+    if groups.is_empty() {
         writeln!(out, "No candidate duplicates found.")?;
         return Ok(());
     }
-    writeln!(out, "## {} duplicate {}\n", pairs.len(), noun(pairs.len()))?;
-    let shown = cap.unwrap_or(pairs.len()).min(pairs.len());
-    let pair_triage = opts.pair_triage();
-    let triage = covering(pair_triage.as_deref(), pairs.len());
-    write_table_body(pairs, triage, shown, opts, out)?;
-    if pairs.len() > shown {
-        super::types::write_truncation_footer(out, pairs.len() - shown)?;
+    writeln!(
+        out,
+        "## {} duplicate {}\n",
+        groups.len(),
+        noun(groups.len())
+    )?;
+    let shown = cap.unwrap_or(groups.len()).min(groups.len());
+    let triage = covering(opts.triage, groups.len());
+    write_table_body(&groups, triage, shown, opts, out)?;
+    if groups.len() > shown {
+        super::types::write_truncation_footer(out, groups.len() - shown)?;
     }
     write_provider_line(triage.and(opts.triaged_by), out)
 }
@@ -146,10 +154,10 @@ fn write_provider_line(
     Ok(())
 }
 
-/// The first `shown` pairs as a table, triaged when `triage` is given (it
-/// then covers every pair), with the summary line above a triaged table.
+/// The first `shown` groups as a table, triaged when `triage` is given (it
+/// then covers every group), with the summary line above a triaged table.
 fn write_table_body(
-    pairs: &[DuplicatePair],
+    groups: &[DuplicateGroup],
     triage: Option<&[Assessment]>,
     shown: usize,
     opts: &RenderOptions,
@@ -158,54 +166,72 @@ fn write_table_body(
     if let Some(triage) = triage {
         writeln!(out, "{}\n", summary_line(triage))?;
     }
-    write_rows(&pairs[..shown], triage.map(|t| &t[..shown]), opts, out)
+    write_rows(groups, shown, triage, opts, out)
 }
 
-/// `triage` when it has exactly one assessment per pair, else nothing: all
-/// or nothing, so no pair's missing verdict can be read as a verdict. Every
-/// section that prints verdicts goes through it.
+/// `triage` when it has exactly one assessment per item (pair or group),
+/// else nothing: all or nothing, so no item's missing verdict can be read
+/// as a verdict. Every section that prints verdicts goes through it.
 fn covering(
     triage: Option<&[Assessment]>,
-    pairs: usize,
+    items: usize,
 ) -> Option<&[Assessment]> {
-    triage.filter(|t| t.len() == pairs)
+    triage.filter(|t| t.len() == items)
 }
 
-/// The table's two header rows without verdicts.
-const UNTRIAGED_HEADER: &str = "| Pair | Similarity |\n|---|---:|";
+/// The table's two header rows without verdicts, over pairs only.
+const PAIR_HEADER: &str = "| Pair | Similarity |\n|---|---:|";
+/// The same over rows that include a larger group.
+const GROUP_HEADER: &str = "| Functions | Similarity |\n|---|---:|";
 /// The table's two header rows with a marker, a verdict, a confidence and a
-/// divergence risk.
-const TRIAGED_HEADER: &str = "| | Pair | Similarity | Verdict | Confidence | Divergence risk |\n\
+/// divergence risk, over pairs only.
+const TRIAGED_PAIR_HEADER: &str = "| | Pair | Similarity | Verdict | Confidence | Divergence risk |\n\
+     |---|---|---:|---|---|---:|";
+/// The same over rows that include a larger group.
+const TRIAGED_GROUP_HEADER: &str = "| | Functions | Similarity | Verdict | Confidence | Divergence risk |\n\
      |---|---|---:|---|---|---:|";
 
-/// The table: its header, then one row per pair, with each pair's verdict
-/// when `triage` is given.
+/// The header over `shown`, the rows the table prints: its first column is
+/// `Pair` while every row is a pair, and `Functions` once one is a larger
+/// group.
+fn header(
+    triaged: bool,
+    shown: &[DuplicateGroup],
+) -> &'static str {
+    let pairs_only = shown.iter().all(|g| g.as_pair().is_some());
+    match (triaged, pairs_only) {
+        (false, true) => PAIR_HEADER,
+        (false, false) => GROUP_HEADER,
+        (true, true) => TRIAGED_PAIR_HEADER,
+        (true, false) => TRIAGED_GROUP_HEADER,
+    }
+}
+
+/// The table: its header, then a row for each of the first `shown` groups,
+/// with each group's verdict when `triage` is given.
 fn write_rows(
-    pairs: &[DuplicatePair],
+    groups: &[DuplicateGroup],
+    shown: usize,
     triage: Option<&[Assessment]>,
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let header = if triage.is_some() {
-        TRIAGED_HEADER
-    } else {
-        UNTRIAGED_HEADER
-    };
-    writeln!(out, "{header}")?;
-    for (n, pair) in pairs.iter().enumerate() {
-        writeln!(out, "{}", table_row(pair, triage.map(|t| &t[n]), opts))?;
+    let shown = &groups[..shown];
+    writeln!(out, "{}", header(triage.is_some(), shown))?;
+    for (n, group) in shown.iter().enumerate() {
+        writeln!(out, "{}", table_row(group, triage.map(|t| &t[n]), opts))?;
     }
     Ok(())
 }
 
-/// One row: the pair and its similarity, framed by the verdict cells when
+/// One row: the group and its similarity, framed by the verdict cells when
 /// there is an assessment.
 fn table_row(
-    pair: &DuplicatePair,
+    group: &DuplicateGroup,
     assessment: Option<&Assessment>,
     opts: &RenderOptions,
 ) -> String {
-    let shared = format!("{} | {:.2}", pair_cell(pair, opts), pair.score);
+    let shared = format!("{} | {:.2}", group_cell(group, opts), group.score);
     let Some(assessment) = assessment else {
         return format!("| {shared} |");
     };
@@ -321,6 +347,33 @@ fn noun(count: usize) -> &'static str {
     } else {
         "candidates"
     }
+}
+
+/// How many members a larger group's row names before counting the rest.
+const NAMED: usize = 5;
+
+/// A group in one table cell: a group of two as its pair, a larger group
+/// as its first [`NAMED`] names joined by `·`, then how many more it has,
+/// with their locations in small type under them.
+fn group_cell(
+    group: &DuplicateGroup,
+    opts: &RenderOptions,
+) -> String {
+    if let Some(pair) = group.as_pair() {
+        return pair_cell(pair, opts);
+    }
+    let shown = &group.members[..NAMED.min(group.members.len())];
+    let names: Vec<String> = shown.iter().map(|m| name(m, opts.links)).collect();
+    let locations: Vec<String> = shown.iter().map(|m| location(m, opts.cwd)).collect();
+    let more = match group.members.len() - shown.len() {
+        0 => String::new(),
+        rest => format!(" and {rest} more"),
+    };
+    format!(
+        "{}{more}<br><sub>{}</sub>",
+        names.join(" · "),
+        locations.join(" · ")
+    )
 }
 
 /// A pair in one table cell: both names joined by an arrow, each linked to
@@ -1424,6 +1477,166 @@ mod tests {
                 prop_assert!(row.contains(&first), "row order: {}", row);
                 prop_assert_eq!(separators(row), 3);
             }
+        }
+    }
+
+    // ---- The GFM table over groups ----
+
+    /// `n` functions of `src/g.rs`, `m00` on, as one group scoring 0.90.
+    fn group_of(n: usize) -> DuplicateGroup {
+        let members: Vec<Location> = (0..n)
+            .map(|k| Location {
+                file: PathBuf::from("/work/src/g.rs"),
+                start_line: 10 * k + 1,
+                end_line: 10 * k + 5,
+                name: format!("m{k:02}"),
+            })
+            .collect();
+        let representative = DuplicatePair {
+            first: members[0].clone(),
+            second: members[1].clone(),
+            score: 1.0,
+        };
+        DuplicateGroup {
+            members,
+            score: 0.9,
+            representative,
+        }
+    }
+
+    /// A pair as grouping hands it over: a group of two.
+    fn pair_group(n: usize) -> DuplicateGroup {
+        let pair = pair(n, 0.85);
+        DuplicateGroup {
+            members: vec![pair.first.clone(), pair.second.clone()],
+            score: pair.score,
+            representative: pair,
+        }
+    }
+
+    fn group_table(
+        groups: &[DuplicateGroup],
+        triage: Option<&[Assessment]>,
+        cap: Option<usize>,
+    ) -> String {
+        let mut buf = Vec::new();
+        let opts = crate::report::RenderOptions {
+            groups: Some(groups),
+            triage,
+            ..at_work()
+        };
+        render_table(&opts, cap, &mut buf).expect("a Vec writer cannot fail");
+        String::from_utf8(buf).expect("the section is utf-8")
+    }
+
+    #[test]
+    fn a_group_of_three_is_one_row_naming_every_member() {
+        let out = group_table(&[group_of(3), pair_group(1)], None, None);
+        assert!(out.starts_with("## 2 duplicate candidates\n"), "{out}");
+        assert!(out.contains("| Functions | Similarity |\n"), "{out}");
+        let rows = body_rows(&out);
+        assert_eq!(
+            rows[0],
+            "| `m00` · `m01` · `m02`<br><sub>`src/g.rs:1-5` · `src/g.rs:11-15` · \
+             `src/g.rs:21-25`</sub> | 0.90 |"
+        );
+        assert_eq!(
+            rows[1],
+            "| `f1_1` ↔ `f1_10`<br><sub>`src/f1.rs:1-5` · `src/f1.rs:10-14`</sub> | 0.85 |"
+        );
+    }
+
+    #[test]
+    fn a_large_group_names_five_and_counts_the_rest() {
+        let named = |n: usize| body_rows(&group_table(&[group_of(n)], None, None))[0].to_owned();
+        let thirty = named(30);
+        assert!(
+            thirty.starts_with("| `m00` · `m01` · `m02` · `m03` · `m04` and 25 more<br><sub>"),
+            "{thirty}"
+        );
+        assert!(thirty.contains("`src/g.rs:41-45`</sub>"), "{thirty}");
+        assert!(!thirty.contains("m05"), "{thirty}");
+        assert!(named(6).contains("`m04` and 1 more<br>"));
+        let five = named(5);
+        assert!(
+            five.contains("`m04`<br>") && !five.contains("more"),
+            "{five}"
+        );
+    }
+
+    #[test]
+    fn only_pairs_keep_the_pair_header() {
+        let pairs = [pair_group(1), pair_group(2)];
+        assert!(group_table(&pairs, None, None).contains("| Pair | Similarity |\n"));
+        let triage = [asserted(Kind::SameLogic, 0.9, 3.0); 2];
+        let triaged = group_table(&pairs, Some(&triage), None);
+        assert!(
+            triaged.contains("| | Pair | Similarity | Verdict |"),
+            "{triaged}"
+        );
+        let mixed = group_table(&[group_of(3), pair_group(1)], Some(&triage), None);
+        assert!(
+            mixed.contains("| | Functions | Similarity | Verdict |"),
+            "{mixed}"
+        );
+    }
+
+    #[test]
+    fn the_header_describes_the_rows_shown() {
+        let groups = [pair_group(1), pair_group(2), group_of(3)];
+        let capped = group_table(&groups, None, Some(2));
+        assert!(capped.contains("| Pair | Similarity |\n"), "{capped}");
+        let all = group_table(&groups, None, None);
+        assert!(all.contains("| Functions | Similarity |\n"), "{all}");
+    }
+
+    #[test]
+    fn verdicts_and_the_summary_count_groups() {
+        let groups = [group_of(30), pair_group(1)];
+        let triage = [
+            asserted(Kind::SameLogic, 0.9, 3.0),
+            Assessment::Uncertain { confidence: 0.2 },
+        ];
+        let out = group_table(&groups, Some(&triage), None);
+        assert!(
+            out.contains("\n🔴 1 should be one · 1 uncertain\n"),
+            "{out}"
+        );
+        let rows = body_rows(&out);
+        assert!(rows[0].starts_with("| 🔴 | `m00`"), "{}", rows[0]);
+        assert!(rows[1].contains("| uncertain |"), "{}", rows[1]);
+        let short = group_table(&groups, Some(&triage[..1]), None);
+        assert!(
+            !short.contains("Verdict"),
+            "one verdict, two groups: {short}"
+        );
+    }
+
+    #[test]
+    fn the_cap_and_its_footer_count_groups() {
+        let groups = [group_of(3), group_of(4), pair_group(1)];
+        let out = group_table(&groups, None, Some(2));
+        assert!(out.starts_with("## 3 duplicate candidates\n"), "{out}");
+        assert_eq!(body_rows(&out).len(), 2);
+        assert!(
+            out.ends_with("\n_…and 1 more, see CI artifact for the full report._\n"),
+            "{out}"
+        );
+    }
+
+    proptest::proptest! {
+        /// One row per group, or the cap's worth.
+        #[test]
+        fn rows_are_the_groups_or_the_cap(
+            sizes in proptest::collection::vec(2usize..9, 1..12),
+            cap in proptest::option::of(1usize..15),
+        ) {
+            let groups: Vec<DuplicateGroup> = sizes.iter().map(|&n| group_of(n)).collect();
+            let out = group_table(&groups, None, cap);
+            let expected = cap.map_or(groups.len(), |cap| cap.min(groups.len()));
+            proptest::prop_assert_eq!(body_rows(&out).len(), expected);
+            let heading = format!("## {} duplicate", groups.len());
+            proptest::prop_assert!(out.starts_with(&heading), "{}", out);
         }
     }
 }
