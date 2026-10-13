@@ -217,7 +217,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   new_, _A moved function keeps its group_, _Same-named members keep their
   group when lines shift_, _The cap counts the groups shown_. Tests: unit
   + property (shown rows equal new + grown, or the cap) + acceptance.
-- [ ] **T3 — Grown rows and resolved groups.** A grown row says `grew
+- [x] **T3 — Grown rows and resolved groups.** A grown row says `grew
   from N`, the count line adds `K resolved`, and pr-comment prints its
   section when a group was resolved even with nothing new. Needs: T2. Scenarios: _A copy added to an
   existing group shows the group as grown_, _A pull request that removes a
