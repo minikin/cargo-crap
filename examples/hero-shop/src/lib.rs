@@ -92,6 +92,20 @@ pub fn write_shipping_label(
     Ok(())
 }
 
+/// Gift wrap in cents: free on large orders, dearer for bulky parcels.
+pub fn gift_wrap_fee(order_cents: u64, parcel: &Parcel) -> u64 {
+    if order_cents > 20_000 {
+        return 0;
+    }
+    if parcel.volume_cm3 > 30_000 {
+        450
+    } else if parcel.volume_cm3 > 5_000 {
+        300
+    } else {
+        150
+    }
+}
+
 /// Percentage off for a coupon code, if the code is valid.
 pub fn coupon_percent(code: &str) -> Option<u8> {
     let code = code.trim();
