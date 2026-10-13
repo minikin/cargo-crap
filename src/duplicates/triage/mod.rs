@@ -12,6 +12,7 @@
 //! `triage` Cargo feature. Providers, decoding, requests, the cache and
 //! rendering use no network and are always present.
 
+pub mod budget;
 pub mod cache;
 #[cfg(feature = "triage")]
 pub mod client;
