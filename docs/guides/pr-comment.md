@@ -7,6 +7,11 @@ A hidden marker (`<!-- cargo-crap-report -->`) lets the script update an
 existing comment instead of posting duplicates. The job needs
 `pull-requests: write`.
 
+[#119](https://github.com/minikin/cargo-crap/pull/119) shows the comment on
+a real pull request: the README hero's demo crate, with the CRAP delta and
+its look-alike functions triaged by OpenAI. Its workflow is
+[`.github/workflows/demo.yml`](../../.github/workflows/demo.yml).
+
 `--repo-url` and `--commit-ref` turn the Function and Location cells of
 `markdown` and `pr-comment` output into links to the source. Inside GitHub
 Actions both default from the environment (`GITHUB_SERVER_URL` plus

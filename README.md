@@ -142,7 +142,8 @@ trip it, so add `--fail-above` once the old offenders are gone.
 
 [Integrating with CI](docs/guides/ci.md) also covers SARIF upload for GitHub
 Code Scanning, and the [PR comment bot](docs/guides/pr-comment.md) posts the
-delta as a pull-request comment.
+delta as a pull-request comment. [#119](https://github.com/minikin/cargo-crap/pull/119)
+shows it live on the hero's demo crate, duplicates triaged by OpenAI included.
 
 ## Duplicates, triaged
 
