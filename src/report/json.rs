@@ -6,6 +6,8 @@
 
 use crate::delta::{DeltaEntry, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
+use crate::duplicates::extract::Location;
+use crate::duplicates::group::DuplicateGroup;
 use crate::duplicates::triage::verdict::Assessment;
 use crate::merge::{CrapEntry, ScopeDiagnostics};
 use crate::report::RenderOptions;
@@ -60,6 +62,11 @@ pub struct Envelope {
     /// does not claim there were none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicates: Option<Vec<DuplicateJson>>,
+    /// The duplicate pairs grouped into functions that all resemble each
+    /// other. Present only when duplicate detection was requested, like
+    /// `duplicates`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_groups: Option<Vec<DuplicateGroupJson>>,
     /// The `?` weight the entries were scored under. Written only when it is
     /// not the default, so a default envelope stays byte-identical to one
     /// from before the knob existed; absent reads back as the default.
@@ -101,7 +108,44 @@ pub struct DuplicateJson {
     pub triage: Option<TriageJson>,
 }
 
-/// A pair's triage verdict, flattened for the wire. Below the confidence
+/// Functions that all resemble each other, flattened for the wire.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DuplicateGroupJson {
+    /// The members, by location.
+    pub members: Vec<MemberJson>,
+    /// The weakest pair's similarity: every two members score at least this.
+    pub score: f64,
+    /// The triage verdict on the group, when triage ran. Absent rather than
+    /// empty otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage: Option<TriageJson>,
+}
+
+/// One member of a duplicate group.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MemberJson {
+    /// Its source file.
+    pub file: String,
+    /// Its function or method name.
+    pub function: String,
+    /// Its first line, 1-indexed and inclusive.
+    pub start_line: usize,
+    /// Its last line, 1-indexed and inclusive.
+    pub end_line: usize,
+}
+
+impl MemberJson {
+    fn from_location(at: &Location) -> Self {
+        Self {
+            file: at.file.display().to_string(),
+            function: at.name.clone(),
+            start_line: at.start_line,
+            end_line: at.end_line,
+        }
+    }
+}
+
+/// A pair's or a group's triage verdict, flattened for the wire. Below the confidence
 /// floor `kind` is `uncertain` and only the confidence is carried: no kind,
 /// and none of the other answers, is asserted.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -165,30 +209,61 @@ impl DuplicateJson {
 }
 
 /// Flatten pairs for either envelope, preserving their order, each with its
-/// triage verdict when `triage` holds exactly one per pair. All or nothing,
-/// as in the human section.
+/// triage verdict when `triage` holds exactly one per pair.
 fn wire(
     pairs: Option<&[DuplicatePair]>,
     triage: Option<&[Assessment]>,
 ) -> Option<Vec<DuplicateJson>> {
-    pairs.map(|pairs| wire_pairs(pairs, triage.filter(|t| t.len() == pairs.len())))
+    pairs.map(|pairs| {
+        let verdict = verdicts(triage, pairs.len());
+        pairs
+            .iter()
+            .enumerate()
+            .map(|(n, pair)| DuplicateJson {
+                triage: verdict(n),
+                ..DuplicateJson::from_pair(pair)
+            })
+            .collect()
+    })
 }
 
-/// Each pair beside its assessment, when there is one per pair.
-fn wire_pairs(
-    pairs: &[DuplicatePair],
+/// Flatten groups for either envelope, preserving their order, each with its
+/// triage verdict when `triage` holds exactly one per group.
+fn wire_groups(
+    groups: Option<&[DuplicateGroup]>,
     triage: Option<&[Assessment]>,
-) -> Vec<DuplicateJson> {
-    pairs
-        .iter()
-        .enumerate()
-        .map(|(n, pair)| DuplicateJson {
-            triage: triage
-                .and_then(|t| t.get(n))
-                .map(TriageJson::from_assessment),
-            ..DuplicateJson::from_pair(pair)
-        })
-        .collect()
+) -> Option<Vec<DuplicateGroupJson>> {
+    groups.map(|groups| {
+        let verdict = verdicts(triage, groups.len());
+        groups
+            .iter()
+            .enumerate()
+            .map(|(n, group)| DuplicateGroupJson {
+                members: group
+                    .members
+                    .iter()
+                    .map(MemberJson::from_location)
+                    .collect(),
+                score: group.score,
+                triage: verdict(n),
+            })
+            .collect()
+    })
+}
+
+/// The flattened verdict of item `n` of `count`. All or nothing, as in the
+/// human section: unless `triage` holds exactly one assessment per item, no
+/// item gets one, so a missing verdict is never read as another item's.
+fn verdicts(
+    triage: Option<&[Assessment]>,
+    count: usize,
+) -> impl Fn(usize) -> Option<TriageJson> + '_ {
+    let triage = triage.filter(|t| t.len() == count);
+    move |n| {
+        triage
+            .and_then(|t| t.get(n))
+            .map(TriageJson::from_assessment)
+    }
 }
 
 pub(crate) fn render_json(
@@ -202,6 +277,7 @@ pub(crate) fn render_json(
         entries: entries.to_vec(),
         diagnostics: opts.diagnostics.cloned(),
         duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
+        duplicate_groups: wire_groups(opts.groups, opts.triage),
         try_weight: recorded_try_weight(opts.try_weight),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
@@ -228,6 +304,8 @@ pub(crate) fn render_delta_json(
         #[serde(skip_serializing_if = "Option::is_none")]
         duplicates: Option<Vec<DuplicateJson>>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        duplicate_groups: Option<Vec<DuplicateGroupJson>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         try_weight: Option<f64>,
     }
     serde_json::to_writer_pretty(
@@ -239,6 +317,7 @@ pub(crate) fn render_delta_json(
             removed: &report.removed,
             diagnostics: opts.diagnostics,
             duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
+            duplicate_groups: wire_groups(opts.groups, opts.triage),
             try_weight: recorded_try_weight(opts.try_weight),
         },
     )?;
@@ -518,5 +597,156 @@ mod tests {
         .unwrap();
         let doc: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert_eq!(doc["duplicates"][0]["triage"]["kind"], "uncertain");
+    }
+
+    fn at(
+        line: usize,
+        name: &str,
+    ) -> Location {
+        Location {
+            file: PathBuf::from("src/a.rs"),
+            start_line: line,
+            end_line: line + 4,
+            name: name.to_owned(),
+        }
+    }
+
+    fn pair(
+        first: &Location,
+        second: &Location,
+        score: f64,
+    ) -> DuplicatePair {
+        DuplicatePair {
+            first: first.clone(),
+            second: second.clone(),
+            score,
+        }
+    }
+
+    /// A group of three scoring 0.9 at its weakest, then a group of two:
+    /// the four pairs they hold, and the two groups as grouping hands them
+    /// over, listed by hand so the renderer is tested on its own.
+    fn two_groups() -> (Vec<DuplicatePair>, Vec<DuplicateGroup>) {
+        let (alpha, beta, gamma) = (at(1, "alpha"), at(10, "beta"), at(20, "gamma"));
+        let (delta, epsilon) = (at(40, "delta"), at(50, "epsilon"));
+        let pairs = vec![
+            pair(&alpha, &beta, 1.0),
+            pair(&alpha, &gamma, 0.9),
+            pair(&beta, &gamma, 0.95),
+            pair(&delta, &epsilon, 0.85),
+        ];
+        let groups = vec![
+            DuplicateGroup {
+                members: vec![alpha.clone(), beta.clone(), gamma],
+                score: 0.9,
+                representative: pair(&alpha, &beta, 1.0),
+            },
+            DuplicateGroup {
+                members: vec![delta.clone(), epsilon.clone()],
+                score: 0.85,
+                representative: pair(&delta, &epsilon, 0.85),
+            },
+        ];
+        (pairs, groups)
+    }
+
+    fn grouped_doc(
+        delta: bool,
+        triage: Option<&[Assessment]>,
+    ) -> serde_json::Value {
+        let (pairs, groups) = two_groups();
+        let opts = RenderOptions {
+            format: Format::Json,
+            duplicates: Some(&pairs),
+            groups: Some(&groups),
+            triage,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        if delta {
+            super::super::render_delta(
+                &super::super::test_support::fractional_cc_delta(),
+                &opts,
+                &mut buf,
+            )
+            .unwrap();
+        } else {
+            render(&sample(), &opts, &mut buf).unwrap();
+        }
+        serde_json::from_slice(&buf).unwrap()
+    }
+
+    const FIRST: Assessment = Assessment::Uncertain { confidence: 0.4 };
+    const SECOND: Assessment = Assessment::Uncertain { confidence: 0.7 };
+
+    #[test]
+    fn a_group_lists_its_members_its_weakest_score_and_its_verdict() {
+        let doc = grouped_doc(false, Some(&[FIRST, SECOND]));
+        assert_eq!(
+            doc["duplicate_groups"][0],
+            serde_json::json!({
+                "members": [
+                    {"file": "src/a.rs", "function": "alpha", "start_line": 1, "end_line": 5},
+                    {"file": "src/a.rs", "function": "beta", "start_line": 10, "end_line": 14},
+                    {"file": "src/a.rs", "function": "gamma", "start_line": 20, "end_line": 24},
+                ],
+                "score": 0.9,
+                "triage": {"kind": "uncertain", "confidence": 0.4},
+            })
+        );
+        assert_eq!(doc["duplicate_groups"][1]["score"], 0.85);
+        assert_eq!(doc["duplicate_groups"][1]["triage"]["confidence"], 0.7);
+    }
+
+    #[test]
+    fn each_pair_carries_the_verdict_of_its_own_group() {
+        let doc = grouped_doc(false, Some(&[FIRST, SECOND]));
+        let confidences: Vec<&serde_json::Value> = doc["duplicates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| &p["triage"]["confidence"])
+            .collect();
+        assert_eq!(confidences, [0.4, 0.4, 0.4, 0.7]);
+    }
+
+    #[test]
+    fn an_untriaged_group_has_no_triage_key() {
+        let doc = grouped_doc(false, None);
+        assert!(doc["duplicate_groups"][0].get("triage").is_none(), "{doc}");
+        let short = grouped_doc(false, Some(&[FIRST]));
+        for group in short["duplicate_groups"].as_array().unwrap() {
+            assert!(
+                group.get("triage").is_none(),
+                "one verdict, two groups: {short}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_delta_envelope_carries_the_groups_too() {
+        let doc = grouped_doc(true, Some(&[FIRST, SECOND]));
+        assert_eq!(doc["duplicate_groups"][0]["score"], 0.9, "{doc}");
+        assert_eq!(doc["duplicate_groups"][0]["triage"]["kind"], "uncertain");
+    }
+
+    #[test]
+    fn without_groups_there_is_no_groups_key() {
+        let doc: serde_json::Value = {
+            let mut buf = Vec::new();
+            let pairs = one_pair();
+            render(
+                &sample(),
+                &RenderOptions {
+                    format: Format::Json,
+                    duplicates: Some(&pairs),
+                    ..Default::default()
+                },
+                &mut buf,
+            )
+            .unwrap();
+            serde_json::from_slice(&buf).unwrap()
+        };
+        assert!(doc.get("duplicate_groups").is_none(), "{doc}");
     }
 }

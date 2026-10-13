@@ -1,0 +1,177 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/duplicates-v1.json",
+  "title": "cargo-crap duplicate definitions (v1)",
+  "description": "Definitions that `report-v1.json` and `delta-v2.json` share: duplicate pairs, duplicate groups and triage verdicts.",
+  "definitions": {
+    "DuplicatePair": {
+      "type": "object",
+      "description": "Two functions whose normalized syntax trees are similar enough to be worth review, scored by Jaccard similarity over their subtree fingerprints.",
+      "required": [
+        "first_file",
+        "first_function",
+        "first_start_line",
+        "first_end_line",
+        "second_file",
+        "second_function",
+        "second_start_line",
+        "second_end_line",
+        "score"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "first_file": {
+          "type": "string",
+          "description": "Source file of the side that sorts first."
+        },
+        "first_function": {
+          "type": "string",
+          "description": "Its function name. Methods include the impl-type prefix, e.g. `Foo::bar`."
+        },
+        "first_start_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed first line of that function (inclusive)."
+        },
+        "first_end_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed last line of that function (inclusive)."
+        },
+        "second_file": {
+          "type": "string",
+          "description": "Source file of the side that sorts second."
+        },
+        "second_function": {
+          "type": "string",
+          "description": "Its function name. Methods include the impl-type prefix, e.g. `Foo::bar`."
+        },
+        "second_start_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed first line of that function (inclusive)."
+        },
+        "second_end_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed last line of that function (inclusive)."
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Jaccard similarity of the two fingerprint sets, in [0, 1]."
+        },
+        "triage": {
+          "$ref": "#/definitions/Triage"
+        }
+      }
+    },
+    "DuplicateGroup": {
+      "type": "object",
+      "description": "Functions that each score at or above the threshold with every other member.",
+      "required": ["members", "score"],
+      "additionalProperties": false,
+      "properties": {
+        "members": {
+          "type": "array",
+          "minItems": 2,
+          "description": "The members, by location.",
+          "items": {
+            "$ref": "#/definitions/DuplicateMember"
+          }
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The weakest pair's Jaccard similarity: every two members score at least this."
+        },
+        "triage": {
+          "$ref": "#/definitions/Triage"
+        }
+      }
+    },
+    "DuplicateMember": {
+      "type": "object",
+      "description": "One function in a duplicate group.",
+      "required": ["file", "function", "start_line", "end_line"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Its source file."
+        },
+        "function": {
+          "type": "string",
+          "description": "Its function name. Methods include the impl-type prefix, e.g. `Foo::bar`."
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed first line of that function (inclusive)."
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed last line of that function (inclusive)."
+        }
+      }
+    },
+    "Triage": {
+      "type": "object",
+      "description": "The triage model's advisory verdict on this pair or group, whichever provider gave it, present only when triage ran. A pair carries the verdict of the group it is reported in. Below the confidence floor `kind` is `uncertain` and only `confidence` accompanies it: no kind, and none of the other answers, is asserted.",
+      "required": ["kind", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "same-logic",
+            "shared-shape-only",
+            "structural-obligation",
+            "parameterisable",
+            "uncertain"
+          ],
+          "description": "What kind of duplication the pair is, or `uncertain` below the confidence floor."
+        },
+        "worth_extracting": {
+          "type": "string",
+          "enum": ["leave-it", "optional", "worthwhile", "should-be-one"],
+          "description": "Whether the pair should become one function: the level nearest `worth_extracting_score`."
+        },
+        "worth_extracting_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "The model's probability-weighted position across the four worth-extracting levels."
+        },
+        "divergence_risk": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Probability that a fix to one side would be needed in the other and missed there."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The kind's confidence; below the configured floor the kind is `uncertain`."
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "uncertain"
+          }
+        }
+      },
+      "then": {
+        "maxProperties": 2
+      },
+      "else": {
+        "required": ["kind", "worth_extracting", "worth_extracting_score", "divergence_risk", "confidence"]
+      }
+    }
+  }
+}

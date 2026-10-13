@@ -603,13 +603,14 @@ fn json_run(
     serde_json::from_slice(&out.get_output().stdout).expect("one JSON document")
 }
 
+#[path = "support/schemas.rs"]
+mod schemas;
+
 fn assert_matches_schema(
     schema: &str,
     doc: &serde_json::Value,
 ) {
-    let raw = fs::read_to_string(schema).expect("read schema");
-    let schema_doc: serde_json::Value = serde_json::from_str(&raw).expect("schema is JSON");
-    let validator = jsonschema::validator_for(&schema_doc).expect("schema compiles");
+    let validator = schemas::compile(schema);
     let errors: Vec<String> = validator.iter_errors(doc).map(|e| e.to_string()).collect();
     assert!(errors.is_empty(), "{schema}: {errors:?}");
 }
@@ -5449,4 +5450,49 @@ fn a_group_verdict_reaches_every_pair_in_json_and_pr_comment() {
     let comment = String::from_utf8(out.stdout).expect("utf-8");
     assert!(comment.contains("| Verdict |"), "{comment}");
     assert_eq!(stub.request_count(), 1, "one request for the group");
+}
+
+// ---- Spec 36 · T5 ----
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_json_keeps_its_pairs_and_adds_the_groups() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given triage is enabled and the duplicates form one group of three
+    let dir = copies_tree(3);
+    let stub = ApiStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When I run `cargo crap --duplicates --format json`
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &["--format", "json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON document");
+    // Then the `duplicates` array lists the three pairs, as before
+    let pairs = doc["duplicates"].as_array().expect("a duplicates array");
+    assert_eq!(pairs.len(), 3, "{doc}");
+    // And each of those pairs carries its group's triage verdict
+    for pair in pairs {
+        assert_eq!(pair["triage"]["kind"], "same-logic", "{pair}");
+    }
+    // And a `duplicate_groups` array lists one group with its three members,
+    // its score and its triage verdict
+    let groups = doc["duplicate_groups"].as_array().expect("a groups array");
+    assert_eq!(groups.len(), 1, "{doc}");
+    let group = &groups[0];
+    let names: Vec<&str> = group["members"]
+        .as_array()
+        .expect("members")
+        .iter()
+        .map(|m| m["function"].as_str().expect("a name"))
+        .collect();
+    assert_eq!(names, ["copy_00", "copy_01", "copy_02"], "{group}");
+    assert_eq!(group["members"][1]["start_line"], 10, "{group}");
+    assert_eq!(group["members"][1]["end_line"], 18, "{group}");
+    assert!(
+        group["members"][0]["file"]
+            .as_str()
+            .is_some_and(|f| f.ends_with("copies.rs")),
+        "{group}"
+    );
+    assert_eq!(group["score"], 1.0, "{group}");
+    assert_eq!(group["triage"], pairs[0]["triage"], "{group}");
+    // And the document validates against the report schema
+    assert_matches_schema("schemas/report-v1.json", &doc);
 }

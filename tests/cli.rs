@@ -174,10 +174,11 @@ const REPORT_SCHEMA_URL: &str =
 const DELTA_SCHEMA_URL: &str =
     "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json";
 
+#[path = "support/schemas.rs"]
+mod schemas;
+
 fn compile_schema(path: &str) -> jsonschema::Validator {
-    let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    let value: serde_json::Value = serde_json::from_str(&raw).expect("schema must be valid JSON");
-    jsonschema::validator_for(&value).expect("schema must compile")
+    schemas::compile(path)
 }
 
 fn assert_valid(
@@ -353,8 +354,48 @@ fn duplicates_json_output_validates_against_published_schema() {
             .is_empty(),
         "fixture must produce at least one pair:\n{stdout}"
     );
+    assert_eq!(
+        value["duplicate_groups"].as_array().map(Vec::len),
+        Some(1),
+        "the pair is a group of two:\n{stdout}"
+    );
     let validator = compile_schema("schemas/report-v1.json");
     assert_valid(&validator, &value);
+}
+
+#[test]
+fn both_schemas_enforce_the_shared_duplicate_definitions() {
+    // A member without its function name breaks `DuplicateMember`, which
+    // lives in duplicates-v1.json: both envelopes must reject it, so the
+    // cross-file `$ref` is resolved, not skipped.
+    let member = serde_json::json!({"file": "src/a.rs", "start_line": 1, "end_line": 5});
+    let groups = serde_json::json!([{"members": [member.clone(), member], "score": 0.9}]);
+    let report = serde_json::json!({
+        "version": "0.7.0",
+        "entries": [],
+        "duplicate_groups": groups,
+    });
+    let delta = serde_json::json!({
+        "version": "0.7.0",
+        "entries": [],
+        "removed": [],
+        "duplicate_groups": groups,
+    });
+    for (schema, doc) in [
+        ("schemas/report-v1.json", &report),
+        ("schemas/delta-v2.json", &delta),
+    ] {
+        let validator = compile_schema(schema);
+        assert!(!validator.is_valid(doc), "{schema} accepted {doc}");
+        let mut fixed = doc.clone();
+        for m in fixed["duplicate_groups"][0]["members"]
+            .as_array_mut()
+            .expect("members")
+        {
+            m["function"] = "f".into();
+        }
+        assert_valid(&validator, &fixed);
+    }
 }
 
 #[test]
@@ -390,6 +431,11 @@ fn duplicates_delta_json_output_validates_against_delta_schema() {
             .expect("duplicates array")
             .is_empty(),
         "fixture must produce at least one pair:\n{stdout}"
+    );
+    assert_eq!(
+        value["duplicate_groups"].as_array().map(Vec::len),
+        Some(1),
+        "the pair is a group of two:\n{stdout}"
     );
     let validator = compile_schema("schemas/delta-v2.json");
     assert_valid(&validator, &value);
