@@ -1,6 +1,6 @@
 # Spec 37: New duplicates in a delta report
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** `src/duplicates/novelty.rs` (new), `src/delta.rs`, `src/report/duplicates.rs`, `src/report/json.rs`, `src/main.rs`, `schemas/`, `.github/workflows/demo.yml`
 
@@ -237,7 +237,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   shown and triaged as without a baseline, and one stderr warning naming
   `--duplicates`. Needs: T5. Scenarios: _A baseline with no duplicate
   record shows every group_. Tests: unit + acceptance.
-- [ ] **T7 — Demo and docs.** `demo.yml` records its baseline with
+- [x] **T7 — Demo and docs.** `demo.yml` records its baseline with
   `--duplicates`. The duplicates, pr-comment and JSON references and the
   CHANGELOG describe new-only sections and the library break. The
   showcase branch (#119) gains a renamed look-alike whose verdict is
