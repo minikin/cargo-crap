@@ -13,6 +13,7 @@ use super::{RenderOptions, SourceLinks, TriagedBy};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
 use crate::duplicates::group::DuplicateGroup;
+use crate::duplicates::novelty::Novelty;
 use crate::duplicates::triage::verdict::{Assessment, WorthExtracting};
 
 pub use crate::duplicates::compare::sort_pairs;
@@ -109,6 +110,12 @@ fn write_group(
 /// `opts.triaged_by` is named under the table. Any other count leaves the
 /// table untriaged, as the human section does.
 ///
+/// With `opts.novelty` covering every group, on a delta run, the table
+/// holds only the new and grown groups under `## N new duplicate
+/// candidate(s)`, the heading, the cap and the summary line count those,
+/// and a line under the table counts the unchanged groups. With none new
+/// it says so instead of printing a table.
+///
 /// # Errors
 ///
 /// Returns an error when the writer does.
@@ -118,6 +125,10 @@ pub fn render_table(
     out: &mut dyn Write,
 ) -> Result<()> {
     let groups = opts.duplicate_groups().unwrap_or_default();
+    let triage = covering(opts.triage, groups.len());
+    if let Some(novelty) = covering_novelty(opts, groups.len()) {
+        return render_new_table(&groups, novelty, triage, cap, opts, out);
+    }
     if groups.is_empty() {
         writeln!(out, "No candidate duplicates found.")?;
         return Ok(());
@@ -128,13 +139,74 @@ pub fn render_table(
         groups.len(),
         noun(groups.len())
     )?;
+    write_capped(&groups, triage, cap, opts, out)?;
+    write_provider_line(triage.and(opts.triaged_by), out)
+}
+
+/// The statuses in `opts.novelty` when there is one per group, else none.
+pub(crate) fn covering_novelty<'a>(
+    opts: &RenderOptions<'a>,
+    groups: usize,
+) -> Option<&'a [Novelty]> {
+    covering(opts.novelty.map(|c| c.novelty.as_slice()), groups)
+}
+
+/// The delta run's table: the new and grown `groups`, each with its own
+/// verdict when `triage` covers every group, then the unchanged count.
+fn render_new_table(
+    groups: &[DuplicateGroup],
+    novelty: &[Novelty],
+    triage: Option<&[Assessment]>,
+    cap: Option<usize>,
+    opts: &RenderOptions,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let kept: Vec<usize> = (0..groups.len())
+        .filter(|&n| novelty[n] != Novelty::Unchanged)
+        .collect();
+    let shown: Vec<DuplicateGroup> = kept.iter().map(|&n| groups[n].clone()).collect();
+    let verdicts: Option<Vec<Assessment>> = triage.map(|t| kept.iter().map(|&n| t[n]).collect());
+    if shown.is_empty() {
+        writeln!(out, "No new duplicate candidates.")?;
+    } else {
+        writeln!(
+            out,
+            "## {} new duplicate {}\n",
+            shown.len(),
+            noun(shown.len())
+        )?;
+        write_capped(&shown, verdicts.as_deref(), cap, opts, out)?;
+    }
+    write_unchanged_line(groups.len() - shown.len(), out)?;
+    write_provider_line(verdicts.filter(|v| !v.is_empty()).and(opts.triaged_by), out)
+}
+
+/// The line counting the groups a delta run left unchanged, when any.
+fn write_unchanged_line(
+    unchanged: usize,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if unchanged > 0 {
+        writeln!(out, "\n{unchanged} existing {} unchanged.", noun(unchanged))?;
+    }
+    Ok(())
+}
+
+/// The table over `groups`, at most `cap` rows, and the truncation footer
+/// counting the rest.
+fn write_capped(
+    groups: &[DuplicateGroup],
+    triage: Option<&[Assessment]>,
+    cap: Option<usize>,
+    opts: &RenderOptions,
+    out: &mut dyn Write,
+) -> Result<()> {
     let shown = cap.unwrap_or(groups.len()).min(groups.len());
-    let triage = covering(opts.triage, groups.len());
-    write_table_body(&groups, triage, shown, opts, out)?;
+    write_table_body(groups, triage, shown, opts, out)?;
     if groups.len() > shown {
         super::types::write_truncation_footer(out, groups.len() - shown)?;
     }
-    write_provider_line(triage.and(opts.triaged_by), out)
+    Ok(())
 }
 
 /// The line naming who triaged the table, when it is triaged and someone is
@@ -169,14 +241,14 @@ fn write_table_body(
     write_rows(groups, shown, triage, opts, out)
 }
 
-/// `triage` when it has exactly one assessment per item (pair or group),
-/// else nothing: all or nothing, so no item's missing verdict can be read
-/// as a verdict. Every section that prints verdicts goes through it.
-fn covering(
-    triage: Option<&[Assessment]>,
+/// `per_item` when it has exactly one entry per item (pair or group), else
+/// nothing: all or nothing, so no item is read another item's verdict or
+/// status. Every section that prints verdicts goes through it.
+fn covering<T>(
+    per_item: Option<&[T]>,
     items: usize,
-) -> Option<&[Assessment]> {
-    triage.filter(|t| t.len() == items)
+) -> Option<&[T]> {
+    per_item.filter(|t| t.len() == items)
 }
 
 /// The table's two header rows without verdicts, over pairs only.
@@ -1637,6 +1709,207 @@ mod tests {
             proptest::prop_assert_eq!(body_rows(&out).len(), expected);
             let heading = format!("## {} duplicate", groups.len());
             proptest::prop_assert!(out.starts_with(&heading), "{}", out);
+        }
+    }
+
+    mod new_only {
+        use super::*;
+        use crate::duplicates::novelty::{Comparison, Novelty};
+        use Novelty::{New, Unchanged};
+
+        /// The GFM section of a delta run: `groups` with `novelty`, one
+        /// status per group.
+        fn delta_table(
+            groups: &[DuplicateGroup],
+            novelty: &[Novelty],
+            triage: Option<&[Assessment]>,
+            cap: Option<usize>,
+        ) -> String {
+            let comparison = Comparison {
+                novelty: novelty.to_vec(),
+                resolved: 0,
+            };
+            let mut buf = Vec::new();
+            let opts = crate::report::RenderOptions {
+                groups: Some(groups),
+                triage,
+                novelty: Some(&comparison),
+                ..at_work()
+            };
+            render_table(&opts, cap, &mut buf).expect("a Vec writer cannot fail");
+            String::from_utf8(buf).expect("the section is utf-8")
+        }
+
+        #[test]
+        fn only_the_new_groups_are_rows_and_the_rest_are_counted() {
+            let groups = [pair_group(1), pair_group(2), group_of(3)];
+            let out = delta_table(&groups, &[Unchanged, New, Unchanged], None, None);
+            assert!(out.starts_with("## 1 new duplicate candidate\n"), "{out}");
+            let alone = group_table(&groups[1..2], None, None);
+            assert_eq!(body_rows(&out), body_rows(&alone));
+            assert!(
+                out.contains("\n2 existing candidates unchanged.\n"),
+                "{out}"
+            );
+        }
+
+        #[test]
+        fn one_existing_candidate_is_singular() {
+            let groups = [pair_group(1), pair_group(2)];
+            let out = delta_table(&groups, &[New, Unchanged], None, None);
+            assert!(out.contains("\n1 existing candidate unchanged.\n"), "{out}");
+        }
+
+        #[test]
+        fn no_existing_candidate_prints_no_count_line() {
+            let groups = [pair_group(1), pair_group(2)];
+            let out = delta_table(&groups, &[New, New], None, None);
+            assert!(out.starts_with("## 2 new duplicate candidates\n"), "{out}");
+            assert!(!out.contains("existing"), "{out}");
+        }
+
+        #[test]
+        fn nothing_new_says_so_and_counts_the_rest() {
+            let groups = [pair_group(1), pair_group(2)];
+            let out = delta_table(&groups, &[Unchanged, Unchanged], None, None);
+            assert_eq!(
+                out,
+                "No new duplicate candidates.\n\n2 existing candidates unchanged.\n"
+            );
+        }
+
+        #[test]
+        fn each_row_keeps_its_own_groups_verdict() {
+            let groups = [pair_group(1), pair_group(2), pair_group(3)];
+            let triage = [
+                asserted(Kind::SameLogic, 0.91, 1.0),
+                asserted(Kind::SameLogic, 0.62, 1.0),
+                asserted(Kind::SameLogic, 0.83, 1.0),
+            ];
+            let out = delta_table(&groups, &[Unchanged, New, Unchanged], Some(&triage), None);
+            let rows = body_rows(&out);
+            assert_eq!(rows.len(), 1, "{out}");
+            assert!(rows[0].contains("0.62"), "{out}");
+            assert!(
+                out.contains(&format!("{}\n", summary_line(&triage[1..2]))),
+                "the summary counts the rows shown: {out}"
+            );
+        }
+
+        /// [`delta_table`] with a full triage named as answered by a provider.
+        fn triaged_delta_table(
+            groups: &[DuplicateGroup],
+            novelty: &[Novelty],
+            triage: &[Assessment],
+            cap: Option<usize>,
+        ) -> String {
+            let comparison = Comparison {
+                novelty: novelty.to_vec(),
+                resolved: 0,
+            };
+            let mut buf = Vec::new();
+            let opts = crate::report::RenderOptions {
+                groups: Some(groups),
+                triage: Some(triage),
+                triaged_by: Some(TriagedBy {
+                    provider: "OpenAI API",
+                    model: "gpt-x",
+                }),
+                novelty: Some(&comparison),
+                ..at_work()
+            };
+            render_table(&opts, cap, &mut buf).expect("a Vec writer cannot fail");
+            String::from_utf8(buf).expect("the section is utf-8")
+        }
+
+        #[test]
+        fn the_provider_is_named_only_under_a_table() {
+            let groups = [pair_group(1), pair_group(2)];
+            let triage = [
+                asserted(Kind::SameLogic, 0.9, 3.0),
+                asserted(Kind::SameLogic, 0.9, 3.0),
+            ];
+            let none_new = triaged_delta_table(&groups, &[Unchanged, Unchanged], &triage, None);
+            assert!(!none_new.contains("Triaged by"), "{none_new}");
+            let one_new = triaged_delta_table(&groups, &[Unchanged, New], &triage, None);
+            assert!(one_new.contains("Triaged by OpenAI API"), "{one_new}");
+        }
+
+        #[test]
+        fn a_grown_group_is_a_row_with_its_own_verdict() {
+            let groups = [pair_group(1), group_of(3)];
+            let triage = [
+                asserted(Kind::SameLogic, 0.91, 3.0),
+                asserted(Kind::SameLogic, 0.64, 3.0),
+            ];
+            let out = triaged_delta_table(
+                &groups,
+                &[Unchanged, Novelty::Grown { from: 2 }],
+                &triage,
+                None,
+            );
+            assert!(out.starts_with("## 1 new duplicate candidate\n"), "{out}");
+            let rows = body_rows(&out);
+            assert_eq!(rows.len(), 1, "{out}");
+            assert!(rows[0].contains("m00") && rows[0].contains("0.64"), "{out}");
+            assert!(out.contains("\n1 existing candidate unchanged.\n"), "{out}");
+        }
+
+        #[test]
+        fn a_capped_delta_table_keeps_each_rows_verdict() {
+            let groups: Vec<DuplicateGroup> = (1..=4).map(pair_group).collect();
+            let triage = [
+                asserted(Kind::SameLogic, 0.61, 3.0),
+                asserted(Kind::SameLogic, 0.72, 3.0),
+                asserted(Kind::SameLogic, 0.83, 3.0),
+                asserted(Kind::SameLogic, 0.94, 3.0),
+            ];
+            let out = triaged_delta_table(&groups, &[New, Unchanged, New, New], &triage, Some(2));
+            let rows = body_rows(&out);
+            assert_eq!(rows.len(), 2, "{out}");
+            assert!(
+                rows[0].contains("0.61") && rows[1].contains("0.83"),
+                "{out}"
+            );
+            let footer = out.find("and 1 more").expect("a footer");
+            let unchanged = out
+                .find("1 existing candidate unchanged.")
+                .expect("a count");
+            assert!(footer < unchanged, "the count follows the footer: {out}");
+        }
+
+        #[test]
+        fn a_status_list_that_does_not_cover_every_group_is_ignored() {
+            let groups = [pair_group(1), pair_group(2)];
+            let out = delta_table(&groups, &[New], None, None);
+            assert_eq!(out, group_table(&groups, None, None));
+        }
+
+        fn statuses() -> impl Strategy<Value = Novelty> {
+            prop_oneof![
+                Just(New),
+                Just(Unchanged),
+                (2usize..5).prop_map(|from| Novelty::Grown { from }),
+            ]
+        }
+
+        proptest::proptest! {
+            /// One row per new or grown group, or the cap's worth.
+            #[test]
+            fn rows_are_the_new_groups_or_the_cap(
+                novelty in proptest::collection::vec(statuses(), 1..12),
+                cap in proptest::option::of(1usize..15),
+            ) {
+                let groups: Vec<DuplicateGroup> = (0..novelty.len()).map(pair_group).collect();
+                let out = delta_table(&groups, &novelty, None, cap);
+                let new = novelty.iter().filter(|n| **n != Unchanged).count();
+                let expected = cap.map_or(new, |cap| cap.min(new));
+                proptest::prop_assert_eq!(body_rows(&out).len(), expected, "{}", out);
+                if new > 0 {
+                    let heading = format!("## {new} new duplicate");
+                    proptest::prop_assert!(out.starts_with(&heading), "{}", out);
+                }
+            }
         }
     }
 }

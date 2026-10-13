@@ -20,6 +20,7 @@
 use crate::delta::{DeltaCounts, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::group::DuplicateGroup;
+use crate::duplicates::novelty::Comparison;
 use crate::duplicates::triage::verdict::Assessment;
 use crate::merge::{CrapEntry, ScopeDiagnostics};
 use crate::score::Severity;
@@ -157,6 +158,11 @@ pub struct RenderOptions<'a> {
     /// other, or `None` to report each pair on its own. Every section that
     /// shows duplicates reads it.
     pub groups: Option<&'a [DuplicateGroup]>,
+    /// The groups measured against a baseline's duplicate record, one status
+    /// per group, on a delta run whose baseline has one. The markdown and
+    /// pr-comment tables then show only the new and grown groups and count
+    /// the rest. Ignored unless it covers every group.
+    pub novelty: Option<&'a Comparison>,
 }
 
 /// The provider and model that judged the duplicate pairs.
@@ -222,6 +228,7 @@ impl Default for RenderOptions<'_> {
             cwd: Path::new(""),
             triaged_by: None,
             groups: None,
+            novelty: None,
         }
     }
 }
@@ -355,10 +362,23 @@ fn write_duplicate_section(
         },
         Format::Markdown => duplicate_table(opts, None, out),
         // A comment with nothing to say about duplicates says nothing.
-        Format::PrComment if groups.is_empty() => Ok(()),
+        Format::PrComment if nothing_new(groups, opts) => Ok(()),
         Format::PrComment => duplicate_table(opts, Some(pr_comment::MAX_ROWS_PER_SECTION), out),
         Format::Json | Format::GitHub | Format::Sarif | Format::Shields => Ok(()),
     }
+}
+
+/// True when no group is worth a PR comment: there are none, or a delta
+/// run's baseline already had every one.
+fn nothing_new(
+    groups: &[DuplicateGroup],
+    opts: &RenderOptions,
+) -> bool {
+    duplicates::covering_novelty(opts, groups.len()).map_or(groups.is_empty(), |novelty| {
+        novelty
+            .iter()
+            .all(|n| *n == crate::duplicates::novelty::Novelty::Unchanged)
+    })
 }
 
 /// The GFM duplicate section, after a blank line, with each group's
@@ -435,6 +455,40 @@ mod tests {
             let expected: Vec<DuplicateGroup> = pairs.iter().map(DuplicateGroup::of_pair).collect();
             assert_eq!(paired.duplicate_groups().as_deref(), Some(&expected[..]));
             assert_eq!(RenderOptions::default().duplicate_groups(), None);
+        }
+
+        #[test]
+        fn a_pr_comment_with_nothing_new_has_no_duplicate_section() {
+            use crate::duplicates::novelty::{Comparison, Novelty};
+            let pairs = [pair(0), pair(1)];
+            let groups: Vec<DuplicateGroup> = pairs.iter().map(DuplicateGroup::of_pair).collect();
+            let render_with = |format: Format, novelty: Vec<Novelty>| {
+                let comparison = Comparison {
+                    novelty,
+                    resolved: 0,
+                };
+                let mut buf = Vec::new();
+                let opts = RenderOptions {
+                    format,
+                    duplicates: Some(&pairs),
+                    groups: Some(&groups),
+                    novelty: Some(&comparison),
+                    ..RenderOptions::default()
+                };
+                render_duplicates(&opts, &mut buf).unwrap();
+                String::from_utf8(buf).unwrap()
+            };
+            let unchanged = vec![Novelty::Unchanged; 2];
+            assert_eq!(render_with(Format::PrComment, unchanged.clone()), "");
+            assert!(
+                render_with(Format::Markdown, unchanged).contains("No new duplicate candidates."),
+                "markdown still says it looked"
+            );
+            let one_new = vec![Novelty::Unchanged, Novelty::New];
+            assert!(
+                render_with(Format::PrComment, one_new).contains("## 1 new duplicate candidate"),
+                "a new group is shown"
+            );
         }
 
         #[test]

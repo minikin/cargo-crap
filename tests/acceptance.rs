@@ -5517,7 +5517,8 @@ fn words_copy(name: &str) -> String {
 }
 
 /// The section of a markdown or pr-comment report from its duplicate
-/// heading (`## N duplicate candidate(s)`) on, and the body rows of the
+/// heading (`## N duplicate candidate(s)`, or `## N new duplicate
+/// candidate(s)` on a delta run) on, and the body rows of the
 /// first table under it, up to the first line that is not a row.
 fn duplicate_rows(stdout: &str) -> (&str, Vec<&str>) {
     let at = stdout
@@ -5528,7 +5529,9 @@ fn duplicate_rows(stdout: &str) -> (&str, Vec<&str>) {
             line.split_once(' ')
                 .and_then(|(_, rest)| rest.split_once(' '))
                 .is_some_and(|(count, rest)| {
-                    count.parse::<usize>().is_ok() && rest.starts_with("duplicate candidate")
+                    count.parse::<usize>().is_ok()
+                        && (rest.starts_with("duplicate candidate")
+                            || rest.starts_with("new duplicate candidate"))
                 })
         })
         .unwrap_or_else(|| panic!("a duplicate heading: {stdout}"));
@@ -5703,4 +5706,294 @@ fn a_triaged_summary_line_counts_groups() {
     // And the summary line counts groups
     assert!(section.contains("\n🔴 26 should be one\n"), "{section}");
     assert_eq!(rows.len(), 25, "{section}");
+}
+
+// ── Spec 37: new duplicates in a delta report ─────────────────────────────
+
+/// A filtering loop named `name`, unlike [`tally_copy`] and [`words_copy`].
+fn filter_copy(name: &str) -> String {
+    format!(
+        "fn {name}(xs: &[i32]) -> Vec<i32> {{
+    let mut ys = Vec::new();
+    for x in xs {{
+        if x % 2 == 1 {{
+            ys.push(x + 1);
+        }}
+    }}
+    ys
+}}
+"
+    )
+}
+
+/// A sum over a range by cases named `name`.
+fn tally_copy(name: &str) -> String {
+    format!(
+        "fn {name}(a: i32, b: i32) -> i32 {{
+    let (lo, hi) = if a < b {{ (a, b) }} else {{ (b, a) }};
+    let mut acc = 0;
+    for v in lo..hi {{
+        acc += match v % 4 {{
+            0 => v * 2,
+            1 => -v,
+            _ => 1,
+        }};
+    }}
+    acc.max(0)
+}}
+"
+    )
+}
+
+/// [`duplicates_run`] from inside `dir`, so a `.cargo-crap.toml` there is
+/// the run's config.
+fn run_inside(
+    dir: &Path,
+    format: &str,
+    extra: &[&str],
+) -> std::process::Output {
+    crap()
+        .current_dir(dir)
+        .args(["--path", dir.to_str().expect("utf-8"), "--format", format])
+        .args(extra)
+        .output()
+        .expect("the binary runs")
+}
+
+/// Record a `--duplicates` JSON baseline of `dir` as `base.json` in `into`.
+fn record_duplicates(
+    dir: &Path,
+    into: &Path,
+) -> PathBuf {
+    let baseline = into.join("base.json");
+    let out = run_inside(
+        dir,
+        "json",
+        &[
+            "--duplicates",
+            "--output",
+            baseline.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(out.status.success(), "the baseline is written: {out:?}");
+    baseline
+}
+
+/// `cargo crap --duplicates --baseline <baseline> --format <format>` over
+/// `dir`, as text.
+fn delta_duplicates(
+    dir: &Path,
+    baseline: &Path,
+    format: &str,
+) -> String {
+    let out = run_inside(
+        dir,
+        format,
+        &[
+            "--duplicates",
+            "--baseline",
+            baseline.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(out.status.success(), "the run succeeds: {out:?}");
+    String::from_utf8(out.stdout).expect("utf-8")
+}
+
+#[test]
+fn a_copy_the_pull_request_adds_is_the_only_one_shown() {
+    // Given a baseline recorded with `--format json --duplicates` holding two
+    // duplicate groups
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    let two_groups = [
+        filter_copy("one"),
+        filter_copy("two"),
+        tally_copy("three"),
+        tally_copy("four"),
+    ]
+    .concat();
+    write(dir.path(), "a.rs", &two_groups);
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree has those two groups and one new pair of look-alikes
+    write(
+        dir.path(),
+        "b.rs",
+        &[words_copy("five"), words_copy("six")].concat(),
+    );
+    // When I run `cargo crap --duplicates --baseline base.json --format pr-comment`
+    let stdout = delta_duplicates(dir.path(), &baseline, "pr-comment");
+    let (section, rows) = duplicate_rows(&stdout);
+    // Then the section is headed "## 1 new duplicate candidate"
+    assert!(
+        section.starts_with("## 1 new duplicate candidate\n"),
+        "{section}"
+    );
+    // And its table has one row, for the new pair
+    assert_eq!(rows.len(), 1, "{section}");
+    assert!(
+        rows[0].contains("five") && rows[0].contains("six"),
+        "{section}"
+    );
+    // And a line under the table reads "2 existing candidates unchanged."
+    assert!(
+        section.contains("\n2 existing candidates unchanged.\n"),
+        "{section}"
+    );
+}
+
+#[test]
+fn shifted_lines_do_not_make_a_group_new() {
+    // Given a baseline with one duplicate group
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    write(
+        dir.path(),
+        "a.rs",
+        &[filter_copy("one"), filter_copy("two")].concat(),
+    );
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree inserts lines above every member, changing their
+    // start and end lines
+    let shifted = format!(
+        "// a note\n// another\n\n{}\n\n\n{}",
+        filter_copy("one"),
+        filter_copy("two")
+    );
+    write(dir.path(), "a.rs", &shifted);
+    // When I run `cargo crap --duplicates --baseline base.json --format pr-comment`
+    let stdout = delta_duplicates(dir.path(), &baseline, "pr-comment");
+    // Then no duplicate section is printed
+    assert!(!stdout.contains("duplicate candidate"), "{stdout}");
+}
+
+#[test]
+fn a_moved_function_keeps_its_group() {
+    // Given a baseline with a pair of look-alikes in `src/a.rs` and `src/b.rs`
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    write(dir.path(), "a.rs", &filter_copy("one"));
+    write(dir.path(), "b.rs", &filter_copy("two"));
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree moves the function in `src/b.rs` to `src/c.rs`,
+    // unchanged
+    fs::remove_file(dir.path().join("b.rs")).expect("remove b.rs");
+    write(dir.path(), "c.rs", &filter_copy("two"));
+    // When I run `cargo crap --duplicates --baseline base.json --format markdown`
+    let stdout = delta_duplicates(dir.path(), &baseline, "markdown");
+    // Then the section reports no new duplicate candidates
+    assert!(
+        stdout.contains("\nNo new duplicate candidates.\n"),
+        "{stdout}"
+    );
+    // And the line under it reads "1 existing candidate unchanged."
+    assert!(
+        stdout.contains("\n1 existing candidate unchanged.\n"),
+        "{stdout}"
+    );
+}
+
+/// Two look-alike `fmt` methods in one file, each in its own impl, with
+/// `above` before each.
+fn twin_fmts(above: &str) -> String {
+    let method = |ty: &str| {
+        format!(
+            "struct {ty};\nimpl {ty} {{\n{above}    fn fmt(&self, xs: &[i32]) -> Vec<i32> {{
+        let mut ys = Vec::new();
+        for x in xs {{
+            if x % 2 == 1 {{
+                ys.push(x + 1);
+            }}
+        }}
+        ys
+    }}
+}}
+"
+        )
+    };
+    [method("A"), method("B")].concat()
+}
+
+#[test]
+fn same_named_members_keep_their_group_when_lines_shift() {
+    // Given a baseline with a pair of look-alike `fmt` methods, both in
+    // `src/lib.rs`
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    write(dir.path(), "lib.rs", &twin_fmts(""));
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree inserts lines above both
+    write(dir.path(), "lib.rs", &twin_fmts("    // a note\n\n"));
+    // When I run `cargo crap --duplicates --baseline base.json --format markdown`
+    let stdout = delta_duplicates(dir.path(), &baseline, "markdown");
+    // Then the section reports no new duplicate candidates
+    assert!(
+        stdout.contains("\nNo new duplicate candidates.\n"),
+        "{stdout}"
+    );
+    // And the line under it reads "1 existing candidate unchanged."
+    assert!(
+        stdout.contains("\n1 existing candidate unchanged.\n"),
+        "{stdout}"
+    );
+}
+
+/// A pair of identical functions for each shape in `range`, every shape a
+/// different number of trailing pushes, so only a config that pairs
+/// identical shapes alone keeps the pairs apart.
+fn shaped_pairs(range: std::ops::Range<usize>) -> String {
+    range
+        .flat_map(|k| {
+            ["a", "b"].map(move |side| {
+                let pushes = "    ys.push(0);\n".repeat(k + 1);
+                format!(
+                    "fn p{k:02}_{side}(xs: &[i32]) -> Vec<i32> {{
+    let mut ys = Vec::new();
+    for x in xs {{
+        if x % 2 == 1 {{
+            ys.push(x + 1);
+        }}
+    }}
+{pushes}    ys
+}}
+"
+                )
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn the_cap_counts_the_groups_shown() {
+    // Given a baseline with thirty duplicate groups that are still present
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    write(
+        dir.path(),
+        ".cargo-crap.toml",
+        "[duplicates]\nenabled = true\nthreshold = 1.0\n",
+    );
+    write(dir.path(), "pairs.rs", &shaped_pairs(0..30));
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree adds two new pairs
+    write(dir.path(), "more.rs", &shaped_pairs(30..32));
+    // When I run `cargo crap --duplicates --baseline base.json --format pr-comment`
+    let stdout = delta_duplicates(dir.path(), &baseline, "pr-comment");
+    let (section, rows) = duplicate_rows(&stdout);
+    // Then the table has two rows and no truncation footer
+    assert_eq!(rows.len(), 2, "{section}");
+    assert!(!section.contains("more, see CI artifact"), "{section}");
+    assert!(
+        section.contains("\n30 existing candidates unchanged.\n"),
+        "{section}"
+    );
 }

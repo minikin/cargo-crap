@@ -14,9 +14,10 @@ use cargo_crap::{
     },
     complexity,
     coverage::{self, FileCoverage},
-    delta::{compute_delta, load_baseline_with_weight},
+    delta::{Baseline, compute_delta, load_baseline_with_weight},
     duplicates,
     duplicates::compare::DuplicatePair,
+    duplicates::extract::Location,
     duplicates::triage::provider::{Provider, default_provider},
     duplicates::triage::verdict::Assessment,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
@@ -899,6 +900,29 @@ impl BaselineFilter {
         self.exclude_set.is_match(rel)
     }
 
+    /// Drop every duplicate group member the current run's duplicate scan
+    /// would not have seen: the exclude globs only, since the scan never
+    /// reads the `--allow` patterns.
+    fn retain_members(
+        &self,
+        groups: &mut [Vec<Location>],
+    ) {
+        for members in groups {
+            members.retain(|m| !self.is_excluded(&m.file));
+        }
+    }
+
+    /// True when the current run would produce `function` in `file`.
+    fn keeps(
+        &self,
+        file: &Path,
+        function: &str,
+    ) -> bool {
+        !self.is_excluded(file)
+            && !self.name_allow.is_match(function)
+            && !path_set_matches_suffix(&self.path_allow, file)
+    }
+
     /// Drop every entry the current run would not have produced. Filtered
     /// entries vanish for delta purposes: they appear in no bucket
     /// (`removed` included) and cannot pair in the name-fallback pass.
@@ -906,11 +930,7 @@ impl BaselineFilter {
         &self,
         entries: &mut Vec<cargo_crap::merge::CrapEntry>,
     ) {
-        entries.retain(|e| {
-            !self.is_excluded(&e.file)
-                && !self.name_allow.is_match(&e.function)
-                && !path_set_matches_suffix(&self.path_allow, &e.file)
-        });
+        entries.retain(|e| self.keeps(&e.file, &e.function));
     }
 }
 
@@ -1315,21 +1335,27 @@ fn load_filtered_baseline(
     members: &[WorkspaceMember],
     member_scope: Option<&MemberScope>,
     try_weight: f64,
-) -> Result<Option<Vec<cargo_crap::merge::CrapEntry>>> {
+) -> Result<Option<Baseline>> {
     let Some(baseline_path) = baseline else {
         return Ok(None);
     };
     let baseline = load_baseline_with_weight(baseline_path)?;
     warn_on_try_weight_mismatch(baseline.try_weight, try_weight);
-    let mut data = baseline.entries;
+    let mut baseline = baseline;
     let roots = if members.is_empty() {
         vec![path.to_path_buf()]
     } else {
         members.iter().map(|m| m.dir.clone()).collect()
     };
-    BaselineFilter::new(excludes, allow_patterns, roots)?.retain(&mut data);
-    apply_member_scope(&mut data, member_scope);
-    Ok(Some(data))
+    let filter = BaselineFilter::new(excludes, allow_patterns, roots)?;
+    filter.retain(&mut baseline.entries);
+    apply_member_scope(&mut baseline.entries, member_scope);
+    // At most one record: `for_each` filters it when the baseline has one.
+    baseline
+        .duplicate_groups
+        .iter_mut()
+        .for_each(|groups| filter_duplicate_record(groups, &filter, member_scope));
+    Ok(Some(baseline))
 }
 
 fn warn_on_try_weight_mismatch(
@@ -1366,8 +1392,31 @@ fn apply_member_scope(
     data: &mut Vec<cargo_crap::merge::CrapEntry>,
     member_scope: Option<&MemberScope>,
 ) {
+    retain_in_scope(data, member_scope, |e| &e.file);
+}
+
+/// Keep the `items` whose file `member_scope` covers, or every item without
+/// a scope.
+fn retain_in_scope<T>(
+    items: &mut Vec<T>,
+    member_scope: Option<&MemberScope>,
+    file: impl Fn(&T) -> &Path,
+) {
     if let Some(scope) = member_scope {
-        data.retain(|e| !scope.is_out_of_scope(&e.file));
+        items.retain(|item| !scope.is_out_of_scope(file(item)));
+    }
+}
+
+/// Narrow a baseline's duplicate record to the members the current run's
+/// duplicate scan would see: its exclude globs and member scope.
+fn filter_duplicate_record(
+    groups: &mut [Vec<Location>],
+    filter: &BaselineFilter,
+    member_scope: Option<&MemberScope>,
+) {
+    filter.retain_members(groups);
+    for members in groups {
+        retain_in_scope(members, member_scope, |m| &m.file);
     }
 }
 
@@ -1538,6 +1587,16 @@ fn duplicate_section<'a>(
         provider: settings.triage_provider.display_name(),
         model: &settings.triage_model,
     })
+}
+
+/// The current groups measured against the baseline's duplicate record,
+/// when the run found groups and the baseline recorded some.
+fn novelty_against(
+    groups: Option<&[duplicates::group::DuplicateGroup]>,
+    baseline: Option<&Baseline>,
+) -> Option<duplicates::novelty::Comparison> {
+    let recorded = baseline?.duplicate_groups.as_deref()?;
+    Some(duplicates::novelty::compare(groups?, recorded))
 }
 
 /// Ask the model about `pairs` when triage is enabled, and hold each verdict
@@ -1850,6 +1909,7 @@ fn run() -> Result<ExitCode> {
     let mut out_box = prepare_output(cli.output.as_ref())?;
     let links = resolve_source_links(cli.repo_url, cli.commit_ref, &knobs.cwd);
     let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref())?;
+    let novelty = novelty_against(dups.groups.as_deref(), baseline_data.as_ref());
     let opts = RenderOpts {
         render: RenderOptions {
             threshold,
@@ -1867,6 +1927,7 @@ fn run() -> Result<ExitCode> {
             groups: dups.groups.as_deref(),
             triage: dups.triage.as_deref(),
             triaged_by: dups.triaged_by(),
+            novelty: novelty.as_ref(),
         },
         epsilon,
         summary: cli.summary,
@@ -1875,7 +1936,7 @@ fn run() -> Result<ExitCode> {
     let (has_crappy, has_regression) = do_render(
         sliced_rows.as_deref().unwrap_or(&entries),
         &entries,
-        baseline_data.as_deref(),
+        baseline_data.as_ref().map(|b| b.entries.as_slice()),
         &opts,
         out_box.as_mut(),
     )?;
@@ -2684,6 +2745,67 @@ mod tests {
         let mut entries = vec![baseline_entry("./src/tests/helpers.rs", "nested_helper")];
         filter.retain(&mut entries);
         assert_eq!(names(&entries), ["nested_helper"]);
+    }
+
+    #[test]
+    fn baseline_filter_drops_duplicate_members_only_by_the_exclude_globs() {
+        // `--allow` hides CRAP rows, and the duplicate scan never reads it:
+        // a member it names is still in the current run's groups.
+        let filter = BaselineFilter::new(
+            &strs(&["tests/**"]),
+            &strs(&["skip_me", "gen/**"]),
+            vec![PathBuf::from(".")],
+        )
+        .unwrap();
+        let at = |file: &str, name: &str| Location {
+            file: PathBuf::from(file),
+            start_line: 1,
+            end_line: 9,
+            name: name.to_string(),
+        };
+        let kept = vec![
+            at("src/a.rs", "g"),
+            at("src/b.rs", "skip_me"),
+            at("gen/c.rs", "h"),
+        ];
+        let mut groups = vec![
+            vec![at("tests/it.rs", "helper"), at("src/a.rs", "g")],
+            kept.clone(),
+        ];
+        filter.retain_members(&mut groups);
+        assert_eq!(groups, vec![vec![at("src/a.rs", "g")], kept]);
+    }
+
+    #[test]
+    fn a_duplicate_record_is_narrowed_to_the_selected_members() {
+        let at = |file: &str, name: &str| Location {
+            file: PathBuf::from(file),
+            start_line: 1,
+            end_line: 9,
+            name: name.to_string(),
+        };
+        let filter = BaselineFilter::new(&[], &[], vec![PathBuf::from("/ws")]).unwrap();
+        let mut groups = vec![
+            vec![
+                at("/ws/crates/alpha/src/lib.rs", "f"),
+                at("/ws/crates/beta/src/lib.rs", "g"),
+            ],
+            vec![
+                at("/ws/crates/alpha/src/a.rs", "h"),
+                at("/ws/crates/alpha/src/b.rs", "k"),
+            ],
+        ];
+        filter_duplicate_record(&mut groups, &filter, Some(&root_layout_scope()));
+        assert_eq!(
+            groups,
+            vec![
+                vec![at("/ws/crates/alpha/src/lib.rs", "f")],
+                vec![
+                    at("/ws/crates/alpha/src/a.rs", "h"),
+                    at("/ws/crates/alpha/src/b.rs", "k"),
+                ],
+            ]
+        );
     }
 
     #[test]

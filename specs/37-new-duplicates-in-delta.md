@@ -206,18 +206,19 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   makes all new, shifting every line changes no status, the statuses add
   up to the group count).
 - [ ] **T2 — Markdown and pr-comment show the new groups.** `load_baseline`
-  keeps `duplicate_groups` as `Option`, filtered like its entries.
-  `main.rs` runs `compare` and sets `RenderOptions::novelty`. The table
-  takes the new and grown groups, under `## N new duplicate candidate(s)`,
-  with the unchanged count line. Needs: T1. Scenarios: _A copy the pull
+  keeps `duplicate_groups` as `Option`, filtered by the exclude globs and
+  member scope. `main.rs` runs `compare` and sets
+  `RenderOptions::novelty`. The table takes the new and grown groups,
+  under `## N new duplicate candidate(s)`, with the unchanged count line.
+  With none new, pr-comment prints no section and markdown prints `No new
+  duplicate candidates.` Needs: T1. Scenarios: _A copy the pull
   request adds is the only one shown_, _Shifted lines do not make a group
   new_, _A moved function keeps its group_, _Same-named members keep their
   group when lines shift_, _The cap counts the groups shown_. Tests: unit
   + property (shown rows equal new + grown, or the cap) + acceptance.
-- [ ] **T3 — Grown rows, resolved groups and an empty result.** A grown row
-  says `grew from N`, the count line adds `K resolved`, pr-comment prints
-  no section when nothing is new or resolved, and markdown prints `No new
-  duplicate candidates.` Needs: T2. Scenarios: _A copy added to an
+- [ ] **T3 — Grown rows and resolved groups.** A grown row says `grew
+  from N`, the count line adds `K resolved`, and pr-comment prints its
+  section when a group was resolved even with nothing new. Needs: T2. Scenarios: _A copy added to an
   existing group shows the group as grown_, _A pull request that removes a
   copy is credited_, _Nothing new prints nothing in the PR comment_.
   Tests: unit + acceptance.
@@ -271,10 +272,12 @@ Members are counted by identity: a baseline group that held one `fmt` of
 a file accounts for one current `fmt` of that file, not two.
 
 Both runs are expected to use the same `--path` or `--workspace`, as the
-demo and CI do. A baseline member the current run's filters exclude
-(spec 18) is dropped before comparing, and a baseline group left with
-fewer than two members is ignored, so changing the exclude set neither
-resolves nor grows a group.
+demo and CI do. A baseline member the current run's exclude globs
+(spec 18) or member scope (spec 25) leave out is dropped before
+comparing, and a baseline group left with fewer than two members is
+ignored, so changing the exclude set neither resolves nor grows a group.
+`--allow` patterns are not applied: they hide CRAP rows, and the
+duplicate scan never reads them.
 
 **Classification**, a pure function in `src/duplicates/novelty.rs`:
 

@@ -134,6 +134,18 @@ pub struct MemberJson {
     pub end_line: usize,
 }
 
+/// The member as a location, as a baseline's duplicate record is read.
+impl From<MemberJson> for Location {
+    fn from(member: MemberJson) -> Self {
+        Self {
+            file: member.file.into(),
+            start_line: member.start_line,
+            end_line: member.end_line,
+            name: member.function,
+        }
+    }
+}
+
 impl MemberJson {
     fn from_location(at: &Location) -> Self {
         Self {
