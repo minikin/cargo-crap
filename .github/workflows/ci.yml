@@ -16,13 +16,16 @@ jobs:
   # runs, and GitHub sees the jobs as "skipped", which satisfies required
   # checks. This file is in both filters: a change to a job runs that job,
   # on the pull request and again on main. The tests read the schemas and
-  # the proptest seeds, so those count as Rust too.
+  # the proptest seeds, so those count as Rust too. `docs` gates the one
+  # test that checks the README and docs/ against real runs.
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       src: ${{ steps.filter.outputs.src }}
+      docs: ${{ steps.filter.outputs.docs }}
+      workflow: ${{ steps.filter.outputs.workflow }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v4
@@ -44,6 +47,11 @@ jobs:
               - '.github/workflows/ci.yml'
             src:
               - 'src/**/*.rs'
+              - '.github/workflows/ci.yml'
+            docs:
+              - 'README.md'
+              - 'docs/**'
+            workflow:
               - '.github/workflows/ci.yml'
 
   test:
@@ -68,6 +76,23 @@ jobs:
         run: cargo nextest run --all-targets --all-features
       - name: Doc tests
         run: cargo test --doc --all-features
+
+  # A docs-only change runs the docs test alone. When Rust changed too, the
+  # test job above already runs it, unless the change is to this file.
+  docs:
+    name: Docs
+    needs: [changes]
+    if: >-
+      (needs.changes.outputs.docs == 'true' && needs.changes.outputs.rust != 'true')
+      || needs.changes.outputs.workflow == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-nextest
+      - name: Docs match real runs
+        run: cargo nextest run --test docs
 
   lints:
     name: Lints
