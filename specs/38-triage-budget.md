@@ -158,7 +158,7 @@ property / acceptance), and, when it depends on earlier tasks, a
 `Needs:` naming them. A task with no `Needs:` is a root. A task whose
 needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
 
-- [ ] **T1 — The `max-requests` key.** `TriageConfig` reads `max-requests`
+- [x] **T1 — The `max-requests` key.** `TriageConfig` reads `max-requests`
   as an unsigned count, with the `max_requests` alias, and a negative value
   is a configuration error. Scenarios: _A negative budget is a
   configuration error_. Tests: unit (parsed, alias, absent by default) +
