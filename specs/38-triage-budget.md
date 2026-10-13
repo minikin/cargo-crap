@@ -163,7 +163,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   is a configuration error. Scenarios: _A negative budget is a
   configuration error_. Tests: unit (parsed, alias, absent by default) +
   acceptance.
-- [ ] **T2 — Choosing what the budget asks.** A pure step in
+- [x] **T2 — Choosing what the budget asks.** A pure step in
   `src/duplicates/triage/mod.rs` that takes each pair as a hit or a miss
   and the budget, and says which misses to ask and how many are skipped.
   No scenario reaches it end to end yet. Tests: unit + property (at most
