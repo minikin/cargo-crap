@@ -37,7 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `duplicates::group` (`DuplicateGroup`, `group_pairs`, `pair_groups`),
   `RenderOptions::duplicate_groups`, `RenderOptions::pair_triage` and
   `report::duplicates::render_grouped` are new.
-||||||| parent of 91c7b0a (fix: a pr-comment location keeps its file name when every row shares it)
 
 ### Fixed
 
