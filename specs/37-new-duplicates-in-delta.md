@@ -205,7 +205,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   against itself is all unchanged with nothing resolved, an empty record
   makes all new, shifting every line changes no status, the statuses add
   up to the group count).
-- [ ] **T2 — Markdown and pr-comment show the new groups.** `load_baseline`
+- [x] **T2 — Markdown and pr-comment show the new groups.** `load_baseline`
   keeps `duplicate_groups` as `Option`, filtered by the exclude globs and
   member scope. `main.rs` runs `compare` and sets
   `RenderOptions::novelty`. The table takes the new and grown groups,
