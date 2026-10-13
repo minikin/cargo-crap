@@ -11,9 +11,8 @@ pub struct DuplicateGroup {
     pub members: Vec<Location>,
     /// The weakest pair's similarity: every two members score at least this.
     pub score: f64,
-    /// Indexes into `members` of the most similar pair, the one triage asks
-    /// about for the whole group.
-    pub representative: (usize, usize),
+    /// The most similar pair, the one triage asks about for the whole group.
+    pub representative: DuplicatePair,
 }
 
 /// Group the pairs that score at or above `threshold`.
@@ -51,6 +50,28 @@ pub fn group_pairs(
     );
     groups.sort_by(|a, b| strongest_first((a.score, &a.members), (b.score, &b.members)));
     groups
+}
+
+/// The group each pair is reported in, as an index into `groups`: the one
+/// holding both of its functions. `None` when any pair is in no group, so a
+/// group's verdict is never handed to a pair it does not cover.
+#[must_use]
+pub fn pair_groups(
+    pairs: &[DuplicatePair],
+    groups: &[DuplicateGroup],
+) -> Option<Vec<usize>> {
+    let mut group_of = std::collections::BTreeMap::new();
+    for (n, group) in groups.iter().enumerate() {
+        for (i, a) in group.members.iter().enumerate() {
+            for b in &group.members[i + 1..] {
+                group_of.insert((a, b), n);
+            }
+        }
+    }
+    pairs
+        .iter()
+        .map(|p| group_of.get(&ordered_sides(p)).copied())
+        .collect()
 }
 
 /// A cluster that is reported as its own group: three or more functions. A
@@ -189,7 +210,7 @@ fn group_of(
     let mut ids = ids.to_vec();
     ids.sort_unstable();
     let mut score = f64::INFINITY;
-    let mut representative = (0, 1);
+    let mut representative = (ids[0], ids[1]);
     let mut best = f64::NEG_INFINITY;
     for i in 0..ids.len() {
         for j in (i + 1)..ids.len() {
@@ -199,14 +220,18 @@ fn group_of(
             score = score.min(pair);
             if pair > best {
                 best = pair;
-                representative = (i, j);
+                representative = (ids[i], ids[j]);
             }
         }
     }
     DuplicateGroup {
         members: ids.iter().map(|&f| index.functions[f].clone()).collect(),
         score,
-        representative,
+        representative: DuplicatePair {
+            first: index.functions[representative.0].clone(),
+            second: index.functions[representative.1].clone(),
+            score: best,
+        },
     }
 }
 
@@ -267,7 +292,11 @@ mod tests {
         assert_eq!(groups.len(), 1, "{groups:?}");
         assert_eq!(names(&groups[0]), ["f0", "f1", "f2"]);
         assert!((groups[0].score - 0.9).abs() < f64::EPSILON);
-        assert_eq!(groups[0].representative, (0, 1), "the 1.00 pair");
+        assert_eq!(
+            rep_names(&groups[0]),
+            ("f0".into(), "f1".into()),
+            "the 1.00 pair"
+        );
     }
 
     #[test]
@@ -279,8 +308,8 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members.len(), 30);
         assert_eq!(
-            groups[0].representative,
-            (0, 1),
+            rep_names(&groups[0]),
+            ("f0".into(), "f1".into()),
             "ties fall back to location"
         );
     }
@@ -291,7 +320,8 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(names(&groups[0]), ["f3", "f7"]);
         assert!((groups[0].score - 0.88).abs() < f64::EPSILON);
-        assert_eq!(groups[0].representative, (0, 1));
+        assert_eq!(rep_names(&groups[0]), ("f3".into(), "f7".into()));
+        assert!((groups[0].representative.score - 0.88).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -355,6 +385,68 @@ mod tests {
     }
 
     #[test]
+    fn a_groups_representative_pair_is_its_most_similar() {
+        let groups = group_pairs_at(&[pair(0, 1, 0.9), pair(1, 2, 1.0), pair(0, 2, 0.95)]);
+        let representative = &groups[0].representative;
+        assert_eq!(
+            (&representative.first, &representative.second),
+            (&f(1), &f(2))
+        );
+        assert!((representative.score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_tie_for_most_similar_goes_to_the_earliest_pair() {
+        let groups = group_pairs_at(&[pair(0, 1, 0.9), pair(0, 2, 1.0), pair(1, 2, 1.0)]);
+        assert_eq!(rep_names(&groups[0]), ("f0".into(), "f2".into()));
+    }
+
+    #[test]
+    fn each_pair_is_reported_in_the_group_holding_both_its_functions() {
+        let pairs = [
+            pair(0, 1, 0.85),
+            pair(5, 6, 1.0),
+            pair(5, 7, 1.0),
+            pair(6, 7, 1.0),
+            pair(7, 8, 0.9),
+        ];
+        let groups = group_pairs_at(&pairs);
+        let found: Vec<Vec<String>> = groups.iter().map(names).collect();
+        assert_eq!(
+            found,
+            [vec!["f5", "f6", "f7"], vec!["f7", "f8"], vec!["f0", "f1"]]
+        );
+        assert_eq!(pair_groups(&pairs, &groups), Some(vec![2, 0, 0, 0, 1]));
+    }
+
+    #[test]
+    fn a_pair_in_no_group_leaves_every_pair_without_one() {
+        let groups = group_pairs_at(&[pair(0, 1, 0.9)]);
+        assert_eq!(pair_groups(&[pair(0, 1, 0.9)], &groups), Some(vec![0]));
+        assert_eq!(
+            pair_groups(&[pair(0, 1, 0.9), pair(2, 3, 0.9)], &groups),
+            None
+        );
+        let selfish = DuplicatePair {
+            first: f(0),
+            second: f(0),
+            score: 1.0,
+        };
+        assert_eq!(
+            pair_groups(&[selfish], &groups),
+            None,
+            "a function is not paired with itself"
+        );
+    }
+
+    fn rep_names(group: &DuplicateGroup) -> (String, String) {
+        (
+            group.representative.first.name.clone(),
+            group.representative.second.name.clone(),
+        )
+    }
+
+    #[test]
     fn no_pairs_no_groups() {
         assert_eq!(group_pairs_at(&[]), Vec::new());
     }
@@ -412,14 +504,26 @@ mod tests {
                     }
                 }
                 prop_assert!((g.score - weakest).abs() < f64::EPSILON);
-                let (x, y) = g.representative;
-                let best = score_of(&pairs, &g.members[x], &g.members[y]).unwrap_or_default();
-                prop_assert!(x < y && y < g.members.len());
+                let r = &g.representative;
+                prop_assert!(r.first < r.second);
+                prop_assert!(g.members.contains(&r.first) && g.members.contains(&r.second));
+                let best = score_of(&pairs, &r.first, &r.second).unwrap_or_default();
+                prop_assert!((r.score - best).abs() < f64::EPSILON);
                 for (i, a) in g.members.iter().enumerate() {
                     for b in &g.members[i + 1..] {
                         prop_assert!(score_of(&pairs, a, b).unwrap_or_default() <= best);
                     }
                 }
+            }
+        }
+
+        #[test]
+        fn every_detected_pair_has_the_group_that_holds_it(pairs in pair_sets()) {
+            let groups = group_pairs_at(&pairs);
+            let of = pair_groups(&pairs, &groups);
+            prop_assert!(of.is_some(), "{:?}", groups);
+            for (p, g) in pairs.iter().zip(of.unwrap_or_default()) {
+                prop_assert!(groups[g].members.contains(&p.first) && groups[g].members.contains(&p.second));
             }
         }
 

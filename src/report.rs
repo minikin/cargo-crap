@@ -126,11 +126,11 @@ pub struct RenderOptions<'a> {
     /// renderers read it, recording it in the envelope when it is not
     /// [`DEFAULT_TRY_WEIGHT`](crate::config::DEFAULT_TRY_WEIGHT).
     pub try_weight: f64,
-    /// One triage assessment per duplicate pair, in the pairs' order, or
-    /// `None` when triage did not run. Read by the JSON renderer, which puts
-    /// each verdict beside its pair, and by [`render_duplicates`], which
-    /// prints the human triage lines and the markdown and pr-comment verdict
-    /// columns.
+    /// One triage assessment per duplicate group, in the groups' order, when
+    /// `groups` is set, else one per pair in the pairs' order, or `None` when
+    /// triage did not run. The human section prints it under each group.
+    /// The JSON renderer and the markdown and pr-comment tables read it
+    /// through [`RenderOptions::pair_triage`], one verdict per pair.
     pub triage: Option<&'a [Assessment]>,
     /// The user asked for a slice of the entries with `top` or `min`, on the
     /// command line or in config. The human table then draws every entry it
@@ -165,6 +165,25 @@ pub struct TriagedBy<'a> {
     pub provider: &'a str,
     /// The model asked, such as `gpt-6-luna`.
     pub model: &'a str,
+}
+
+impl<'a> RenderOptions<'a> {
+    /// One assessment per pair in `duplicates`, in the pairs' order: with
+    /// `groups` set, each pair gets the verdict of the group it is reported
+    /// in. `None` when triage did not run, or when it does not cover every
+    /// group or every pair, so no pair is shown another pair's verdict.
+    #[must_use]
+    pub fn pair_triage(&self) -> Option<std::borrow::Cow<'a, [Assessment]>> {
+        let triage = self.triage?;
+        let Some(groups) = self.groups else {
+            return Some(std::borrow::Cow::Borrowed(triage));
+        };
+        if triage.len() != groups.len() {
+            return None;
+        }
+        let of = crate::duplicates::group::pair_groups(self.duplicates?, groups)?;
+        Some(of.into_iter().map(|g| triage[g]).collect())
+    }
 }
 
 impl Default for RenderOptions<'_> {
@@ -334,7 +353,7 @@ fn human_duplicates(
 ) -> Result<()> {
     writeln!(out)?;
     match opts.groups {
-        Some(groups) => duplicates::render_grouped(pairs, groups, opts.triage, out),
+        Some(groups) => duplicates::render_grouped(groups, opts.triage, out),
         None => duplicates::render(pairs, opts.triage, out),
     }
 }
@@ -377,6 +396,95 @@ mod tests {
     use super::*;
     use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
     use test_support::sample;
+
+    mod pair_triage {
+        use super::*;
+        use crate::duplicates::extract::Location;
+        use crate::duplicates::group::group_pairs;
+
+        fn f(n: usize) -> Location {
+            Location {
+                file: std::path::PathBuf::from("src/a.rs"),
+                start_line: 10 * n + 1,
+                end_line: 10 * n + 9,
+                name: format!("f{n}"),
+            }
+        }
+
+        fn pair(
+            a: usize,
+            b: usize,
+        ) -> DuplicatePair {
+            DuplicatePair {
+                first: f(a),
+                second: f(b),
+                score: 1.0,
+            }
+        }
+
+        fn sure(confidence: f64) -> Assessment {
+            Assessment::Uncertain { confidence }
+        }
+
+        #[test]
+        fn each_pair_gets_the_verdict_of_its_group() {
+            // A group of three, then a lone pair: two groups, four pairs.
+            let pairs = [pair(0, 1), pair(0, 2), pair(1, 2), pair(5, 6)];
+            let groups = group_pairs(&pairs, 0.82);
+            assert_eq!(groups.len(), 2);
+            let triage = [sure(0.1), sure(0.2)];
+            let opts = RenderOptions {
+                duplicates: Some(&pairs),
+                groups: Some(&groups),
+                triage: Some(&triage),
+                ..RenderOptions::default()
+            };
+            let by_pair = opts.pair_triage().expect("every pair covered");
+            let expected = [sure(0.1), sure(0.1), sure(0.1), sure(0.2)];
+            assert_eq!(by_pair.as_ref(), expected);
+        }
+
+        #[test]
+        fn without_groups_the_triage_is_already_per_pair() {
+            let pairs = [pair(0, 1)];
+            let triage = [sure(0.4)];
+            let opts = RenderOptions {
+                duplicates: Some(&pairs),
+                triage: Some(&triage),
+                ..RenderOptions::default()
+            };
+            assert_eq!(opts.pair_triage().expect("as given").as_ref(), triage);
+        }
+
+        #[test]
+        fn a_triage_that_misses_a_group_or_a_pair_gives_none() {
+            let pairs = [pair(0, 1), pair(5, 6)];
+            let groups = group_pairs(&pairs, 0.82);
+            let one = [sure(0.3)];
+            let short = RenderOptions {
+                duplicates: Some(&pairs),
+                groups: Some(&groups),
+                triage: Some(&one),
+                ..RenderOptions::default()
+            };
+            assert_eq!(short.pair_triage(), None, "one verdict, two groups");
+            let stray = [pair(0, 1), pair(5, 6), pair(8, 9)];
+            let two = [sure(0.3), sure(0.4)];
+            let unmatched = RenderOptions {
+                duplicates: Some(&stray),
+                groups: Some(&groups),
+                triage: Some(&two),
+                ..RenderOptions::default()
+            };
+            assert_eq!(unmatched.pair_triage(), None, "a pair in no group");
+            let untriaged = RenderOptions {
+                duplicates: Some(&pairs),
+                groups: Some(&groups),
+                ..RenderOptions::default()
+            };
+            assert_eq!(untriaged.pair_triage(), None);
+        }
+    }
 
     /// One regressed row, rendered with counts that describe a larger
     /// comparison than the rows shown.

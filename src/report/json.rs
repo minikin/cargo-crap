@@ -201,7 +201,7 @@ pub(crate) fn render_json(
         version: SCHEMA_VERSION.to_string(),
         entries: entries.to_vec(),
         diagnostics: opts.diagnostics.cloned(),
-        duplicates: wire(opts.duplicates, opts.triage),
+        duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
         try_weight: recorded_try_weight(opts.try_weight),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
@@ -238,7 +238,7 @@ pub(crate) fn render_delta_json(
             entries: &report.entries,
             removed: &report.removed,
             diagnostics: opts.diagnostics,
-            duplicates: wire(opts.duplicates, opts.triage),
+            duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
             try_weight: recorded_try_weight(opts.try_weight),
         },
     )?;

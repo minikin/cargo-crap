@@ -1221,7 +1221,7 @@ fn run_against(
 #[cfg(feature = "triage")]
 const TRIAGE_SKIPPED: &str = "warning: duplicate triage skipped: ";
 #[cfg(feature = "triage")]
-const REPORTED_UNTRIAGED: &str = "; the pairs are reported untriaged";
+const REPORTED_UNTRIAGED: &str = "; the duplicates are reported untriaged";
 
 /// The one warning line a degraded run prints for `cause`.
 #[cfg(feature = "triage")]
@@ -5377,4 +5377,76 @@ fn two_look_alikes_still_print_as_a_pair() {
         ),
         "{stdout}"
     );
+}
+
+// ---- Spec 36 · T4 ----
+
+#[cfg(feature = "triage")]
+#[test]
+fn triage_asks_once_per_group() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given triage is enabled and thirty copies of one function form one group
+    let dir = copies_tree(30);
+    let stub = ApiStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When cargo-crap runs
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    // Then exactly one request is made
+    let requests = stub.requests();
+    assert_eq!(requests.len(), 1, "{stdout}");
+    // And it carries the group's most similar pair: every pair scores 1.00,
+    // so the first two members by location
+    assert!(
+        requests[0].body.contains("fn copy_00") && requests[0].body.contains("fn copy_01"),
+        "{}",
+        requests[0].body
+    );
+    // And the group's verdict is printed once, under the group
+    assert_eq!(stdout.matches("  triage: ").count(), 1, "{stdout}");
+    let group = &stdout[stdout.find("DUPLICATE GROUP of 30").expect("the group")..];
+    assert!(
+        group.contains("copy_29\n  triage: "),
+        "under its last member: {stdout}"
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_second_run_asks_nothing() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given a triaged run over a group has finished
+    let dir = copies_tree(5);
+    let stub = ApiStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    let first = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    assert_eq!(stub.request_count(), 1);
+    // When the same tree is run again
+    let second = run_with_config(dir.path(), TRIAGE_ON, &stub, &[]);
+    // Then no request is made
+    assert_eq!(stub.request_count(), 1, "the cache answered");
+    // And the group shows the same verdict
+    assert_eq!(second.stdout, first.stdout);
+    assert!(String::from_utf8_lossy(&second.stdout).contains("  triage: "));
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_group_verdict_reaches_every_pair_in_json_and_pr_comment() {
+    use support::api_stub::{ApiStub, Reply};
+    // Given triage is enabled and three copies of one function form one group
+    let dir = copies_tree(3);
+    let stub = ApiStub::scripted(vec![Reply::json(&triage_answer("same_logic", 0.9))]);
+    // When the JSON report is written
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    // Then each of the three pairs carries the group's one verdict
+    let pairs = json["duplicates"].as_array().expect("pairs");
+    assert_eq!(pairs.len(), 3, "{json}");
+    for pair in pairs {
+        assert_eq!(pair["triage"]["kind"], "same-logic", "{pair}");
+    }
+    // And the pr-comment table, from the cached verdict, is triaged too
+    let out = run_with_config(dir.path(), TRIAGE_ON, &stub, &["--format", "pr-comment"]);
+    let comment = String::from_utf8(out.stdout).expect("utf-8");
+    assert!(comment.contains("| Verdict |"), "{comment}");
+    assert_eq!(stub.request_count(), 1, "one request for the group");
 }

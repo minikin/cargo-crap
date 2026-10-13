@@ -21,6 +21,9 @@ pub use crate::duplicates::compare::sort_pairs;
 /// Any other count prints the section untriaged: all or nothing, so no pair's
 /// missing line can be read as a verdict.
 ///
+/// Library API for callers that report pairs on their own: the binary
+/// groups its pairs and prints them with [`render_grouped`].
+///
 /// # Errors
 ///
 /// Returns an error when the writer does.
@@ -41,16 +44,15 @@ pub fn render(
     Ok(())
 }
 
-/// Render the duplicate section over `groups` of `pairs`: a group of two
-/// prints exactly as its pair does in [`render`], with the pair's triage line
-/// when `triage` covers every pair, and a larger group prints its size, its
-/// weakest score and its members by location.
+/// Render the duplicate section over `groups`, with each group's verdict
+/// under it when `triage` holds one assessment per group. A group of two
+/// prints exactly as its pair does in [`render`], and a larger group prints
+/// its size, its weakest score and its members by location.
 ///
 /// # Errors
 ///
 /// Returns an error when the writer does.
 pub fn render_grouped(
-    pairs: &[DuplicatePair],
     groups: &[DuplicateGroup],
     triage: Option<&[Assessment]>,
     out: &mut dyn Write,
@@ -60,35 +62,23 @@ pub fn render_grouped(
         return Ok(());
     }
     writeln!(out, "{} duplicate {}:\n", groups.len(), noun(groups.len()))?;
-    let triage = covering(triage, pairs.len());
-    for group in groups {
-        match pair_of(group, pairs) {
-            Some(n) => write_pair(&pairs[n], triage.and_then(|t| t.get(n)), out)?,
-            None => write_group(group, out)?,
-        }
+    let triage = covering(triage, groups.len());
+    for (n, group) in groups.iter().enumerate() {
+        write_group(group, triage.and_then(|t| t.get(n)), out)?;
     }
     Ok(())
 }
 
-/// The index in `pairs` of a group of two's pair, or `None` for a larger
-/// group.
-fn pair_of(
-    group: &DuplicateGroup,
-    pairs: &[DuplicatePair],
-) -> Option<usize> {
-    let [first, second] = group.members.as_slice() else {
-        return None;
-    };
-    pairs.iter().position(|p| {
-        (&p.first, &p.second) == (first, second) || (&p.first, &p.second) == (second, first)
-    })
-}
-
-/// A group of three or more: its size and weakest score, then its members.
+/// One group: a pair's heading for two members, the group's size and
+/// weakest score for more, then the members and the verdict.
 fn write_group(
     group: &DuplicateGroup,
+    assessment: Option<&Assessment>,
     out: &mut dyn Write,
 ) -> Result<()> {
+    if group.members.len() == 2 {
+        return write_pair(&group.representative, assessment, out);
+    }
     writeln!(
         out,
         "DUPLICATE GROUP of {}, score={:.2}",
@@ -97,6 +87,9 @@ fn write_group(
     )?;
     for member in &group.members {
         writeln!(out, "  {}", side(member))?;
+    }
+    if let Some(assessment) = assessment {
+        writeln!(out, "  triage: {}", triage_line(assessment))?;
     }
     Ok(())
 }
@@ -127,7 +120,8 @@ pub fn render_table(
     }
     writeln!(out, "## {} duplicate {}\n", pairs.len(), noun(pairs.len()))?;
     let shown = cap.unwrap_or(pairs.len()).min(pairs.len());
-    let triage = covering(opts.triage, pairs.len());
+    let pair_triage = opts.pair_triage();
+    let triage = covering(pair_triage.as_deref(), pairs.len());
     write_table_body(pairs, triage, shown, opts, out)?;
     if pairs.len() > shown {
         super::types::write_truncation_footer(out, pairs.len() - shown)?;
@@ -802,13 +796,10 @@ mod tests {
 
     // ---- Groups in the human section ----
 
-    /// The human section over `groups` of `pairs`, untriaged.
-    fn grouped(
-        pairs: &[DuplicatePair],
-        groups: &[DuplicateGroup],
-    ) -> String {
+    /// The human section over `groups`, untriaged.
+    fn grouped(groups: &[DuplicateGroup]) -> String {
         let mut buf = Vec::new();
-        render_grouped(pairs, groups, None, &mut buf).expect("a Vec writer cannot fail");
+        render_grouped(groups, None, &mut buf).expect("a Vec writer cannot fail");
         String::from_utf8(buf).expect("utf-8")
     }
 
@@ -836,9 +827,9 @@ mod tests {
 
     #[test]
     fn a_group_of_three_prints_its_members_under_one_heading() {
-        let (pairs, groups) = trio();
+        let (_, groups) = trio();
         assert_eq!(
-            grouped(&pairs, &groups),
+            grouped(&groups),
             "1 duplicate candidate:\n\n\
              DUPLICATE GROUP of 3, score=0.90\n  \
              src/f9.rs:1-5  g1\n  \
@@ -851,17 +842,13 @@ mod tests {
     fn a_group_of_two_prints_as_its_pair_with_the_pairs_verdict() {
         let pairs = [pair(1, 0.95), pair(2, 0.9)];
         let groups = crate::duplicates::group::group_pairs(&pairs, 0.82);
-        assert_eq!(
-            grouped(&pairs, &groups),
-            rendered(&pairs),
-            "the same text as pairs"
-        );
+        assert_eq!(grouped(&groups), rendered(&pairs), "the same text as pairs");
         let triage = [
             asserted(Kind::SameLogic, 0.91, 2.2),
             asserted(Kind::SameLogic, 0.8, 0.0),
         ];
         let mut buf = Vec::new();
-        render_grouped(&pairs, &groups, Some(&triage), &mut buf).expect("a Vec writer cannot fail");
+        render_grouped(&groups, Some(&triage), &mut buf).expect("a Vec writer cannot fail");
         assert_eq!(
             String::from_utf8(buf).expect("utf-8"),
             triaged(&pairs, &triage)
@@ -869,15 +856,35 @@ mod tests {
     }
 
     #[test]
+    fn a_groups_verdict_prints_once_under_it() {
+        let (_, groups) = trio();
+        let mut buf = Vec::new();
+        render_grouped(
+            &groups,
+            Some(&[asserted(Kind::SameLogic, 0.99, 3.0)]),
+            &mut buf,
+        )
+        .expect("a Vec writer cannot fail");
+        let out = String::from_utf8(buf).expect("utf-8");
+        assert!(
+            out.ends_with(
+                "  src/f9.rs:20-24  g20\n  triage: same-logic, should-be-one (conf 0.99)\n"
+            ),
+            "{out}"
+        );
+        assert_eq!(out.matches("triage:").count(), 1, "{out}");
+    }
+
+    #[test]
     fn no_groups_say_so() {
-        assert_eq!(grouped(&[], &[]), "No candidate duplicates found.\n");
+        assert_eq!(grouped(&[]), "No candidate duplicates found.\n");
     }
 
     #[test]
     fn a_group_that_cannot_be_written_is_an_error() {
-        let (pairs, groups) = trio();
+        let (_, groups) = trio();
         for refused in ["DUPLICATE GROUP", "g10"] {
-            let result = render_grouped(&pairs, &groups, None, &mut Refuses::new(refused));
+            let result = render_grouped(&groups, None, &mut Refuses::new(refused));
             assert!(result.is_err(), "a refused {refused:?} write is reported");
         }
     }

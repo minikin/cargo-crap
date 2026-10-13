@@ -1486,11 +1486,13 @@ fn duplicate_pairs(
     Ok(Some(pairs))
 }
 
-/// The duplicate section's content: the pairs, and their triage when it ran.
+/// The duplicate section's content: the pairs, their groups, and one triage
+/// verdict per group when it ran.
 struct DuplicateSection<'a> {
     pairs: Option<Vec<DuplicatePair>>,
     /// The pairs grouped into functions that all resemble each other.
     groups: Option<Vec<duplicates::group::DuplicateGroup>>,
+    /// One assessment per group, in the groups' order.
     triage: Option<Vec<Assessment>>,
     /// The display name of the provider asked, named when triage answered.
     provider: &'static str,
@@ -1509,9 +1511,10 @@ impl DuplicateSection<'_> {
     }
 }
 
-/// Find the duplicate pairs, then triage them when configured to. Triage
-/// only ever sees pairs that will be reported, so a format that cannot
-/// carry duplicates never triggers a request.
+/// Find the duplicate pairs and group them, then triage each group's most
+/// similar pair when configured to. Triage only ever sees groups that will
+/// be reported, so a format that cannot carry duplicates never triggers a
+/// request.
 fn duplicate_section<'a>(
     settings: &'a DupSettings,
     roots: &[ScanRoot],
@@ -1519,12 +1522,15 @@ fn duplicate_section<'a>(
     target: Option<&Path>,
 ) -> Result<DuplicateSection<'a>> {
     let pairs = duplicate_pairs(settings, roots, format)?;
-    let triage = pairs
-        .as_deref()
-        .and_then(|pairs| triage_assessments(settings, pairs, target));
     let groups = pairs
         .as_deref()
         .map(|pairs| duplicates::group::group_pairs(pairs, settings.threshold));
+    // One request per group, about its most similar pair.
+    let triage = groups.as_deref().and_then(|groups| {
+        let representatives: Vec<DuplicatePair> =
+            groups.iter().map(|g| g.representative.clone()).collect();
+        triage_assessments(settings, &representatives, target)
+    });
     Ok(DuplicateSection {
         pairs,
         groups,
@@ -1539,9 +1545,9 @@ fn duplicate_section<'a>(
 ///
 /// Triage is advisory, so nothing about it can fail the run: no key, no
 /// network, an API error or an answer that does not decode each become one
-/// warning naming the cause, and the pairs are reported untriaged, exactly
-/// as with triage off. A build without the `triage` feature has no client:
-/// it says how to get one and reports the pairs untriaged.
+/// warning naming the cause, and the duplicates are reported untriaged,
+/// exactly as with triage off. A build without the `triage` feature has no
+/// client: it says how to get one and reports the duplicates untriaged.
 fn triage_assessments(
     settings: &DupSettings,
     pairs: &[DuplicatePair],
@@ -1558,7 +1564,7 @@ fn triage_assessments(
         triage::run(pairs, &api_settings)
             .inspect_err(|e| {
                 eprintln!(
-                    "warning: duplicate triage skipped: {e}; the pairs are reported untriaged"
+                    "warning: duplicate triage skipped: {e}; the duplicates are reported untriaged"
                 );
             })
             .ok()
