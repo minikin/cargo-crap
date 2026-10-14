@@ -188,7 +188,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   have no verdict_, _On a delta run the budget goes to the new groups_, _A
   budget of 0 on a cold cache still explains the table_. Tests: unit +
   acceptance.
-- [ ] **T5 — Docs and CHANGELOG.** The triage guide and config reference
+- [x] **T5 — Docs and CHANGELOG.** The triage guide and config reference
   describe `max-requests`, the output-formats reference the budget line,
   and the CHANGELOG the feature and the library break. Needs: T4. No
   scenario: checked by the docs tests.
