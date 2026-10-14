@@ -111,7 +111,7 @@ runs:
     # comment at a local stand-in through them.
     - name: Comment
       if: steps.score.outputs.comment == 'true' && (env.CARGO_CRAP_TEST_PR_NUMBER || github.event.pull_request.number)
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       env:
         REPORT: ${{ steps.score.outputs.report }}
         MARKER: ${{ inputs.comment-marker }}
