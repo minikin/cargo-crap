@@ -21,13 +21,27 @@ file_input lcov "$given_lcov"
 file_input baseline "$given_baseline"
 # Each step its own directory, so two steps in one job keep their reports.
 work="$(mktemp -d "$RUNNER_TEMP/cargo-crap.XXXXXX")"
+# Split before anything runs, as plain assignments, so input that cannot be
+# split stops the step here.
+crap_words="$(words_of args "$CRAP_ARGS")"
+coverage_words="$(words_of coverage-args "$CRAP_COVERAGE_ARGS")"
 args=()
 coverage_args=()
-while IFS= read -r word; do args+=("$word"); done < <(split_words "$CRAP_ARGS")
-while IFS= read -r word; do coverage_args+=("$word"); done < <(split_words "$CRAP_COVERAGE_ARGS")
+if [ -n "$crap_words" ]; then
+    while IFS= read -r word; do args+=("$word"); done <<< "$crap_words"
+fi
+if [ -n "$coverage_words" ]; then
+    while IFS= read -r word; do coverage_args+=("$word"); done <<< "$coverage_words"
+fi
 
 cover() {
     cargo llvm-cov --lcov --output-path "$1" ${coverage_args[@]+"${coverage_args[@]}"}
+}
+
+# Run a command with every provider key cleared, which cargo-crap reads as
+# unset, so it sends no triage request and only reads cached verdicts.
+unpaid() {
+    TYPESAFE_API_KEY='' OPENAI_API_KEY='' "$@"
 }
 
 # The `.cargo-crap.toml` cargo-crap would read from here, up to the
@@ -109,7 +123,7 @@ score_base() {
         cp "$work/pr-config.toml" "$pr_config"
     fi
     cover "$work/base.lcov"
-    TYPESAFE_API_KEY='' OPENAI_API_KEY='' cargo-crap --lcov "$work/base.lcov" \
+    unpaid cargo-crap --lcov "$work/base.lcov" \
         ${args[@]+"${args[@]}"} --format json --output "$work/base.json"
     trap - EXIT
     restore
@@ -151,21 +165,18 @@ crap() {
     cargo-crap --lcov "$lcov" ${args[@]+"${args[@]}"} ${compared[@]+"${compared[@]}"} "$@"
 }
 
-# Links at the pull request's own head, not the merge commit GITHUB_SHA
-# names on a pull_request event. cargo-crap writes paths relative to the
-# working directory, so a crate in a subdirectory carries it in the ref:
-# `blob/<sha>/crates/foo/src/lib.rs`.
-links=()
-ref="${CRAP_HEAD_SHA:-${GITHUB_SHA:-}}"
-if [ -n "$ref" ]; then
-    prefix="$(git rev-parse --show-prefix)"
-    links=(--commit-ref "$ref${prefix:+/${prefix%/}}")
-fi
+# Links name the commit that was scored: on a pull request's default
+# checkout the merge commit, so a line number is the line that was measured.
+# cargo-crap writes paths relative to the working directory, so a crate in a
+# subdirectory carries it in the ref: `blob/<sha>/crates/foo/src/lib.rs`.
+ref="$(git rev-parse HEAD)"
+prefix="$(git rev-parse --show-prefix)"
+links=(--commit-ref "$ref${prefix:+/${prefix%/}}")
 report="$work/report.md"
 if [ "${#compared[@]}" -gt 0 ]; then
-    crap --format pr-comment ${links[@]+"${links[@]}"} --output "$report"
+    crap --format pr-comment "${links[@]}" --output "$report"
 else
-    crap --format markdown ${links[@]+"${links[@]}"} --output "$report"
+    crap --format markdown "${links[@]}" --output "$report"
 fi
 # The runner drops a job summary over 1 MiB whole, so a report that large is
 # left to the `report` output.
@@ -195,7 +206,10 @@ fi
 
 # One JSON run is both the gate and, on a pull request, the regression
 # count. Its status goes to the `status` output, which the Action's last
-# step exits with, so the comment is posted before the step fails.
+# step exits with, so the comment is posted before the step fails. It runs
+# unpaid: the report run has spent the triage budget and cached what it
+# learnt, and a run with a key would spend the budget again. Its warnings
+# repeat the report run's, so only its errors are shown.
 gate=()
 if [ "$fail_above" = true ]; then
     gate+=(--fail-above)
@@ -204,7 +218,8 @@ if [ "${#compared[@]}" -gt 0 ] && [ "$fail_regression" = true ]; then
     gate+=(--fail-regression)
 fi
 status=0
-crap ${gate[@]+"${gate[@]}"} --format json --output "$work/result.json" || status=$?
+unpaid crap ${gate[@]+"${gate[@]}"} --format json --output "$work/result.json" 2> "$work/gate.err" || status=$?
+grep -v '^warning: ' "$work/gate.err" >&2 || true
 # 2 is cargo-crap failing to run, not a gate: nothing to count.
 if [ "$status" -ge 2 ]; then
     exit "$status"

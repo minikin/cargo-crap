@@ -468,6 +468,65 @@ jobs:
           if grep -q 'fn two' "$RUNNER_TEMP/api.log"; then exit 1; fi
           if grep -q '"triage"' "$RUNNER_TEMP"/cargo-crap.*/base.json; then exit 1; fi
 
+  pr-budget:
+    name: The triage budget is spent once per job
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: Five new groups, none cached, and a budget of two
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" five-groups
+          printf '[duplicates]\nenabled = true\n\n[duplicates.triage]\nenabled = true\nmax-requests = 2\n' \
+            > "$RUNNER_TEMP/shop/.cargo-crap.toml"
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" verdicts &
+          sleep 1
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          comment: false
+        env:
+          TYPESAFE_API_KEY: not-a-key
+          TYPESAFE_BASE_URL: http://127.0.0.1:8765
+      - name: Two requests in the whole job
+        run: test "$(grep -c '/v1/systemone' "$RUNNER_TEMP/api.log")" = 2
+
+  bad-args:
+    name: Arguments that cannot be split fail the step
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A small tested crate
+        run: scripts/action/fixture.sh "$RUNNER_TEMP/shop"
+      - uses: ./
+        id: crap
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ""
+          args: --threshold 20'
+      - name: Failed before any cargo-crap run
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: |
+          test "$OUTCOME" = failure
+          test -z "$REPORT"
+
   pr-args:
     name: Extra arguments reach cargo-crap
     needs: build
@@ -533,12 +592,53 @@ jobs:
       - name: The earlier comment was updated, and none was added
         env:
           REPORT: ${{ steps.crap.outputs.report }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           grep -q '"method": "PATCH", "path": "/repos/[^/]*/[^/]*/issues/comments/7"' "$RUNNER_TEMP/api.log"
           if grep -q '"method": "POST"' "$RUNNER_TEMP/api.log"; then exit 1; fi
-          # The links name the pull request's head, or the pushed commit.
-          grep -q "/blob/${HEAD_SHA:-$GITHUB_SHA}/" "$REPORT"
+          # The links name the commit that was scored.
+          grep -q "/blob/$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD)/" "$REPORT"
+
+  comment-redirect:
+    name: Code under test cannot redirect the comment
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
+      CARGO_CRAP_TEST_PR_NUMBER: "42"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      # The build script runs in the coverage step and points every later
+      # step at another host and another issue.
+      - name: A crate whose build script rewrites the job's environment
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop"
+          cat > "$RUNNER_TEMP/shop/build.rs" <<'RUST'
+          fn main() {
+              use std::io::Write;
+              if let Ok(path) = std::env::var("GITHUB_ENV") {
+                  let mut env = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+                  writeln!(env, "CARGO_CRAP_TEST_API_URL=http://127.0.0.1:8766").unwrap();
+                  writeln!(env, "CARGO_CRAP_TEST_PR_NUMBER=99").unwrap();
+              }
+          }
+          RUST
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github &
+          python3 scripts/action/stub.py 8766 "$RUNNER_TEMP/elsewhere.log" github &
+          sleep 1
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ""
+      - name: The comment went where the job said, and nowhere else
+        run: |
+          grep -q 'CARGO_CRAP_TEST_API_URL=http://127.0.0.1:8766' "$GITHUB_ENV"
+          grep -q '"method": "POST", "path": "/repos/[^/]*/[^/]*/issues/42/comments"' "$RUNNER_TEMP/api.log"
+          test ! -e "$RUNNER_TEMP/elsewhere.log"
 
   comment-fork:
     name: A fork's pull request gets the report in the job summary
@@ -706,8 +806,7 @@ jobs:
       - name: The links carry the subdirectory
         env:
           REPORT: ${{ steps.crap.outputs.report }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: grep -q "/blob/${HEAD_SHA:-$GITHUB_SHA}/crates/shop/" "$REPORT"
+        run: grep -q "/blob/$(git -C "$RUNNER_TEMP/repo" rev-parse HEAD)/crates/shop/" "$REPORT"
 
   own-checkout:
     name: The Action survives running inside the checkout it compares

@@ -90,6 +90,12 @@ jobs:
           merge-multiple: true
           path: artifacts
 
+      # The Action verifies every archive it installs against this file, and
+      # action-smoke below installs from this release, so it ships with it.
+      - name: Checksums
+        working-directory: artifacts
+        run: sha256sum cargo-crap-* > SHA256SUMS
+
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*

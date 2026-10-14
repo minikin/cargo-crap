@@ -35,6 +35,32 @@ download_url() {
     fi
 }
 
+# The SHA-256 digest of file `$1`, in lowercase hex: `sha256sum` on Linux and
+# Git Bash, `shasum` on macOS.
+digest_of() {
+    if command -v sha256sum > /dev/null; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+# Whether archive `$1` has the digest the release's sums file `$2` lists for
+# its name. Either failure names the archive.
+verify_archive() {
+    local name expected
+    name="$(basename "$1")"
+    expected="$(awk -v name="$name" '$2 == name || $2 == "*" name { print $1 }' "$2")"
+    if [ -z "$expected" ]; then
+        echo "::error::the release's SHA256SUMS lists no $name" >&2
+        return 1
+    fi
+    if [ "$(digest_of "$1")" != "$expected" ]; then
+        echo "::error::$name does not match the digest in the release's SHA256SUMS" >&2
+        return 1
+    fi
+}
+
 # How many functions a shields badge counts above the threshold: its message
 # is "passing" for none and "N crappy" otherwise.
 crappy_from_badge() {
@@ -53,6 +79,21 @@ split_words() {
         return 0
     fi
     printf '%s' "$1" | xargs printf '%s\n'
+}
+
+# The words of input `$1` (value `$2`), one per line. Input that cannot be
+# split, such as a stray quote, prints none and fails naming the input: xargs
+# may have printed the words before the quote, and a run without the rest
+# would pass under the wrong settings.
+words_of() {
+    local words
+    if ! words="$(split_words "$2" 2> /dev/null)"; then
+        echo "::error::$1 cannot be split into words: check its quotes" >&2
+        return 1
+    fi
+    if [ -n "$words" ]; then
+        printf '%s\n' "$words"
+    fi
 }
 
 # `value` when it is `true` or `false`. Anything else is an error naming the

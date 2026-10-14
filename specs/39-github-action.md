@@ -1,6 +1,6 @@
 # Spec 39: A GitHub Action
 
-**Status:** Implemented
+**Status:** Approved
 **Effort:** Large
 **Module:** `action.yml` (new), `scripts/action/` (new), `.github/workflows/action.yml` (new), `.github/workflows/demo.yml`, `.github/workflows/release.yml`, `docs/`
 
@@ -189,6 +189,41 @@ When  the Action runs
 Then  both the pull request's run and the base-commit run pass them
 ```
 
+### Scenario: Code under test cannot redirect the comment
+
+```
+Given a build script that writes `CARGO_CRAP_TEST_API_URL` to `GITHUB_ENV`
+When  the Action runs on a pull request
+Then  the comment goes to the API the job started with
+And   the host the build script named receives nothing
+```
+
+### Scenario: The triage budget is spent once per job
+
+```
+Given duplicate triage is enabled with `max-requests = 2`, five groups
+      without a cached verdict, and a provider key in the environment
+When  the Action runs on a pull request
+Then  the provider receives exactly two requests
+```
+
+### Scenario: Arguments that cannot be split fail the step
+
+```
+Given `args: --threshold 20'`
+When  the Action runs
+Then  the step fails naming `args`, before any cargo-crap run
+```
+
+### Scenario: An archive that does not match the release's sums is refused
+
+```
+Given a downloaded archive whose digest is not the one `SHA256SUMS` lists
+When  the Action installs it
+Then  the step fails naming the archive
+And   no cargo-crap is put on `PATH`
+```
+
 ---
 
 ## Tasks
@@ -220,7 +255,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   existing LCOV file skips the coverage run_, _A given baseline file
   replaces the base-commit run_. Tests: CI scenario jobs.
 - [x] **T4 — The sticky comment.** Post or update by `comment-marker`
-  through the REST API, links at the head commit, and the job summary with
+  through the REST API, links at the commit that was scored, and the job summary with
   one warning when the token cannot comment. Needs: T3. Scenarios: _A
   second run updates the comment instead of adding one_, _A fork's pull
   request gets the report in the job summary_, _Two comments with their own
@@ -231,6 +266,19 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   `v1`, the demo runs through `uses: ./` with its own marker, and the
   README, the CI guides and the CHANGELOG show the one-step setup. Needs: T4. No scenario: checked by the docs
   tests and the demo's comment.
+- [ ] **T6 — The comment cannot be redirected, and links name what was
+  scored.** The Install step reads the test seams before any repository
+  code runs and passes them on as its outputs, and the Comment step reads
+  only those. Links name `git rev-parse HEAD`. Needs: T5. Scenarios: _Code
+  under test cannot redirect the comment_. Tests: CI scenario jobs.
+- [ ] **T7 — The budget is spent once, and bad arguments fail.** The gate
+  run clears the provider keys, and input that cannot be split into words
+  fails the step. Needs: T6. Scenarios: _The triage budget is spent once
+  per job_, _Arguments that cannot be split fail the step_. Tests: shell +
+  CI scenario jobs.
+- [ ] **T8 — Release checksums.** The release job publishes `SHA256SUMS`,
+  and install verifies the archive against it. Needs: T7. Scenarios: _An
+  archive that does not match the release's sums is refused_. Tests: shell.
 
 ---
 
@@ -279,7 +327,12 @@ for the newest release on each run. **Outputs:** `crappy` (functions above the t
 `cargo-crap-{target}.tar.gz` or `.zip` on Windows, from the release tagged
 `v{version}`, or from the latest release. Downloaded with `gh release
 download` or `curl`, unpacked with `tar` or, on Windows, the `unzip` Git
-Bash ships, and put on `PATH`.
+Bash ships, and put on `PATH`. The release job publishes `SHA256SUMS`
+beside the archives, and install refuses an archive whose digest is not the
+one listed. Releases before 0.8.0 had the file attached afterwards,
+computed from the assets they held, so every version installs verified and
+one without the file does not install. This catches a corrupted or replaced asset, not a
+compromised release, which could replace the file too.
 
 **Coverage.** Without `lcov`, `cargo llvm-cov --lcov --output-path` runs
 with `coverage-args`, after `taiki-e/install-action` installs
@@ -301,9 +354,11 @@ expected.
 **Report and comment.** One run writes `--format pr-comment` (on a pull
 request) or `--format markdown` (on a push) to a file, appended to the job
 summary and named by `report`. A `--format json` run of the same inputs
-fills the outputs. On a pull request the links point at the pull request's
-head commit (`--commit-ref` with the head SHA), not the merge commit
-`GITHUB_SHA` names. The comment is found by `comment-marker`: the default is
+fills the outputs. The links name the commit that was scored
+(`--commit-ref` with `git rev-parse HEAD`): under the default checkout of a
+pull request that is the merge commit, so a line number in the comment is
+the line that was measured. The merge commit is recomputed when the base
+moves, and the next run's comment links the new one. The comment is found by `comment-marker`: the default is
 the marker the pr-comment format starts with, and any other marker is put
 on the comment's first line. It is updated if present and created
 otherwise, through the REST API with `github-token`. A 403 or 404 there is
@@ -312,7 +367,15 @@ the comment's whole first line, and an empty one is refused, so a comment
 written by someone else is never taken for the Action's.
 
 **Gate.** Last, after the comment: the gate run adds `--fail-regression`
-and `--fail-above` per the inputs, and its exit code is the step's.
+and `--fail-above` per the inputs, and its exit code is the step's. It
+clears every provider's key as the base run does: the report run has
+already spent the triage budget and cached its verdicts, and a second run
+with a key would spend it again on the groups the first one skipped.
+
+**Arguments.** `args` and `coverage-args` are split into words as the shell
+would, quotes and backslashes included, and nothing in them is executed.
+Input that cannot be split, such as a stray quote, fails the step naming
+the input, so no run goes ahead with arguments missing.
 
 **Versioning.** `v1` is a moving tag on the commit of each 0.x release
 whose `action.yml` keeps the v1 inputs. The release workflow moves it to
@@ -328,8 +391,13 @@ with `working-directory` and `base` pointing at it, and asserts on the
 outputs and the summary file. The comment scenarios start a small local
 HTTP server that stands in for the GitHub API and assert on the requests it
 received. GitHub does not let a step override `GITHUB_API_URL`, so the
-comment step reads two test seams first, `CARGO_CRAP_TEST_API_URL` and
+comment step takes two test seams first, `CARGO_CRAP_TEST_API_URL` and
 `CARGO_CRAP_TEST_PR_NUMBER`, named so no real workflow sets them by chance.
+The Install step reads them from the environment before any of the
+repository's code runs and passes them on as its outputs. Code that the
+coverage step runs can write `GITHUB_ENV` for every later step, and must not
+be able to send the token to another host or the comment to another
+issue.
 The scripts' small pieces (the target triple, the word splitting, the input
 checks) get shell tests run by `just`. The demo workflow switches to `uses: ./` with its own
 `comment-marker`, so the showcase on #119 runs through the Action and never

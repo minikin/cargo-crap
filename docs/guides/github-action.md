@@ -25,7 +25,8 @@ jobs:
 ```
 
 It works on Linux, macOS and Windows runners. It downloads a released
-cargo-crap binary, so nothing is compiled but your own tests.
+cargo-crap binary and checks it against the release's `SHA256SUMS`, so
+nothing is compiled but your own tests.
 
 ## What it does
 
@@ -44,8 +45,15 @@ permission. The cost is a second test run. Then it:
    before,
 3. fails the step when a function's score rose, after commenting.
 
+The links in the report name the commit that was scored: for a pull
+request, the merge commit GitHub checks out, so a line number points at the
+line that was measured.
+
 A pull request from a fork has a read-only token, which cannot comment. The
 report is then in the job summary, the step warns once, and it still gates.
+Keep the Action on `pull_request`. It runs the pull request's tests, and
+under `pull_request_target` the token can write, so checking out a fork's
+code there hands that code a write token.
 
 The base-commit run uses the pull request's `.cargo-crap.toml`, so a pull
 request that changes the threshold or the duplicate settings is compared
@@ -71,7 +79,9 @@ the base commit fails to build.
 | `fail-above` | `false` | fail when a function scores above the threshold |
 | `github-token` | `${{ github.token }}` | the token that writes the comment |
 
-`binary`, `lcov` and `baseline` are relative to `working-directory`. The
+`binary`, `lcov` and `baseline` are relative to `working-directory`.
+`args` and `coverage-args` are split as the shell would split them, and a
+stray quote fails the step rather than dropping the arguments. The
 threshold and everything else come from `.cargo-crap.toml`, as on the
 command line. `lcov` on a pull request leaves the base commit with no
 coverage to score, so give `baseline` with it, or set `fail-regression` to
@@ -106,8 +116,9 @@ base's (see [Finding duplicates](duplicates.md)). For
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-The base-commit run clears every provider key, so it never pays for a
-request.
+Only the run that writes the report sends triage requests. The
+base-commit run and the gate run clear every provider key, so
+`max-requests` is spent once per job.
 
 ## Versions
 

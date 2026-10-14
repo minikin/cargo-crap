@@ -4,12 +4,15 @@ Records every request, one JSON object per line, in the log file given.
 
   triage   answers every request with a 500, so a run that reaches it learns
            nothing and the test reads what was asked.
+  verdicts answers every request with the same TypeSafe verdict, so a run
+           caches what it asked and the test counts the requests.
   github   a pull request's issue comments, kept in memory: GET lists them,
            POST adds one, PATCH edits one. `--existing BODY` starts with one
            comment, and `--forbid` refuses every write with a 403, as a
            fork's read-only token is refused.
 
 Usage: python3 stub.py <port> <log> triage
+       python3 stub.py <port> <log> verdicts
        python3 stub.py <port> <log> github [--existing BODY] [--forbid]
 """
 import json
@@ -17,6 +20,15 @@ import re
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+VERDICT = {
+    "model": "stub",
+    "answers": {
+        "duplication_kind": {"type": "choice", "choice": "same_logic", "confidence": 0.9},
+        "worth_extracting": {"type": "score", "score": 2.0, "confidence": 0.8},
+        "divergence_risk": {"type": "noul", "noul": 0.6},
+    },
+    "usage": {},
+}
 COMMENTS = []
 FORBID = False
 MODE = "triage"
@@ -38,6 +50,8 @@ class Stub(BaseHTTPRequestHandler):
             log.write(json.dumps({"method": self.command, "path": self.path, "body": body}) + "\n")
         if MODE == "triage":
             return self.reply(500)
+        if MODE == "verdicts":
+            return self.reply(200, VERDICT)
         path = self.path.split("?")[0]
         if self.command == "GET" and re.fullmatch(r"/repos/[^/]+/[^/]+/issues/\d+/comments", path):
             return self.reply(200, COMMENTS)

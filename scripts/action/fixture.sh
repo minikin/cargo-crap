@@ -4,7 +4,7 @@
 # a pull request. Prints nothing. The base commit is `HEAD~1` when there is a
 # change, `HEAD` otherwise.
 #
-# Usage: fixture.sh <dir> [regress|steady|config-skew|extra|lone-copy] [subdir]
+# Usage: fixture.sh <dir> [regress|steady|config-skew|extra|lone-copy|five-groups] [subdir]
 #   subdir       put the crate in <dir>/<subdir>, with the repository at <dir>
 #   regress      the pull request adds untested branches to `shipping`
 #   steady       the pull request only rewords a comment
@@ -14,6 +14,7 @@
 #   lone-copy    the base commit holds a duplicate pair, the pull request
 #                deletes one of the two and adds a pair of its own
 #   broken-base  the base commit does not compile, the pull request fixes it
+#   five-groups  the pull request adds five duplicate pairs, none like another
 set -euo pipefail
 dir="$1"
 change="${2:-}"
@@ -84,6 +85,59 @@ pub fn $1(a: i32, b: i32) -> i32 {
 }
 RUST
 }
+# Five functions no two of which look alike, each named with `$1`.
+five() {
+    cat <<RUST
+pub fn odd_$1(xs: &[i32]) -> Vec<i32> {
+    let mut ys = Vec::new();
+    for x in xs {
+        if x % 2 == 1 {
+            ys.push(x + 1);
+        }
+    }
+    ys
+}
+RUST
+    tally "range_$1"
+    cat <<RUST
+pub fn mask_$1(s: &str) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_digit() {
+            out.push('#');
+        } else if ch.is_whitespace() {
+            continue;
+        } else {
+            out.push(ch.to_ascii_uppercase());
+        }
+    }
+    out
+}
+pub fn steps_$1(n: u64) -> u64 {
+    let mut steps = 0;
+    let mut m = n;
+    while m != 1 && m != 0 {
+        m = if m % 2 == 0 { m / 2 } else { 3 * m + 1 };
+        steps += 1;
+        if steps > 1000 {
+            break;
+        }
+    }
+    steps
+}
+pub fn trim_$1(v: &mut Vec<u8>) -> usize {
+    let before = v.len();
+    v.retain(|b| *b != 0);
+    v.sort_unstable();
+    v.dedup();
+    match v.first() {
+        Some(first) if *first > 10 => before - v.len() + 1,
+        Some(_) => before - v.len(),
+        None => 0,
+    }
+}
+RUST
+}
 shipping > src/lib.rs
 case "$change" in
     broken-base) echo "pub fn broken() -> u32 { missing }" >> src/lib.rs ;;
@@ -107,6 +161,7 @@ PY
     extra) copy extra_two > src/extra.rs ;;
     lone-copy) { copy one; tally keep_a; tally keep_b; } > src/copies.rs ;;
     broken-base) shipping > src/lib.rs ;;
+    five-groups) { five a; five b; } > src/groups.rs && echo "pub mod groups;" >> src/lib.rs ;;
     *) echo "unknown change: $change" >&2 && exit 1 ;;
 esac
 commit pr

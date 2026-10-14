@@ -17,6 +17,12 @@ else
     dir="$(cd "$RUNNER_TEMP" && pwd)/cargo-crap-bin"
     mkdir -p "$dir"
     curl -fsSL --retry 3 -o "$dir/$archive" "$(download_url "$VERSION" "$archive")"
+    if ! curl -fsSL --retry 3 -o "$dir/SHA256SUMS" "$(download_url "$VERSION" SHA256SUMS)"; then
+        echo "::error::the cargo-crap $VERSION release has no SHA256SUMS to verify $archive against"
+        exit 1
+    fi
+    # Checked before anything is unpacked, so a mismatch leaves nothing to run.
+    verify_archive "$dir/$archive" "$dir/SHA256SUMS"
     case "$archive" in
         *.zip)
             if command -v unzip > /dev/null; then
