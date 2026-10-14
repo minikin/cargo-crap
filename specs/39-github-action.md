@@ -198,7 +198,7 @@ property / acceptance), and, when it depends on earlier tasks, a
 `Needs:` naming them. A task with no `Needs:` is a root. A task whose
 needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
 
-- [ ] **T1 — Install, cover and report on a push.** `action.yml` with its
+- [x] **T1 — Install, cover and report on a push.** `action.yml` with its
   inputs and outputs, an install script that maps the runner to a release
   archive (`version` or `latest`), the coverage step, and a push run that
   writes the markdown report to the job summary, sets `crappy` and
