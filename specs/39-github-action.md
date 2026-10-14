@@ -207,7 +207,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   installed_, _A given binary is used instead of a download_, _It runs on
   Linux, macOS and Windows runners_. Tests: shell
   (the runner-to-target mapping) + CI scenario jobs.
-- [ ] **T2 — Compare a pull request with its base commit.** The base run in
+- [x] **T2 — Compare a pull request with its base commit.** The base run in
   place, under the pull request's config, with the provider keys cleared,
   the same `args` on both runs, the pr-comment report in the summary, the
   `regressed` output and the regression gate. Needs: T1. Scenarios: _A
