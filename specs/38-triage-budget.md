@@ -181,7 +181,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   key_, _Without a budget every group is asked_, _A budget that covers
   every group says nothing_. Tests: unit + acceptance (the `triage`
   build's stub counts requests).
-- [ ] **T4 — The tables say why rows have no verdict.** `RenderOptions`
+- [x] **T4 — The tables say why rows have no verdict.** `RenderOptions`
   gains `untriaged`, and the markdown and pr-comment tables print the
   budget line in its place among the lines under the table, with or
   without a verdict. Needs: T3. Scenarios: _The PR comment says why rows
