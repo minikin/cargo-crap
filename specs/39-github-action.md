@@ -268,17 +268,17 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   `v1`, the demo runs through `uses: ./` with its own marker, and the
   README, the CI guides and the CHANGELOG show the one-step setup. Needs: T4. No scenario: checked by the docs
   tests and the demo's comment.
-- [ ] **T6 — The test seams work only here.** The Comment step reads
+- [x] **T6 — The test seams work only here.** The Comment step reads
   the test seams only when `github.repository` is minikin/cargo-crap, and
   the guide states the trust boundary. Needs: T5. Scenarios: _The test
   seams are ignored outside this repository_. Tests: a docs test over
   `action.yml`, since CI runs only in this repository.
-- [ ] **T7 — The budget is spent once, and bad arguments fail.** The gate
+- [x] **T7 — The budget is spent once, and bad arguments fail.** The gate
   run clears the provider keys, and input that cannot be split into words
   fails the step. Needs: T6. Scenarios: _The triage budget is spent once
   per job_, _Arguments that cannot be split fail the step_. Tests: shell +
   CI scenario jobs.
-- [ ] **T8 — Release checksums.** The release job publishes `SHA256SUMS`,
+- [x] **T8 — Release checksums.** The release job publishes `SHA256SUMS`,
   and install verifies the archive against it. Needs: T7. Scenarios: _An
   archive that does not match the release's sums is refused_. Tests: shell.
 
