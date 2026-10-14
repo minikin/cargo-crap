@@ -146,6 +146,15 @@ When  the Action runs
 Then  cargo-crap 0.8.0 is the binary that scores the crate
 ```
 
+### Scenario: A given binary is used instead of a download
+
+```
+Given `binary: target/release/cargo-crap` names a cargo-crap the job built
+When  the Action runs
+Then  it downloads nothing
+And   that binary scores the crate
+```
+
 ### Scenario: The base-commit run uses the pull request's config
 
 ```
@@ -195,7 +204,8 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   writes the markdown report to the job summary, sets `crappy` and
   `report`, and gates on `fail-above` when asked. Scenarios: _A push run
   writes the report to the job summary_, _A chosen cargo-crap version is
-  installed_, _It runs on Linux, macOS and Windows runners_. Tests: shell
+  installed_, _A given binary is used instead of a download_, _It runs on
+  Linux, macOS and Windows runners_. Tests: shell
   (the runner-to-target mapping) + CI scenario jobs.
 - [ ] **T2 — Compare a pull request with its base commit.** The base run in
   place, under the pull request's config, with the provider keys cleared,
@@ -237,6 +247,7 @@ comment, gate. Small scripts can be run and tested outside a workflow.
 | Input | Default | Meaning |
 |---|---|---|
 | `version` | the release the Action was cut with | cargo-crap release to install, or `latest` |
+| `binary` | none | a cargo-crap binary to use instead of downloading one |
 | `working-directory` | `.` | where the crate is |
 | `args` | none | extra arguments for every cargo-crap run |
 | `lcov` | none | an existing LCOV file, used instead of a coverage run |
@@ -303,7 +314,9 @@ whose `action.yml` keeps the v1 inputs. The release workflow moves it. An
 input removed or renamed is `v2`.
 
 **Testing.** Acceptance is a workflow, `.github/workflows/action.yml`, one
-job per scenario named after it. Each job builds a fixture repository in
+job per scenario named after it. Every job but the install ones passes
+`binary` with a cargo-crap built from the pull request, so the Action is
+tested with the code under review. Each job builds a fixture repository in
 `$RUNNER_TEMP` with a base commit and a pull-request commit, runs `uses: ./`
 with `working-directory` and `base` pointing at it, and asserts on the
 outputs and the summary file. The comment scenarios start a small local
