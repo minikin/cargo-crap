@@ -11,7 +11,8 @@
 #                request's does not
 #   extra        both commits hold src/extra.rs, the pull request changes it
 #   lone-copy    the base commit holds a duplicate pair, the pull request
-#                deletes one of the two
+#                deletes one of the two and adds a pair of its own
+#   broken-base  the base commit does not compile, the pull request fixes it
 set -euo pipefail
 dir="$1"
 change="${2:-}"
@@ -64,8 +65,25 @@ pub fn $1(xs: &[i32]) -> Vec<i32> {
 }
 RUST
 }
+tally() {
+    cat <<RUST
+pub fn $1(a: i32, b: i32) -> i32 {
+    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+    let mut acc = 0;
+    for v in lo..hi {
+        acc += match v % 4 {
+            0 => v * 2,
+            1 => -v,
+            _ => 1,
+        };
+    }
+    acc.max(0)
+}
+RUST
+}
 shipping > src/lib.rs
 case "$change" in
+    broken-base) echo "pub fn broken() -> u32 { missing }" >> src/lib.rs ;;
     config-skew) printf 'exclude = ["src/lib.rs"]\n' > .cargo-crap.toml ;;
     extra) copy extra_one > src/extra.rs && echo "pub mod extra;" >> src/lib.rs ;;
     lone-copy) { copy one; copy two; } > src/copies.rs && echo "pub mod copies;" >> src/lib.rs ;;
@@ -85,7 +103,8 @@ PY
     steady) sed -i.bak 's|/// Shipping in cents by parcel weight in grams.|/// Shipping in cents, by weight in grams.|' src/lib.rs && rm src/lib.rs.bak ;;
     config-skew) rm .cargo-crap.toml ;;
     extra) copy extra_two > src/extra.rs ;;
-    lone-copy) copy one > src/copies.rs ;;
+    lone-copy) { copy one; tally keep_a; tally keep_b; } > src/copies.rs ;;
+    broken-base) shipping > src/lib.rs ;;
     *) echo "unknown change: $change" >&2 && exit 1 ;;
 esac
 commit pr

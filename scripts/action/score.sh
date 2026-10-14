@@ -22,11 +22,13 @@ cover() {
 }
 
 # The `.cargo-crap.toml` cargo-crap would read from here, up to the
-# repository's root, or nothing.
+# repository's root and never past it, or nothing. Physical paths on both
+# sides, so a symlinked ancestor or Git Bash's /d/ spelling cannot hide the
+# root.
 nearest_config() {
     local dir top
-    dir="$(pwd)"
-    top="$(git rev-parse --show-toplevel)"
+    dir="$(pwd -P)"
+    top="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
     while :; do
         if [ -f "$dir/.cargo-crap.toml" ]; then
             echo "$dir/.cargo-crap.toml"
@@ -39,19 +41,50 @@ nearest_config() {
     done
 }
 
+head=""
+pr_config=""
+stashed=false
+# Put the pull request back as the job prepared it: its commit, its local
+# changes and an untracked config. Run on the way out of the base run,
+# whether it finished or failed.
+restore() {
+    git checkout -q --detach --force "$head"
+    if [ "$stashed" = true ]; then
+        git stash pop -q
+        stashed=false
+    fi
+    if [ -n "$pr_config" ]; then
+        cp "$work/pr-config.toml" "$pr_config"
+    fi
+}
+
 # Score `base` into `$work/base.json`: checked out in place, under the pull
 # request's config, with every provider key cleared so it never pays for
-# triage. The pull request's commit, and an untracked config, come back after.
+# triage. Fails, with the pull request restored, when the base commit has no
+# working directory to score.
 score_base() {
-    local head pr_config found
+    local found prefix
     head="$(git rev-parse HEAD)"
+    if git cat-file -e "$base^{commit}" 2> /dev/null; then
+        base="$(git rev-parse "$base^{commit}")"
+    else
+        git fetch -q --no-tags --depth=1 origin "$base"
+        base="$(git rev-parse FETCH_HEAD)"
+    fi
+    prefix="$(git rev-parse --show-prefix)"
+    if [ -n "$prefix" ] && ! git cat-file -e "$base:${prefix%/}" 2> /dev/null; then
+        echo "::warning::$prefix does not exist at the base commit, so there is nothing to compare with"
+        return 1
+    fi
     pr_config="$(nearest_config)"
     if [ -n "$pr_config" ]; then
         cp "$pr_config" "$work/pr-config.toml"
     fi
-    if ! git cat-file -e "$base^{commit}" 2> /dev/null; then
-        git fetch -q --no-tags --depth=1 origin "$base"
+    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+        git stash push -q
+        stashed=true
     fi
+    trap restore EXIT
     git checkout -q --detach --force "$base"
     while found="$(nearest_config)" && [ -n "$found" ]; do
         rm "$found"
@@ -62,15 +95,12 @@ score_base() {
     cover "$work/base.lcov"
     TYPESAFE_API_KEY='' OPENAI_API_KEY='' cargo-crap --lcov "$work/base.lcov" \
         ${args[@]+"${args[@]}"} --format json --output "$work/base.json"
-    git checkout -q --detach --force "$head"
-    if [ -n "$pr_config" ]; then
-        cp "$work/pr-config.toml" "$pr_config"
-    fi
+    trap - EXIT
+    restore
 }
 
 compared=()
-if [ -n "$base" ]; then
-    score_base
+if [ -n "$base" ] && score_base; then
     compared=(--baseline "$work/base.json")
 fi
 
@@ -82,7 +112,7 @@ crap() {
 }
 
 report="$work/report.md"
-if [ -n "$base" ]; then
+if [ "${#compared[@]}" -gt 0 ]; then
     crap --format pr-comment --output "$report"
 else
     crap --format markdown --output "$report"
@@ -96,9 +126,13 @@ else
 fi
 cp "$GITHUB_STEP_SUMMARY" "$work/summary.md"
 
-# Quiet: a config with duplicates on makes every badge run say they do not
-# apply to it. A real failure leaves no count, which is checked below.
-badge="$(crap --format shields 2> /dev/null)"
+# Its stderr kept aside: with duplicates on in config, every badge run says
+# they do not apply to it, and only a failure should show.
+if ! badge="$(crap --format shields 2> "$work/badge.err")"; then
+    cat "$work/badge.err" >&2
+    echo "::error::cargo-crap could not count the functions above the threshold"
+    exit 1
+fi
 crappy="$(crappy_from_badge "$badge")"
 if ! is_count "$crappy"; then
     echo "::error::could not count the functions above the threshold from: $badge"
@@ -108,19 +142,28 @@ fi
     echo "crappy=$crappy"
     echo "report=$report"
 } >> "$GITHUB_OUTPUT"
-if [ -n "$base" ]; then
-    crap --format json --output "$work/delta.json"
-    regressed="$(jq '[.entries[] | select(.status == "regressed")] | length' "$work/delta.json")"
-    echo "regressed=$regressed" >> "$GITHUB_OUTPUT"
-fi
 
+# One JSON run is both the gate and, on a pull request, the regression
+# count: its status is held until the outputs are written.
 gate=()
 if [ "$fail_above" = true ]; then
     gate+=(--fail-above)
 fi
-if [ -n "$base" ] && [ "$fail_regression" = true ]; then
+if [ "${#compared[@]}" -gt 0 ] && [ "$fail_regression" = true ]; then
     gate+=(--fail-regression)
 fi
-if [ "${#gate[@]}" -gt 0 ]; then
-    crap "${gate[@]}" --format json --output "$work/gate.json"
+status=0
+crap ${gate[@]+"${gate[@]}"} --format json --output "$work/result.json" || status=$?
+# 2 is cargo-crap failing to run, not a gate: nothing to count.
+if [ "$status" -ge 2 ]; then
+    exit "$status"
 fi
+if [ "${#compared[@]}" -gt 0 ]; then
+    regressed="$(grep -c '"status": "regressed"' "$work/result.json" || true)"
+    if ! is_count "$regressed"; then
+        echo "::error::could not count the regressions in $work/result.json"
+        exit 1
+    fi
+    echo "regressed=$regressed" >> "$GITHUB_OUTPUT"
+fi
+exit "$status"
