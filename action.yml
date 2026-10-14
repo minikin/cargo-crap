@@ -1,0 +1,63 @@
+name: cargo-crap
+description: Score Rust functions by CRAP (complexity × untested code), compare a pull request with its base, comment and gate.
+author: minikin
+branding:
+  icon: alert-triangle
+  color: orange
+
+inputs:
+  version:
+    description: The cargo-crap release to install, or `latest`.
+    default: "0.7.0"
+  binary:
+    description: A cargo-crap binary to use instead of downloading one.
+    default: ""
+  working-directory:
+    description: Where the crate is.
+    default: "."
+  args:
+    description: Extra arguments for every cargo-crap run, as shell words.
+    default: ""
+  coverage-args:
+    description: Extra arguments for `cargo llvm-cov`, as shell words.
+    default: ""
+  fail-above:
+    description: Fail when a function scores above the threshold.
+    default: "false"
+
+outputs:
+  crappy:
+    description: How many functions score above the threshold.
+    value: ${{ steps.score.outputs.crappy }}
+  report:
+    description: The path of the markdown report.
+    value: ${{ steps.score.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install cargo-crap
+      shell: bash
+      run: "\"$GITHUB_ACTION_PATH/scripts/action/install.sh\""
+      env:
+        VERSION: ${{ inputs.version }}
+        BINARY: ${{ inputs.binary }}
+
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-llvm-cov
+
+    - name: Add llvm-tools
+      shell: bash
+      run: rustup component add llvm-tools-preview
+
+    - name: Score
+      id: score
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: "\"$GITHUB_ACTION_PATH/scripts/action/score.sh\""
+      env:
+        CRAP_ARGS: ${{ inputs.args }}
+        CRAP_COVERAGE_ARGS: ${{ inputs.coverage-args }}
+        FAIL_ABOVE: ${{ inputs.fail-above }}

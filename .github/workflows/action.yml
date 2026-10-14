@@ -1,0 +1,142 @@
+name: Action
+
+# The acceptance tests of spec 39: one job per scenario of the composite
+# action at the repository root, each run through `uses: ./` against a
+# fixture crate built in the runner's temp directory. Jobs that are not about
+# installing a release pass `binary` with a cargo-crap built from this
+# commit, so the Action is tested with the code under review. No job reads
+# untrusted event text: outputs reach `run:` through `env:`.
+
+on:
+  pull_request:
+    paths:
+      - 'action.yml'
+      - 'scripts/action/**'
+      - '.github/workflows/action.yml'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches: [main]
+    paths:
+      - 'action.yml'
+      - 'scripts/action/**'
+      - '.github/workflows/action.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scripts:
+    name: Action scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell tests
+        run: bash scripts/action/test.sh
+      - name: Shellcheck
+        run: shellcheck -x scripts/action/*.sh
+
+  build:
+    name: Build cargo-crap
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --features triage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: target/release/cargo-crap
+          retention-days: 1
+
+  push-report:
+    name: A push run writes the report to the job summary
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A small tested crate
+        run: |
+          chmod +x "$RUNNER_TEMP/bin/cargo-crap"
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop"
+      - uses: ./
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+      - name: The report and the outputs
+        env:
+          CRAPPY: ${{ steps.crap.outputs.crappy }}
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: |
+          test "$CRAPPY" = 0
+          grep -q '`shipping`' "$REPORT"
+          grep -q 'none exceed CRAP threshold' "$REPORT"
+
+  version:
+    name: A chosen cargo-crap version is installed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: A small tested crate
+        run: scripts/action/fixture.sh "$RUNNER_TEMP/shop"
+      - uses: ./
+        with:
+          version: 0.7.0
+          working-directory: ${{ runner.temp }}/shop
+      - name: That release is on the path
+        run: test "$(cargo-crap --version)" = "cargo-crap 0.7.0"
+
+  binary:
+    name: A given binary is used instead of a download
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A small tested crate
+        run: |
+          chmod +x "$RUNNER_TEMP/bin/cargo-crap"
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop"
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+      - name: Nothing was downloaded, and the built binary scored
+        run: |
+          test ! -e "$RUNNER_TEMP/cargo-crap-bin"
+          test "$(command -v cargo-crap)" = "$RUNNER_TEMP/bin/cargo-crap"
+
+  platforms:
+    name: It runs on Linux, macOS and Windows runners (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: A small tested crate
+        shell: bash
+        run: scripts/action/fixture.sh "$RUNNER_TEMP/shop"
+      - uses: ./
+        id: crap
+        with:
+          working-directory: ${{ runner.temp }}/shop
+      - name: The report was written
+        shell: bash
+        env:
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: grep -q '`shipping`' "$REPORT"
