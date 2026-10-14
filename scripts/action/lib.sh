@@ -78,7 +78,12 @@ split_words() {
     if [ -z "${1//[[:space:]]/}" ]; then
         return 0
     fi
-    printf '%s' "$1" | xargs printf '%s\n'
+    # A last word `.` is split with the input and dropped again: GNU xargs
+    # drops an empty word ('') at the very end of its input, BSD xargs keeps
+    # it. The pipeline's status is xargs', so a stray quote still fails.
+    local words
+    words="$(printf '%s .' "$1" | xargs printf '%s\n')" || return 1
+    printf '%s' "${words%.}"
 }
 
 # The words of input `$1` (value `$2`), one per line. Input that cannot be
