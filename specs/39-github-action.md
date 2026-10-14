@@ -219,7 +219,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   run, and `baseline` skips the base-commit run. Needs: T2. Scenarios: _An
   existing LCOV file skips the coverage run_, _A given baseline file
   replaces the base-commit run_. Tests: CI scenario jobs.
-- [ ] **T4 — The sticky comment.** Post or update by `comment-marker`
+- [x] **T4 — The sticky comment.** Post or update by `comment-marker`
   through the REST API, links at the head commit, and the job summary with
   one warning when the token cannot comment. Needs: T3. Scenarios: _A
   second run updates the comment instead of adding one_, _A fork's pull
