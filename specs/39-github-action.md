@@ -215,7 +215,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   regressions passes_, _The base-commit run uses the pull request's
   config_, _The base-commit run never pays for triage_, _Extra arguments
   reach cargo-crap_. Tests: CI scenario jobs on fixture repositories.
-- [ ] **T3 — A given LCOV file or baseline.** `lcov` skips the coverage
+- [x] **T3 — A given LCOV file or baseline.** `lcov` skips the coverage
   run, and `baseline` skips the base-commit run. Needs: T2. Scenarios: _An
   existing LCOV file skips the coverage run_, _A given baseline file
   replaces the base-commit run_. Tests: CI scenario jobs.
