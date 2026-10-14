@@ -180,6 +180,7 @@ jobs:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           base: ${{ steps.shop.outputs.base }}
+          comment: false
       - name: The regression is reported, counted and fails the step
         env:
           OUTCOME: ${{ steps.crap.outcome }}
@@ -213,6 +214,7 @@ jobs:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           base: ${{ steps.shop.outputs.base }}
+          comment: false
       - name: No regression is reported, and the local edit survived
         env:
           REGRESSED: ${{ steps.crap.outputs.regressed }}
@@ -244,6 +246,7 @@ jobs:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           base: ${{ steps.shop.outputs.base }}
+          comment: false
       - name: The step failed, on the pull request's commit, with a clean tree
         env:
           OUTCOME: ${{ steps.crap.outcome }}
@@ -279,6 +282,7 @@ jobs:
           working-directory: ${{ runner.temp }}/shop
           lcov: lcov.info
           baseline: base.json
+          comment: false
       - name: No tests ran, and the given coverage and baseline were used
         env:
           REPORT: ${{ steps.crap.outputs.report }}
@@ -315,6 +319,7 @@ jobs:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           baseline: base.json
+          comment: false
           # No such commit, and never looked up: the baseline replaces it.
           base: "0000000000000000000000000000000000000000"
       - name: Compared with the file, not with a run of the base commit
@@ -345,6 +350,7 @@ jobs:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           base: "1234567890123456789012345678901234567890"
+          comment: false
       - name: Failed, rather than compared with the pull request itself
         env:
           OUTCOME: ${{ steps.crap.outcome }}
@@ -376,6 +382,7 @@ jobs:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           base: ${{ steps.shop.outputs.base }}
+          comment: false
           lcov: lcov.info
       - uses: ./
         id: ungated
@@ -383,6 +390,7 @@ jobs:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           base: ${{ steps.shop.outputs.base }}
+          comment: false
           lcov: lcov.info
           fail-regression: false
       - name: Refused under the gate, reported without it
@@ -414,6 +422,7 @@ jobs:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           base: ${{ steps.shop.outputs.base }}
+          comment: false
       - name: Under the base commit's own config every function would be new
         env:
           REPORT: ${{ steps.crap.outputs.report }}
@@ -436,13 +445,14 @@ jobs:
           printf '[duplicates]\nenabled = true\n\n[duplicates.triage]\nenabled = true\n' \
             > "$RUNNER_TEMP/shop/.cargo-crap.toml"
           echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
-          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" &
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" triage &
           sleep 1
       - uses: ./
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           base: ${{ steps.shop.outputs.base }}
+          comment: false
         env:
           TYPESAFE_API_KEY: not-a-key
           TYPESAFE_BASE_URL: http://127.0.0.1:8765
@@ -473,6 +483,7 @@ jobs:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           base: ${{ steps.shop.outputs.base }}
+          comment: false
           args: --exclude 'src/extra.rs'
       # The comparison would hide a base run that ignored them: the loaded
       # baseline is filtered with the pull request's excludes anyway. So the
@@ -484,6 +495,136 @@ jobs:
           base="$(dirname "$REPORT")/base.json"
           grep -q '"shipping"' "$base"
           ! grep -q 'extra_one' "$base"
+
+  comment-update:
+    name: A second run updates the comment instead of adding one
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CRAP_API_URL: http://127.0.0.1:8765
+      CRAP_PR_NUMBER: "42"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request, and a stand-in GitHub API
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github &
+          sleep 1
+      - uses: ./
+        id: first
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+      - name: One comment, created once and then updated
+        env:
+          REPORT: ${{ steps.first.outputs.report }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(grep -c '"method": "POST"' "$RUNNER_TEMP/api.log")" = 1
+          grep -q '"method": "PATCH", "path": "/repos/[^/]*/[^/]*/issues/comments/100"' "$RUNNER_TEMP/api.log"
+          # On a pull_request event the links name the pull request's head.
+          if [ -n "$HEAD_SHA" ]; then grep -q "/blob/$HEAD_SHA/" "$REPORT"; fi
+
+  comment-fork:
+    name: A fork's pull request gets the report in the job summary
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CRAP_API_URL: http://127.0.0.1:8765
+      CRAP_PR_NUMBER: "42"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A regression, and an API that refuses every write
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" regress
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github --forbid &
+          sleep 1
+      - uses: ./
+        id: crap
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+      - name: Refused, summarised, and still gated
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: |
+          grep -q '"method": "POST"' "$RUNNER_TEMP/api.log"
+          grep -q '1 CRAP regression' "$(dirname "$REPORT")/summary.md"
+          test "$OUTCOME" = failure
+
+  comment-markers:
+    name: Two comments with their own markers stay apart
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CRAP_API_URL: http://127.0.0.1:8765
+      CRAP_PR_NUMBER: "42"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request, and a stand-in GitHub API
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github &
+          sleep 1
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          comment-marker: "<!-- shop-demo -->"
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          comment-marker: "<!-- shop-demo -->"
+      - name: Two comments, each updated by its own step
+        run: |
+          python3 - "$RUNNER_TEMP/api.log" <<'PY'
+          import json, sys
+          log = [json.loads(line) for line in open(sys.argv[1])]
+          posts = [json.loads(r["body"])["body"] for r in log if r["method"] == "POST"]
+          patches = [(r["path"].rsplit("/", 1)[1], json.loads(r["body"])["body"]) for r in log if r["method"] == "PATCH"]
+          assert [p.splitlines()[0] for p in posts] == ["<!-- cargo-crap-report -->", "<!-- shop-demo -->"], posts
+          assert [(i, b.splitlines()[0]) for i, b in patches] == [("100", "<!-- cargo-crap-report -->"), ("101", "<!-- shop-demo -->")], patches
+          PY
 
   platforms:
     name: It runs on Linux, macOS and Windows runners (${{ matrix.os }})
@@ -505,6 +646,7 @@ jobs:
         id: crap
         with:
           base: ${{ steps.shop.outputs.base }}
+          comment: false
           working-directory: ${{ runner.temp }}/shop
       - name: The comparison was written, back on the pull request's commit
         shell: bash

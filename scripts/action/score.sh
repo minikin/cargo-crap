@@ -148,7 +148,13 @@ crap() {
 
 report="$work/report.md"
 if [ "${#compared[@]}" -gt 0 ]; then
-    crap --format pr-comment --output "$report"
+    # Links at the pull request's own head, not the merge commit GITHUB_SHA
+    # names on a pull_request event.
+    links=()
+    if [ -n "${CRAP_HEAD_SHA:-}" ]; then
+        links=(--commit-ref "$CRAP_HEAD_SHA")
+    fi
+    crap --format pr-comment ${links[@]+"${links[@]}"} --output "$report"
 else
     crap --format markdown --output "$report"
 fi
@@ -179,7 +185,8 @@ fi
 } >> "$GITHUB_OUTPUT"
 
 # One JSON run is both the gate and, on a pull request, the regression
-# count: its status is held until the outputs are written.
+# count. Its status goes to the `status` output, which the Action's last
+# step exits with, so the comment is posted before the step fails.
 gate=()
 if [ "$fail_above" = true ]; then
     gate+=(--fail-above)
@@ -200,5 +207,6 @@ if [ "${#compared[@]}" -gt 0 ]; then
         exit 1
     fi
     echo "regressed=$regressed" >> "$GITHUB_OUTPUT"
+    echo "compared=true" >> "$GITHUB_OUTPUT"
 fi
-exit "$status"
+echo "status=$status" >> "$GITHUB_OUTPUT"

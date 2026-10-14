@@ -36,6 +36,15 @@ inputs:
   fail-above:
     description: Fail when a function scores above the threshold.
     default: "false"
+  comment:
+    description: On a pull request, post the report as a comment, or update the one posted before.
+    default: "true"
+  comment-marker:
+    description: The hidden line that finds the comment again. Give each Action step that comments on one pull request its own.
+    default: "<!-- cargo-crap-report -->"
+  github-token:
+    description: The token that writes the comment.
+    default: ${{ github.token }}
 
 outputs:
   crappy:
@@ -83,3 +92,53 @@ runs:
         CRAP_BASE: ${{ inputs.base }}
         CRAP_LCOV: ${{ inputs.lcov }}
         CRAP_BASELINE: ${{ inputs.baseline }}
+        CRAP_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+    # A fork's read-only token cannot write: one warning, and the report is
+    # already in the job summary.
+    - name: Comment
+      if: inputs.comment == 'true' && steps.score.outputs.compared == 'true'
+      uses: actions/github-script@v7
+      env:
+        REPORT: ${{ steps.score.outputs.report }}
+        MARKER: ${{ inputs.comment-marker }}
+        PR_NUMBER: ${{ env.CRAP_PR_NUMBER || github.event.pull_request.number }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        base-url: ${{ env.CRAP_API_URL || github.api_url }}
+        script: |
+          const fs = require('fs');
+          const issue_number = Number(process.env.PR_NUMBER);
+          if (!issue_number) {
+            core.notice('No pull request to comment on: the report is in the job summary.');
+            return;
+          }
+          const marker = process.env.MARKER;
+          let body = fs.readFileSync(process.env.REPORT, 'utf8');
+          if (!body.startsWith(marker)) {
+            body = `${marker}\n${body}`;
+          }
+          const { owner, repo } = context.repo;
+          try {
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find(c => (c.body || '').startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+          } catch (error) {
+            if (error.status === 403 || error.status === 404) {
+              core.warning(`Could not comment on the pull request (${error.status}): the report is in the job summary.`);
+            } else {
+              throw error;
+            }
+          }
+
+    - name: Gate
+      shell: bash
+      run: exit "$STATUS"
+      env:
+        STATUS: ${{ steps.score.outputs.status }}
