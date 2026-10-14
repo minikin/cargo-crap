@@ -88,9 +88,13 @@ fn recorded_try_weight(try_weight: f64) -> Option<f64> {
 }
 
 /// The envelope's `untriaged_groups`: the count when the budget skipped a
-/// group, `None` (no key on the wire) otherwise.
-fn recorded_untriaged(untriaged: usize) -> Option<usize> {
-    (untriaged > 0).then_some(untriaged)
+/// group and the groups it counts are written, `None` (no key on the wire)
+/// otherwise.
+fn recorded_untriaged<T>(
+    groups: Option<&T>,
+    untriaged: usize,
+) -> Option<usize> {
+    groups.and((untriaged > 0).then_some(untriaged))
 }
 
 /// One candidate duplicate pair, flattened for the wire.
@@ -358,14 +362,15 @@ pub(crate) fn render_json(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
+    let duplicate_groups = wire_groups(opts.groups, opts.triage);
     let envelope = Envelope {
         schema: Some(REPORT_SCHEMA_URL.to_string()),
         version: SCHEMA_VERSION.to_string(),
         entries: entries.to_vec(),
         diagnostics: opts.diagnostics.cloned(),
         duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
-        duplicate_groups: wire_groups(opts.groups, opts.triage),
-        untriaged_groups: recorded_untriaged(opts.untriaged),
+        untriaged_groups: recorded_untriaged(duplicate_groups.as_ref(), opts.untriaged),
+        duplicate_groups,
         try_weight: recorded_try_weight(opts.try_weight),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
@@ -398,6 +403,7 @@ pub(crate) fn render_delta_json(
         #[serde(skip_serializing_if = "Option::is_none")]
         try_weight: Option<f64>,
     }
+    let duplicate_groups = wire_delta_groups(opts);
     serde_json::to_writer_pretty(
         &mut *out,
         &DeltaOutput {
@@ -407,8 +413,8 @@ pub(crate) fn render_delta_json(
             removed: &report.removed,
             diagnostics: opts.diagnostics,
             duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
-            duplicate_groups: wire_delta_groups(opts),
-            untriaged_groups: recorded_untriaged(opts.untriaged),
+            untriaged_groups: recorded_untriaged(duplicate_groups.as_ref(), opts.untriaged),
+            duplicate_groups,
             try_weight: recorded_try_weight(opts.try_weight),
         },
     )?;
@@ -829,6 +835,21 @@ mod tests {
         for doc in docs(0) {
             assert!(doc.get("untriaged_groups").is_none(), "{doc}");
         }
+    }
+
+    #[test]
+    fn no_count_without_the_groups_it_counts() {
+        let (pairs, _) = two_groups();
+        let opts = RenderOptions {
+            format: Format::Json,
+            duplicates: Some(&pairs),
+            untriaged: 2,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        render(&sample(), &opts, &mut buf).unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert!(doc.get("untriaged_groups").is_none(), "{doc}");
     }
 
     #[test]

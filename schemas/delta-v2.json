@@ -6,6 +6,7 @@
   "type": "object",
   "required": ["version", "entries", "removed"],
   "additionalProperties": false,
+  "dependencies": { "untriaged_groups": ["duplicate_groups"] },
   "properties": {
     "$schema": {
       "type": "string",
@@ -42,7 +43,7 @@
     "untriaged_groups": {
       "type": "integer",
       "minimum": 1,
-      "description": "How many duplicate groups the triage budget (`max-requests`) left unasked, so they carry no `triage`. Present only when it left any: absent means every group was asked, or triage did not run."
+      "description": "How many duplicate groups the triage budget (`max-requests`) left unasked, so they carry no `triage`. Only new and grown groups are asked on a delta run, so an unchanged group has no `triage` and is never counted. Present only when the budget left one of the asked groups unasked: absent means every asked group got a verdict request, or triage did not run."
     },
     "try_weight": {
       "type": "number",

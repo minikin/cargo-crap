@@ -6677,6 +6677,12 @@ fn json_counts_the_groups_the_budget_skipped() {
         &stub,
         &["--format", "json"],
     );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stub.request_count(), 1);
     // Then one group carries `triage` and two do not
     assert_eq!(triaged_groups(&out.stdout), [true, false, false]);
     // And the envelope's `untriaged_groups` is 2
@@ -6687,12 +6693,14 @@ fn json_counts_the_groups_the_budget_skipped() {
     // When the budget covers every group
     let fresh = TempDir::new().expect("temp dir");
     write(fresh.path(), "pairs.rs", &shaped_pairs(0..3));
+    let covering = same_logic_stub();
     let out = run_with_config(
         fresh.path(),
         &budget_config("max-requests = 10\n"),
-        &stub,
+        &covering,
         &["--format", "json"],
     );
+    assert_eq!(covering.request_count(), 3);
     // Then the envelope has no `untriaged_groups` key
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
     assert_eq!(triaged_groups(&out.stdout), [true, true, true]);
@@ -6711,12 +6719,74 @@ fn the_human_table_says_why_rows_have_no_verdict() {
     let out = run_with_config(dir.path(), &budget_config("max-requests = 1\n"), &stub, &[]);
     // Then a line under the duplicates table reads
     // "2 candidates were not triaged: the run's triage budget ran out."
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let stdout = String::from_utf8(out.stdout).expect("utf-8");
-    let section = &stdout[stdout.find("3 duplicate candidates:").expect("section")..];
-    assert!(
-        section.contains("\n2 candidates were not triaged: the run's triage budget ran out.\n"),
-        "{section}"
+    let section = &stdout[stdout.find("3 duplicate candidates:").expect(&stderr)..];
+    assert_eq!(section.matches("  triage: ").count(), 1, "{section}");
+    let line = "\n2 candidates were not triaged: the run's triage budget ran out.\n";
+    assert!(section.ends_with(line), "{section}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn on_a_delta_run_the_human_line_names_the_new_candidates() {
+    // Given triage is enabled with `max-requests = 1`
+    // And a baseline recorded with `--duplicates` holding two groups that are
+    // still present
+    // And the current tree adds two new pairs
+    // (built twice, so the second run starts from an empty verdict cache)
+    let tree = || {
+        let (dir, store) = (
+            TempDir::new().expect("temp dir"),
+            TempDir::new().expect("temp dir"),
+        );
+        write(dir.path(), "pairs.rs", &shaped_pairs(0..2));
+        write(
+            dir.path(),
+            ".cargo-crap.toml",
+            "[duplicates]\nenabled = true\nthreshold = 1.0\n",
+        );
+        let baseline = record_duplicates(dir.path(), store.path());
+        write(dir.path(), "more.rs", &shaped_pairs(2..4));
+        (dir, store, baseline)
+    };
+    let (dir, _store, baseline) = tree();
+    let stub = same_logic_stub();
+    // When I run `cargo crap --duplicates --baseline base.json`
+    let out = run_with_config(
+        dir.path(),
+        &budget_config("max-requests = 1\n"),
+        &stub,
+        &["--baseline", baseline.to_str().expect("utf-8")],
     );
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    // Then the human section lists all four groups
+    let section = &stdout[stdout.find("4 duplicate candidates:").expect(&stderr)..];
+    // And a line under it reads
+    // "1 of the 2 new candidates was not triaged: the run's triage budget
+    // ran out."
+    let line = "\n1 of the 2 new candidates was not triaged: the run's triage budget ran out.\n";
+    assert!(section.ends_with(line), "{section}");
+    // When I run the same with `--format json`
+    let (dir, _store, baseline) = tree();
+    let stub = same_logic_stub();
+    let out = run_with_config(
+        dir.path(),
+        &budget_config("max-requests = 1\n"),
+        &stub,
+        &[
+            "--baseline",
+            baseline.to_str().expect("utf-8"),
+            "--format",
+            "json",
+        ],
+    );
+    // Then the envelope's `untriaged_groups` is 1
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(doc["untriaged_groups"], 1, "{doc}");
+    let validator = schemas::compile("schemas/delta-v2.json");
+    assert!(validator.is_valid(&doc), "{doc}");
 }
 
 #[cfg(feature = "triage")]

@@ -163,6 +163,22 @@ Then  a line under the duplicates table reads
       "2 candidates were not triaged: the run's triage budget ran out."
 ```
 
+### Scenario: On a delta run the human line names the new candidates
+
+```
+Given triage is enabled with `max-requests = 1`
+And   a baseline recorded with `--duplicates` holding two groups that are
+      still present
+And   the current tree adds two new pairs
+When  I run `cargo crap --duplicates --baseline base.json`
+Then  the human section lists all four groups
+And   a line under it reads
+      "1 of the 2 new candidates was not triaged: the run's triage budget
+      ran out."
+When  I run the same with `--format json`
+Then  the envelope's `untriaged_groups` is 1
+```
+
 ### Scenario: A negative budget is a configuration error
 
 ```
@@ -215,12 +231,14 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   describe `max-requests`, the output-formats reference the budget line,
   and the CHANGELOG the feature and the library break. Needs: T4. No
   scenario: checked by the docs tests.
-- [ ] **T6 — JSON and the human table report the skipped groups.** Both
+- [x] **T6 — JSON and the human table report the skipped groups.** Both
   JSON envelopes gain `untriaged_groups`, present only when non-zero, in
   the code, the two schemas and the JSON reference, and the human
-  duplicates section prints the budget line. Needs: T5. Scenarios: _JSON
-  counts the groups the budget skipped_, _The human table says why rows
-  have no verdict_. Tests: unit + acceptance + schema validation.
+  duplicates section prints the budget line, naming the new candidates on
+  a delta run. Needs: T5. Scenarios: _JSON counts the groups the budget
+  skipped_, _The human table says why rows have no verdict_, _On a delta
+  run the human line names the new candidates_. Tests: unit + acceptance
+  + schema validation.
 
 ---
 
@@ -263,7 +281,9 @@ with a budget of 0 on a cold cache the table has no verdict columns, and
 the line is the one place a reader learns why. The lines under the table
 come in this order: the truncation footer, spec 37's count line, the
 budget line, the provider line. The human section prints the same line
-under its table. JSON envelopes, the plain report and the delta, carry the
+under its groups. On a delta run it lists every group but triage asked
+only about the new and grown ones, so the line names them: `1 of the 2 new
+candidates was not triaged: the run's triage budget ran out.` JSON envelopes, the plain report and the delta, carry the
 count as `untriaged_groups`, present only when it is not zero, so a
 consumer can tell a verdict the budget skipped from triage being off.
 

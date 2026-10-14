@@ -165,9 +165,10 @@ pub struct RenderOptions<'a> {
     /// pr-comment tables then show only the new and grown groups and count
     /// the rest. Ignored unless it covers every group.
     pub novelty: Option<&'a Comparison>,
-    /// How many duplicate groups the triage budget left unasked. The
-    /// markdown and pr-comment tables say so under the table when it is
-    /// not zero.
+    /// How many duplicate groups the triage budget left unasked. When it is
+    /// not zero, the human section and the markdown and pr-comment tables
+    /// say so under the groups, and both JSON envelopes carry it as
+    /// `untriaged_groups` beside the groups.
     pub untriaged: usize,
 }
 
@@ -366,7 +367,7 @@ fn write_duplicate_section(
     match opts.format {
         Format::Human => {
             writeln!(out)?;
-            duplicates::render_human(groups, opts, out)
+            duplicates::render_human_section(groups, opts, out)
         },
         Format::Markdown => duplicate_table(opts, None, out),
         // A comment with nothing to say about duplicates says nothing.

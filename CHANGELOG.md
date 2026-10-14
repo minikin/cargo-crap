@@ -62,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RenderOptions` gains `untriaged`, `report::json::Envelope` gains
   `untriaged_groups`, and `duplicates::triage::budget` (`plan`, `Plan`,
   `warning`) is new (spec 38).
+- `report-v1.json` and `delta-v2.json` accept `untriaged_groups`. A
+  validator holding an older copy of either schema rejects it.
 
 
 ## [0.8.0] - 2026-10-13
