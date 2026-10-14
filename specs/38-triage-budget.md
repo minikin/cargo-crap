@@ -1,6 +1,6 @@
 # Spec 38: A triage budget
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/duplicates/triage/mod.rs`, `src/config.rs`, `src/main.rs`, `src/report/duplicates.rs`
 
