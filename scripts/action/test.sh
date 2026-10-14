@@ -44,6 +44,37 @@ check "the latest version" \
 check "none above" "0" "$(crappy_from_badge '{"message": "passing"}')"
 check "some above" "12" "$(crappy_from_badge '{"label": "CRAP > 15", "message": "12 crappy"}')"
 
+# Shell words from an input: quotes honoured, nothing executed.
+words() {
+    local out=() w
+    while IFS= read -r w; do out+=("[$w]"); done < <(split_words "$1")
+    echo "${out[*]-}"
+}
+check "plain words" "[--workspace] [--exclude] [benches/**]" "$(words "--workspace --exclude benches/**")"
+check "quoted words" "[--exclude] [a b/**]" "$(words "--exclude 'a b/**'")"
+check "double quotes" "[--exclude] [a b]" "$(words '--exclude "a b"')"
+check "no words" "" "$(words "")"
+check "only spaces" "" "$(words "   ")"
+marker="$(mktemp -d)/ran"
+# shellcheck disable=SC2016 # the literal `$(` is the point: it must survive unrun
+check "nothing is executed" '[$(touch] ['"$marker"')]' "$(words "\$(touch $marker)")"
+check "the command did not run" "absent" "$( [ -e "$marker" ] && echo present || echo absent)"
+
+# A true/false input, and nothing else.
+check "true" "true" "$(boolean fail-above true)"
+check "false" "false" "$(boolean fail-above false)"
+check "another spelling is refused" "" "$(boolean fail-above yes 2>/dev/null)"
+boolean fail-above yes >/dev/null 2>&1
+check "another spelling fails" "1" "$?"
+
+# A count, and nothing else.
+is_count 12
+check "a count" "0" "$?"
+is_count twelve
+check "a word is not a count" "1" "$?"
+is_count ""
+check "nothing is not a count" "1" "$?"
+
 if [ "$failures" -gt 0 ]; then
     echo "$failures failed"
     exit 1

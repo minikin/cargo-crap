@@ -75,7 +75,13 @@ crap-delta:
 # Full local gate: format, lint, tests, CRAP. Note `cov` is NOT part of it —
 # the `crap` recipe runs llvm-cov to produce lcov.info but never applies the
 # 90% line bar; run `just cov` for that.
-dev: fmt lint test crap
+dev: fmt lint test action-test crap
+
+# The GitHub Action's shell pieces: their tests, and shellcheck when it is
+# installed.
+action-test:
+    bash scripts/action/test.sh
+    if command -v shellcheck > /dev/null; then shellcheck -x scripts/action/*.sh; fi
 
 # Mutation tests for a specific file: just mutants src/delta.rs
 mutants FILE:

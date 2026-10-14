@@ -73,7 +73,7 @@ jobs:
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
-      - name: The report and the outputs
+      - name: The report, the summary and the outputs
         env:
           CRAPPY: ${{ steps.crap.outputs.crappy }}
           REPORT: ${{ steps.crap.outputs.report }}
@@ -81,6 +81,8 @@ jobs:
           test "$CRAPPY" = 0
           grep -q '`shipping`' "$REPORT"
           grep -q 'none exceed CRAP threshold' "$REPORT"
+          # The step's job summary, copied beside the report.
+          grep -q '`shipping`' "$(dirname "$REPORT")/summary.md"
 
   version:
     name: A chosen cargo-crap version is installed
@@ -91,10 +93,11 @@ jobs:
         run: scripts/action/fixture.sh "$RUNNER_TEMP/shop"
       - uses: ./
         with:
-          version: 0.7.0
+          # Not the default, so the input is what picks it.
+          version: 0.6.1
           working-directory: ${{ runner.temp }}/shop
       - name: That release is on the path
-        run: test "$(cargo-crap --version)" = "cargo-crap 0.7.0"
+        run: test "$(cargo-crap --version)" = "cargo-crap 0.6.1"
 
   binary:
     name: A given binary is used instead of a download
@@ -106,10 +109,10 @@ jobs:
         with:
           name: cargo-crap-under-test
           path: ${{ runner.temp }}/bin
+      # No chmod: the artifact arrives without its execute bit, and the
+      # Action restores it.
       - name: A small tested crate
-        run: |
-          chmod +x "$RUNNER_TEMP/bin/cargo-crap"
-          scripts/action/fixture.sh "$RUNNER_TEMP/shop"
+        run: scripts/action/fixture.sh "$RUNNER_TEMP/shop"
       - uses: ./
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
@@ -118,6 +121,34 @@ jobs:
         run: |
           test ! -e "$RUNNER_TEMP/cargo-crap-bin"
           test "$(command -v cargo-crap)" = "$RUNNER_TEMP/bin/cargo-crap"
+
+  fail-above:
+    name: The fail-above gate fails the step after the outputs are set
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A small tested crate
+        run: scripts/action/fixture.sh "$RUNNER_TEMP/shop"
+      - uses: ./
+        id: crap
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          args: --threshold 2
+          fail-above: true
+      - name: The step failed, and still counted
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+          CRAPPY: ${{ steps.crap.outputs.crappy }}
+        run: |
+          test "$OUTCOME" = failure
+          test "$CRAPPY" = 1
 
   platforms:
     name: It runs on Linux, macOS and Windows runners (${{ matrix.os }})

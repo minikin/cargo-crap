@@ -60,4 +60,4 @@ runs:
       env:
         CRAP_ARGS: ${{ inputs.args }}
         CRAP_COVERAGE_ARGS: ${{ inputs.coverage-args }}
-        FAIL_ABOVE: ${{ inputs.fail-above }}
+        CRAP_FAIL_ABOVE: ${{ inputs.fail-above }}

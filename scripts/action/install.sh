@@ -11,15 +11,23 @@ if [ -n "${BINARY:-}" ]; then
         echo "::error::binary: $BINARY is not a file"
         exit 1
     fi
+    # An uploaded artifact loses its execute bit on the way down.
+    chmod +x "$BINARY"
     dir="$(cd "$(dirname "$BINARY")" && pwd)"
 else
     target="$(target_for "$RUNNER_OS" "$RUNNER_ARCH")"
     archive="$(archive_for "$target")"
-    dir="$RUNNER_TEMP/cargo-crap-bin"
+    dir="$(cd "$RUNNER_TEMP" && pwd)/cargo-crap-bin"
     mkdir -p "$dir"
     curl -fsSL --retry 3 -o "$dir/$archive" "$(download_url "$VERSION" "$archive")"
     case "$archive" in
-        *.zip) unzip -q -o "$dir/$archive" -d "$dir" ;;
+        *.zip)
+            if command -v unzip > /dev/null; then
+                unzip -q -o "$dir/$archive" -d "$dir"
+            else
+                tar xf "$dir/$archive" -C "$dir"
+            fi
+            ;;
         *) tar xzf "$dir/$archive" -C "$dir" ;;
     esac
 fi
@@ -29,4 +37,4 @@ if command -v cygpath > /dev/null; then
 else
     echo "$dir" >> "$GITHUB_PATH"
 fi
-PATH="$dir:$PATH" cargo-crap --version
+"$dir/cargo-crap" --version

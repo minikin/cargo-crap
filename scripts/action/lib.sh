@@ -45,3 +45,29 @@ crappy_from_badge() {
         *) echo "${message%% *}" ;;
     esac
 }
+
+# The shell words in `$1`, one per line: quotes and backslashes are honoured
+# as the shell would, and nothing in them is executed or expanded.
+split_words() {
+    if [ -z "${1//[[:space:]]/}" ]; then
+        return 0
+    fi
+    printf '%s' "$1" | xargs printf '%s\n'
+}
+
+# `value` when it is `true` or `false`. Anything else is an error naming the
+# input, so a misspelt switch never turns a gate off unnoticed.
+boolean() {
+    case "$2" in
+        true | false) echo "$2" ;;
+        *)
+            echo "::error::$1 must be true or false, not '$2'" >&2
+            return 1
+            ;;
+    esac
+}
+
+# Whether `$1` is a count: one or more digits.
+is_count() {
+    [[ "$1" =~ ^[0-9]+$ ]]
+}
