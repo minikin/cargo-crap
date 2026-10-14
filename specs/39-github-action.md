@@ -1,6 +1,6 @@
 # Spec 39: A GitHub Action
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** `action.yml` (new), `scripts/action/` (new), `.github/workflows/action.yml` (new), `.github/workflows/demo.yml`, `.github/workflows/release.yml`, `docs/`
 
