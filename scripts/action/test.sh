@@ -57,7 +57,13 @@ check "a digest is sha256" "fd6e6ba7ed5cb5c7f77871e3d91e5ad51d7936c45e9c5a460d8a
 } > "$sums_dir/SHA256SUMS"
 verify_archive "$sums_dir/cargo-crap-x86_64-unknown-linux-gnu.tar.gz" "$sums_dir/SHA256SUMS"
 check "a listed digest passes" "0" "$?"
-check "a mismatch names the archive" \
+sed 's/$/\r/' "$sums_dir/SHA256SUMS" > "$sums_dir/crlf"
+verify_archive "$sums_dir/cargo-crap-x86_64-unknown-linux-gnu.tar.gz" "$sums_dir/crlf"
+check "a sums file with CRLF line ends passes" "0" "$?"
+{ cat "$sums_dir/SHA256SUMS"; cat "$sums_dir/SHA256SUMS"; } > "$sums_dir/twice"
+verify_archive "$sums_dir/cargo-crap-x86_64-unknown-linux-gnu.tar.gz" "$sums_dir/twice"
+check "a name listed twice passes" "0" "$?"
+check "an archive that does not match the release's sums is refused" \
     "::error::cargo-crap-aarch64-apple-darwin.tar.gz does not match the digest in the release's SHA256SUMS" \
     "$(verify_archive "$sums_dir/cargo-crap-aarch64-apple-darwin.tar.gz" "$sums_dir/SHA256SUMS" 2>&1)"
 verify_archive "$sums_dir/cargo-crap-aarch64-apple-darwin.tar.gz" "$sums_dir/SHA256SUMS" >/dev/null 2>&1
@@ -100,6 +106,10 @@ check "a stray quote names its input" \
     "$(words_of args "--threshold 20'" 2>&1 >/dev/null)"
 words_of args "--threshold 20'" >/dev/null 2>&1
 check "a stray quote fails" "1" "$?"
+words_file="$(mktemp)"
+words_of args "--exclude ''" > "$words_file"
+check "a trailing empty word survives" "2" "$(wc -l < "$words_file" | tr -d ' ')"
+check "and it is empty" "" "$(sed -n 2p "$words_file")"
 
 # A true/false input, and nothing else.
 check "true" "true" "$(boolean fail-above true)"

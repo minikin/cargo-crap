@@ -16,11 +16,13 @@ else
     archive="$(archive_for "$target")"
     dir="$(cd "$RUNNER_TEMP" && pwd)/cargo-crap-bin"
     mkdir -p "$dir"
-    curl -fsSL --retry 3 -o "$dir/$archive" "$(download_url "$VERSION" "$archive")"
+    # The sums first: without them nothing is installed, so a failure costs
+    # no archive download.
     if ! curl -fsSL --retry 3 -o "$dir/SHA256SUMS" "$(download_url "$VERSION" SHA256SUMS)"; then
-        echo "::error::the cargo-crap $VERSION release has no SHA256SUMS to verify $archive against"
+        echo "::error::could not download SHA256SUMS from the cargo-crap $VERSION release, which every release carries: see the error above"
         exit 1
     fi
+    curl -fsSL --retry 3 -o "$dir/$archive" "$(download_url "$VERSION" "$archive")"
     # Checked before anything is unpacked, so a mismatch leaves nothing to run.
     verify_archive "$dir/$archive" "$dir/SHA256SUMS"
     case "$archive" in

@@ -351,3 +351,38 @@ fn the_action_installs_this_release_by_default() {
         Some(env!("CARGO_PKG_VERSION"))
     );
 }
+
+#[test]
+fn the_test_seams_are_ignored_outside_this_repository() {
+    // The scenario jobs run only here, so the guard itself is what is
+    // checked: every read of a seam sits behind the repository test, and
+    // `github.api_url` and the event's pull request are the fallbacks.
+    let action = read("action.yml");
+    let guard = "github.repository == 'minikin/cargo-crap' && env.CARGO_CRAP_TEST_";
+    let reads = action.matches("env.CARGO_CRAP_TEST_").count();
+    assert_eq!(reads, 3, "the if, the pull request number and the API URL");
+    assert_eq!(action.matches(guard).count(), reads, "an unguarded seam");
+    assert!(action.contains("env.CARGO_CRAP_TEST_API_URL) || github.api_url"));
+    assert_eq!(
+        action
+            .matches("env.CARGO_CRAP_TEST_PR_NUMBER) || github.event.pull_request.number")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn the_actions_unpaid_runs_clear_every_providers_key() {
+    use cargo_crap::duplicates::triage::provider::{by_id, ids};
+    // A provider whose key `unpaid` misses would let the base, badge and
+    // gate runs spend the triage budget again.
+    let score = read("scripts/action/score.sh");
+    let unpaid = score
+        .lines()
+        .find(|l| l.trim_start().ends_with("\"$@\"") && l.contains("=''"))
+        .expect("the unpaid line");
+    for id in ids() {
+        let var = by_id(id).expect("a listed provider").key_var();
+        assert!(unpaid.contains(&format!("{var}=''")), "{var} in {unpaid}");
+    }
+}

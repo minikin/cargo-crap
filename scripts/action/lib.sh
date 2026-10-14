@@ -50,7 +50,7 @@ digest_of() {
 verify_archive() {
     local name expected
     name="$(basename "$1")"
-    expected="$(awk -v name="$name" '$2 == name || $2 == "*" name { print $1 }' "$2")"
+    expected="$(awk -v name="$name" '{ sub(/\r$/, "") } $2 == name || $2 == "*" name { print $1; exit }' "$2")"
     if [ -z "$expected" ]; then
         echo "::error::the release's SHA256SUMS lists no $name" >&2
         return 1
@@ -87,13 +87,13 @@ split_words() {
 # would pass under the wrong settings.
 words_of() {
     local words
-    if ! words="$(split_words "$2" 2> /dev/null)"; then
+    # The `.` keeps the trailing newlines `$( )` would strip, and with them a
+    # trailing empty word.
+    if ! words="$(split_words "$2" 2> /dev/null || exit 1; echo .)"; then
         echo "::error::$1 cannot be split into words: check its quotes" >&2
         return 1
     fi
-    if [ -n "$words" ]; then
-        printf '%s\n' "$words"
-    fi
+    printf '%s' "${words%.}"
 }
 
 # `value` when it is `true` or `false`. Anything else is an error naming the

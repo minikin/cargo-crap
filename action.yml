@@ -62,24 +62,14 @@ runs:
   steps:
     # Every later step runs from a copy of the scripts, taken before any
     # checkout: with `uses: ./` they sit in the tree the base-commit run
-    # replaces. CARGO_CRAP_TEST_API_URL and CARGO_CRAP_TEST_PR_NUMBER are
-    # this repository's test seams: GitHub does not let a step override
-    # GITHUB_API_URL, so its scenario jobs point the comment at a local
-    # stand-in through them. They are read here, before the coverage step
-    # runs the repository's code, which can write GITHUB_ENV for every later
-    # step and must not redirect the token or the comment.
+    # replaces.
     - name: Install cargo-crap
-      id: install
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
         scripts="$(mktemp -d "$RUNNER_TEMP/cargo-crap-scripts.XXXXXX")"
         cp -R "$GITHUB_ACTION_PATH/scripts/action/." "$scripts/"
         echo "CARGO_CRAP_SCRIPTS=$scripts" >> "$GITHUB_ENV"
-        {
-          echo "api-url=${CARGO_CRAP_TEST_API_URL:-}"
-          echo "pr-number=${CARGO_CRAP_TEST_PR_NUMBER:-}"
-        } >> "$GITHUB_OUTPUT"
         "$scripts/install.sh"
       env:
         VERSION: ${{ inputs.version }}
@@ -110,22 +100,27 @@ runs:
         CRAP_BASE: ${{ inputs.base }}
         CRAP_LCOV: ${{ inputs.lcov }}
         CRAP_BASELINE: ${{ inputs.baseline }}
+        CRAP_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         CRAP_COMMENT: ${{ inputs.comment }}
         CRAP_COMMENT_MARKER: ${{ inputs.comment-marker }}
 
     # A fork's read-only token cannot write: one warning, and the report is
-    # already in the job summary. The test seams come from the Install
-    # step's outputs, never from the environment.
+    # already in the job summary. CARGO_CRAP_TEST_API_URL and
+    # CARGO_CRAP_TEST_PR_NUMBER are this repository's test seams: GitHub does
+    # not let a step override GITHUB_API_URL, so its scenario jobs point the
+    # comment at a local stand-in through them. Every other repository's job
+    # ignores them, so nothing that writes its environment can point the
+    # token at another host through them.
     - name: Comment
-      if: steps.score.outputs.comment == 'true' && (steps.install.outputs.pr-number || github.event.pull_request.number)
+      if: steps.score.outputs.comment == 'true' && ((github.repository == 'minikin/cargo-crap' && env.CARGO_CRAP_TEST_PR_NUMBER) || github.event.pull_request.number)
       uses: actions/github-script@v8
       env:
         REPORT: ${{ steps.score.outputs.report }}
         MARKER: ${{ inputs.comment-marker }}
-        PR_NUMBER: ${{ steps.install.outputs.pr-number || github.event.pull_request.number }}
+        PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && env.CARGO_CRAP_TEST_PR_NUMBER) || github.event.pull_request.number }}
       with:
         github-token: ${{ inputs.github-token }}
-        base-url: ${{ steps.install.outputs.api-url || github.api_url }}
+        base-url: ${{ (github.repository == 'minikin/cargo-crap' && env.CARGO_CRAP_TEST_API_URL) || github.api_url }}
         script: |
           const fs = require('fs');
           const issue_number = Number(process.env.PR_NUMBER);

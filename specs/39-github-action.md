@@ -189,13 +189,15 @@ When  the Action runs
 Then  both the pull request's run and the base-commit run pass them
 ```
 
-### Scenario: Code under test cannot redirect the comment
+### Scenario: The test seams are ignored outside this repository
 
 ```
-Given a build script that writes `CARGO_CRAP_TEST_API_URL` to `GITHUB_ENV`
-When  the Action runs on a pull request
-Then  the comment goes to the API the job started with
-And   the host the build script named receives nothing
+Given a repository other than minikin/cargo-crap
+And   `CARGO_CRAP_TEST_API_URL` and `CARGO_CRAP_TEST_PR_NUMBER` in the job's
+      environment
+When  the Action comments
+Then  it comments through `github.api_url` on the pull request that
+      started the run
 ```
 
 ### Scenario: The triage budget is spent once per job
@@ -212,7 +214,7 @@ Then  the provider receives exactly two requests
 ```
 Given `args: --threshold 20'`
 When  the Action runs
-Then  the step fails naming `args`, before any cargo-crap run
+Then  the step fails naming `args`, before anything is scored
 ```
 
 ### Scenario: An archive that does not match the release's sums is refused
@@ -255,7 +257,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   existing LCOV file skips the coverage run_, _A given baseline file
   replaces the base-commit run_. Tests: CI scenario jobs.
 - [x] **T4 — The sticky comment.** Post or update by `comment-marker`
-  through the REST API, links at the commit that was scored, and the job summary with
+  through the REST API, links at the head commit, and the job summary with
   one warning when the token cannot comment. Needs: T3. Scenarios: _A
   second run updates the comment instead of adding one_, _A fork's pull
   request gets the report in the job summary_, _Two comments with their own
@@ -266,11 +268,11 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   `v1`, the demo runs through `uses: ./` with its own marker, and the
   README, the CI guides and the CHANGELOG show the one-step setup. Needs: T4. No scenario: checked by the docs
   tests and the demo's comment.
-- [ ] **T6 — The comment cannot be redirected, and links name what was
-  scored.** The Install step reads the test seams before any repository
-  code runs and passes them on as its outputs, and the Comment step reads
-  only those. Links name `git rev-parse HEAD`. Needs: T5. Scenarios: _Code
-  under test cannot redirect the comment_. Tests: CI scenario jobs.
+- [ ] **T6 — The test seams work only here.** The Comment step reads
+  the test seams only when `github.repository` is minikin/cargo-crap, and
+  the guide states the trust boundary. Needs: T5. Scenarios: _The test
+  seams are ignored outside this repository_. Tests: a docs test over
+  `action.yml`, since CI runs only in this repository.
 - [ ] **T7 — The budget is spent once, and bad arguments fail.** The gate
   run clears the provider keys, and input that cannot be split into words
   fails the step. Needs: T6. Scenarios: _The triage budget is spent once
@@ -354,11 +356,12 @@ expected.
 **Report and comment.** One run writes `--format pr-comment` (on a pull
 request) or `--format markdown` (on a push) to a file, appended to the job
 summary and named by `report`. A `--format json` run of the same inputs
-fills the outputs. The links name the commit that was scored
-(`--commit-ref` with `git rev-parse HEAD`): under the default checkout of a
-pull request that is the merge commit, so a line number in the comment is
-the line that was measured. The merge commit is recomputed when the base
-moves, and the next run's comment links the new one. The comment is found by `comment-marker`: the default is
+fills the outputs. On a pull request the links point at the pull request's
+head commit (`--commit-ref` with the head SHA), not the merge commit
+`GITHUB_SHA` names: GitHub deletes a pull request's merge ref when it
+closes, and keeps the head ref, so the links outlive the pull request. A
+line number can be off by a few lines when the base changed the same file
+after the branch point. The comment is found by `comment-marker`: the default is
 the marker the pr-comment format starts with, and any other marker is put
 on the comment's first line. It is updated if present and created
 otherwise, through the REST API with `github-token`. A 403 or 404 there is
@@ -368,9 +371,10 @@ written by someone else is never taken for the Action's.
 
 **Gate.** Last, after the comment: the gate run adds `--fail-regression`
 and `--fail-above` per the inputs, and its exit code is the step's. It
-clears every provider's key as the base run does: the report run has
-already spent the triage budget and cached its verdicts, and a second run
-with a key would spend it again on the groups the first one skipped.
+clears every provider's key as the base run does, and so does the badge
+run: the report run has already spent the triage budget, and a second run
+with a key would spend it again on the groups the first one skipped. The
+gate counts score regressions, which need no verdict.
 
 **Arguments.** `args` and `coverage-args` are split into words as the shell
 would, quotes and backslashes included, and nothing in them is executed.
@@ -391,13 +395,18 @@ with `working-directory` and `base` pointing at it, and asserts on the
 outputs and the summary file. The comment scenarios start a small local
 HTTP server that stands in for the GitHub API and assert on the requests it
 received. GitHub does not let a step override `GITHUB_API_URL`, so the
-comment step takes two test seams first, `CARGO_CRAP_TEST_API_URL` and
-`CARGO_CRAP_TEST_PR_NUMBER`, named so no real workflow sets them by chance.
-The Install step reads them from the environment before any of the
-repository's code runs and passes them on as its outputs. Code that the
-coverage step runs can write `GITHUB_ENV` for every later step, and must not
-be able to send the token to another host or the comment to another
-issue.
+comment step reads two test seams first, `CARGO_CRAP_TEST_API_URL` and
+`CARGO_CRAP_TEST_PR_NUMBER`, and only when `github.repository` is
+minikin/cargo-crap, so no other repository's job, and no code that writes
+its environment, can point the token at another host through them.
+
+**Trust.** The Action runs the pull request's build scripts and tests in
+the job that holds the comment token, and code that runs there can reach
+the token by other means (a proxy variable written to `GITHUB_ENV`, or a
+replaced binary). No step order inside the Action prevents that. The
+boundary is the event: on `pull_request` a fork's token is read-only and a
+branch's author can already write. The guide says to keep the Action off
+`pull_request_target` with a fork's code checked out.
 The scripts' small pieces (the target triple, the word splitting, the input
 checks) get shell tests run by `just`. The demo workflow switches to `uses: ./` with its own
 `comment-marker`, so the showcase on #119 runs through the Action and never

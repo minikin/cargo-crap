@@ -21,25 +21,23 @@ file_input lcov "$given_lcov"
 file_input baseline "$given_baseline"
 # Each step its own directory, so two steps in one job keep their reports.
 work="$(mktemp -d "$RUNNER_TEMP/cargo-crap.XXXXXX")"
-# Split before anything runs, as plain assignments, so input that cannot be
-# split stops the step here.
-crap_words="$(words_of args "$CRAP_ARGS")"
-coverage_words="$(words_of coverage-args "$CRAP_COVERAGE_ARGS")"
+# Split before anything runs, through files so an empty word survives, as
+# plain commands so input that cannot be split stops the step here.
+words_of args "$CRAP_ARGS" > "$work/args.words"
+words_of coverage-args "$CRAP_COVERAGE_ARGS" > "$work/coverage-args.words"
 args=()
 coverage_args=()
-if [ -n "$crap_words" ]; then
-    while IFS= read -r word; do args+=("$word"); done <<< "$crap_words"
-fi
-if [ -n "$coverage_words" ]; then
-    while IFS= read -r word; do coverage_args+=("$word"); done <<< "$coverage_words"
-fi
+while IFS= read -r word; do args+=("$word"); done < "$work/args.words"
+while IFS= read -r word; do coverage_args+=("$word"); done < "$work/coverage-args.words"
 
 cover() {
     cargo llvm-cov --lcov --output-path "$1" ${coverage_args[@]+"${coverage_args[@]}"}
 }
 
 # Run a command with every provider key cleared, which cargo-crap reads as
-# unset, so it sends no triage request and only reads cached verdicts.
+# unset, so it sends no triage request. Triage is all or nothing: with a
+# group left to ask and no key, the run reports no verdict at all, which
+# none of the unpaid runs needs.
 unpaid() {
     TYPESAFE_API_KEY='' OPENAI_API_KEY='' "$@"
 }
@@ -165,18 +163,22 @@ crap() {
     cargo-crap --lcov "$lcov" ${args[@]+"${args[@]}"} ${compared[@]+"${compared[@]}"} "$@"
 }
 
-# Links name the commit that was scored: on a pull request's default
-# checkout the merge commit, so a line number is the line that was measured.
+# Links at the pull request's own head, not the merge commit GITHUB_SHA
+# names on a pull_request event: GitHub deletes the merge ref when the pull
+# request closes and keeps the head ref, so the links outlive it.
 # cargo-crap writes paths relative to the working directory, so a crate in a
 # subdirectory carries it in the ref: `blob/<sha>/crates/foo/src/lib.rs`.
-ref="$(git rev-parse HEAD)"
-prefix="$(git rev-parse --show-prefix)"
-links=(--commit-ref "$ref${prefix:+/${prefix%/}}")
+links=()
+ref="${CRAP_HEAD_SHA:-${GITHUB_SHA:-}}"
+if [ -n "$ref" ]; then
+    prefix="$(git rev-parse --show-prefix)"
+    links=(--commit-ref "$ref${prefix:+/${prefix%/}}")
+fi
 report="$work/report.md"
 if [ "${#compared[@]}" -gt 0 ]; then
-    crap --format pr-comment "${links[@]}" --output "$report"
+    crap --format pr-comment ${links[@]+"${links[@]}"} --output "$report"
 else
-    crap --format markdown "${links[@]}" --output "$report"
+    crap --format markdown ${links[@]+"${links[@]}"} --output "$report"
 fi
 # The runner drops a job summary over 1 MiB whole, so a report that large is
 # left to the `report` output.
@@ -189,7 +191,7 @@ cp "$GITHUB_STEP_SUMMARY" "$work/summary.md"
 
 # Its stderr kept aside: with duplicates on in config, every badge run says
 # they do not apply to it, and only a failure should show.
-if ! badge="$(crap --format shields 2> "$work/badge.err")"; then
+if ! badge="$(unpaid crap --format shields 2> "$work/badge.err")"; then
     cat "$work/badge.err" >&2
     echo "::error::cargo-crap could not count the functions above the threshold"
     exit 1
@@ -207,9 +209,9 @@ fi
 # One JSON run is both the gate and, on a pull request, the regression
 # count. Its status goes to the `status` output, which the Action's last
 # step exits with, so the comment is posted before the step fails. It runs
-# unpaid: the report run has spent the triage budget and cached what it
-# learnt, and a run with a key would spend the budget again. Its warnings
-# repeat the report run's, so only its errors are shown.
+# unpaid: the report run has spent the triage budget, a run with a key would
+# spend it again, and score regressions need no verdict. Its triage warnings
+# are about that missing key, not the job's, so they are left out.
 gate=()
 if [ "$fail_above" = true ]; then
     gate+=(--fail-above)
@@ -219,7 +221,7 @@ if [ "${#compared[@]}" -gt 0 ] && [ "$fail_regression" = true ]; then
 fi
 status=0
 unpaid crap ${gate[@]+"${gate[@]}"} --format json --output "$work/result.json" 2> "$work/gate.err" || status=$?
-grep -v '^warning: ' "$work/gate.err" >&2 || true
+grep -v -e '^warning: duplicate triage skipped' -e '^warning: the triage budget' "$work/gate.err" >&2 || true
 # 2 is cargo-crap failing to run, not a gate: nothing to count.
 if [ "$status" -ge 2 ]; then
     exit "$status"

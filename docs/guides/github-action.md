@@ -45,15 +45,18 @@ permission. The cost is a second test run. Then it:
    before,
 3. fails the step when a function's score rose, after commenting.
 
-The links in the report name the commit that was scored: for a pull
-request, the merge commit GitHub checks out, so a line number points at the
-line that was measured.
+The links in the report name the pull request's head commit, which GitHub
+keeps after the pull request closes. A line number can be a few lines off
+when the base branch changed the same file after the branch point.
 
 A pull request from a fork has a read-only token, which cannot comment. The
 report is then in the job summary, the step warns once, and it still gates.
-Keep the Action on `pull_request`. It runs the pull request's tests, and
-under `pull_request_target` the token can write, so checking out a fork's
-code there hands that code a write token.
+Keep the Action on `pull_request`. It runs the pull request's build
+scripts and tests in the job that holds the token, and nothing inside the
+Action can keep that code from the token. On `pull_request` a fork's token
+is read-only, and a branch's author can already write. Under
+`pull_request_target` the token can write, so checking out a fork's code
+there hands that code a write token.
 
 The base-commit run uses the pull request's `.cargo-crap.toml`, so a pull
 request that changes the threshold or the duplicate settings is compared
@@ -116,9 +119,9 @@ base's (see [Finding duplicates](duplicates.md)). For
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-Only the run that writes the report sends triage requests. The
-base-commit run and the gate run clear every provider key, so
-`max-requests` is spent once per job.
+Only the run that writes the report sends triage requests. The other
+cargo-crap runs in the job clear every provider key, so `max-requests` is
+spent once per job.
 
 ## Versions
 
