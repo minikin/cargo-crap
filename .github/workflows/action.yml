@@ -252,6 +252,77 @@ jobs:
           test "$(git -C "$RUNNER_TEMP/shop" log -1 --format=%s)" = pr
           test -z "$(git -C "$RUNNER_TEMP/shop" status --porcelain --untracked-files=no)"
 
+  given-lcov:
+    name: An existing LCOV file skips the coverage run
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request, a baseline of its base commit, and an LCOV file
+        run: |
+          chmod +x "$RUNNER_TEMP/bin/cargo-crap"
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" regress
+          cd "$RUNNER_TEMP/shop"
+          git checkout -q HEAD~1
+          "$RUNNER_TEMP/bin/cargo-crap" --path . --format json --output base.json
+          git checkout -q -
+          # Every line of `shipping` covered: a run of its own tests would not.
+          { echo "SF:src/lib.rs"; for l in $(seq 2 14); do echo "DA:$l,1"; done; echo end_of_record; } > lcov.info
+      - uses: ./
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          lcov: lcov.info
+          baseline: base.json
+      - name: No tests ran, and the given coverage and baseline were used
+        env:
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: |
+          ! command -v cargo-llvm-cov
+          test ! -d "$RUNNER_TEMP/shop/target/debug"
+          grep -q '| 100.0 |' "$REPORT"
+          grep -q 'regressed ·' "$REPORT"
+
+  given-baseline:
+    name: A given baseline file replaces the base-commit run
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request and a baseline recorded without coverage
+        run: |
+          chmod +x "$RUNNER_TEMP/bin/cargo-crap"
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          cd "$RUNNER_TEMP/shop"
+          git checkout -q HEAD~1
+          "$RUNNER_TEMP/bin/cargo-crap" --path . --format json --output base.json
+          git checkout -q -
+      - uses: ./
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          baseline: base.json
+          # No such commit: a base-commit run would fail on it.
+          base: "0000000000000000000000000000000000000000"
+      - name: Compared with the file, not with a run of the base commit
+        env:
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: |
+          # Without coverage the file scored `shipping` higher, so it improved.
+          # A base-commit run with coverage would leave it unchanged.
+          grep -q '↓ 1 improved' "$REPORT"
+          test "$(git -C "$RUNNER_TEMP/shop" log -1 --format=%s)" = pr
+
   pr-config:
     name: The base-commit run uses the pull request's config
     needs: build

@@ -21,6 +21,12 @@ inputs:
   coverage-args:
     description: Extra arguments for `cargo llvm-cov`, as shell words.
     default: ""
+  lcov:
+    description: An existing LCOV file, relative to the working directory, used instead of a coverage run.
+    default: ""
+  baseline:
+    description: A baseline JSON file, relative to the working directory, used instead of the base-commit run.
+    default: ""
   base:
     description: The commit to compare with. The pull request's base commit by default, and nothing on a push.
     default: ${{ github.event.pull_request.base.sha }}
@@ -53,11 +59,13 @@ runs:
         BINARY: ${{ inputs.binary }}
 
     - name: Install cargo-llvm-cov
+      if: inputs.lcov == ''
       uses: taiki-e/install-action@v2
       with:
         tool: cargo-llvm-cov
 
     - name: Add llvm-tools
+      if: inputs.lcov == ''
       shell: bash
       run: rustup component add llvm-tools-preview
 
@@ -72,3 +80,5 @@ runs:
         CRAP_FAIL_ABOVE: ${{ inputs.fail-above }}
         CRAP_FAIL_REGRESSION: ${{ inputs.fail-regression }}
         CRAP_BASE: ${{ inputs.base }}
+        CRAP_LCOV: ${{ inputs.lcov }}
+        CRAP_BASELINE: ${{ inputs.baseline }}

@@ -10,6 +10,14 @@ source "$here/lib.sh"
 fail_above="$(boolean fail-above "$CRAP_FAIL_ABOVE")"
 fail_regression="$(boolean fail-regression "$CRAP_FAIL_REGRESSION")"
 base="${CRAP_BASE:-}"
+given_lcov="${CRAP_LCOV:-}"
+given_baseline="${CRAP_BASELINE:-}"
+for given in "$given_lcov" "$given_baseline"; do
+    if [ -n "$given" ] && [ ! -f "$given" ]; then
+        echo "::error::$given is not a file (paths are relative to the working directory)"
+        exit 1
+    fi
+done
 # Each step its own directory, so two steps in one job keep their reports.
 work="$(mktemp -d "$RUNNER_TEMP/cargo-crap.XXXXXX")"
 args=()
@@ -100,12 +108,20 @@ score_base() {
 }
 
 compared=()
-if [ -n "$base" ] && score_base; then
+if [ -n "$given_baseline" ]; then
+    compared=(--baseline "$given_baseline")
+elif [ -n "$base" ] && [ -n "$given_lcov" ]; then
+    echo "::warning::with lcov given, the base commit has no coverage to score: give baseline as well to compare"
+elif [ -n "$base" ] && score_base; then
     compared=(--baseline "$work/base.json")
 fi
 
-lcov="$work/lcov.info"
-cover "$lcov"
+if [ -n "$given_lcov" ]; then
+    lcov="$given_lcov"
+else
+    lcov="$work/lcov.info"
+    cover "$lcov"
+fi
 
 crap() {
     cargo-crap --lcov "$lcov" ${args[@]+"${args[@]}"} ${compared[@]+"${compared[@]}"} "$@"
