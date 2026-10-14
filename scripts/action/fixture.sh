@@ -4,7 +4,8 @@
 # a pull request. Prints nothing. The base commit is `HEAD~1` when there is a
 # change, `HEAD` otherwise.
 #
-# Usage: fixture.sh <dir> [regress|steady|config-skew|extra|lone-copy]
+# Usage: fixture.sh <dir> [regress|steady|config-skew|extra|lone-copy] [subdir]
+#   subdir       put the crate in <dir>/<subdir>, with the repository at <dir>
 #   regress      the pull request adds untested branches to `shipping`
 #   steady       the pull request only rewords a comment
 #   config-skew  the base commit's config excludes src/lib.rs, the pull
@@ -16,8 +17,10 @@
 set -euo pipefail
 dir="$1"
 change="${2:-}"
-mkdir -p "$dir/src"
+mkdir -p "$dir/${3:-.}/src"
 cd "$dir"
+git init -q
+cd "${3:-.}"
 commit() {
     git -c user.name=fixture -c user.email=fixture@example.com add -A
     git -c user.name=fixture -c user.email=fixture@example.com commit -q -m "$1"
@@ -88,7 +91,6 @@ case "$change" in
     extra) copy extra_one > src/extra.rs && echo "pub mod extra;" >> src/lib.rs ;;
     lone-copy) { copy one; copy two; } > src/copies.rs && echo "pub mod copies;" >> src/lib.rs ;;
 esac
-git init -q
 commit base
 case "$change" in
     "") exit 0 ;;

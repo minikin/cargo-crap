@@ -501,49 +501,46 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     env:
-      CRAP_API_URL: http://127.0.0.1:8765
-      CRAP_PR_NUMBER: "42"
+      CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
+      CARGO_CRAP_TEST_PR_NUMBER: "42"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
           path: ${{ runner.temp }}/bin
-      - name: A pull request, and a stand-in GitHub API
-        id: shop
+      - name: A regression, and an API holding the comment of an earlier run
         run: |
-          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
-          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
-          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github &
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" regress
+          scripts/action/prepared.sh "$RUNNER_TEMP/shop" "$RUNNER_TEMP/bin/cargo-crap"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github \
+            --existing $'<!-- cargo-crap-report -->\nan earlier report' &
           sleep 1
       - uses: ./
-        id: first
+        id: crap
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
-          base: ${{ steps.shop.outputs.base }}
-      - uses: ./
-        with:
-          binary: ${{ runner.temp }}/bin/cargo-crap
-          working-directory: ${{ runner.temp }}/shop
-          base: ${{ steps.shop.outputs.base }}
-      - name: One comment, created once and then updated
+          lcov: lcov.info
+          baseline: base.json
+          fail-regression: false
+      - name: The earlier comment was updated, and none was added
         env:
-          REPORT: ${{ steps.first.outputs.report }}
+          REPORT: ${{ steps.crap.outputs.report }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          test "$(grep -c '"method": "POST"' "$RUNNER_TEMP/api.log")" = 1
-          grep -q '"method": "PATCH", "path": "/repos/[^/]*/[^/]*/issues/comments/100"' "$RUNNER_TEMP/api.log"
-          # On a pull_request event the links name the pull request's head.
-          if [ -n "$HEAD_SHA" ]; then grep -q "/blob/$HEAD_SHA/" "$REPORT"; fi
+          grep -q '"method": "PATCH", "path": "/repos/[^/]*/[^/]*/issues/comments/7"' "$RUNNER_TEMP/api.log"
+          ! grep -q '"method": "POST"' "$RUNNER_TEMP/api.log"
+          # The links name the pull request's head, or the pushed commit.
+          grep -q "/blob/${HEAD_SHA:-$GITHUB_SHA}/" "$REPORT"
 
   comment-fork:
     name: A fork's pull request gets the report in the job summary
     needs: build
     runs-on: ubuntu-latest
     env:
-      CRAP_API_URL: http://127.0.0.1:8765
-      CRAP_PR_NUMBER: "42"
+      CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
+      CARGO_CRAP_TEST_PR_NUMBER: "42"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -551,35 +548,45 @@ jobs:
           name: cargo-crap-under-test
           path: ${{ runner.temp }}/bin
       - name: A regression, and an API that refuses every write
-        id: shop
         run: |
           scripts/action/fixture.sh "$RUNNER_TEMP/shop" regress
-          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          scripts/action/prepared.sh "$RUNNER_TEMP/shop" "$RUNNER_TEMP/bin/cargo-crap"
           python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github --forbid &
           sleep 1
       - uses: ./
-        id: crap
+        id: gated
         continue-on-error: true
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
-          base: ${{ steps.shop.outputs.base }}
+          lcov: lcov.info
+          baseline: base.json
+      # Without the gate, a refused comment alone must not fail the step:
+      # it warns, it does not crash.
+      - uses: ./
+        id: ungated
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          lcov: lcov.info
+          baseline: base.json
+          fail-regression: false
       - name: Refused, summarised, and still gated
         env:
-          OUTCOME: ${{ steps.crap.outcome }}
-          REPORT: ${{ steps.crap.outputs.report }}
+          GATED: ${{ steps.gated.outcome }}
+          REPORT: ${{ steps.gated.outputs.report }}
         run: |
           grep -q '"method": "POST"' "$RUNNER_TEMP/api.log"
           grep -q '1 CRAP regression' "$(dirname "$REPORT")/summary.md"
-          test "$OUTCOME" = failure
+          test "$GATED" = failure
 
   comment-markers:
     name: Two comments with their own markers stay apart
     needs: build
     runs-on: ubuntu-latest
     env:
-      CRAP_API_URL: http://127.0.0.1:8765
-      CRAP_PR_NUMBER: "42"
+      CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
+      CARGO_CRAP_TEST_PR_NUMBER: "42"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -587,34 +594,37 @@ jobs:
           name: cargo-crap-under-test
           path: ${{ runner.temp }}/bin
       - name: A pull request, and a stand-in GitHub API
-        id: shop
         run: |
           scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
-          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          scripts/action/prepared.sh "$RUNNER_TEMP/shop" "$RUNNER_TEMP/bin/cargo-crap"
           python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github &
           sleep 1
       - uses: ./
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
-          base: ${{ steps.shop.outputs.base }}
+          lcov: lcov.info
+          baseline: base.json
       - uses: ./
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
-          base: ${{ steps.shop.outputs.base }}
-          comment-marker: "<!-- shop-demo -->"
+          lcov: lcov.info
+          baseline: base.json
+          comment-marker: "<!-- cargo-crap-report-demo -->"
       - uses: ./
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
-          base: ${{ steps.shop.outputs.base }}
+          lcov: lcov.info
+          baseline: base.json
       - uses: ./
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
-          base: ${{ steps.shop.outputs.base }}
-          comment-marker: "<!-- shop-demo -->"
+          lcov: lcov.info
+          baseline: base.json
+          comment-marker: "<!-- cargo-crap-report-demo -->"
       - name: Two comments, each updated by its own step
         run: |
           python3 - "$RUNNER_TEMP/api.log" <<'PY'
@@ -622,9 +632,76 @@ jobs:
           log = [json.loads(line) for line in open(sys.argv[1])]
           posts = [json.loads(r["body"])["body"] for r in log if r["method"] == "POST"]
           patches = [(r["path"].rsplit("/", 1)[1], json.loads(r["body"])["body"]) for r in log if r["method"] == "PATCH"]
-          assert [p.splitlines()[0] for p in posts] == ["<!-- cargo-crap-report -->", "<!-- shop-demo -->"], posts
-          assert [(i, b.splitlines()[0]) for i, b in patches] == [("100", "<!-- cargo-crap-report -->"), ("101", "<!-- shop-demo -->")], patches
+          first = [p.splitlines()[0] for p in posts]
+          assert first == ["<!-- cargo-crap-report -->", "<!-- cargo-crap-report-demo -->"], first
+          updated = [(i, b.splitlines()[0]) for i, b in patches]
+          assert updated == [("100", "<!-- cargo-crap-report -->"), ("101", "<!-- cargo-crap-report-demo -->")], updated
           PY
+
+  comment-empty-marker:
+    name: An empty comment marker is refused
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
+      CARGO_CRAP_TEST_PR_NUMBER: "42"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request, and someone else's comment on it
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          scripts/action/prepared.sh "$RUNNER_TEMP/shop" "$RUNNER_TEMP/bin/cargo-crap"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github \
+            --existing 'Looks good to me' &
+          sleep 1
+      - uses: ./
+        id: crap
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          lcov: lcov.info
+          baseline: base.json
+          comment-marker: ""
+      - name: Refused, and the other comment untouched
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+        run: |
+          test "$OUTCOME" = failure
+          ! grep -q '"method": "PATCH"' "$RUNNER_TEMP/api.log"
+
+  links-in-subdirectory:
+    name: Links reach a crate in a subdirectory
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A regression in a crate under crates/shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/repo" regress crates/shop
+          scripts/action/prepared.sh "$RUNNER_TEMP/repo/crates/shop" "$RUNNER_TEMP/bin/cargo-crap"
+      - uses: ./
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/repo/crates/shop
+          lcov: lcov.info
+          baseline: base.json
+          fail-regression: false
+          comment: false
+      - name: The links carry the subdirectory
+        env:
+          REPORT: ${{ steps.crap.outputs.report }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: grep -q "/blob/${HEAD_SHA:-$GITHUB_SHA}/crates/shop/" "$REPORT"
 
   platforms:
     name: It runs on Linux, macOS and Windows runners (${{ matrix.os }})

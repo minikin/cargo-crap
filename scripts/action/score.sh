@@ -9,6 +9,11 @@ source "$here/lib.sh"
 
 fail_above="$(boolean fail-above "$CRAP_FAIL_ABOVE")"
 fail_regression="$(boolean fail-regression "$CRAP_FAIL_REGRESSION")"
+comment="$(boolean comment "$CRAP_COMMENT")"
+if [ "$comment" = true ] && [ -z "$CRAP_COMMENT_MARKER" ]; then
+    echo "::error::comment-marker is empty: it would match every comment on the pull request"
+    exit 1
+fi
 base="${CRAP_BASE:-}"
 given_lcov="${CRAP_LCOV:-}"
 given_baseline="${CRAP_BASELINE:-}"
@@ -146,17 +151,21 @@ crap() {
     cargo-crap --lcov "$lcov" ${args[@]+"${args[@]}"} ${compared[@]+"${compared[@]}"} "$@"
 }
 
+# Links at the pull request's own head, not the merge commit GITHUB_SHA
+# names on a pull_request event. cargo-crap writes paths relative to the
+# working directory, so a crate in a subdirectory carries it in the ref:
+# `blob/<sha>/crates/foo/src/lib.rs`.
+links=()
+ref="${CRAP_HEAD_SHA:-${GITHUB_SHA:-}}"
+if [ -n "$ref" ]; then
+    prefix="$(git rev-parse --show-prefix)"
+    links=(--commit-ref "$ref${prefix:+/${prefix%/}}")
+fi
 report="$work/report.md"
 if [ "${#compared[@]}" -gt 0 ]; then
-    # Links at the pull request's own head, not the merge commit GITHUB_SHA
-    # names on a pull_request event.
-    links=()
-    if [ -n "${CRAP_HEAD_SHA:-}" ]; then
-        links=(--commit-ref "$CRAP_HEAD_SHA")
-    fi
     crap --format pr-comment ${links[@]+"${links[@]}"} --output "$report"
 else
-    crap --format markdown --output "$report"
+    crap --format markdown ${links[@]+"${links[@]}"} --output "$report"
 fi
 # The runner drops a job summary over 1 MiB whole, so a report that large is
 # left to the `report` output.
@@ -209,4 +218,7 @@ if [ "${#compared[@]}" -gt 0 ]; then
     echo "regressed=$regressed" >> "$GITHUB_OUTPUT"
     echo "compared=true" >> "$GITHUB_OUTPUT"
 fi
-echo "status=$status" >> "$GITHUB_OUTPUT"
+{
+    echo "status=$status"
+    echo "comment=$comment"
+} >> "$GITHUB_OUTPUT"

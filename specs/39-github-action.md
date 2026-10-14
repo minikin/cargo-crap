@@ -224,8 +224,8 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   one warning when the token cannot comment. Needs: T3. Scenarios: _A
   second run updates the comment instead of adding one_, _A fork's pull
   request gets the report in the job summary_, _Two comments with their own
-  markers stay apart_. Tests: shell (the marker lookup) + CI scenario jobs
-  against a local stub of the API.
+  markers stay apart_. Tests: CI scenario jobs against a local stub of the
+  API.
 - [ ] **T5 — Release, demo and docs.** The release workflow writes its
   version into `action.yml` and moves `v1`, the demo runs through `uses:
   ./` with its own marker, and the README, the CI guides and the CHANGELOG
@@ -237,10 +237,12 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
 ## Implementation Notes
 
 **Shape.** A composite action, `action.yml` at the repository root, so
-`uses: minikin/cargo-crap@v1` resolves to it. Its steps run scripts under
-`scripts/action/` with `shell: bash`, which every GitHub runner has,
-Windows included. Each script does one thing: install, cover, score, base,
-comment, gate. Small scripts can be run and tested outside a workflow.
+`uses: minikin/cargo-crap@v1` resolves to it. Install and score are scripts
+under `scripts/action/` with `shell: bash`, which every GitHub runner has,
+Windows included, and their pure pieces are shell-tested. The comment is an
+`actions/github-script` step, which brings JSON, pagination and a
+configurable API URL without `jq`, and the gate is a last step that exits
+with the score step's status.
 
 **Inputs.**
 
@@ -304,7 +306,9 @@ head commit (`--commit-ref` with the head SHA), not the merge commit
 the marker the pr-comment format starts with, and any other marker is put
 on the comment's first line. It is updated if present and created
 otherwise, through the REST API with `github-token`. A 403 or 404 there is
-the fork case: one warning, and the run goes on.
+the fork case: one warning, and the run goes on. The marker is matched as
+the comment's whole first line, and an empty one is refused, so a comment
+written by someone else is never taken for the Action's.
 
 **Gate.** Last, after the comment: the gate run adds `--fail-regression`
 and `--fail-above` per the inputs, and its exit code is the step's.
@@ -320,10 +324,12 @@ tested with the code under review. Each job builds a fixture repository in
 `$RUNNER_TEMP` with a base commit and a pull-request commit, runs `uses: ./`
 with `working-directory` and `base` pointing at it, and asserts on the
 outputs and the summary file. The comment scenarios start a small local
-HTTP server that stands in for the GitHub API, reached through
-`GITHUB_API_URL`, and assert on the requests it received. The scripts'
-small pieces (the target triple, the marker lookup) get shell tests run by
-`just`. The demo workflow switches to `uses: ./` with its own
+HTTP server that stands in for the GitHub API and assert on the requests it
+received. GitHub does not let a step override `GITHUB_API_URL`, so the
+comment step reads two test seams first, `CARGO_CRAP_TEST_API_URL` and
+`CARGO_CRAP_TEST_PR_NUMBER`, named so no real workflow sets them by chance.
+The scripts' small pieces (the target triple, the word splitting, the input
+checks) get shell tests run by `just`. The demo workflow switches to `uses: ./` with its own
 `comment-marker`, so the showcase on #119 runs through the Action and never
 touches the Self-score comment.
 
