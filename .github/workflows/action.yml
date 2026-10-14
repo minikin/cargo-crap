@@ -759,7 +759,8 @@ jobs:
         id: crap
         with:
           # The newest release that exists: the default names this commit's
-          # version, which is released only after it lands.
+          # version, released only after it lands. The release workflow runs
+          # the Action with the default on every platform before moving v1.
           version: latest
           base: ${{ steps.shop.outputs.base }}
           comment: false

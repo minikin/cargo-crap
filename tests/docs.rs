@@ -325,10 +325,15 @@ fn every_marked_sample_output_matches_a_real_run() {
     );
 }
 
-/// The `default:` of input `name` in `action.yml`.
+/// The `default:` of input `name`, under `inputs:` in `action.yml`.
 fn action_input_default(name: &str) -> Option<String> {
     let action = read("action.yml");
-    let mut lines = action.lines().skip_while(|l| *l != format!("  {name}:"));
+    let mut lines = action
+        .lines()
+        .skip_while(|l| *l != "inputs:")
+        .skip(1)
+        .take_while(|l| l.is_empty() || l.starts_with(' '))
+        .skip_while(|l| *l != format!("  {name}:"));
     lines.next()?;
     lines
         .take_while(|l| l.starts_with("    "))

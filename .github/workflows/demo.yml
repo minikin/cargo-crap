@@ -2,13 +2,13 @@ name: Demo
 
 # The live version of the README hero: a pull request that changes
 # examples/hero-shop gets the comment cargo-crap would post on that shop's
-# own pull request, through this repository's GitHub Action (`uses: ./`). The CRAP delta compares the shop on the base branch with
-# the shop in the pull request, and the duplicate section lists the
-# look-alikes the pull request adds, triaged by OpenAI. Verdicts for the
-# hero's pairs are committed under
-# docs/assets/hero/triage-cache, so the demo needs no key. With an
-# OPENAI_API_KEY secret, a pair missing from that cache is asked about;
-# without one it shows untriaged.
+# own pull request, through this repository's GitHub Action (`uses: ./`).
+# The CRAP delta compares the shop on the base branch with the shop in the
+# pull request, and the duplicate section lists the look-alikes the pull
+# request adds, triaged by OpenAI. Verdicts for the hero's pairs are
+# committed under docs/assets/hero/triage-cache, so the demo needs no key.
+# With an OPENAI_API_KEY secret, a pair missing from that cache is asked
+# about; without one it shows untriaged.
 #
 # The showcase pull request is a draft from demo/hero-shop-pr that copies
 # examples/hero-shop/pr/*.rs over src/. It is never merged.
@@ -18,8 +18,6 @@ on:
     paths:
       - 'examples/hero-shop/**'
       - '.github/workflows/demo.yml'
-      - 'action.yml'
-      - 'scripts/action/**'
 
 permissions:
   contents: read
@@ -34,14 +32,18 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # The verdicts for the hero's pairs are seeded into this target
-      # directory's triage cache, so the demo needs no key.
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target/demo
+      # directory's triage cache, so the demo needs no key. Under the
+      # runner's temp directory, which no cache restores, so only the
+      # committed verdicts are there.
+      CARGO_TARGET_DIR: ${{ runner.temp }}/demo-target
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target/build"
 
       # The Action is tested with the code under review: this pull request's
       # cargo-crap, with triage built in.
@@ -53,7 +55,7 @@ jobs:
           mkdir -p "$CARGO_TARGET_DIR/cargo-crap/triage"
           cp docs/assets/hero/triage-cache/*.json "$CARGO_TARGET_DIR/cargo-crap/triage/"
           printf '[duplicates]\nenabled = true\n\n[duplicates.triage]\nenabled = true\nprovider = "openai"\n' \
-            > .cargo-crap.toml
+            > examples/hero-shop/.cargo-crap.toml
 
       # The base-commit run reads the same config, records the shop's
       # duplicates and never asks the API. Its own marker keeps this comment

@@ -60,10 +60,17 @@ outputs:
 runs:
   using: composite
   steps:
+    # Every later step runs from a copy of the scripts, taken before any
+    # checkout: with `uses: ./` they sit in the tree the base-commit run
+    # replaces.
     - name: Install cargo-crap
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: "\"$GITHUB_ACTION_PATH/scripts/action/install.sh\""
+      run: |
+        scripts="$(mktemp -d "$RUNNER_TEMP/cargo-crap-scripts.XXXXXX")"
+        cp -R "$GITHUB_ACTION_PATH/scripts/action/." "$scripts/"
+        echo "CARGO_CRAP_SCRIPTS=$scripts" >> "$GITHUB_ENV"
+        "$scripts/install.sh"
       env:
         VERSION: ${{ inputs.version }}
         BINARY: ${{ inputs.binary }}
@@ -77,18 +84,14 @@ runs:
     - name: Add llvm-tools
       if: inputs.lcov == ''
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: rustup component add llvm-tools-preview
 
-    # Run from a copy: with `uses: ./` the scripts sit in the checkout that
-    # the base-commit run replaces under them.
     - name: Score
       id: score
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: |
-        scripts="$(mktemp -d "$RUNNER_TEMP/cargo-crap-scripts.XXXXXX")"
-        cp "$GITHUB_ACTION_PATH"/scripts/action/*.sh "$scripts/"
-        "$scripts/score.sh"
+      run: "\"$CARGO_CRAP_SCRIPTS/score.sh\""
       env:
         CRAP_ARGS: ${{ inputs.args }}
         CRAP_COVERAGE_ARGS: ${{ inputs.coverage-args }}
