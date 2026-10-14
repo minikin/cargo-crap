@@ -10,7 +10,7 @@ inputs:
     description: The cargo-crap release to install, or `latest`.
     default: "0.7.0"
   binary:
-    description: A cargo-crap binary to use instead of downloading one.
+    description: A cargo-crap binary, relative to the working directory, to use instead of downloading one.
     default: ""
   working-directory:
     description: Where the crate is.
@@ -28,10 +28,10 @@ inputs:
     description: A baseline JSON file, relative to the working directory, used instead of the base-commit run.
     default: ""
   base:
-    description: The commit to compare with. The pull request's base commit by default, and nothing on a push.
+    description: The commit to compare with. The pull request's base commit by default, and nothing on a push. Ignored when baseline is given.
     default: ${{ github.event.pull_request.base.sha }}
   fail-regression:
-    description: On a pull request, fail when a function's score rose.
+    description: Fail when a function's score rose, whenever there is something to compare with (a pull request, or a given baseline).
     default: "true"
   fail-above:
     description: Fail when a function scores above the threshold.
@@ -53,6 +53,7 @@ runs:
   steps:
     - name: Install cargo-crap
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: "\"$GITHUB_ACTION_PATH/scripts/action/install.sh\""
       env:
         VERSION: ${{ inputs.version }}

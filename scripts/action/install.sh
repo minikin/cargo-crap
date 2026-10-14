@@ -7,10 +7,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$here/lib.sh"
 
 if [ -n "${BINARY:-}" ]; then
-    if [ ! -f "$BINARY" ]; then
-        echo "::error::binary: $BINARY is not a file"
-        exit 1
-    fi
+    file_input binary "$BINARY"
     # An uploaded artifact loses its execute bit on the way down.
     chmod +x "$BINARY"
     dir="$(cd "$(dirname "$BINARY")" && pwd)"

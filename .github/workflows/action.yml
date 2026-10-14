@@ -283,10 +283,13 @@ jobs:
         env:
           REPORT: ${{ steps.crap.outputs.report }}
         run: |
-          ! command -v cargo-llvm-cov
-          test ! -d "$RUNNER_TEMP/shop/target/debug"
+          # Not installed, and no coverage file of the Action's own.
+          if command -v cargo-llvm-cov; then exit 1; fi
+          test ! -e "$(dirname "$REPORT")/lcov.info"
           grep -q '| 100.0 |' "$REPORT"
-          grep -q 'regressed ·' "$REPORT"
+          # Compared with the file: no base-commit run left its record.
+          test ! -e "$(dirname "$REPORT")/base.json"
+          grep -q '↑ 0 regressed' "$REPORT"
 
   given-baseline:
     name: A given baseline file replaces the base-commit run
@@ -312,7 +315,7 @@ jobs:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           baseline: base.json
-          # No such commit: a base-commit run would fail on it.
+          # No such commit, and never looked up: the baseline replaces it.
           base: "0000000000000000000000000000000000000000"
       - name: Compared with the file, not with a run of the base commit
         env:
@@ -321,7 +324,74 @@ jobs:
           # Without coverage the file scored `shipping` higher, so it improved.
           # A base-commit run with coverage would leave it unchanged.
           grep -q '↓ 1 improved' "$REPORT"
-          test "$(git -C "$RUNNER_TEMP/shop" log -1 --format=%s)" = pr
+          test ! -e "$(dirname "$REPORT")/base.json"
+
+  pr-unknown-base:
+    name: A base commit that cannot be found fails the step
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request
+        run: scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+      - uses: ./
+        id: crap
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: "1234567890123456789012345678901234567890"
+      - name: Failed, rather than compared with the pull request itself
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: |
+          test "$OUTCOME" = failure
+          test -z "$REPORT"
+
+  given-lcov-alone:
+    name: An LCOV file without a baseline cannot gate a pull request
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request and an LCOV file
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          { echo "SF:src/lib.rs"; echo "DA:2,1"; echo end_of_record; } > "$RUNNER_TEMP/shop/lcov.info"
+      - uses: ./
+        id: gated
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          lcov: lcov.info
+      - uses: ./
+        id: ungated
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          lcov: lcov.info
+          fail-regression: false
+      - name: Refused under the gate, reported without it
+        env:
+          GATED: ${{ steps.gated.outcome }}
+          REPORT: ${{ steps.ungated.outputs.report }}
+        run: |
+          test "$GATED" = failure
+          grep -q '`shipping`' "$REPORT"
 
   pr-config:
     name: The base-commit run uses the pull request's config

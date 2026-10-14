@@ -71,3 +71,12 @@ boolean() {
 is_count() {
     [[ "$1" =~ ^[0-9]+$ ]]
 }
+
+# Whether the path input `$1`, set to `$2`, is empty or names an existing
+# file. A missing file is an error naming the input.
+file_input() {
+    if [ -n "$2" ] && [ ! -f "$2" ]; then
+        echo "::error::$1: $2 is not a file (paths are relative to the working directory)" >&2
+        return 1
+    fi
+}

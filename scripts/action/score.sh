@@ -12,12 +12,8 @@ fail_regression="$(boolean fail-regression "$CRAP_FAIL_REGRESSION")"
 base="${CRAP_BASE:-}"
 given_lcov="${CRAP_LCOV:-}"
 given_baseline="${CRAP_BASELINE:-}"
-for given in "$given_lcov" "$given_baseline"; do
-    if [ -n "$given" ] && [ ! -f "$given" ]; then
-        echo "::error::$given is not a file (paths are relative to the working directory)"
-        exit 1
-    fi
-done
+file_input lcov "$given_lcov"
+file_input baseline "$given_baseline"
 # Each step its own directory, so two steps in one job keep their reports.
 work="$(mktemp -d "$RUNNER_TEMP/cargo-crap.XXXXXX")"
 args=()
@@ -66,24 +62,31 @@ restore() {
     fi
 }
 
-# Score `base` into `$work/base.json`: checked out in place, under the pull
-# request's config, with every provider key cleared so it never pays for
-# triage. Fails, with the pull request restored, when the base commit has no
-# working directory to score.
-score_base() {
-    local found prefix
-    head="$(git rev-parse HEAD)"
+# `base` as a commit: resolved here, or fetched from origin. Any failure ends
+# the run, since comparing with anything else would pass a regression.
+resolve_base() {
     if git cat-file -e "$base^{commit}" 2> /dev/null; then
         base="$(git rev-parse "$base^{commit}")"
     else
         git fetch -q --no-tags --depth=1 origin "$base"
-        base="$(git rev-parse FETCH_HEAD)"
+        base="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
     fi
+}
+
+# Whether the working directory exists at the base commit.
+base_has_workdir() {
+    local prefix
     prefix="$(git rev-parse --show-prefix)"
-    if [ -n "$prefix" ] && ! git cat-file -e "$base:${prefix%/}" 2> /dev/null; then
-        echo "::warning::$prefix does not exist at the base commit, so there is nothing to compare with"
-        return 1
-    fi
+    [ -z "$prefix" ] || git cat-file -e "$base:${prefix%/}" 2> /dev/null
+}
+
+# Score `base` into `$work/base.json`: checked out in place, under the pull
+# request's config, with every provider key cleared so it never pays for
+# triage. Called as a plain command, never as a condition, so any failure
+# stops the run instead of comparing with the wrong tree.
+score_base() {
+    local found
+    head="$(git rev-parse HEAD)"
     pr_config="$(nearest_config)"
     if [ -n "$pr_config" ]; then
         cp "$pr_config" "$work/pr-config.toml"
@@ -109,14 +112,30 @@ score_base() {
 
 compared=()
 if [ -n "$given_baseline" ]; then
+    if [ -n "$base" ]; then
+        echo "::notice::comparing with $given_baseline, not with a run of the base commit"
+    fi
     compared=(--baseline "$given_baseline")
 elif [ -n "$base" ] && [ -n "$given_lcov" ]; then
-    echo "::warning::with lcov given, the base commit has no coverage to score: give baseline as well to compare"
-elif [ -n "$base" ] && score_base; then
-    compared=(--baseline "$work/base.json")
+    if [ "$fail_regression" = true ]; then
+        echo "::error::with lcov given, the base commit has no coverage to score: give baseline as well, or set fail-regression to false"
+        exit 1
+    fi
+    echo "::warning::with lcov given and no baseline, there is nothing to compare with"
+elif [ -n "$base" ]; then
+    resolve_base
+    if base_has_workdir; then
+        score_base
+        compared=(--baseline "$work/base.json")
+    else
+        echo "::warning::$(git rev-parse --show-prefix) does not exist at the base commit, so there is nothing to compare with"
+    fi
 fi
 
 if [ -n "$given_lcov" ]; then
+    if [ "${#coverage_args[@]}" -gt 0 ]; then
+        echo "::warning::coverage-args has no effect with lcov given"
+    fi
     lcov="$given_lcov"
 else
     lcov="$work/lcov.info"

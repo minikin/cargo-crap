@@ -75,6 +75,18 @@ check "a word is not a count" "1" "$?"
 is_count ""
 check "nothing is not a count" "1" "$?"
 
+# A path input names an existing file, or nothing.
+present="$(mktemp)"
+check "an existing file" "" "$(file_input lcov "$present" 2>&1)"
+file_input lcov "$present"
+check "an existing file passes" "0" "$?"
+check "no value passes" "" "$(file_input lcov "" 2>&1)"
+check "a missing file names its input" \
+    "::error::lcov: no-such.info is not a file (paths are relative to the working directory)" \
+    "$(file_input lcov no-such.info 2>&1)"
+file_input lcov no-such.info >/dev/null 2>&1
+check "a missing file fails" "1" "$?"
+
 if [ "$failures" -gt 0 ]; then
     echo "$failures failed"
     exit 1
