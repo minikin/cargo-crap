@@ -129,6 +129,8 @@ each verdict kept is an API call not paid for again.
 
 ## Capping the requests
 
+*Since 0.8.0.*
+
 A first run over a large project, a run after `cargo clean`, or a CI job
 that does not keep `target/` asks about every candidate at once, and
 nothing limits how many that is. `max-requests` does:

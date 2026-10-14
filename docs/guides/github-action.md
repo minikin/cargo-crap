@@ -1,5 +1,7 @@
 # GitHub Action
 
+*Since 0.8.0.*
+
 One step scores the crate, compares a pull request with its base, comments
 on it and gates:
 

@@ -142,6 +142,8 @@ the provider and the model asked:
 
 ### On a delta run
 
+*Since 0.8.0.*
+
 When the `--baseline` was recorded with `--duplicates`, the section shows
 only what the change made: new candidates, and groups that gained members.
 The heading counts those, and a line under the table counts the rest when

@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.8.0] - 2026-10-14
+
+`--duplicates` reports functions that all resemble each other as one
+group instead of every pair between them, and triage asks one request per
+group: thirty copies of one function are one candidate and one paid
+request, not 435. On a delta run the PR comment lists only the duplicates
+the change made, and `max-requests` caps the paid requests one run may
+send. A GitHub Action, `uses: minikin/cargo-crap@v1`, scores a crate,
+compares a pull request with its base, comments and gates in one step. The
+PR comment keeps the file name in a location when every row is in one
+file. Library consumers of `RenderOptions`, `duplicates::triage::run` and
+`report::json::Envelope` need changes (see Changed).
+
 ### Added
 
 - A GitHub Action, `uses: minikin/cargo-crap@v1`: it installs a released
@@ -39,52 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one warning. See
   [On a delta run](docs/reference/output-formats.md#on-a-delta-run)
   (spec 37).
-
-### Changed
-
-- On such a delta run triage asks only about the candidates it shows, so
-  an unchanged candidate is not paid for on every pull request (spec 37).
-- A triaged markdown or pr-comment table gives a candidate without a
-  verdict empty verdict cells instead of dropping every verdict (spec 37).
-- `delta-v2.json` accepts `status` and `grown_from` on a duplicate group,
-  through the new `DeltaDuplicateGroup` definition in
-  `duplicates-v1.json`. A validator holding an older copy of the schema
-  rejects them.
-- **BREAKING (library API):** `RenderOptions::triage` holds one
-  `Option<Assessment>` per group, `None` for a group triage was not asked
-  about, `duplicates::render_grouped` takes the same, and
-  `RenderOptions::pair_triage` returns one per pair. `RenderOptions`
-  gains `novelty` and `delta::Baseline` gains `duplicate_groups`.
-  `duplicates::novelty` (`compare`, `Comparison`, `Novelty`) is new.
-- **BREAKING (library API):** `duplicates::triage::run` returns `Triaged`,
-  one optional verdict per pair and the number the budget skipped.
-  `config::TriageConfig` and `triage::Settings` gain `max_requests`,
-  `RenderOptions` gains `untriaged`, `report::json::Envelope` gains
-  `untriaged_groups`, and `duplicates::triage::budget` (`plan`, `Plan`,
-  `warning`) is new (spec 38).
-- `report-v1.json` and `delta-v2.json` accept `untriaged_groups`. A
-  validator holding an older copy of either schema rejects it.
-
-
-## [0.8.0] - 2026-10-13
-
-`--duplicates` reports functions that all resemble each other as one
-group instead of every pair between them, and triage asks one request per
-group: thirty copies of one function are one candidate and one paid
-request, not 435. A project with only pairs sees no change outside JSON,
-which gains `duplicate_groups`. The PR comment keeps the file name in a
-location when every row is in one file. Library consumers of
-`RenderOptions` need changes (see Changed).
-
-### Added
-
 - `--format json` carries `duplicate_groups` beside `duplicates` on
   `--duplicates` runs: one entry per candidate, groups of two included,
   each with its members, its weakest score and, with triage on, its
   verdict. The duplicate definitions both schemas share moved to
-  `schemas/duplicates-v1.json`. A validator that does not follow
-  references needs that file beside `report-v1.json` or `delta-v2.json`.
-  See [JSON output schema](docs/reference/json.md) (spec 36).
+  `schemas/duplicates-v1.json`. To validate offline, register it under
+  its published URL. See [JSON output schema](docs/reference/json.md)
+  (spec 36).
 
 ### Changed
 
@@ -105,6 +80,29 @@ location when every row is in one file. Library consumers of
   `duplicates::group` (`DuplicateGroup`, `group_pairs`, `pair_groups`),
   `RenderOptions::duplicate_groups`, `RenderOptions::pair_triage` and
   `report::duplicates::render_grouped` are new.
+- On a delta run against a baseline recorded with `--duplicates`, triage
+  asks only about the new and grown candidates, so an unchanged candidate
+  is not paid for on every pull request (spec 37).
+- A triaged markdown or pr-comment table gives a candidate without a
+  verdict empty verdict cells instead of dropping every verdict (spec 37).
+- `delta-v2.json` accepts `status` and `grown_from` on a duplicate group,
+  through the new `DeltaDuplicateGroup` definition in
+  `duplicates-v1.json`. A validator holding an older copy of the schema
+  rejects them.
+- **BREAKING (library API):** `RenderOptions::triage` holds one
+  `Option<Assessment>` per group, `None` for a group triage was not asked
+  about, `duplicates::render_grouped` takes the same, and
+  `RenderOptions::pair_triage` returns one per pair. `RenderOptions`
+  gains `novelty` and `delta::Baseline` gains `duplicate_groups`.
+  `duplicates::novelty` (`compare`, `Comparison`, `Novelty`) is new.
+- **BREAKING (library API):** `duplicates::triage::run` returns `Triaged`,
+  one optional verdict per pair and the number the budget skipped.
+  `config::TriageConfig` and `triage::Settings` gain `max_requests`,
+  `RenderOptions` gains `untriaged`, `report::json::Envelope` gains
+  `untriaged_groups`, and `duplicates::triage::budget` (`plan`, `Plan`,
+  `warning`) is new (spec 38).
+- `report-v1.json` and `delta-v2.json` accept `untriaged_groups`. A
+  validator holding an older copy of either schema rejects it.
 
 ### Fixed
 
