@@ -39,6 +39,12 @@ jobs:
         run: bash scripts/action/test.sh
       - name: Shellcheck
         run: shellcheck -x scripts/action/*.sh
+      # Catches what a run cannot: a context used where it is not allowed
+      # rejects the whole workflow, and a bare `! grep` never fails a step.
+      - name: Actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -ignore SC2016 .github/workflows/action.yml .github/workflows/demo.yml .github/workflows/release.yml
 
   build:
     name: Build cargo-crap
@@ -459,8 +465,8 @@ jobs:
       - name: Only the pull request's new pair was asked about
         run: |
           grep -q 'keep_a' "$RUNNER_TEMP/api.log"
-          ! grep -q 'fn two' "$RUNNER_TEMP/api.log"
-          ! grep -q '"triage"' "$RUNNER_TEMP"/cargo-crap.*/base.json
+          if grep -q 'fn two' "$RUNNER_TEMP/api.log"; then exit 1; fi
+          if grep -q '"triage"' "$RUNNER_TEMP"/cargo-crap.*/base.json; then exit 1; fi
 
   pr-args:
     name: Extra arguments reach cargo-crap
@@ -494,7 +500,7 @@ jobs:
         run: |
           base="$(dirname "$REPORT")/base.json"
           grep -q '"shipping"' "$base"
-          ! grep -q 'extra_one' "$base"
+          if grep -q 'extra_one' "$base"; then exit 1; fi
 
   comment-update:
     name: A second run updates the comment instead of adding one
@@ -530,7 +536,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           grep -q '"method": "PATCH", "path": "/repos/[^/]*/[^/]*/issues/comments/7"' "$RUNNER_TEMP/api.log"
-          ! grep -q '"method": "POST"' "$RUNNER_TEMP/api.log"
+          if grep -q '"method": "POST"' "$RUNNER_TEMP/api.log"; then exit 1; fi
           # The links name the pull request's head, or the pushed commit.
           grep -q "/blob/${HEAD_SHA:-$GITHUB_SHA}/" "$REPORT"
 
@@ -672,7 +678,7 @@ jobs:
           OUTCOME: ${{ steps.crap.outcome }}
         run: |
           test "$OUTCOME" = failure
-          ! grep -q '"method": "PATCH"' "$RUNNER_TEMP/api.log"
+          if grep -q '"method": "PATCH"' "$RUNNER_TEMP/api.log"; then exit 1; fi
 
   links-in-subdirectory:
     name: Links reach a crate in a subdirectory

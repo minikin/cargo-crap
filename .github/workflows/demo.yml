@@ -30,12 +30,6 @@ jobs:
   comment:
     name: Demo PR comment
     runs-on: ubuntu-latest
-    env:
-      # The verdicts for the hero's pairs are seeded into this target
-      # directory's triage cache, so the demo needs no key. Under the
-      # runner's temp directory, which no cache restores, so only the
-      # committed verdicts are there.
-      CARGO_TARGET_DIR: ${{ runner.temp }}/demo-target
     steps:
       - uses: actions/checkout@v6
         with:
@@ -50,8 +44,14 @@ jobs:
       - name: Build cargo-crap
         run: cargo build --release --features triage --target-dir target/build
 
+      # The verdicts for the hero's pairs are seeded into the shop's target
+      # directory's triage cache, so the demo needs no key. Under the
+      # runner's temp directory, which no cache restores, so only the
+      # committed verdicts are there.
       - name: Seed the triage cache and the shop's config
         run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/demo-target" >> "$GITHUB_ENV"
+          CARGO_TARGET_DIR="$RUNNER_TEMP/demo-target"
           mkdir -p "$CARGO_TARGET_DIR/cargo-crap/triage"
           cp docs/assets/hero/triage-cache/*.json "$CARGO_TARGET_DIR/cargo-crap/triage/"
           printf '[duplicates]\nenabled = true\n\n[duplicates.triage]\nenabled = true\nprovider = "openai"\n' \
