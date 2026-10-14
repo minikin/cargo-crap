@@ -34,7 +34,7 @@ jobs:
     name: Action scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Shell tests
         run: bash scripts/action/test.sh
       - name: Shellcheck
@@ -50,7 +50,7 @@ jobs:
     name: Build cargo-crap
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --release --features triage
@@ -65,7 +65,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -96,7 +96,7 @@ jobs:
     name: A chosen cargo-crap version is installed
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: A small tested crate
         run: scripts/action/fixture.sh "$RUNNER_TEMP/shop"
       - uses: ./
@@ -114,7 +114,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -139,7 +139,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -169,7 +169,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -203,7 +203,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -235,7 +235,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -266,7 +266,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -306,7 +306,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -342,7 +342,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -370,7 +370,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -412,7 +412,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -439,7 +439,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -473,7 +473,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -510,7 +510,7 @@ jobs:
       CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
       CARGO_CRAP_TEST_PR_NUMBER: "42"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -548,7 +548,7 @@ jobs:
       CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
       CARGO_CRAP_TEST_PR_NUMBER: "42"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -594,7 +594,7 @@ jobs:
       CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
       CARGO_CRAP_TEST_PR_NUMBER: "42"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -652,7 +652,7 @@ jobs:
       CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
       CARGO_CRAP_TEST_PR_NUMBER: "42"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -685,7 +685,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -714,7 +714,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: cargo-crap-under-test
@@ -753,7 +753,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # A pull request, so the base-commit run is exercised on every platform.
       - name: A pull request that only rewords a comment
         id: shop

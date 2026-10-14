@@ -111,7 +111,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: A small tested crate
         shell: bash
         run: scripts/action/fixture.sh "$RUNNER_TEMP/shop"
@@ -137,7 +137,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Point v1 at the release commit
         run: |
           git tag -f v1 "$GITHUB_SHA"
