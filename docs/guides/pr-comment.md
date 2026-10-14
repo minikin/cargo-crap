@@ -46,7 +46,7 @@ self_score:
 
     - name: Post or update PR comment
       if: github.event_name == 'pull_request'
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       with:
         script: |
           const fs = require('fs');

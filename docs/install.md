@@ -9,8 +9,11 @@ cargo binstall cargo-crap
 **From source** (requires Rust stable ≥ 1.88):
 
 ```bash
-cargo install cargo-crap
+cargo install cargo-crap --locked
 ```
+
+Add `--features triage` to build in [duplicate triage](guides/triage.md).
+`cargo binstall` and the release archives include it.
 
 **From the AUR**:
 
@@ -32,6 +35,17 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/minikin/cargo-crap/rele
 
 # Linux (aarch64)
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/minikin/cargo-crap/releases/latest/download/cargo-crap-aarch64-unknown-linux-gnu.tar.gz | tar xz -C ~/.cargo/bin
+```
+
+Every release also carries `SHA256SUMS`. To check an archive before
+unpacking it, download both and verify, here for Linux x86_64:
+
+```bash
+base=https://github.com/minikin/cargo-crap/releases/latest/download
+curl --proto '=https' --tlsv1.2 -LsSfO "$base/cargo-crap-x86_64-unknown-linux-gnu.tar.gz"
+curl --proto '=https' --tlsv1.2 -LsSfO "$base/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS   # macOS: shasum -a 256 --check --ignore-missing SHA256SUMS
+tar xzf cargo-crap-x86_64-unknown-linux-gnu.tar.gz -C ~/.cargo/bin
 ```
 
 Windows: download `cargo-crap-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/minikin/cargo-crap/releases/latest) and extract `cargo-crap.exe` into a directory on your `PATH`.

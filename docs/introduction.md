@@ -11,12 +11,16 @@ the threshold or goes up.
 
 - [Install](install.md) the binary, then follow [Getting started](getting-started.md)
   for a first run and how to read the report.
+- On GitHub, [the Action](guides/github-action.md) does it in one step since
+  0.8.0: coverage, the comparison with a pull request's base, the comment and
+  the gate.
 - The guides cover CI gates, pull-request comments, workspaces, the badge and
   duplicate detection, starting with [Integrating with CI](guides/ci.md).
 - Since 0.6.0, a model from [TypeSafe](https://docs.typesafe.ai) or, since
   0.7.0, the [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions) can
   [triage the duplicates](guides/triage.md): it tells the same logic written
-  twice from two functions that only share a Rust idiom.
+  twice from two functions that only share a Rust idiom. Since 0.8.0,
+  functions that all resemble each other are one group, triaged once.
 - The reference lists every [flag](reference/cli.md), every
   [configuration key](reference/config.md), the
   [output formats](reference/output-formats.md) and the

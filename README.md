@@ -101,7 +101,7 @@ branch.
 
 ## Add it to CI
 
-On GitHub, one step does it:
+On GitHub, one step does it, since 0.8.0:
 
 ```yaml
 # .github/workflows/crap.yml

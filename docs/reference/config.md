@@ -49,14 +49,15 @@ cache = true
 enabled   = false   # same as passing --duplicates
 threshold = 0.82    # similarity at or above which a pair is reported
 min-nodes = 20      # skip functions smaller than this; 0 compares everything
-# Since 0.6.0. Triage each reported pair with a model (needs the `triage`
-# build feature and the provider's key: see docs/guides/triage.md).
+# Since 0.6.0. Triage each reported candidate with a model (needs the
+# `triage` build feature and the provider's key: see docs/guides/triage.md).
 [duplicates.triage]
 enabled          = false
 provider         = "typesafe"   # or "openai" (TYPESAFE_API_KEY or OPENAI_API_KEY)
 model            = "jev-latest" # default: the provider's own
 confidence-floor = 0.5   # below this a verdict says "uncertain"; 0.0..=1.0
-max-requests     = 100   # candidates asked per run; cached ones are free; default: no limit
+# Since 0.8.0. Candidates asked per run; cached ones are free; default: no limit.
+max-requests     = 100
 ```
 
 All keys are optional. Unknown keys are rejected to catch typos.
