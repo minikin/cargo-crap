@@ -21,6 +21,12 @@ inputs:
   coverage-args:
     description: Extra arguments for `cargo llvm-cov`, as shell words.
     default: ""
+  base:
+    description: The commit to compare with. The pull request's base commit by default, and nothing on a push.
+    default: ${{ github.event.pull_request.base.sha }}
+  fail-regression:
+    description: On a pull request, fail when a function's score rose.
+    default: "true"
   fail-above:
     description: Fail when a function scores above the threshold.
     default: "false"
@@ -29,6 +35,9 @@ outputs:
   crappy:
     description: How many functions score above the threshold.
     value: ${{ steps.score.outputs.crappy }}
+  regressed:
+    description: On a pull request, how many functions' scores rose.
+    value: ${{ steps.score.outputs.regressed }}
   report:
     description: The path of the markdown report.
     value: ${{ steps.score.outputs.report }}
@@ -61,3 +70,5 @@ runs:
         CRAP_ARGS: ${{ inputs.args }}
         CRAP_COVERAGE_ARGS: ${{ inputs.coverage-args }}
         CRAP_FAIL_ABOVE: ${{ inputs.fail-above }}
+        CRAP_FAIL_REGRESSION: ${{ inputs.fail-regression }}
+        CRAP_BASE: ${{ inputs.base }}

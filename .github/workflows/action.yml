@@ -150,6 +150,154 @@ jobs:
           test "$OUTCOME" = failure
           test "$CRAPPY" = 1
 
+  pr-regression:
+    name: A pull request is compared with its base commit
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request that raises one function's score
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" regress
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+      - uses: ./
+        id: crap
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+      - name: The regression is reported, counted and fails the step
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+          REGRESSED: ${{ steps.crap.outputs.regressed }}
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: |
+          test "$OUTCOME" = failure
+          test "$REGRESSED" = 1
+          grep -q '1 CRAP regression' "$REPORT"
+          test "$(git -C "$RUNNER_TEMP/shop" log -1 --format=%s)" = pr
+
+  pr-steady:
+    name: A pull request without regressions passes
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request that only rewords a comment
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+      - uses: ./
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+      - name: No regression is reported
+        env:
+          REGRESSED: ${{ steps.crap.outputs.regressed }}
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: |
+          test "$REGRESSED" = 0
+          grep -q 'No CRAP regressions' "$REPORT"
+
+  pr-config:
+    name: The base-commit run uses the pull request's config
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A base commit whose config excludes the crate
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" config-skew
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+      - uses: ./
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+      - name: Under the base commit's own config every function would be new
+        env:
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: grep -q '★ 0 new' "$REPORT"
+
+  pr-triage:
+    name: The base-commit run never pays for triage
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A duplicate pair only the base commit holds, with triage on
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" lone-copy
+          printf '[duplicates]\nenabled = true\n\n[duplicates.triage]\nenabled = true\n' \
+            > "$RUNNER_TEMP/shop/.cargo-crap.toml"
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" &
+          sleep 1
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+        env:
+          TYPESAFE_API_KEY: not-a-key
+          TYPESAFE_BASE_URL: http://127.0.0.1:8765
+      - name: The API was never asked, though it records what it is asked
+        run: |
+          test ! -s "$RUNNER_TEMP/api.log"
+          curl -s -o /dev/null -X POST http://127.0.0.1:8765/v1/systemone -d '{}' || true
+          test "$(wc -l < "$RUNNER_TEMP/api.log")" = 1
+
+  pr-args:
+    name: Extra arguments reach cargo-crap
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A file both commits hold
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" extra
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+      - uses: ./
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          args: --exclude 'src/extra.rs'
+      - name: Excluded on both sides, so nothing reads as removed
+        env:
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: grep -q '— 0 removed' "$REPORT"
+
   platforms:
     name: It runs on Linux, macOS and Windows runners (${{ matrix.os }})
     strategy:
