@@ -366,7 +366,7 @@ fn write_duplicate_section(
     match opts.format {
         Format::Human => {
             writeln!(out)?;
-            duplicates::render_grouped(groups, opts.triage, out)
+            duplicates::render_human(groups, opts, out)
         },
         Format::Markdown => duplicate_table(opts, None, out),
         // A comment with nothing to say about duplicates says nothing.

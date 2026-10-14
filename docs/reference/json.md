@@ -12,8 +12,13 @@ generate types from the schema.
 Both reference the definitions they share, the duplicate pairs, groups and
 triage verdicts, in
 [`schemas/duplicates-v1.json`](https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/duplicates-v1.json).
-A validator that follows references fetches it on its own. One that does
-not needs it beside the envelope schema.
+A validator that follows references fetches it on its own. To validate
+offline, give the validator `duplicates-v1.json` under its published URL,
+the `$id` the reference resolves against, not as a file beside the
+envelope schema. With Python's `jsonschema`, that is a
+`referencing.Registry` holding it under
+`https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/duplicates-v1.json`.
+With `ajv`, `ajv.addSchema(duplicates)` before compiling the envelope.
 
 ```jsonc
 // cargo crap --format json
@@ -95,7 +100,15 @@ lies inside exactly one group.
 ```
 
 With [triage](../guides/triage.md) on, a group's verdict is its `triage`
-object, and each of its pairs in `duplicates` carries the same one.
+object, and each of its pairs in `duplicates` carries the same one. When
+the [triage budget](../guides/triage.md#capping-the-requests) left groups
+unasked, the envelope counts them in `untriaged_groups`, so a group
+without `triage` can be told from triage being off. The key is absent when
+every group was asked or triage did not run.
+
+```jsonc
+"untriaged_groups": 3
+```
 
 Both keys are absent, not empty, when detection was not requested, so "not
 asked" stays distinguishable from "asked, found nothing".

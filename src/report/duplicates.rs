@@ -72,6 +72,18 @@ pub fn render_grouped(
     Ok(())
 }
 
+/// The human duplicate section: [`render_grouped`] over `groups` with
+/// `opts.triage`, then the triage budget's line when it left any group
+/// unasked.
+pub(crate) fn render_human(
+    groups: &[DuplicateGroup],
+    opts: &RenderOptions,
+    out: &mut dyn Write,
+) -> Result<()> {
+    render_grouped(groups, opts.triage, out)?;
+    write_budget_line(opts.untriaged, out)
+}
+
 /// One group: a pair's heading for two members, the group's size and
 /// weakest score for more, then the members and the verdict.
 fn write_group(
@@ -252,6 +264,16 @@ fn write_closing_lines(
     triaged_by: Option<TriagedBy<'_>>,
     out: &mut dyn Write,
 ) -> Result<()> {
+    write_budget_line(untriaged, out)?;
+    write_provider_line(triaged_by, out)
+}
+
+/// The line saying how many candidates the triage budget left unasked, when
+/// it left any. The human section ends with it as the tables do.
+fn write_budget_line(
+    untriaged: usize,
+    out: &mut dyn Write,
+) -> Result<()> {
     if untriaged > 0 {
         let verb = if untriaged == 1 { "was" } else { "were" };
         writeln!(
@@ -260,7 +282,7 @@ fn write_closing_lines(
             noun(untriaged)
         )?;
     }
-    write_provider_line(triaged_by, out)
+    Ok(())
 }
 
 /// The line naming who triaged the table, when it is triaged and someone is
@@ -2115,6 +2137,48 @@ mod tests {
                     proptest::prop_assert!(out.starts_with(&heading), "{}", out);
                 }
             }
+        }
+    }
+
+    mod human_budget_line {
+        use super::*;
+        use crate::report::{Format, render_duplicates};
+
+        fn human(untriaged: usize) -> String {
+            let groups = [pair_group(0), pair_group(1)];
+            let opts = crate::report::RenderOptions {
+                format: Format::Human,
+                groups: Some(&groups),
+                untriaged,
+                ..at_work()
+            };
+            let mut buf = Vec::new();
+            render_duplicates(&opts, &mut buf).expect("a Vec writer cannot fail");
+            String::from_utf8(buf).expect("utf-8")
+        }
+
+        #[test]
+        fn the_human_section_ends_with_the_budget_line() {
+            let out = human(2);
+            assert!(
+                out.ends_with(
+                    "\n2 candidates were not triaged: the run's triage budget ran out.\n"
+                ),
+                "{out}"
+            );
+            let one = human(1);
+            assert!(
+                one.ends_with("\n1 candidate was not triaged: the run's triage budget ran out.\n"),
+                "{one}"
+            );
+        }
+
+        #[test]
+        fn without_a_skipped_group_the_human_section_is_unchanged() {
+            let groups = [pair_group(0), pair_group(1)];
+            let mut plain = b"\n".to_vec();
+            render_grouped(&groups, None, &mut plain).expect("a Vec writer cannot fail");
+            assert_eq!(human(0), String::from_utf8(plain).expect("utf-8"));
         }
     }
 

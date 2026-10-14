@@ -144,9 +144,9 @@ max-requests = 20
 - The budget goes to the candidates in report order, the most similar
   first.
 - The rest print without a verdict. The run says on stderr how many and
-  how to raise the limit, and markdown and the PR comment add a line
-  under the table: `2 candidates were not triaged: the run's triage
-  budget ran out.`
+  how to raise the limit, the human, markdown and PR comment output add a
+  line under the duplicates: `2 candidates were not triaged: the run's
+  triage budget ran out.`, and JSON counts them in `untriaged_groups`.
 - Each run's verdicts are cached, so a small budget judges every candidate
   over a few runs.
 - `max-requests = 0` asks nothing and needs no key: the run shows the

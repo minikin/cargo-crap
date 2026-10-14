@@ -36,6 +36,11 @@
       "description": "The duplicate pairs grouped into functions that each resemble every other member, ordered by descending score, then by members. A pair whose functions share no larger group is a group of two, so every pair in `duplicates` lies inside one group. Present only on `--duplicates` runs, like `duplicates`.",
       "items": { "$ref": "duplicates-v1.json#/definitions/DuplicateGroup" }
     },
+    "untriaged_groups": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How many duplicate groups the triage budget (`max-requests`) left unasked, so they carry no `triage`. Present only when it left any: absent means every group was asked, or triage did not run."
+    },
     "try_weight": {
       "type": "number",
       "minimum": 0,

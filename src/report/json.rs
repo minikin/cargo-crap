@@ -68,6 +68,11 @@ pub struct Envelope {
     /// `duplicates`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_groups: Option<Vec<DuplicateGroupJson>>,
+    /// How many duplicate groups the triage budget left unasked. Present
+    /// only when it left any, so a group without a verdict can be told
+    /// from triage being off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untriaged_groups: Option<usize>,
     /// The `?` weight the entries were scored under. Written only when it is
     /// not the default, so a default envelope stays byte-identical to one
     /// from before the knob existed; absent reads back as the default.
@@ -80,6 +85,12 @@ pub struct Envelope {
 /// other weight, however close, scored the entries differently.
 fn recorded_try_weight(try_weight: f64) -> Option<f64> {
     (try_weight != crate::config::DEFAULT_TRY_WEIGHT).then_some(try_weight)
+}
+
+/// The envelope's `untriaged_groups`: the count when the budget skipped a
+/// group, `None` (no key on the wire) otherwise.
+fn recorded_untriaged(untriaged: usize) -> Option<usize> {
+    (untriaged > 0).then_some(untriaged)
 }
 
 /// One candidate duplicate pair, flattened for the wire.
@@ -354,6 +365,7 @@ pub(crate) fn render_json(
         diagnostics: opts.diagnostics.cloned(),
         duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
         duplicate_groups: wire_groups(opts.groups, opts.triage),
+        untriaged_groups: recorded_untriaged(opts.untriaged),
         try_weight: recorded_try_weight(opts.try_weight),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
@@ -382,6 +394,8 @@ pub(crate) fn render_delta_json(
         #[serde(skip_serializing_if = "Option::is_none")]
         duplicate_groups: Option<Vec<DeltaGroupJson>>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        untriaged_groups: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         try_weight: Option<f64>,
     }
     serde_json::to_writer_pretty(
@@ -394,6 +408,7 @@ pub(crate) fn render_delta_json(
             diagnostics: opts.diagnostics,
             duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
             duplicate_groups: wire_delta_groups(opts),
+            untriaged_groups: recorded_untriaged(opts.untriaged),
             try_weight: recorded_try_weight(opts.try_weight),
         },
     )?;
@@ -786,6 +801,41 @@ mod tests {
             .map(|p| &p["triage"]["confidence"])
             .collect();
         assert_eq!(confidences, [0.4, 0.4, 0.4, 0.7]);
+    }
+
+    #[test]
+    fn both_envelopes_count_the_groups_the_budget_skipped_only_when_there_are_any() {
+        use super::super::render_delta;
+        use super::super::test_support::fractional_cc_delta;
+        let (pairs, groups) = two_groups();
+        let triage = [Some(FIRST), None];
+        let docs = |untriaged: usize| {
+            let opts = RenderOptions {
+                format: Format::Json,
+                duplicates: Some(&pairs),
+                groups: Some(&groups),
+                triage: Some(&triage),
+                untriaged,
+                ..Default::default()
+            };
+            let (mut plain, mut delta) = (Vec::new(), Vec::new());
+            render(&sample(), &opts, &mut plain).unwrap();
+            render_delta(&fractional_cc_delta(), &opts, &mut delta).unwrap();
+            [plain, delta].map(|buf| serde_json::from_slice::<serde_json::Value>(&buf).unwrap())
+        };
+        for doc in docs(1) {
+            assert_eq!(doc["untriaged_groups"], 1, "{doc}");
+        }
+        for doc in docs(0) {
+            assert!(doc.get("untriaged_groups").is_none(), "{doc}");
+        }
+    }
+
+    #[test]
+    fn an_envelope_without_the_count_reads_back() {
+        let raw = r#"{"version": "0.7.0", "entries": []}"#;
+        let envelope: Envelope = serde_json::from_str(raw).unwrap();
+        assert_eq!(envelope.untriaged_groups, None);
     }
 
     #[test]
