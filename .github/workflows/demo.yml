@@ -2,7 +2,7 @@ name: Demo
 
 # The live version of the README hero: a pull request that changes
 # examples/hero-shop gets the comment cargo-crap would post on that shop's
-# own pull request. The CRAP delta compares the shop on the base branch with
+# own pull request, through this repository's GitHub Action (`uses: ./`). The CRAP delta compares the shop on the base branch with
 # the shop in the pull request, and the duplicate section lists the
 # look-alikes the pull request adds, triaged by OpenAI. Verdicts for the
 # hero's pairs are committed under
@@ -18,6 +18,8 @@ on:
     paths:
       - 'examples/hero-shop/**'
       - '.github/workflows/demo.yml'
+      - 'action.yml'
+      - 'scripts/action/**'
 
 permissions:
   contents: read
@@ -31,89 +33,38 @@ jobs:
     name: Demo PR comment
     runs-on: ubuntu-latest
     env:
-      SHOP: examples/hero-shop
-      CRAP: ${{ github.workspace }}/target/release/cargo-crap
+      # The verdicts for the hero's pairs are seeded into this target
+      # directory's triage cache, so the demo needs no key.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/demo
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-llvm-cov
 
+      # The Action is tested with the code under review: this pull request's
+      # cargo-crap, with triage built in.
       - name: Build cargo-crap
-        run: cargo build --release --features triage
+        run: cargo build --release --features triage --target-dir target/build
 
-      # Both runs score from the repository root with the same --path, so
-      # the baseline's keys match the pull request's and the comment's
-      # links point at examples/hero-shop/src/... on the head commit. The
-      # base run records its duplicates, so the comment lists only the
-      # look-alikes the pull request adds.
-      - name: Score the shop on the base branch
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+      - name: Seed the triage cache and the shop's config
         run: |
-          rm -rf "$SHOP/src"
-          git checkout "origin/$BASE_REF" -- "$SHOP/src"
-          cargo llvm-cov --manifest-path "$SHOP/Cargo.toml" --lcov --output-path "$RUNNER_TEMP/base.lcov"
-          # The duplicate settings both runs share. The comment step adds
-          # triage to them, so the base run sends no request.
-          printf '[duplicates]\nenabled = true\n' > .cargo-crap.toml
-          "$CRAP" --path "$SHOP/src" --lcov "$RUNNER_TEMP/base.lcov" --duplicates --format json \
-            --output "$RUNNER_TEMP/baseline.json"
-          rm -rf "$SHOP/src"
-          git checkout HEAD -- "$SHOP/src"
-
-      - name: Write the comment
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CARGO_TARGET_DIR: ${{ runner.temp }}/demo-target
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          cargo llvm-cov --manifest-path "$SHOP/Cargo.toml" --lcov --output-path "$RUNNER_TEMP/pr.lcov"
           mkdir -p "$CARGO_TARGET_DIR/cargo-crap/triage"
           cp docs/assets/hero/triage-cache/*.json "$CARGO_TARGET_DIR/cargo-crap/triage/"
           printf '[duplicates]\nenabled = true\n\n[duplicates.triage]\nenabled = true\nprovider = "openai"\n' \
             > .cargo-crap.toml
-          {
-            echo '<!-- cargo-crap-demo -->'
-            "$CRAP" --path "$SHOP/src" --lcov "$RUNNER_TEMP/pr.lcov" --threshold 15 \
-              --baseline "$RUNNER_TEMP/baseline.json" --format pr-comment --commit-ref "$HEAD_SHA"
-          } > "$RUNNER_TEMP/comment.md"
-          cat "$RUNNER_TEMP/comment.md"
 
-      # Its own marker first, so the self-score comment, found by
-      # <!-- cargo-crap-report --> at the start, is never this one.
-      - name: Post or update the comment
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/github-script@v7
+      # The base-commit run reads the same config, records the shop's
+      # duplicates and never asks the API. Its own marker keeps this comment
+      # apart from the self-score one, and the showcase's regression is the
+      # point, so it does not fail the job.
+      - uses: ./
         with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync(`${process.env.RUNNER_TEMP}/comment.md`, 'utf8');
-            const marker = '<!-- cargo-crap-demo -->';
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const existing = comments.find(c => c.body.startsWith(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
+          binary: ${{ github.workspace }}/target/build/release/cargo-crap
+          working-directory: examples/hero-shop
+          args: --path src --threshold 15
+          comment-marker: "<!-- cargo-crap-demo -->"
+          fail-regression: false
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A GitHub Action, `uses: minikin/cargo-crap@v1`: it installs a released
+  cargo-crap, runs the tests under `cargo llvm-cov` and scores the crate.
+  On a pull request it scores the base commit in the same job, posts or
+  updates the sticky comment and fails on a regression. A fork's pull
+  request gets the report in the job summary instead. Linux, macOS and
+  Windows runners. See [GitHub Action](docs/guides/github-action.md)
+  (spec 39).
 - `[duplicates.triage] max-requests` caps the candidates one run asks the
   model about. Cached verdicts are free, the budget goes to the most
   similar candidates first, and the rest print untriaged, with one warning

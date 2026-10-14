@@ -1,5 +1,9 @@
 # Integrating with CI
 
+On GitHub, the [GitHub Action](github-action.md) does coverage, the
+comparison with a pull request's base, the comment and the gate in one
+step. The commands below are for other CI systems, or for doing it by hand.
+
 See [Exit codes](../reference/exit-codes.md) for what each exit code means.
 The [regression gate](regression-gate.md), the [PR comment bot](pr-comment.md)
 and [badge generation](badge.md#badge-generation) have pages of their own.

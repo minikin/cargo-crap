@@ -1,6 +1,8 @@
 # Regression gate (recommended for teams)
 
-Save a baseline on `main`, then fail on any PR that makes a score go up. It
+Save a baseline on `main`, then fail on any PR that makes a score go up.
+On GitHub, the [GitHub Action](github-action.md) does it without a stored
+baseline, by scoring the pull request's base commit in the same job. It
 works regardless of the absolute threshold and catches a regression when it
 is introduced.
 

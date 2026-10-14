@@ -703,6 +703,42 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: grep -q "/blob/${HEAD_SHA:-$GITHUB_SHA}/crates/shop/" "$REPORT"
 
+  own-checkout:
+    name: The Action survives running inside the checkout it compares
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      # The demo's case: `uses: ./` from the repository being compared, whose
+      # base commit does not hold the Action's scripts at all.
+      - name: A pull request that also adds the Action itself
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$GITHUB_WORKSPACE/selftest" steady
+          mkdir -p selftest/scripts
+          cp action.yml selftest/
+          cp -R scripts/action selftest/scripts/
+          git -C selftest add -A
+          git -C selftest -c user.name=fixture -c user.email=fixture@example.com commit -q --amend --no-edit
+          echo "base=$(git -C selftest rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+      - uses: ./selftest
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: selftest
+          base: ${{ steps.shop.outputs.base }}
+          comment: false
+      - name: Compared, and back on the pull request's commit
+        env:
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: |
+          grep -q 'No CRAP regressions' "$REPORT"
+          test -f selftest/scripts/action/score.sh
+
   platforms:
     name: It runs on Linux, macOS and Windows runners (${{ matrix.os }})
     strategy:
@@ -722,6 +758,9 @@ jobs:
       - uses: ./
         id: crap
         with:
+          # The newest release that exists: the default names this commit's
+          # version, which is released only after it lands.
+          version: latest
           base: ${{ steps.shop.outputs.base }}
           comment: false
           working-directory: ${{ runner.temp }}/shop

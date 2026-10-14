@@ -8,6 +8,7 @@
 # Guides
 
 - [Integrating with CI](guides/ci.md)
+- [GitHub Action](guides/github-action.md)
 - [Regression gate](guides/regression-gate.md)
 - [PR comment bot](guides/pr-comment.md)
 - [Workspaces and changed-package CI](guides/workspaces.md)

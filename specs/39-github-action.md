@@ -226,10 +226,10 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   request gets the report in the job summary_, _Two comments with their own
   markers stay apart_. Tests: CI scenario jobs against a local stub of the
   API.
-- [ ] **T5 — Release, demo and docs.** The release workflow writes its
-  version into `action.yml` and moves `v1`, the demo runs through `uses:
-  ./` with its own marker, and the README, the CI guides and the CHANGELOG
-  show the one-step setup. Needs: T4. No scenario: checked by the docs
+- [ ] **T5 — Release, demo and docs.** `action.yml`'s default version
+  follows `Cargo.toml`, held there by a test, the release workflow moves
+  `v1`, the demo runs through `uses: ./` with its own marker, and the
+  README, the CI guides and the CHANGELOG show the one-step setup. Needs: T4. No scenario: checked by the docs
   tests and the demo's comment.
 
 ---
@@ -268,8 +268,9 @@ is `fail-above`, off by default: a push run reports and passes unless asked
 to gate.
 
 The default `version` is the release the Action's tag was cut with: the
-release workflow writes it into `action.yml`, so `@v1` installs the same
-cargo-crap until `v1` moves, and never drifts under a user. `latest` asks
+release pull request sets it in `action.yml` beside `Cargo.toml`, and a
+test fails when the two differ, so `@v1` installs the same cargo-crap until
+`v1` moves, and never drifts under a user. `latest` asks
 for the newest release on each run. **Outputs:** `crappy` (functions above the threshold),
 `regressed` (functions whose score rose, on a pull request), `report`
 (path to the markdown report).
@@ -314,7 +315,8 @@ written by someone else is never taken for the Action's.
 and `--fail-above` per the inputs, and its exit code is the step's.
 
 **Versioning.** `v1` is a moving tag on the commit of each 0.x release
-whose `action.yml` keeps the v1 inputs. The release workflow moves it. An
+whose `action.yml` keeps the v1 inputs. The release workflow moves it to
+the release commit after publishing the release. An
 input removed or renamed is `v2`.
 
 **Testing.** Acceptance is a workflow, `.github/workflows/action.yml`, one

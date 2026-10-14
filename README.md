@@ -101,11 +101,7 @@ branch.
 
 ## Add it to CI
 
-The exit code carries the verdict: 0 when no gate tripped, 1 when
-`--fail-above` or `--fail-regression` tripped, 2 when the run itself failed
-(see [Exit codes](docs/reference/exit-codes.md)). This workflow runs on every
-push to `main` and every pull request, and fails when a function scores above
-the default threshold of 30:
+On GitHub, one step does it:
 
 ```yaml
 # .github/workflows/crap.yml
@@ -116,34 +112,30 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   crap:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-llvm-cov,cargo-crap
-      - run: cargo llvm-cov --lcov --output-path lcov.info
-      - run: cargo crap --lcov lcov.info --fail-above
+      - uses: minikin/cargo-crap@v1
 ```
 
-`taiki-e/install-action` downloads the release binaries of `cargo-llvm-cov`
-and `cargo-crap`, so neither is built from source.
+On a pull request it scores the base commit in the same job, posts the
+delta as a comment, and fails when a function's score rose. On a push it
+writes the report to the job summary. See [GitHub Action](docs/guides/github-action.md)
+for its inputs, and [#119](https://github.com/minikin/cargo-crap/pull/119)
+for it live on the hero's demo crate, duplicates triaged by OpenAI included.
 
-On a codebase that already has functions above 30, that gate fails every pull
-request until they are fixed. The [regression gate](docs/guides/regression-gate.md)
-compares against a saved baseline instead and fails only when a score goes
-up. A function added since the baseline is reported as `New` and does not
-trip it, so add `--fail-above` once the old offenders are gone.
-
-[Integrating with CI](docs/guides/ci.md) also covers SARIF upload for GitHub
-Code Scanning, and the [PR comment bot](docs/guides/pr-comment.md) posts the
-delta as a pull-request comment. [#119](https://github.com/minikin/cargo-crap/pull/119)
-shows it live on the hero's demo crate, duplicates triaged by OpenAI included.
+Elsewhere, the exit code carries the verdict: 0 when no gate tripped, 1 when
+`--fail-above` or `--fail-regression` tripped, 2 when the run itself failed
+(see [Exit codes](docs/reference/exit-codes.md)).
+[Integrating with CI](docs/guides/ci.md) shows the commands, the
+[regression gate](docs/guides/regression-gate.md) compares against a saved
+baseline, and SARIF upload for GitHub Code Scanning is there too.
 
 ## Duplicates, triaged
 
@@ -181,7 +173,7 @@ and [the triage demo](examples/triage-demo) has three pairs to try it on.
 
 ## Documentation
 
-- Guides: [integrating with CI](docs/guides/ci.md),
+- Guides: [integrating with CI](docs/guides/ci.md), [the GitHub Action](docs/guides/github-action.md),
   [regression gate](docs/guides/regression-gate.md),
   [PR comment bot](docs/guides/pr-comment.md),
   [workspaces and changed-package CI](docs/guides/workspaces.md),

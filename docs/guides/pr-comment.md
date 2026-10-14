@@ -1,5 +1,10 @@
 # PR comment bot
 
+On GitHub, the [GitHub Action](github-action.md) posts this comment for
+you. The workflow below is the same by hand. Keep one of the two on a
+repository: both find the comment by the same hidden line, so they would
+overwrite each other.
+
 `--format pr-comment` produces a sticky comment that surfaces regressions
 and new functions in the primary table and tucks improvements, removed
 functions and above-threshold hot-spots into collapsed `<details>` blocks.

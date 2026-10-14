@@ -7,8 +7,8 @@ branding:
 
 inputs:
   version:
-    description: The cargo-crap release to install, or `latest`.
-    default: "0.7.0"
+    description: The cargo-crap release to install, or `latest`. The release this Action was cut with by default.
+    default: "0.8.0"
   binary:
     description: A cargo-crap binary, relative to the working directory, to use instead of downloading one.
     default: ""
@@ -79,11 +79,16 @@ runs:
       shell: bash
       run: rustup component add llvm-tools-preview
 
+    # Run from a copy: with `uses: ./` the scripts sit in the checkout that
+    # the base-commit run replaces under them.
     - name: Score
       id: score
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: "\"$GITHUB_ACTION_PATH/scripts/action/score.sh\""
+      run: |
+        scripts="$(mktemp -d "$RUNNER_TEMP/cargo-crap-scripts.XXXXXX")"
+        cp "$GITHUB_ACTION_PATH"/scripts/action/*.sh "$scripts/"
+        "$scripts/score.sh"
       env:
         CRAP_ARGS: ${{ inputs.args }}
         CRAP_COVERAGE_ARGS: ${{ inputs.coverage-args }}

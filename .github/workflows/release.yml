@@ -2,7 +2,9 @@ name: Release
 
 on:
   push:
-    tags: [ "v*" ]
+    # Version tags only: the Action's moving `v1` tag must never start a
+    # release of its own.
+    tags: [ "v[0-9]+.[0-9]+.[0-9]+*" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -92,6 +94,23 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+
+  # ── Point the Action's v1 tag at this release ─────────────────────────────
+  # `uses: minikin/cargo-crap@v1` then installs this release by default:
+  # action.yml's default version is held equal to Cargo.toml by a test.
+  # GITHUB_TOKEN's push starts no workflow, so this cannot loop.
+  move-v1:
+    name: Move the v1 tag
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Point v1 at the release commit
+        run: |
+          git tag -f v1 "$GITHUB_SHA"
+          git push -f origin v1
 
   # ── Publish to crates.io after the release is live ───────────────────────
   publish:
