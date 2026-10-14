@@ -1550,6 +1550,8 @@ struct DuplicateSection<'a> {
     /// One verdict per group, in the groups' order, `None` for a group
     /// nobody asked about.
     triage: Option<Vec<Option<Assessment>>>,
+    /// How many groups the triage budget left unasked.
+    untriaged: usize,
     /// The display name of the provider asked, named when triage answered.
     provider: &'static str,
     /// The model asked.
@@ -1595,36 +1597,41 @@ fn duplicate_section<'a>(
             .map(|&n| groups[n].representative.clone())
             .collect();
         triage_assessments(settings, &representatives, target)
-            .map(|verdicts| spread(&asked, verdicts, groups.len()))
+            .map(|(verdicts, skipped)| (spread(&asked, verdicts, groups.len()), skipped))
     });
+    let (triage, untriaged) =
+        triage.map_or((None, 0), |(verdicts, skipped)| (Some(verdicts), skipped));
     Ok(DuplicateSection {
         pairs,
         groups,
         novelty,
         triage,
+        untriaged,
         provider: settings.triage_provider.display_name(),
         model: &settings.triage_model,
     })
 }
 
 /// Each answer held to the confidence floor, `None` where the budget asked
-/// nothing, with the budget's one warning when it left groups unasked.
+/// nothing, and how many the budget left unasked, with its one warning when
+/// it left any.
 #[cfg(feature = "triage")]
 fn assessments(
     triaged: cargo_crap::duplicates::triage::Triaged,
     settings: &DupSettings,
-) -> Vec<Option<Assessment>> {
+) -> (Vec<Option<Assessment>>, usize) {
     let warning = settings.triage_max_requests.and_then(|budget| {
         cargo_crap::duplicates::triage::budget::warning(budget, triaged.skipped)
     });
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
-    triaged
+    let verdicts = triaged
         .verdicts
         .into_iter()
         .map(|verdict| verdict.map(|v| v.assessment(settings.triage_floor)))
-        .collect()
+        .collect();
+    (verdicts, triaged.skipped)
 }
 
 /// The groups triage asks about, by index: every group, or on a delta run
@@ -1697,7 +1704,7 @@ fn triage_assessments(
     settings: &DupSettings,
     pairs: &[DuplicatePair],
     target: Option<&Path>,
-) -> Option<Vec<Option<Assessment>>> {
+) -> Option<(Vec<Option<Assessment>>, usize)> {
     if !settings.triage_enabled {
         return None;
     }
@@ -2011,6 +2018,7 @@ fn run() -> Result<ExitCode> {
             triage: dups.triage.as_deref(),
             triaged_by: dups.triaged_by(),
             novelty: dups.novelty.as_ref(),
+            untriaged: dups.untriaged,
         },
         epsilon,
         summary: cli.summary,
@@ -2899,6 +2907,7 @@ mod tests {
             groups: None,
             novelty: None,
             triage,
+            untriaged: 0,
             provider: "OpenAI API",
             model: "gpt-x",
         };

@@ -111,7 +111,8 @@ Then  the table has three rows, the first with a verdict and two with
       empty verdict cells
 And   a line under the table reads
       "2 candidates were not triaged: the run's triage budget ran out."
-When  I run the same with `--format markdown`
+When  I run the same with `--format markdown` on a tree with no cached
+      verdicts
 Then  the same line is under the table
 ```
 

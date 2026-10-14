@@ -119,6 +119,9 @@ fn write_group(
 /// counts the unchanged groups and the resolved ones. With none new it
 /// says so instead of printing a table.
 ///
+/// When `opts.untriaged` is not zero, a line before the provider line says
+/// how many candidates the triage budget left unasked.
+///
 /// # Errors
 ///
 /// Returns an error when the writer does.
@@ -144,7 +147,7 @@ pub fn render_table(
     )?;
     let verdicts = with_a_verdict(triage);
     write_capped(&groups, verdicts, None, cap, opts, out)?;
-    write_provider_line(verdicts.and(opts.triaged_by), out)
+    write_closing_lines(opts.untriaged, verdicts.and(opts.triaged_by), out)
 }
 
 /// `opts.novelty` when it has one status per group, else none.
@@ -158,7 +161,8 @@ pub(crate) fn covering_comparison<'a>(
 
 /// The delta run's table: the new and grown `groups`, each with its own
 /// verdict when `triage` covers every group and a grown one saying what it
-/// grew from, then the count of unchanged and resolved groups.
+/// grew from, then the count of unchanged and resolved groups and, under a
+/// table, the triage budget's line.
 fn render_new_table(
     groups: &[DuplicateGroup],
     comparison: &Comparison,
@@ -188,7 +192,10 @@ fn render_new_table(
         write_capped(&shown, verdicts, Some(&grew), cap, opts, out)?;
     }
     write_count_line(groups.len() - shown.len(), comparison.resolved, out)?;
-    write_provider_line(verdicts.and(opts.triaged_by), out)
+    // The budget's line counts rows the table shows: never more than those,
+    // and nothing under a table with none.
+    let untriaged = opts.untriaged.min(shown.len());
+    write_closing_lines(untriaged, verdicts.and(opts.triaged_by), out)
 }
 
 /// The line counting the groups a delta run left unchanged and the
@@ -236,6 +243,24 @@ fn write_capped(
 /// verdict prints no verdict columns and names nobody.
 fn with_a_verdict(triage: Option<&[Option<Assessment>]>) -> Option<&[Option<Assessment>]> {
     triage.filter(|t| t.iter().any(Option::is_some))
+}
+
+/// The lines that close a table: how many candidates the triage budget left
+/// unasked, when it left any, then who triaged the table.
+fn write_closing_lines(
+    untriaged: usize,
+    triaged_by: Option<TriagedBy<'_>>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if untriaged > 0 {
+        let verb = if untriaged == 1 { "was" } else { "were" };
+        writeln!(
+            out,
+            "\n{untriaged} {} {verb} not triaged: the run's triage budget ran out.",
+            noun(untriaged)
+        )?;
+    }
+    write_provider_line(triaged_by, out)
 }
 
 /// The line naming who triaged the table, when it is triaged and someone is
@@ -2090,6 +2115,127 @@ mod tests {
                     proptest::prop_assert!(out.starts_with(&heading), "{}", out);
                 }
             }
+        }
+    }
+
+    mod budget_line {
+        use super::*;
+        use crate::duplicates::novelty::{Comparison, Novelty};
+        use crate::report::test_support::every;
+
+        fn budget_table(
+            groups: &[DuplicateGroup],
+            triage: Option<&[Option<Assessment>]>,
+            novelty: Option<&Comparison>,
+            untriaged: usize,
+        ) -> String {
+            let mut buf = Vec::new();
+            let opts = crate::report::RenderOptions {
+                groups: Some(groups),
+                triage,
+                triaged_by: Some(TriagedBy {
+                    provider: "OpenAI API",
+                    model: "gpt-x",
+                }),
+                novelty,
+                untriaged,
+                ..at_work()
+            };
+            render_table(&opts, None, &mut buf).expect("a Vec writer cannot fail");
+            String::from_utf8(buf).expect("the section is utf-8")
+        }
+
+        const TWO: &str = "\n2 candidates were not triaged: the run's triage budget ran out.\n";
+
+        #[test]
+        fn the_line_follows_the_table_and_precedes_the_provider() {
+            let groups = [pair_group(1), pair_group(2), pair_group(3)];
+            let triage = [Some(asserted(Kind::SameLogic, 0.9, 3.0)), None, None];
+            let out = budget_table(&groups, Some(&triage), None, 2);
+            let line = out.find(TWO).unwrap_or_else(|| panic!("the line: {out}"));
+            let provider = out.find("Triaged by").expect("the provider line");
+            let last_row = out.rfind("\n|").expect("a row");
+            assert!(last_row < line && line < provider, "{out}");
+        }
+
+        #[test]
+        fn one_candidate_is_singular() {
+            let groups = [pair_group(1), pair_group(2)];
+            let triage = [Some(asserted(Kind::SameLogic, 0.9, 3.0)), None];
+            let out = budget_table(&groups, Some(&triage), None, 1);
+            assert!(
+                out.contains("\n1 candidate was not triaged: the run's triage budget ran out.\n"),
+                "{out}"
+            );
+        }
+
+        #[test]
+        fn a_table_without_any_verdict_still_explains_itself() {
+            let groups = [pair_group(1), pair_group(2)];
+            let out = budget_table(&groups, Some(&[None, None]), None, 2);
+            assert!(!out.contains("Verdict"), "no verdict columns: {out}");
+            assert!(out.contains(TWO), "{out}");
+            assert!(!out.contains("Triaged by"), "nobody answered: {out}");
+        }
+
+        #[test]
+        fn nothing_skipped_prints_no_line() {
+            let groups = [pair_group(1)];
+            let triage = every(&[asserted(Kind::SameLogic, 0.9, 3.0)]);
+            let out = budget_table(&groups, Some(&triage), None, 0);
+            assert!(!out.contains("not triaged"), "{out}");
+        }
+
+        #[test]
+        fn the_line_follows_the_truncation_footer() {
+            let groups = [pair_group(1), pair_group(2), pair_group(3)];
+            let triage = [Some(asserted(Kind::SameLogic, 0.9, 3.0)), None, None];
+            let mut buf = Vec::new();
+            let opts = crate::report::RenderOptions {
+                groups: Some(&groups),
+                triage: Some(&triage),
+                triaged_by: Some(TriagedBy {
+                    provider: "OpenAI API",
+                    model: "gpt-x",
+                }),
+                untriaged: 2,
+                ..at_work()
+            };
+            render_table(&opts, Some(1), &mut buf).expect("a Vec writer cannot fail");
+            let out = String::from_utf8(buf).expect("utf-8");
+            let footer = out.find("and 2 more").expect("the footer");
+            let line = out.find(TWO).unwrap_or_else(|| panic!("the line: {out}"));
+            let provider = out.find("Triaged by").expect("the provider line");
+            assert!(footer < line && line < provider, "{out}");
+        }
+
+        #[test]
+        fn an_empty_delta_table_has_no_budget_line() {
+            let groups = [pair_group(1)];
+            let comparison = Comparison {
+                novelty: vec![Novelty::Unchanged],
+                resolved: 0,
+            };
+            let out = budget_table(&groups, Some(&[None]), Some(&comparison), 2);
+            assert!(out.starts_with("## No new duplicate candidates"), "{out}");
+            assert!(!out.contains("not triaged"), "{out}");
+        }
+
+        #[test]
+        fn on_a_delta_run_the_line_follows_the_count_line() {
+            let groups = [pair_group(1), pair_group(2), pair_group(3), pair_group(4)];
+            let comparison = Comparison {
+                novelty: vec![Novelty::Unchanged, Novelty::New, Novelty::New, Novelty::New],
+                resolved: 0,
+            };
+            let triage = [None, Some(asserted(Kind::SameLogic, 0.9, 3.0)), None, None];
+            let out = budget_table(&groups, Some(&triage), Some(&comparison), 2);
+            let count = out
+                .find("1 existing candidate unchanged.")
+                .expect("the count line");
+            let line = out.find(TWO).unwrap_or_else(|| panic!("the line: {out}"));
+            let provider = out.find("Triaged by").expect("the provider line");
+            assert!(count < line && line < provider, "{out}");
         }
     }
 }

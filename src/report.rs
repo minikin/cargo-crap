@@ -165,6 +165,10 @@ pub struct RenderOptions<'a> {
     /// pr-comment tables then show only the new and grown groups and count
     /// the rest. Ignored unless it covers every group.
     pub novelty: Option<&'a Comparison>,
+    /// How many duplicate groups the triage budget left unasked. The
+    /// markdown and pr-comment tables say so under the table when it is
+    /// not zero.
+    pub untriaged: usize,
 }
 
 /// The provider and model that judged the duplicate pairs.
@@ -211,8 +215,9 @@ impl Default for RenderOptions<'_> {
     /// CLI defaults: threshold 30, human format, no links, no
     /// diagnostics, changed-only delta rows, no uncovered hints, no
     /// duplicates, the classical `?` weight, a capped human table, no
-    /// working directory, so paths show as given, no triage provider, and
-    /// every pair reported on its own.
+    /// working directory, so paths show as given, no triage provider,
+    /// every pair reported on its own, and no group left untriaged by a
+    /// budget.
     fn default() -> Self {
         Self {
             threshold: crate::score::DEFAULT_THRESHOLD,
@@ -231,6 +236,7 @@ impl Default for RenderOptions<'_> {
             triaged_by: None,
             groups: None,
             novelty: None,
+            untriaged: 0,
         }
     }
 }

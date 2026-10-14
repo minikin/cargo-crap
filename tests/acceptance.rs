@@ -6626,3 +6626,116 @@ fn shout_b(words: &[&str]) -> String {
         assert_eq!(group.get("triage").is_some(), strong, "{group}");
     }
 }
+
+#[cfg(feature = "triage")]
+#[test]
+fn the_pr_comment_says_why_rows_have_no_verdict() {
+    // Given triage is enabled with `max-requests = 1`
+    // And a tree with three duplicate groups, none of them cached
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), "pairs.rs", &shaped_pairs(0..3));
+    let stub = same_logic_stub();
+    let config = budget_config("max-requests = 1\n");
+    // When I run `cargo crap --duplicates --format pr-comment`
+    let out = run_with_config(dir.path(), &config, &stub, &["--format", "pr-comment"]);
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let (section, rows) = duplicate_rows(&stdout);
+    // Then the table has three rows, the first with a verdict and two with
+    // empty verdict cells
+    assert_eq!(rows.len(), 3, "{section}");
+    assert!(rows[0].starts_with("| 🔴 |"), "{section}");
+    assert!(
+        rows[1..].iter().all(|r| r.starts_with("|  | ")),
+        "{section}"
+    );
+    // And a line under the table reads
+    // "2 candidates were not triaged: the run's triage budget ran out."
+    let line = "\n2 candidates were not triaged: the run's triage budget ran out.\n";
+    assert!(section.contains(line), "{section}");
+    // When I run the same with `--format markdown` on a tree with no cached
+    // verdicts
+    let fresh = TempDir::new().expect("temp dir");
+    write(fresh.path(), "pairs.rs", &shaped_pairs(0..3));
+    let out = run_with_config(fresh.path(), &config, &stub, &["--format", "markdown"]);
+    // Then the same line is under the table
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    assert!(stdout.contains(line), "{stdout}");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn on_a_delta_run_the_budget_goes_to_the_new_groups() {
+    // Given triage is enabled with `max-requests = 1`
+    // And a baseline recorded with `--duplicates` holding two groups that are
+    // still present
+    let (dir, store) = (
+        TempDir::new().expect("temp dir"),
+        TempDir::new().expect("temp dir"),
+    );
+    write(dir.path(), "pairs.rs", &shaped_pairs(0..2));
+    write(
+        dir.path(),
+        ".cargo-crap.toml",
+        "[duplicates]\nenabled = true\nthreshold = 1.0\n",
+    );
+    let baseline = record_duplicates(dir.path(), store.path());
+    // And the current tree adds two new pairs
+    write(dir.path(), "more.rs", &shaped_pairs(2..4));
+    let stub = same_logic_stub();
+    // When I run `cargo crap --duplicates --baseline base.json --format pr-comment`
+    let out = run_with_config(
+        dir.path(),
+        &budget_config("max-requests = 1\n"),
+        &stub,
+        &[
+            "--baseline",
+            baseline.to_str().expect("utf-8"),
+            "--format",
+            "pr-comment",
+        ],
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let (section, rows) = duplicate_rows(&stdout);
+    // Then exactly one triage request is made, about the stronger new pair
+    assert_eq!(stub.request_count(), 1, "{section}");
+    let asked = &stub.requests()[0].body;
+    assert!(
+        asked.contains("p02_a") && !asked.contains("p00_a"),
+        "{asked}"
+    );
+    assert_eq!(rows.len(), 2, "{section}");
+    assert!(rows[0].starts_with("| 🔴 |"), "{section}");
+    // And the line under the table reads
+    // "1 candidate was not triaged: the run's triage budget ran out."
+    assert!(
+        section.contains("\n1 candidate was not triaged: the run's triage budget ran out.\n"),
+        "{section}"
+    );
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn a_budget_of_0_on_a_cold_cache_still_explains_the_table() {
+    // Given triage is enabled with `max-requests = 0`
+    // And a tree with two duplicate groups, neither cached
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), "pairs.rs", &shaped_pairs(0..2));
+    let stub = same_logic_stub();
+    // When I run `cargo crap --duplicates --format pr-comment`
+    let out = run_with_config(
+        dir.path(),
+        &budget_config("max-requests = 0\n"),
+        &stub,
+        &["--format", "pr-comment"],
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let (section, _) = duplicate_rows(&stdout);
+    // Then the table has no verdict columns
+    assert!(!section.contains("Verdict"), "{section}");
+    // And a line under it reads
+    // "2 candidates were not triaged: the run's triage budget ran out."
+    assert!(
+        section.contains("\n2 candidates were not triaged: the run's triage budget ran out.\n"),
+        "{section}"
+    );
+}
