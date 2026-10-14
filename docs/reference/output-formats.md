@@ -131,6 +131,11 @@ the provider and the model asked:
 - With triage off or failed, the table has only the candidates and their
   similarity. A candidate triage was not asked about keeps empty verdict
   cells in a triaged table.
+- When the [triage budget](../guides/triage.md#capping-the-requests) left
+  candidates unasked, a line under the table says how many: `2 candidates
+  were not triaged: the run's triage budget ran out.` It follows the
+  truncation footer and the delta count line, and precedes the provider
+  line, whether or not any row has a verdict.
 - The PR comment lists at most 25 candidates and says how many it left
   out, and a PR comment with no candidate has no section. Markdown lists
   every candidate, or says that none was found.

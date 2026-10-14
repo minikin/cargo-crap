@@ -111,7 +111,9 @@ third-party API:
 Triage only annotates: every candidate still prints in the same order with
 the same score, and the exit code never depends on it. Without a key, a
 network or a working API, the run prints the untriaged section and one
-warning saying why.
+warning saying why. With `max-requests = 0` (see
+[Capping the requests](#capping-the-requests)) no key is needed, and the
+verdicts already cached still print.
 
 Verdicts are cached in `cargo-crap/triage/` under the target directory,
 the same one the analysis cache uses (see
@@ -124,6 +126,35 @@ and the provider, so an unchanged pair is never asked about twice,
 switching provider never reuses the other provider's verdicts, and
 `cargo clean` removes it. `--no-cache` and `cache = false` leave it alone:
 each verdict kept is an API call not paid for again.
+
+## Capping the requests
+
+A first run over a large project, a run after `cargo clean`, or a CI job
+that does not keep `target/` asks about every candidate at once, and
+nothing limits how many that is. `max-requests` does:
+
+```toml
+[duplicates.triage]
+enabled = true
+max-requests = 20
+```
+
+- At most 20 candidates are asked about per run, one request each.
+  Cached verdicts are free and never count.
+- The budget goes to the candidates in report order, the most similar
+  first.
+- The rest print without a verdict. The run says on stderr how many and
+  how to raise the limit, and markdown and the PR comment add a line
+  under the table: `2 candidates were not triaged: the run's triage
+  budget ran out.`
+- Each run's verdicts are cached, so a small budget judges every candidate
+  over a few runs.
+- `max-requests = 0` asks nothing and needs no key: the run shows the
+  verdicts already cached and leaves the rest untriaged.
+- A request that fails transiently is tried up to three times in all, so a
+  flaky API can see up to three requests per candidate the budget covers.
+
+Without `max-requests` there is no limit.
 
 ## Choosing a provider
 

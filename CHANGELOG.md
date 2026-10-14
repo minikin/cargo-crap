@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `[duplicates.triage] max-requests` caps the candidates one run asks the
+  model about. Cached verdicts are free, the budget goes to the most
+  similar candidates first, and the rest print untriaged, with one warning
+  and a line under the markdown and pr-comment table. `max-requests = 0`
+  asks nothing and needs no API key. Without `max-requests` there is no
+  limit. See
+  [Capping the requests](docs/guides/triage.md#capping-the-requests)
+  (spec 38).
 - A delta run with `--duplicates`, against a baseline recorded with
   `--duplicates`, shows only the duplicate candidates the change made in
   markdown and the PR comment: new ones, and groups that gained members,
@@ -38,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RenderOptions::pair_triage` returns one per pair. `RenderOptions`
   gains `novelty` and `delta::Baseline` gains `duplicate_groups`.
   `duplicates::novelty` (`compare`, `Comparison`, `Novelty`) is new.
+- **BREAKING (library API):** `duplicates::triage::run` returns `Triaged`,
+  one optional verdict per pair and the number the budget skipped.
+  `config::TriageConfig` and `triage::Settings` gain `max_requests`,
+  `RenderOptions` gains `untriaged`, and `duplicates::triage::budget`
+  (`plan`, `Plan`, `warning`) is new (spec 38).
 
 
 ## [0.8.0] - 2026-10-13
