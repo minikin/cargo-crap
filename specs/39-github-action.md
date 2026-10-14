@@ -226,7 +226,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   request gets the report in the job summary_, _Two comments with their own
   markers stay apart_. Tests: CI scenario jobs against a local stub of the
   API.
-- [ ] **T5 — Release, demo and docs.** `action.yml`'s default version
+- [x] **T5 — Release, demo and docs.** `action.yml`'s default version
   follows `Cargo.toml`, held there by a test, the release workflow moves
   `v1`, the demo runs through `uses: ./` with its own marker, and the
   README, the CI guides and the CHANGELOG show the one-step setup. Needs: T4. No scenario: checked by the docs
