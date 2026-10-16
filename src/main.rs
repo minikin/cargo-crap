@@ -360,13 +360,19 @@ fn unmatched_cli_excludes<'a>(
     unmatched
 }
 
+/// The workspace root in `--workspace` and `-p` mode, as every walked root
+/// records it; `None` in single-path mode.
+fn workspace_root(roots: &[ScanRoot]) -> Option<&Path> {
+    roots.iter().find_map(|r| r.workspace_root.as_deref())
+}
+
 /// One stderr warning per `--exclude` glob the walk never matched (spec 40).
 fn warn_unmatched_excludes(
     excludes: &Excludes,
     matched: &[bool],
     roots: &[ScanRoot],
 ) {
-    let workspace = roots.iter().any(|r| r.workspace_root.is_some());
+    let workspace = workspace_root(roots).is_some();
     for glob in unmatched_cli_excludes(excludes, matched) {
         eprintln!("{}", no_match_warning(glob, workspace));
     }
@@ -1445,6 +1451,7 @@ fn load_filtered_baseline(
     let baseline = load_baseline_with_weight(baseline_path)?;
     warn_on_try_weight_mismatch(baseline.try_weight, try_weight);
     let mut baseline = baseline;
+    resolve_relative_paths(&mut baseline, workspace_root(roots));
     let filter = BaselineFilter::new(roots, allow_patterns)?;
     filter.retain(&mut baseline.entries);
     apply_member_scope(&mut baseline.entries, member_scope);
@@ -1454,6 +1461,27 @@ fn load_filtered_baseline(
         .iter_mut()
         .for_each(|groups| filter_duplicate_record(groups, &filter, member_scope));
     Ok(Some(baseline))
+}
+
+/// In workspace mode, read every relative path in `baseline` as relative to
+/// the workspace root, as a workspace-mode report writes it (spec 41), so the
+/// filter, the member scope and the delta compare absolute with absolute.
+fn resolve_relative_paths(
+    baseline: &mut Baseline,
+    workspace_root: Option<&Path>,
+) {
+    let Some(root) = workspace_root else {
+        return;
+    };
+    // `join` keeps an absolute path as it is. Separators are unified first,
+    // as `BaselineFilter` does, so a baseline written on Windows resolves.
+    let resolve = |file: &mut PathBuf| *file = root.join(file.to_string_lossy().replace('\\', "/"));
+    for entry in &mut baseline.entries {
+        resolve(&mut entry.file);
+    }
+    for member in baseline.duplicate_groups.iter_mut().flatten().flatten() {
+        resolve(&mut member.file);
+    }
 }
 
 fn warn_on_try_weight_mismatch(
@@ -2135,7 +2163,7 @@ fn run() -> Result<ExitCode> {
 
     // --- Render ---
     let mut out_box = prepare_output(cli.output.as_ref())?;
-    let workspace_root = roots.first().and_then(|r| r.workspace_root.clone());
+    let workspace_root = workspace_root(&roots).map(Path::to_path_buf);
     let links = resolve_source_links(
         cli.repo_url,
         cli.commit_ref,
@@ -3043,6 +3071,47 @@ mod tests {
             })
             .collect();
         BaselineFilter::new(&roots, allow)
+    }
+
+    #[test]
+    fn relative_baseline_paths_resolve_below_the_workspace_root() {
+        let at = |file: &str| Location {
+            file: PathBuf::from(file),
+            start_line: 1,
+            end_line: 9,
+            name: "f".into(),
+        };
+        let baseline = || Baseline {
+            entries: vec![
+                baseline_entry("crates/a/src/lib.rs", "rel"),
+                baseline_entry("/abs/x.rs", "abs"),
+                baseline_entry("crates\\b\\src\\lib.rs", "windows"),
+            ],
+            try_weight: 1.0,
+            duplicate_groups: Some(vec![vec![at("crates/a/src/lib.rs"), at("/abs/x.rs")]]),
+        };
+        let files = |b: &Baseline| -> (Vec<PathBuf>, Vec<PathBuf>) {
+            (
+                b.entries.iter().map(|e| e.file.clone()).collect(),
+                b.duplicate_groups.as_ref().unwrap()[0]
+                    .iter()
+                    .map(|m| m.file.clone())
+                    .collect(),
+            )
+        };
+        let mut resolved = baseline();
+        resolve_relative_paths(&mut resolved, Some(Path::new("/ws")));
+        let expected = vec![
+            PathBuf::from("/ws/crates/a/src/lib.rs"),
+            PathBuf::from("/abs/x.rs"),
+        ];
+        let (entries, members) = files(&resolved);
+        assert_eq!(entries[..2], expected[..]);
+        assert_eq!(entries[2], PathBuf::from("/ws/crates/b/src/lib.rs"));
+        assert_eq!(members, expected);
+        let mut untouched = baseline();
+        resolve_relative_paths(&mut untouched, None);
+        assert_eq!(files(&untouched), files(&baseline()));
     }
 
     #[test]

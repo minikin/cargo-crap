@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such as `src/generated/**` work as before, and the default exclusions
   still match below each member only. The duplicate scan and the baseline
   filter follow the same rule (spec 40).
+- In `--workspace` and `-p` mode, reports write paths relative to the
+  workspace root instead of absolute: the human table, markdown, the PR
+  comment, both duplicate sections, JSON (`file`, `previous_file`,
+  `duplicates[].first_file` / `second_file`, duplicate group members and
+  the analyzed-file examples under `diagnostics`) and SARIF `uri`. A
+  member outside the workspace root keeps its absolute path, single-path
+  mode is unchanged, and link URLs and GitHub annotations are as before.
+  A workspace-mode `--baseline` reads relative paths against the
+  workspace root, so a baseline compares cleanly across checkouts, and an
+  absolute baseline from an earlier version still compares cleanly in the
+  checkout that recorded it (spec 41).
+- **BREAKING (library API):** `RenderOptions` gains `workspace_root`, and
+  `SourceLinks::with_workspace_root` is new (spec 41).
 - **BREAKING (library API):** `complexity::analyze_tree_cached` takes a
   `complexity::ExcludeMatcher` and returns `CachedAnalysis` directly.
   `ExcludeMatcher`, `Exclusion`, `complexity::rust_files_matching`,

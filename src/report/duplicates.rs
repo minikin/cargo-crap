@@ -8,7 +8,7 @@ use anyhow::Result;
 use owo_colors::Style;
 
 use super::links::linkify;
-use super::types::{bar, cwd_relative, styled, workspace_relative};
+use super::types::{bar, below_root, cwd_relative, styled, workspace_relative};
 use super::{RenderOptions, SourceLinks, TriagedBy};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
@@ -92,25 +92,50 @@ pub(crate) fn render_human_section(
     write_budget_line(untriaged, reported, out)
 }
 
+/// `at` with its file written below the workspace root (spec 41).
+fn location_below_root(
+    at: &Location,
+    root: &Path,
+) -> Location {
+    let mut shown = at.clone();
+    shown.file = below_root(&at.file, root);
+    shown
+}
+
+fn pair_below_root(
+    pair: &DuplicatePair,
+    root: &Path,
+) -> DuplicatePair {
+    DuplicatePair {
+        first: location_below_root(&pair.first, root),
+        second: location_below_root(&pair.second, root),
+        score: pair.score,
+    }
+}
+
+/// `pairs` with every location written below the workspace root (spec 41).
+pub(crate) fn pairs_below_root(
+    pairs: &[DuplicatePair],
+    root: &Path,
+) -> Vec<DuplicatePair> {
+    pairs.iter().map(|p| pair_below_root(p, root)).collect()
+}
+
 /// `groups` with every location written below the workspace root (spec 41).
-fn groups_below_root(
+pub(crate) fn groups_below_root(
     groups: &[DuplicateGroup],
     root: &Path,
 ) -> Vec<DuplicateGroup> {
-    let below = |at: &Location| Location {
-        file: workspace_relative(&at.file, Some(root)).to_path_buf(),
-        ..at.clone()
-    };
     groups
         .iter()
         .map(|g| DuplicateGroup {
-            members: g.members.iter().map(below).collect(),
-            representative: DuplicatePair {
-                first: below(&g.representative.first),
-                second: below(&g.representative.second),
-                ..g.representative.clone()
-            },
-            ..g.clone()
+            members: g
+                .members
+                .iter()
+                .map(|m| location_below_root(m, root))
+                .collect(),
+            score: g.score,
+            representative: pair_below_root(&g.representative, root),
         })
         .collect()
 }

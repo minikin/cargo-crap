@@ -1373,6 +1373,336 @@ fn github_annotations_are_unchanged() {
     assert!(!from_beta.contains("file=crates/"), "{from_beta}");
 }
 
+// ---- Spec 41 · T3 ----
+
+fn entry_files(json: &serde_json::Value) -> Vec<String> {
+    let mut files = strings_at(&json["entries"], "file");
+    files.sort();
+    files.dedup();
+    files
+}
+
+#[test]
+fn json_entries_carry_workspace_relative_file_paths() {
+    // Given the workspace
+    let ws = spec41_workspace();
+    // When I run `cargo crap --workspace --lcov lcov.info --format json`
+    let json = json_in(ws.path(), &["--workspace", "--lcov", "lcov.info"]);
+    // Then every entries[].file is "crates/alpha/src/lib.rs" or "crates/beta/src/lib.rs"
+    assert_eq!(
+        entry_files(&json),
+        ["crates/alpha/src/lib.rs", "crates/beta/src/lib.rs"]
+    );
+}
+
+#[test]
+fn json_duplicate_locations_are_workspace_relative() {
+    // Given the workspace, with a near-identical pair of functions in alpha and beta
+    let ws = spec41_workspace();
+    write(
+        &ws.path().join("crates/alpha/src"),
+        "dup.rs",
+        &spec40_duplicate("alpha_dup"),
+    );
+    write(
+        &ws.path().join("crates/beta/src"),
+        "dup.rs",
+        &spec40_duplicate("beta_dup"),
+    );
+    // When I run `cargo crap --workspace --duplicates --format json`
+    let json = json_in(ws.path(), &["--workspace", "--duplicates"]);
+    // Then each duplicate member's file is "crates/alpha/src/lib.rs" or "crates/beta/src/lib.rs"
+    let pair = &json["duplicates"][0];
+    assert_eq!(pair["first_file"], "crates/alpha/src/dup.rs", "{json}");
+    assert_eq!(pair["second_file"], "crates/beta/src/dup.rs", "{json}");
+    let members = json["duplicate_groups"][0]["members"].to_string();
+    assert!(members.contains("\"crates/alpha/src/dup.rs\""), "{members}");
+    assert!(members.contains("\"crates/beta/src/dup.rs\""), "{members}");
+}
+
+#[test]
+fn sarif_locations_are_workspace_relative() {
+    // Given the workspace
+    let ws = spec41_workspace();
+    // When I run `cargo crap --workspace --lcov lcov.info --format sarif --threshold 0`
+    let stdout = stdout_in(
+        ws.path(),
+        &[
+            "--workspace",
+            "--lcov",
+            "lcov.info",
+            "--format",
+            "sarif",
+            "--threshold",
+            "0",
+        ],
+    );
+    let sarif: serde_json::Value = serde_json::from_str(&stdout).expect("sarif json");
+    // Then every result's artifactLocation.uri starts with "crates/"
+    let uris: Vec<&str> = sarif["runs"][0]["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .map(|r| {
+            r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                .as_str()
+                .expect("a uri")
+        })
+        .collect();
+    assert!(!uris.is_empty(), "{stdout}");
+    assert!(uris.iter().all(|u| u.starts_with("crates/")), "{uris:?}");
+}
+
+#[test]
+fn paths_do_not_depend_on_the_working_directory() {
+    // Given the workspace
+    let ws = spec41_workspace();
+    // When I run `cargo crap --workspace --lcov lcov.info --format json` from crates/beta/
+    let from_beta = json_in(
+        &ws.path().join("crates/beta"),
+        &["--workspace", "--lcov", "../../lcov.info"],
+    );
+    // Then the entries[].file values are the ones the same run gives from the workspace root
+    let from_root = json_in(ws.path(), &["--workspace", "--lcov", "lcov.info"]);
+    assert_eq!(entry_files(&from_beta), entry_files(&from_root));
+}
+
+#[test]
+fn a_member_outside_the_workspace_root_keeps_its_absolute_path() {
+    // Given a workspace at ws/ with a member `outside` at a sibling directory,
+    // joined with package.workspace = "../ws"
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path().canonicalize().expect("canonical");
+    fs::create_dir_all(root.join("ws/inside/src")).expect("mkdir");
+    fs::create_dir_all(root.join("outside/src")).expect("mkdir");
+    write(
+        &root.join("ws"),
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"inside\", \"../outside\"]\nresolver = \"2\"\n",
+    );
+    write(
+        &root.join("ws/inside"),
+        "Cargo.toml",
+        "[package]\nname = \"inside\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(
+        &root.join("ws/inside/src"),
+        "lib.rs",
+        "pub fn inside_fn() {}\n",
+    );
+    write(
+        &root.join("outside"),
+        "Cargo.toml",
+        "[package]\nname = \"outside\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+         workspace = \"../ws\"\n",
+    );
+    write(
+        &root.join("outside/src"),
+        "lib.rs",
+        "pub fn outside_fn() {}\n",
+    );
+    // When I run `cargo crap --workspace --format json` from ws/
+    let json = json_in(&root.join("ws"), &["--workspace"]);
+    // Then the entries for `outside` carry its absolute file path
+    let outside = root.join("outside/src/lib.rs");
+    assert_eq!(
+        entry_files(&json),
+        [outside.to_str().expect("utf-8"), "inside/src/lib.rs"]
+    );
+}
+
+#[test]
+fn single_path_mode_keeps_the_path_form_path_gave() {
+    // Given a crate with functions in src/lib.rs
+    let dir = spec40_crate(&[]);
+    // When I run `cargo crap --lcov lcov.info --format json` with the default --path
+    write(
+        dir.path(),
+        "lcov.info",
+        "SF:src/lib.rs\nDA:1,1\nend_of_record\n",
+    );
+    let json = json_in(dir.path(), &["--lcov", "lcov.info"]);
+    // Then every entries[].file starts with "./src/"
+    assert_eq!(entry_files(&json), ["./src/lib.rs"]);
+}
+
+#[test]
+fn coverage_is_matched_as_before() {
+    // Given the workspace, with alpha's functions fully covered in lcov.info
+    let ws = spec41_workspace();
+    // When I run `cargo crap --workspace --lcov lcov.info --format json`
+    let json = json_in(ws.path(), &["--workspace", "--lcov", "lcov.info"]);
+    // Then every alpha entry reports coverage 100
+    let alpha: Vec<&serde_json::Value> = json["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .filter(|e| {
+            e["function"]
+                .as_str()
+                .is_some_and(|f| f.starts_with("alpha"))
+        })
+        .collect();
+    assert!(!alpha.is_empty(), "{json}");
+    assert!(alpha.iter().all(|e| e["coverage"] == 100.0), "{alpha:?}");
+}
+
+// ---- Spec 41 · T4 ----
+
+/// The spec 41 workspace with a duplicate pair across alpha and beta. Both
+/// functions are named `dup`, so the duplicate delta can only pair them by
+/// path, never by a name unique to one side.
+fn spec41_workspace_with_duplicates() -> TempDir {
+    let ws = spec41_workspace();
+    write(
+        &ws.path().join("crates/alpha/src"),
+        "dup.rs",
+        &spec40_duplicate("dup"),
+    );
+    write(
+        &ws.path().join("crates/beta/src"),
+        "dup.rs",
+        &spec40_duplicate("dup"),
+    );
+    ws
+}
+
+/// Assert `delta` compared every function as unchanged and found no new
+/// duplicate group.
+fn assert_nothing_changed(delta: &serde_json::Value) {
+    let statuses = strings_at(&delta["entries"], "status");
+    assert!(!statuses.is_empty(), "{delta}");
+    assert!(statuses.iter().all(|s| s == "unchanged"), "{statuses:?}");
+    assert_eq!(
+        strings_at(&delta["removed"], "function"),
+        Vec::<String>::new()
+    );
+    let groups = strings_at(&delta["duplicate_groups"], "status");
+    assert!(!groups.is_empty(), "{delta}");
+    assert!(groups.iter().all(|s| s == "unchanged"), "{groups:?}");
+}
+
+#[test]
+fn an_absolute_baseline_from_the_same_checkout_compares_unchanged() {
+    // Given a baseline written by cargo-crap 0.8.0 with `--workspace --format json
+    // --duplicates` in this checkout
+    let ws = spec41_workspace_with_duplicates();
+    let root = ws.path().canonicalize().expect("canonical");
+    let mut baseline = json_in(
+        ws.path(),
+        &["--workspace", "--lcov", "lcov.info", "--duplicates"],
+    );
+    let absolute = |v: &mut serde_json::Value| {
+        let rel = v.as_str().expect("a path").to_owned();
+        *v = root.join(rel).to_str().expect("utf-8").into();
+    };
+    for entry in baseline["entries"].as_array_mut().expect("entries") {
+        absolute(&mut entry["file"]);
+    }
+    for group in baseline["duplicate_groups"].as_array_mut().expect("groups") {
+        for member in group["members"].as_array_mut().expect("members") {
+            absolute(&mut member["file"]);
+        }
+    }
+    fs::write(ws.path().join("baseline.json"), baseline.to_string()).expect("write");
+    // And no source change since
+    // When I run `cargo crap --workspace --lcov lcov.info --duplicates --baseline baseline.json`
+    let delta = json_in(
+        ws.path(),
+        &[
+            "--workspace",
+            "--lcov",
+            "lcov.info",
+            "--duplicates",
+            "--baseline",
+            "baseline.json",
+        ],
+    );
+    // Then every entry is Unchanged
+    // And none is New, Moved or removed
+    // And no duplicate group is reported as new
+    assert_nothing_changed(&delta);
+}
+
+#[test]
+fn a_relative_baseline_from_another_checkout_compares_unchanged() {
+    // Given a baseline written with `--workspace --format json --duplicates` in a
+    // copy of the workspace at another absolute path
+    let other = spec41_workspace_with_duplicates();
+    let baseline = json_in(
+        other.path(),
+        &["--workspace", "--lcov", "lcov.info", "--duplicates"],
+    );
+    // And the same source in this checkout
+    let ws = spec41_workspace_with_duplicates();
+    fs::write(ws.path().join("baseline.json"), baseline.to_string()).expect("write");
+    // When I run `cargo crap --workspace --lcov lcov.info --duplicates --baseline baseline.json`
+    let delta = json_in(
+        ws.path(),
+        &[
+            "--workspace",
+            "--lcov",
+            "lcov.info",
+            "--duplicates",
+            "--baseline",
+            "baseline.json",
+        ],
+    );
+    // Then every entry is Unchanged
+    // And none is New, Moved or removed
+    // And no duplicate group is reported as new
+    assert_nothing_changed(&delta);
+}
+
+#[test]
+fn the_baseline_exclude_filter_applies_to_relative_baseline_paths() {
+    // Given a baseline written with `--workspace --no-default-excludes --format json`
+    // that includes functions in crates/alpha/tests/
+    let ws = spec41_workspace();
+    let baseline = json_in(ws.path(), &["--workspace", "--no-default-excludes"]);
+    let files = strings_at(&baseline["entries"], "file");
+    assert!(
+        files.iter().any(|f| f.starts_with("crates/alpha/tests/")),
+        "{files:?}"
+    );
+    fs::write(ws.path().join("baseline.json"), baseline.to_string()).expect("write");
+    // When I run `cargo crap --workspace --lcov lcov.info --baseline baseline.json`
+    let delta = json_in(
+        ws.path(),
+        &[
+            "--workspace",
+            "--lcov",
+            "lcov.info",
+            "--baseline",
+            "baseline.json",
+        ],
+    );
+    // Then no function from crates/alpha/tests/ is reported as removed
+    assert_eq!(strings_at(&delta["removed"], "file"), Vec::<String>::new());
+}
+
+#[test]
+fn the_p_member_scope_applies_to_relative_baseline_paths() {
+    // Given a baseline written with `--workspace --format json`
+    let ws = spec41_workspace();
+    let baseline = json_in(ws.path(), &["--workspace"]);
+    fs::write(ws.path().join("baseline.json"), baseline.to_string()).expect("write");
+    // When I run `cargo crap -p alpha --lcov lcov.info --baseline baseline.json`
+    let delta = json_in(
+        ws.path(),
+        &[
+            "-p",
+            "alpha",
+            "--lcov",
+            "lcov.info",
+            "--baseline",
+            "baseline.json",
+        ],
+    );
+    // Then no function from crates/beta/ is reported as removed
+    assert_eq!(strings_at(&delta["removed"], "file"), Vec::<String>::new());
+}
+
 // --- Spec 30 · Duplicate-pair triage ----------------------------------------
 //
 // Each task fills only its own heading, so parallel branches never touch the

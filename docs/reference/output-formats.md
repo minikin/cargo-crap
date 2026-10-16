@@ -193,6 +193,8 @@ rust-analyzer, and most static-analysis tooling.
   `result` with `level: "warning"` and a physical location pointing at
   the function's start line.
 - Functions below the threshold are not included.
+- In `--workspace` and `-p` mode each `uri` is relative to the workspace
+  root, as JSON paths are.
 - An empty result set still produces a valid SARIF document with the
   full `runs[0].tool.driver` envelope.
 - `--baseline` is rejected with `--format sarif`, since SARIF describes

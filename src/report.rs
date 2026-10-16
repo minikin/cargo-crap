@@ -262,7 +262,10 @@ pub fn render(
     let threshold = opts.threshold;
     let shown = entries_below_root(entries, text_root(opts));
     match opts.format {
-        Format::Json => json::render_json(entries, opts, out),
+        Format::Json => {
+            let below = JsonBelowRoot::of(opts);
+            json::render_json(&shown, &below.options(opts), out)
+        },
         Format::Human => human::render_human(
             &shown,
             threshold,
@@ -283,7 +286,7 @@ pub fn render(
             opts.cwd,
             out,
         ),
-        Format::Sarif => sarif::render_sarif(entries, threshold, out),
+        Format::Sarif => sarif::render_sarif(&shown, threshold, out),
         Format::Shields => shields::render_shields(entries, threshold, out),
     }
 }
@@ -308,7 +311,10 @@ pub fn render_delta(
     let below = text_root(opts).map(|root| report_below_root(report, root));
     let shown = below.as_ref().unwrap_or(report);
     match opts.format {
-        Format::Json => json::render_delta_json(report, opts, out),
+        Format::Json => {
+            let below = JsonBelowRoot::of(opts);
+            json::render_delta_json(shown, &below.options(opts), out)
+        },
         Format::Human => human::render_delta_human(shown, opts, &counts, out),
         Format::GitHub => github::render_delta_github(report, threshold, opts.cwd, out),
         Format::Markdown => markdown::render_delta_markdown(
@@ -365,11 +371,12 @@ fn entry_below_root(
 }
 
 /// The workspace root when `opts` asks for a format that writes paths below
-/// it, else `None`: the other formats are handed the entries untouched.
+/// it, else `None`: GitHub annotations keep the absolute entries (Rule 3) and
+/// the badge writes no path.
 fn text_root<'o>(opts: &RenderOptions<'o>) -> Option<&'o Path> {
     let writes_below_root = matches!(
         opts.format,
-        Format::Human | Format::Markdown | Format::PrComment
+        Format::Human | Format::Markdown | Format::PrComment | Format::Json | Format::Sarif
     );
     opts.workspace_root.filter(|_| writes_below_root)
 }
@@ -400,6 +407,51 @@ fn report_below_root(
                 shown
             })
             .collect(),
+    }
+}
+
+/// The duplicate pairs, groups and scope diagnostics a JSON report writes in
+/// workspace mode, each analyzed path below the workspace root (spec 41).
+/// Empty outside it. The diagnostics' LCOV-side examples stay as the LCOV
+/// file spells them.
+struct JsonBelowRoot {
+    pairs: Option<Vec<DuplicatePair>>,
+    groups: Option<Vec<DuplicateGroup>>,
+    diagnostics: Option<ScopeDiagnostics>,
+}
+
+impl JsonBelowRoot {
+    fn of(opts: &RenderOptions) -> Self {
+        let root = text_root(opts);
+        Self {
+            pairs: root
+                .zip(opts.duplicates)
+                .map(|(root, pairs)| duplicates::pairs_below_root(pairs, root)),
+            groups: root
+                .zip(opts.groups)
+                .map(|(root, groups)| duplicates::groups_below_root(groups, root)),
+            diagnostics: root.zip(opts.diagnostics).map(|(root, diagnostics)| {
+                let mut shown = diagnostics.clone();
+                for example in &mut shown.source_only.examples {
+                    *example = below_root(example, root);
+                }
+                shown
+            }),
+        }
+    }
+
+    /// `opts`, reading these pairs, groups and diagnostics where there are
+    /// any.
+    fn options<'a>(
+        &'a self,
+        opts: &RenderOptions<'a>,
+    ) -> RenderOptions<'a> {
+        RenderOptions {
+            duplicates: self.pairs.as_deref().or(opts.duplicates),
+            groups: self.groups.as_deref().or(opts.groups),
+            diagnostics: self.diagnostics.as_ref().or(opts.diagnostics),
+            ..*opts
+        }
     }
 }
 
@@ -520,17 +572,24 @@ mod tests {
     }
 
     #[test]
-    fn only_the_text_formats_write_below_the_workspace_root() {
+    fn every_format_but_github_and_shields_writes_below_the_workspace_root() {
         let root = Path::new("/ws");
         let with = |format| RenderOptions {
             format,
             workspace_root: Some(root),
             ..RenderOptions::default()
         };
-        for format in [Format::Human, Format::Markdown, Format::PrComment] {
+        let below = [
+            Format::Human,
+            Format::Markdown,
+            Format::PrComment,
+            Format::Json,
+            Format::Sarif,
+        ];
+        for format in below {
             assert_eq!(text_root(&with(format)), Some(root), "{format:?}");
         }
-        for format in [Format::Json, Format::GitHub, Format::Sarif, Format::Shields] {
+        for format in [Format::GitHub, Format::Shields] {
             assert_eq!(text_root(&with(format)), None, "{format:?}");
         }
     }
@@ -562,6 +621,34 @@ mod tests {
         );
         assert_eq!(shown.removed[0].file, Path::new("crates/b/src/gone.rs"));
         assert_eq!(shown.removed[0].function, "gone");
+    }
+
+    #[test]
+    fn json_diagnostics_write_analyzed_examples_below_the_workspace_root() {
+        let stray = |examples: &[&str]| crate::merge::StrayFiles {
+            count: examples.len(),
+            examples: examples.iter().map(PathBuf::from).collect(),
+        };
+        let diagnostics = ScopeDiagnostics {
+            analyzed_files: 2,
+            lcov_files: 1,
+            matched_files: 0,
+            source_only: stray(&["/ws/crates/a/src/x.rs"]),
+            lcov_only: stray(&["/other/y.rs"]),
+        };
+        let opts = RenderOptions {
+            format: Format::Json,
+            workspace_root: Some(Path::new("/ws")),
+            diagnostics: Some(&diagnostics),
+            ..RenderOptions::default()
+        };
+        let below = JsonBelowRoot::of(&opts);
+        let shown = below.options(&opts).diagnostics.expect("diagnostics");
+        assert_eq!(
+            shown.source_only.examples,
+            [PathBuf::from("crates/a/src/x.rs")]
+        );
+        assert_eq!(shown.lcov_only.examples, [PathBuf::from("/other/y.rs")]);
     }
 
     #[test]
