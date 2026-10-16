@@ -8,7 +8,7 @@ use anyhow::Result;
 use owo_colors::Style;
 
 use super::links::linkify;
-use super::types::{bar, cwd_relative, styled};
+use super::types::{bar, cwd_relative, styled, workspace_relative};
 use super::{RenderOptions, SourceLinks, TriagedBy};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
@@ -82,11 +82,37 @@ pub(crate) fn render_human_section(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    render_grouped(groups, opts.triage, out)?;
+    match opts.workspace_root {
+        Some(root) => render_grouped(&groups_below_root(groups, root), opts.triage, out)?,
+        None => render_grouped(groups, opts.triage, out)?,
+    }
     let reported = covering_comparison(opts, groups.len()).map(|c| c.reported().count());
     // Never more than the groups listed, and so nothing under an empty section.
     let untriaged = opts.untriaged.min(reported.unwrap_or(groups.len()));
     write_budget_line(untriaged, reported, out)
+}
+
+/// `groups` with every location written below the workspace root (spec 41).
+fn groups_below_root(
+    groups: &[DuplicateGroup],
+    root: &Path,
+) -> Vec<DuplicateGroup> {
+    let below = |at: &Location| Location {
+        file: workspace_relative(&at.file, Some(root)).to_path_buf(),
+        ..at.clone()
+    };
+    groups
+        .iter()
+        .map(|g| DuplicateGroup {
+            members: g.members.iter().map(below).collect(),
+            representative: DuplicatePair {
+                first: below(&g.representative.first),
+                second: below(&g.representative.second),
+                ..g.representative.clone()
+            },
+            ..g.clone()
+        })
+        .collect()
 }
 
 /// One group: a pair's heading for two members, the group's size and
@@ -542,7 +568,7 @@ fn group_cell(
     }
     let shown = &group.members[..NAMED.min(group.members.len())];
     let names: Vec<String> = shown.iter().map(|m| name(m, opts.links)).collect();
-    let locations: Vec<String> = shown.iter().map(|m| location(m, opts.cwd)).collect();
+    let locations: Vec<String> = shown.iter().map(|m| location(m, opts)).collect();
     let more = match group.members.len() - shown.len() {
         0 => String::new(),
         rest => format!(" and {rest} more"),
@@ -565,8 +591,8 @@ fn pair_cell(
         "{} ↔ {}<br><sub>{} · {}</sub>",
         name(&pair.first, opts.links),
         name(&pair.second, opts.links),
-        location(&pair.first, opts.cwd),
-        location(&pair.second, opts.cwd)
+        location(&pair.first, opts),
+        location(&pair.second, opts)
     )
 }
 
@@ -583,11 +609,15 @@ fn name(
 /// reads as markdown.
 fn location(
     at: &Location,
-    cwd: &Path,
+    opts: &RenderOptions,
 ) -> String {
+    let file = match opts.workspace_root {
+        Some(root) => workspace_relative(&at.file, Some(root)),
+        None => cwd_relative(&at.file, opts.cwd),
+    };
     code_span(&format!(
         "{}:{}-{}",
-        cwd_relative(&at.file, cwd).display(),
+        file.display(),
         at.start_line,
         at.end_line
     ))
@@ -1203,6 +1233,54 @@ mod tests {
         (0..bytes.len())
             .filter(|&i| bytes[i] == b'|' && (i == 0 || bytes[i - 1] != b'\\'))
             .count()
+    }
+
+    #[test]
+    fn a_workspace_mode_table_writes_locations_below_the_root() {
+        let opts = RenderOptions {
+            workspace_root: Some(Path::new("/ws")),
+            cwd: Path::new("/ws/crates"),
+            ..RenderOptions::default()
+        };
+        assert_eq!(
+            location(&at("/ws/crates/a/src/lib.rs", 1, "f"), &opts),
+            "`crates/a/src/lib.rs:1-10`"
+        );
+        let single = RenderOptions {
+            cwd: Path::new("/ws/crates"),
+            ..RenderOptions::default()
+        };
+        assert_eq!(
+            location(&at("/ws/crates/a/src/lib.rs", 1, "f"), &single),
+            "`a/src/lib.rs:1-10`"
+        );
+    }
+
+    #[test]
+    fn a_group_is_written_below_the_workspace_root() {
+        let first = at("/ws/a/src/lib.rs", 1, "f");
+        let second = at("/ws/b/src/lib.rs", 1, "g");
+        let group = DuplicateGroup {
+            members: vec![first.clone(), second.clone()],
+            score: 1.0,
+            representative: DuplicatePair {
+                first,
+                second,
+                score: 1.0,
+            },
+        };
+        let shown = groups_below_root(&[group], Path::new("/ws"));
+        let files =
+            |l: &[&Location]| -> Vec<PathBuf> { l.iter().map(|l| l.file.clone()).collect() };
+        let rep = &shown[0].representative;
+        assert_eq!(
+            files(&shown[0].members.iter().collect::<Vec<_>>()),
+            [PathBuf::from("a/src/lib.rs"), PathBuf::from("b/src/lib.rs")]
+        );
+        assert_eq!(
+            files(&[&rep.first, &rep.second]),
+            [PathBuf::from("a/src/lib.rs"), PathBuf::from("b/src/lib.rs")]
+        );
     }
 
     fn at(

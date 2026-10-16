@@ -1903,6 +1903,7 @@ fn resolve_source_links(
     cli_repo_url: Option<String>,
     cli_commit_ref: Option<String>,
     root: &Path,
+    workspace_root: Option<&Path>,
 ) -> Option<SourceLinks> {
     let repo_url = cli_repo_url.or_else(|| {
         let server = std::env::var("GITHUB_SERVER_URL").ok()?;
@@ -1914,7 +1915,11 @@ fn resolve_source_links(
         ))
     })?;
     let commit_ref = cli_commit_ref.or_else(|| std::env::var("GITHUB_SHA").ok())?;
-    Some(SourceLinks::new(repo_url, commit_ref).with_root(root.to_path_buf()))
+    let links = SourceLinks::new(repo_url, commit_ref).with_root(root.to_path_buf());
+    Some(match workspace_root {
+        Some(workspace_root) => links.with_workspace_root(workspace_root.to_path_buf()),
+        None => links,
+    })
 }
 
 /// Parse argv, validate flag combinations, and load the optional
@@ -2029,6 +2034,42 @@ fn parse_and_validate() -> Result<LoadedArgs> {
     })
 }
 
+/// The settings `run` reads with CLI values taking precedence and config
+/// filling in what is missing.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is one resolved CLI/config switch; not a struct-design smell"
+)]
+struct Settings {
+    threshold: f64,
+    missing_policy: MissingCoveragePolicy,
+    fail_above: bool,
+    fail_regression: bool,
+    show_unchanged: bool,
+    uncovered_hints: bool,
+    sort_order: SortOrder,
+}
+
+fn resolve_settings(
+    cli: &Cli,
+    config: &cargo_crap::config::Config,
+) -> Settings {
+    Settings {
+        threshold: cli
+            .threshold
+            .or(config.threshold)
+            .unwrap_or(DEFAULT_THRESHOLD),
+        missing_policy: resolve_missing(cli.missing, config.missing),
+        fail_above: resolve_bool(cli.fail_above, config.fail_above),
+        fail_regression: resolve_bool(cli.fail_regression, config.fail_regression),
+        show_unchanged: resolve_bool(cli.show_unchanged, config.show_unchanged),
+        // Config-only knob: deliberately no CLI flag, so there is no CLI side
+        // to resolve against.
+        uncovered_hints: config.uncovered_hints.unwrap_or(false),
+        sort_order: cli.sort.map(Into::into).or(config.sort).unwrap_or_default(),
+    }
+}
+
 fn run() -> Result<ExitCode> {
     let LoadedArgs {
         cli,
@@ -2038,22 +2079,7 @@ fn run() -> Result<ExitCode> {
         knobs,
     } = parse_and_validate()?;
     let try_weight = knobs.try_weight;
-
-    // Merge: CLI values take precedence; config fills in what's missing.
-    let threshold = cli
-        .threshold
-        .or(config.threshold)
-        .unwrap_or(DEFAULT_THRESHOLD);
-
-    let missing_policy = resolve_missing(cli.missing, config.missing);
-
-    let fail_above = resolve_bool(cli.fail_above, config.fail_above);
-    let fail_regression = resolve_bool(cli.fail_regression, config.fail_regression);
-    let show_unchanged = resolve_bool(cli.show_unchanged, config.show_unchanged);
-    // Config-only knob: deliberately no CLI flag, so there is no CLI side
-    // to resolve against.
-    let uncovered_hints = config.uncovered_hints.unwrap_or(false);
-    let sort_order = cli.sort.map(Into::into).or(config.sort).unwrap_or_default();
+    let settings = resolve_settings(&cli, &config);
 
     let effective_exclude = effective_excludes(
         cli.no_default_excludes,
@@ -2087,7 +2113,7 @@ fn run() -> Result<ExitCode> {
     pb.finish_and_clear();
 
     // --- Merge + filters ---
-    let merge_result = merge(fns, coverage, missing_policy);
+    let merge_result = merge(fns, coverage, settings.missing_policy);
     let diagnostics = merge_result.diagnostics;
     warn_scope_mismatch(diagnostics.as_ref());
     let mut entries = merge_result.entries;
@@ -2096,7 +2122,7 @@ fn run() -> Result<ExitCode> {
     apply_filters(&mut entries, &effective_allow)?;
     // `entries` stays whole for the baseline comparison. `sliced_rows` holds
     // the rows `min` and `top` select, ordered after `top` has picked by CRAP.
-    let sliced_rows = shown_rows(&mut entries, min, top, sort_order);
+    let sliced_rows = shown_rows(&mut entries, min, top, settings.sort_order);
 
     // --- Baseline (loaded here, filtered per specs 18 + 25) ---
     let baseline_data = load_filtered_baseline(
@@ -2109,27 +2135,34 @@ fn run() -> Result<ExitCode> {
 
     // --- Render ---
     let mut out_box = prepare_output(cli.output.as_ref())?;
-    let links = resolve_source_links(cli.repo_url, cli.commit_ref, &knobs.cwd);
+    let workspace_root = roots.first().and_then(|r| r.workspace_root.clone());
+    let links = resolve_source_links(
+        cli.repo_url,
+        cli.commit_ref,
+        &knobs.cwd,
+        workspace_root.as_deref(),
+    );
     let baseline = baseline_data.as_ref();
     let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref(), baseline)?;
     let opts = RenderOpts {
         render: RenderOptions {
-            threshold,
+            threshold: settings.threshold,
             format: cli.format.into(),
             links: links.as_ref(),
             diagnostics: diagnostics.as_ref(),
-            show_unchanged,
-            uncovered_hints,
+            show_unchanged: settings.show_unchanged,
+            uncovered_hints: settings.uncovered_hints,
             try_weight,
             sliced: is_sliced(min, top),
             delta_counts: None,
             width: output_width(cli.output.is_none()),
             cwd: &knobs.cwd,
+            workspace_root: workspace_root.as_deref(),
             ..dups.render_options()
         },
         epsilon,
         summary: cli.summary,
-        sort: sort_order,
+        sort: settings.sort_order,
     };
     let (has_crappy, has_regression) = do_render(
         sliced_rows.as_deref().unwrap_or(&entries),
@@ -2143,7 +2176,7 @@ fn run() -> Result<ExitCode> {
     // truncated report (#47, spec 23).
     out_box.flush().context("flushing output")?;
 
-    if (fail_above && has_crappy) || (fail_regression && has_regression) {
+    if (settings.fail_above && has_crappy) || (settings.fail_regression && has_regression) {
         return Ok(ExitCode::from(1));
     }
     Ok(ExitCode::SUCCESS)

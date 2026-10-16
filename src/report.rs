@@ -25,8 +25,10 @@ use crate::duplicates::triage::verdict::Assessment;
 use crate::merge::{CrapEntry, ScopeDiagnostics};
 use crate::score::Severity;
 use anyhow::{Result, bail};
+use std::borrow::Cow;
 use std::io::Write;
 use std::path::Path;
+use types::below_root;
 
 pub mod duplicates;
 mod github;
@@ -258,10 +260,11 @@ pub fn render(
     out: &mut dyn Write,
 ) -> Result<()> {
     let threshold = opts.threshold;
+    let shown = entries_below_root(entries, text_root(opts));
     match opts.format {
         Format::Json => json::render_json(entries, opts, out),
         Format::Human => human::render_human(
-            entries,
+            &shown,
             threshold,
             opts.uncovered_hints,
             opts.sliced,
@@ -270,10 +273,10 @@ pub fn render(
         ),
         Format::GitHub => github::render_github(entries, threshold, opts.cwd, out),
         Format::Markdown => {
-            markdown::render_markdown(entries, threshold, opts.links, opts.uncovered_hints, out)
+            markdown::render_markdown(&shown, threshold, opts.links, opts.uncovered_hints, out)
         },
         Format::PrComment => pr_comment::render_pr_comment(
-            entries,
+            &shown,
             threshold,
             opts.links,
             opts.uncovered_hints,
@@ -302,12 +305,14 @@ pub fn render_delta(
 ) -> Result<()> {
     let threshold = opts.threshold;
     let counts = opts.delta_counts.unwrap_or_else(|| report.counts());
+    let below = text_root(opts).map(|root| report_below_root(report, root));
+    let shown = below.as_ref().unwrap_or(report);
     match opts.format {
         Format::Json => json::render_delta_json(report, opts, out),
-        Format::Human => human::render_delta_human(report, opts, &counts, out),
+        Format::Human => human::render_delta_human(shown, opts, &counts, out),
         Format::GitHub => github::render_delta_github(report, threshold, opts.cwd, out),
         Format::Markdown => markdown::render_delta_markdown(
-            report,
+            shown,
             threshold,
             opts.links,
             opts.show_unchanged,
@@ -316,7 +321,7 @@ pub fn render_delta(
             out,
         ),
         Format::PrComment => pr_comment::render_delta_pr_comment(
-            report,
+            shown,
             threshold,
             opts.links,
             opts.uncovered_hints,
@@ -334,6 +339,67 @@ pub fn render_delta(
         // The badge has no delta variant (spec 15): the baseline is silently
         // ignored and the output reflects absolute current scores only.
         Format::Shields => shields::render_delta_shields(report, threshold, out),
+    }
+}
+
+/// `entries` with every file written as a workspace-mode report writes it
+/// (spec 41), or `entries` itself outside workspace mode. Links and GitHub
+/// annotations keep the absolute paths: see [`SourceLinks::with_workspace_root`].
+fn entries_below_root<'e>(
+    entries: &'e [CrapEntry],
+    root: Option<&Path>,
+) -> Cow<'e, [CrapEntry]> {
+    match root {
+        Some(root) => Cow::Owned(entries.iter().map(|e| entry_below_root(e, root)).collect()),
+        None => Cow::Borrowed(entries),
+    }
+}
+
+fn entry_below_root(
+    entry: &CrapEntry,
+    root: &Path,
+) -> CrapEntry {
+    let mut shown = entry.clone();
+    shown.file = below_root(&entry.file, root);
+    shown
+}
+
+/// The workspace root when `opts` asks for a format that writes paths below
+/// it, else `None`: the other formats are handed the entries untouched.
+fn text_root<'o>(opts: &RenderOptions<'o>) -> Option<&'o Path> {
+    let writes_below_root = matches!(
+        opts.format,
+        Format::Human | Format::Markdown | Format::PrComment
+    );
+    opts.workspace_root.filter(|_| writes_below_root)
+}
+
+/// [`entries_below_root`] for a delta report: current, previous and removed
+/// files alike.
+fn report_below_root(
+    report: &DeltaReport,
+    root: &Path,
+) -> DeltaReport {
+    DeltaReport {
+        entries: report
+            .entries
+            .iter()
+            .map(|de| {
+                let mut shown = de.clone();
+                shown.current.file = below_root(&de.current.file, root);
+                shown.previous_file = de.previous_file.as_deref().map(|p| below_root(p, root));
+                shown
+            })
+            .collect(),
+        removed: report
+            .removed
+            .iter()
+            .map(|r| {
+                let mut shown = r.clone();
+                shown.file = below_root(&r.file, root);
+                shown
+            })
+            .collect(),
     }
 }
 
@@ -429,12 +495,82 @@ pub fn crappy_count(
 #[cfg(test)]
 mod tests {
 
+    fn at(file: &str) -> CrapEntry {
+        let mut entry = test_support::sample().remove(0);
+        entry.file = PathBuf::from(file);
+        entry
+    }
+
+    #[test]
+    fn a_text_format_writes_entries_below_the_workspace_root() {
+        let entries = [at("/ws/crates/a/src/lib.rs"), at("/elsewhere/lib.rs")];
+        let shown = entries_below_root(&entries, Some(Path::new("/ws")));
+        let files: Vec<&Path> = shown.iter().map(|e| e.file.as_path()).collect();
+        assert_eq!(
+            files,
+            [
+                Path::new("crates/a/src/lib.rs"),
+                Path::new("/elsewhere/lib.rs")
+            ]
+        );
+        assert!(matches!(
+            entries_below_root(&entries, None),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn only_the_text_formats_write_below_the_workspace_root() {
+        let root = Path::new("/ws");
+        let with = |format| RenderOptions {
+            format,
+            workspace_root: Some(root),
+            ..RenderOptions::default()
+        };
+        for format in [Format::Human, Format::Markdown, Format::PrComment] {
+            assert_eq!(text_root(&with(format)), Some(root), "{format:?}");
+        }
+        for format in [Format::Json, Format::GitHub, Format::Sarif, Format::Shields] {
+            assert_eq!(text_root(&with(format)), None, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn a_delta_report_writes_current_previous_and_removed_files_below_the_root() {
+        let report = DeltaReport {
+            entries: vec![crate::delta::DeltaEntry {
+                current: at("/ws/crates/a/src/new.rs"),
+                baseline_crap: Some(1.0),
+                delta: Some(0.0),
+                status: crate::delta::DeltaStatus::Moved,
+                previous_file: Some(PathBuf::from("/ws/crates/a/src/old.rs")),
+            }],
+            removed: vec![crate::delta::RemovedEntry {
+                function: "gone".into(),
+                file: PathBuf::from("/ws/crates/b/src/gone.rs"),
+                baseline_crap: 2.0,
+            }],
+        };
+        let shown = report_below_root(&report, Path::new("/ws"));
+        assert_eq!(
+            shown.entries[0].current.file,
+            Path::new("crates/a/src/new.rs")
+        );
+        assert_eq!(
+            shown.entries[0].previous_file.as_deref(),
+            Some(Path::new("crates/a/src/old.rs"))
+        );
+        assert_eq!(shown.removed[0].file, Path::new("crates/b/src/gone.rs"));
+        assert_eq!(shown.removed[0].function, "gone");
+    }
+
     #[test]
     fn render_options_default_to_no_workspace_root() {
         assert_eq!(RenderOptions::default().workspace_root, None);
     }
     use super::*;
     use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
+    use std::path::PathBuf;
     use test_support::sample;
 
     mod duplicate_groups {

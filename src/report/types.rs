@@ -362,15 +362,20 @@ pub(crate) fn write_truncation_footer(
 /// `cargo metadata` reports the members, and for an absolute `path` joining
 /// the result to `root` gives `path` back. `None` (single-path mode) writes
 /// every path as given.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the renderers call it from spec 41 T2 on")
-)]
 pub(crate) fn workspace_relative<'a>(
     path: &'a Path,
     root: Option<&Path>,
 ) -> &'a Path {
     root.map_or(path, |root| cwd_relative(path, root))
+}
+
+/// [`workspace_relative`] below a known `root`, owned, for building the
+/// copy of a report a workspace-mode renderer writes.
+pub(crate) fn below_root(
+    path: &Path,
+    root: &Path,
+) -> std::path::PathBuf {
+    workspace_relative(path, Some(root)).to_path_buf()
 }
 
 /// `path` relative to `cwd` when it is under it, else `path` as given.

@@ -1197,6 +1197,182 @@ fn the_help_text_names_both_bases() {
     );
 }
 
+// --- Spec 41 · Workspace-mode reports show paths relative to the root ----
+
+/// A fresh copy of `tests/fixtures/sample_workspace` (`alpha` at
+/// `crates/alpha/`, `beta` at `crates/beta/`) with an `lcov.info` covering
+/// every line of both members by absolute path.
+fn spec41_workspace() -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample_workspace"),
+        dir.path(),
+    );
+    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let mut lcov = String::new();
+    for (member, lines) in [("alpha", 15), ("beta", 3)] {
+        let file = root.join(format!("crates/{member}/src/lib.rs"));
+        writeln!(lcov, "SF:{}", file.display()).expect("write");
+        for line in 1..=lines {
+            writeln!(lcov, "DA:{line},1").expect("write");
+        }
+        lcov.push_str("end_of_record\n");
+    }
+    write(dir.path(), "lcov.info", &lcov);
+    dir
+}
+
+/// Every `<file>:<line>` code span in `text`.
+fn code_span_locations(text: &str) -> Vec<&str> {
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|span| span.contains(".rs:"))
+        .collect()
+}
+
+fn stdout_in(
+    dir: &Path,
+    args: &[&str],
+) -> String {
+    let out = crap().current_dir(dir).args(args).assert().success();
+    String::from_utf8(out.get_output().stdout.clone()).expect("utf-8")
+}
+
+// ---- Spec 41 · T2 ----
+
+#[test]
+fn the_human_table_shows_workspace_relative_locations() {
+    // Given the workspace
+    let ws = spec41_workspace();
+    // When I run `cargo crap --workspace --lcov lcov.info`
+    let stdout = stdout_in(ws.path(), &["--workspace", "--lcov", "lcov.info"]);
+    // Then the Location of alpha's functions starts with "crates/alpha/src/lib.rs:"
+    assert!(stdout.contains("crates/alpha/src/lib.rs:"), "{stdout}");
+    // And no Location contains the workspace root's absolute path
+    let root = ws.path().canonicalize().expect("canonical");
+    for absolute in [ws.path(), root.as_path()] {
+        let absolute = absolute.to_str().expect("utf-8");
+        assert!(!stdout.contains(absolute), "{absolute} in {stdout}");
+    }
+}
+
+#[test]
+fn a_p_run_shows_workspace_relative_locations() {
+    // Given the workspace
+    let ws = spec41_workspace();
+    // When I run `cargo crap -p alpha --lcov lcov.info --format markdown`
+    let stdout = stdout_in(
+        ws.path(),
+        &["-p", "alpha", "--lcov", "lcov.info", "--format", "markdown"],
+    );
+    // Then every location in the output starts with "crates/alpha/src/lib.rs:"
+    let locations = code_span_locations(&stdout);
+    assert!(!locations.is_empty(), "{stdout}");
+    assert!(
+        locations
+            .iter()
+            .all(|l| l.starts_with("crates/alpha/src/lib.rs:")),
+        "{locations:?}"
+    );
+}
+
+#[test]
+fn source_link_text_is_relative_and_the_url_is_unchanged() {
+    // Given the workspace
+    let ws = spec41_workspace();
+    // When I run `cargo crap --workspace --lcov lcov.info --format markdown
+    //   --repo-url https://github.com/o/r --commit-ref abc123`
+    let stdout = stdout_in(
+        ws.path(),
+        &[
+            "--workspace",
+            "--lcov",
+            "lcov.info",
+            "--format",
+            "markdown",
+            "--repo-url",
+            "https://github.com/o/r",
+            "--commit-ref",
+            "abc123",
+        ],
+    );
+    // Then the link text for alpha's top function reads "crates/alpha/src/lib.rs:<line>"
+    // And its URL is "https://github.com/o/r/blob/abc123/crates/alpha/src/lib.rs#L<line>"
+    let link = stdout
+        .split("[`crates/alpha/src/lib.rs:")
+        .nth(1)
+        .unwrap_or_else(|| panic!("a relative link text: {stdout}"));
+    let (line_no, rest) = link.split_once("`](").expect("a link");
+    assert_eq!(
+        rest.split_once(')').expect("a closed link").0,
+        format!("https://github.com/o/r/blob/abc123/crates/alpha/src/lib.rs#L{line_no}")
+    );
+    // From a member directory the URL is still the one the absolute path gives:
+    // the path below the working directory.
+    let from_beta = stdout_in(
+        &ws.path().join("crates/beta"),
+        &[
+            "--workspace",
+            "--lcov",
+            "../../lcov.info",
+            "--format",
+            "markdown",
+            "--repo-url",
+            "https://github.com/o/r",
+            "--commit-ref",
+            "abc123",
+        ],
+    );
+    assert!(
+        from_beta.contains(
+            "[`crates/beta/src/lib.rs:1`](https://github.com/o/r/blob/abc123/src/lib.rs#L1)"
+        ),
+        "{from_beta}"
+    );
+}
+
+#[test]
+fn github_annotations_are_unchanged() {
+    // Given the workspace
+    let ws = spec41_workspace();
+    // When I run `cargo crap --workspace --lcov lcov.info --format github --threshold 0`
+    let stdout = stdout_in(
+        ws.path(),
+        &[
+            "--workspace",
+            "--lcov",
+            "lcov.info",
+            "--format",
+            "github",
+            "--threshold",
+            "0",
+        ],
+    );
+    // Then every annotation's file= parameter starts with "crates/"
+    let files: Vec<&str> = stdout
+        .lines()
+        .filter_map(|l| l.split("file=").nth(1))
+        .collect();
+    assert!(!files.is_empty(), "{stdout}");
+    assert!(files.iter().all(|f| f.starts_with("crates/")), "{files:?}");
+    // From a member directory they are still below the working directory.
+    let from_beta = stdout_in(
+        &ws.path().join("crates/beta"),
+        &[
+            "--workspace",
+            "--lcov",
+            "../../lcov.info",
+            "--format",
+            "github",
+            "--threshold",
+            "0",
+        ],
+    );
+    assert!(from_beta.contains("file=src/lib.rs,"), "{from_beta}");
+    assert!(!from_beta.contains("file=crates/"), "{from_beta}");
+}
+
 // --- Spec 30 · Duplicate-pair triage ----------------------------------------
 //
 // Each task fills only its own heading, so parallel branches never touch the
