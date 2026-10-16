@@ -183,11 +183,7 @@ mod tests {
 
     #[test]
     fn styled_emits_ansi_only_when_color_enabled() {
-        // Global toggle: colour defaults to off, this is the only test that
-        // flips it, and it restores off. Under `cargo test` other tests share
-        // the process and can render inside the enabled window, so a test
-        // that measures output must not count escape sequences.
-        use super::super::types::set_color_enabled;
+        use super::super::types::with_color;
         let entries = vec![entry(None, "a1", 1.0)];
         let render = |entries: &[CrapEntry]| {
             let mut buf = Vec::new();
@@ -195,10 +191,8 @@ mod tests {
             String::from_utf8(buf).unwrap()
         };
 
-        set_color_enabled(true);
-        let colored = render(&entries);
-        set_color_enabled(false);
-        let plain = render(&entries);
+        let colored = with_color(true, || render(&entries));
+        let plain = with_color(false, || render(&entries));
 
         assert!(
             colored.contains('\u{1b}'),

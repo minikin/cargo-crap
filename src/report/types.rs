@@ -28,7 +28,32 @@ pub fn set_color_enabled(enabled: bool) {
 }
 
 pub(crate) fn color_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = COLOR_OVERRIDE.with(std::cell::Cell::get) {
+        return enabled;
+    }
     COLOR_ENABLED.load(Ordering::Relaxed)
+}
+
+// `cargo test` runs every test of a crate in one process, one thread each.
+// A test that flipped `COLOR_ENABLED` would colour whatever another test
+// rendered meanwhile; an override on the test's own thread cannot.
+#[cfg(test)]
+thread_local! {
+    static COLOR_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with colour switched to `enabled` on this thread only, for a test
+/// that needs to see both renderings.
+#[cfg(test)]
+pub(crate) fn with_color<T>(
+    enabled: bool,
+    f: impl FnOnce() -> T,
+) -> T {
+    let before = COLOR_OVERRIDE.with(|o| o.replace(Some(enabled)));
+    let out = f();
+    COLOR_OVERRIDE.with(|o| o.set(before));
+    out
 }
 
 /// Apply `style` to `text` only when colour is enabled, so escape codes
@@ -423,6 +448,28 @@ pub(crate) fn format_location_with_prev(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn colour_switched_on_by_a_test_is_not_seen_by_a_test_on_another_thread() {
+        use std::sync::Barrier;
+        let switched = Barrier::new(2);
+        let checked = Barrier::new(2);
+        let seen_elsewhere = std::thread::scope(|s| {
+            s.spawn(|| {
+                with_color(true, || {
+                    switched.wait();
+                    checked.wait();
+                });
+            });
+            switched.wait();
+            let seen = color_enabled();
+            checked.wait();
+            seen
+        });
+        assert!(!seen_elsewhere);
+        assert!(with_color(true, color_enabled));
+        assert!(!color_enabled());
+    }
 
     #[test]
     fn cc_display_shows_integral_cc_without_a_decimal_point() {
