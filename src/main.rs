@@ -507,12 +507,14 @@ fn analyze_root(
     session: Option<&Session>,
     records: &mut Vec<FileRecord>,
 ) -> Result<Vec<complexity::FunctionComplexity>> {
-    let context = || format!("analyzing {}", dir.display());
+    let excludes = complexity::ExcludeMatcher::member_only(excludes)
+        .with_context(|| format!("analyzing {}", dir.display()))?;
     let Some(session) = session else {
-        return complexity::analyze_tree_weighted(dir, excludes, try_weight).with_context(context);
+        return Ok(complexity::analyze_tree_matching(
+            dir, &excludes, try_weight,
+        ));
     };
-    let analysis =
-        complexity::analyze_tree_cached(dir, excludes, session.cache()).with_context(context)?;
+    let analysis = complexity::analyze_tree_cached(dir, &excludes, session.cache());
     records.extend(analysis.records);
     Ok(analysis.functions)
 }

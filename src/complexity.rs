@@ -344,6 +344,84 @@ fn build_exclude_set<S: AsRef<str>>(patterns: &[S]) -> Result<GlobSet> {
     builder.build().context("building exclude glob set")
 }
 
+/// The exclude globs of a walk, matched on up to two bases (spec 40).
+///
+/// Member-only globs (the defaults and the nested-member excludes) match the
+/// path below the walked root and nothing else: spec 14 needs `tests/**` to
+/// mean each crate's own `tests/`. User globs match that path and, when there
+/// is a workspace root, the path below the workspace root too.
+#[derive(Debug, Default)]
+pub struct ExcludeMatcher {
+    member_only: GlobSet,
+    user: GlobSet,
+    workspace_root: Option<PathBuf>,
+}
+
+/// What [`ExcludeMatcher::check`] decided for one file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exclusion {
+    /// True when any glob, member-only or user, matched.
+    pub excluded: bool,
+    /// The index of every user glob that matched under either base,
+    /// ascending and without repeats, whether or not another glob matched
+    /// too.
+    pub user_globs: Vec<usize>,
+}
+
+impl ExcludeMatcher {
+    /// # Errors
+    ///
+    /// Returns an error when a pattern is not a valid glob.
+    pub fn new<M: AsRef<str>, U: AsRef<str>>(
+        member_only: &[M],
+        user: &[U],
+        workspace_root: Option<&Path>,
+    ) -> Result<Self> {
+        Ok(Self {
+            member_only: build_exclude_set(member_only)?,
+            user: build_exclude_set(user)?,
+            workspace_root: workspace_root.map(Path::to_path_buf),
+        })
+    }
+
+    /// Every glob member-only and no workspace root: the single-base
+    /// matching every `&[S]` entry point has always done.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a pattern is not a valid glob.
+    pub fn member_only<S: AsRef<str>>(excludes: &[S]) -> Result<Self> {
+        Self::new(excludes, &[] as &[&str], None)
+    }
+
+    /// Match `file`, found by walking `root`.
+    #[must_use]
+    pub fn check(
+        &self,
+        root: &Path,
+        file: &Path,
+    ) -> Exclusion {
+        let below_root = file.strip_prefix(root).ok();
+        let below_workspace = self
+            .workspace_root
+            .as_deref()
+            .and_then(|workspace| file.strip_prefix(workspace).ok());
+        let mut user_globs: Vec<usize> = below_root
+            .into_iter()
+            .chain(below_workspace)
+            .flat_map(|rel| self.user.matches(rel))
+            .collect();
+        user_globs.sort_unstable();
+        user_globs.dedup();
+        let excluded =
+            !user_globs.is_empty() || below_root.is_some_and(|rel| self.member_only.is_match(rel));
+        Exclusion {
+            excluded,
+            user_globs,
+        }
+    }
+}
+
 /// Walk a directory tree and analyze every `.rs` file, honoring `.gitignore`.
 ///
 /// `excludes` is a list of glob patterns (relative to `root`) for paths that
@@ -366,11 +444,20 @@ pub fn analyze_tree_weighted<S: AsRef<str>>(
     excludes: &[S],
     try_weight: f64,
 ) -> Result<Vec<FunctionComplexity>> {
-    let paths = rust_files(root, excludes)?;
+    let excludes = ExcludeMatcher::member_only(excludes)?;
+    Ok(analyze_tree_matching(root, &excludes, try_weight))
+}
 
+/// [`analyze_tree_weighted`], with the files to skip decided by `excludes`.
+#[must_use]
+pub fn analyze_tree_matching(
+    root: &Path,
+    excludes: &ExcludeMatcher,
+    try_weight: f64,
+) -> Vec<FunctionComplexity> {
     // Phase 2: analyze files in parallel. Each file is independent so rayon
     // can schedule them across all available cores with no synchronization.
-    let all: Vec<FunctionComplexity> = paths
+    rust_files_matching(root, excludes)
         .par_iter()
         .flat_map_iter(|path| match analyze_file_weighted(path, try_weight) {
             Ok(fns) => fns,
@@ -379,9 +466,7 @@ pub fn analyze_tree_weighted<S: AsRef<str>>(
                 vec![]
             },
         })
-        .collect();
-
-    Ok(all)
+        .collect()
 }
 
 /// What [`analyze_tree_cached`] found: the functions, in walk order, and one
@@ -402,17 +487,14 @@ pub struct CachedAnalysis {
 /// The functions and the warnings are the same as an uncached walk's. Each
 /// file is keyed by the canonical walk root joined with its path below the
 /// root, so the key does not depend on how the root was spelled.
-///
-/// # Errors
-///
-/// Returns an error when an exclude pattern is not a valid glob.
-pub fn analyze_tree_cached<S: AsRef<str>>(
+#[must_use]
+pub fn analyze_tree_cached(
     root: &Path,
-    excludes: &[S],
+    excludes: &ExcludeMatcher,
     cache: &ComplexityCache,
-) -> Result<CachedAnalysis> {
+) -> CachedAnalysis {
     let try_weight = cache.try_weight();
-    let paths = rust_files(root, excludes)?;
+    let paths = rust_files_matching(root, excludes);
     let canonical_root = std::fs::canonicalize(root).ok();
     let analysed: Vec<(Vec<FunctionComplexity>, Option<FileRecord>)> = paths
         .par_iter()
@@ -427,7 +509,7 @@ pub fn analyze_tree_cached<S: AsRef<str>>(
         functions.extend(fns);
         records.extend(record);
     }
-    Ok(CachedAnalysis { functions, records })
+    CachedAnalysis { functions, records }
 }
 
 /// The canonical path `path` is cached under: the canonical root joined
@@ -495,42 +577,41 @@ pub fn rust_files<S: AsRef<str>>(
     root: &Path,
     excludes: &[S],
 ) -> Result<Vec<PathBuf>> {
-    let exclude_set = build_exclude_set(excludes)?;
+    let excludes = ExcludeMatcher::member_only(excludes)?;
+    Ok(rust_files_matching(root, &excludes))
+}
 
+/// [`rust_files`], with the files to skip decided by `excludes`.
+#[must_use]
+pub fn rust_files_matching(
+    root: &Path,
+    excludes: &ExcludeMatcher,
+) -> Vec<PathBuf> {
     // Single-threaded walk — the filesystem is inherently sequential and the
     // ignore crate is not Send.
-    let paths: Vec<PathBuf> = {
-        let walker = ignore::WalkBuilder::new(root)
-            .standard_filters(true)
-            .build();
-
-        walker
-            .filter_map(|result| {
-                let entry = match result {
-                    Ok(e) => e,
-                    Err(err) => {
-                        eprintln!("warning: walk error: {err}");
-                        return None;
-                    },
-                };
-                if !entry.file_type().is_some_and(|t| t.is_file()) {
+    ignore::WalkBuilder::new(root)
+        .standard_filters(true)
+        .build()
+        .filter_map(|result| {
+            let entry = match result {
+                Ok(e) => e,
+                Err(err) => {
+                    eprintln!("warning: walk error: {err}");
                     return None;
-                }
-                if entry.path().extension().and_then(|e| e.to_str()) != Some("rs") {
-                    return None;
-                }
-                if !exclude_set.is_empty()
-                    && let Ok(rel) = entry.path().strip_prefix(root)
-                    && exclude_set.is_match(rel)
-                {
-                    return None;
-                }
-                Some(entry.path().to_path_buf())
-            })
-            .collect()
-    };
-
-    Ok(paths)
+                },
+            };
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
+                return None;
+            }
+            if entry.path().extension().and_then(|e| e.to_str()) != Some("rs") {
+                return None;
+            }
+            if excludes.check(root, entry.path()).excluded {
+                return None;
+            }
+            Some(entry.path().to_path_buf())
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1073,6 +1154,225 @@ fn allowed() -> i32 { 42 }
         assert!(result.is_err(), "invalid glob must return an error");
     }
 
+    // --- spec 40: two-base exclude matching ---
+
+    fn matcher(
+        member_only: &[&str],
+        user: &[&str],
+        workspace_root: Option<&str>,
+    ) -> ExcludeMatcher {
+        ExcludeMatcher::new(member_only, user, workspace_root.map(Path::new)).expect("valid globs")
+    }
+
+    fn check(
+        m: &ExcludeMatcher,
+        root: &str,
+        file: &str,
+    ) -> Exclusion {
+        m.check(Path::new(root), Path::new(file))
+    }
+
+    #[test]
+    fn a_user_glob_matches_the_workspace_relative_path() {
+        let m = matcher(&[], &["agent/**"], Some("/ws"));
+        let hit = check(&m, "/ws/agent", "/ws/agent/src/lib.rs");
+        assert!(hit.excluded);
+        assert_eq!(hit.user_globs, vec![0]);
+    }
+
+    #[test]
+    fn a_user_glob_still_matches_the_member_relative_path() {
+        let m = matcher(&[], &["src/generated/**"], Some("/ws"));
+        let hit = check(&m, "/ws/agent", "/ws/agent/src/generated/gen.rs");
+        assert!(hit.excluded);
+        assert_eq!(hit.user_globs, vec![0]);
+    }
+
+    #[test]
+    fn a_member_only_glob_never_matches_the_workspace_relative_path() {
+        let m = matcher(&["tests/**"], &[], Some("/ws"));
+        let hit = check(&m, "/ws/tests/harness", "/ws/tests/harness/src/lib.rs");
+        assert!(!hit.excluded);
+        assert_eq!(hit.user_globs, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_member_only_glob_matches_the_member_relative_path() {
+        let m = matcher(&["tests/**"], &[], Some("/ws"));
+        let hit = check(&m, "/ws/agent", "/ws/agent/tests/it.rs");
+        assert!(hit.excluded);
+        assert!(hit.user_globs.is_empty(), "a default is not a user glob");
+    }
+
+    #[test]
+    fn a_user_glob_equal_to_a_default_gets_the_workspace_base() {
+        let m = matcher(&["tests/**"], &["tests/**"], Some("/ws"));
+        let hit = check(&m, "/ws/tests/harness", "/ws/tests/harness/src/lib.rs");
+        assert!(hit.excluded);
+        assert_eq!(hit.user_globs, vec![0]);
+    }
+
+    #[test]
+    fn every_overlapping_user_glob_is_reported_once() {
+        let m = matcher(
+            &["src/**"],
+            &["agent/**", "nope/**", "agent/src/**", "src/**"],
+            Some("/ws"),
+        );
+        let hit = check(&m, "/ws/agent", "/ws/agent/src/lib.rs");
+        assert!(hit.excluded);
+        assert_eq!(hit.user_globs, vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn without_a_workspace_root_a_user_glob_is_member_relative_only() {
+        let m = matcher(&[], &["agent/**"], None);
+        let hit = check(&m, "/ws/agent", "/ws/agent/src/lib.rs");
+        assert!(!hit.excluded);
+        assert_eq!(hit.user_globs, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_file_outside_the_workspace_root_uses_the_member_base_only() {
+        let m = matcher(&[], &["outside/**", "src/**"], Some("/ws"));
+        let hit = check(&m, "/elsewhere/outside", "/elsewhere/outside/src/lib.rs");
+        assert!(hit.excluded);
+        assert_eq!(hit.user_globs, vec![1]);
+    }
+
+    #[test]
+    fn an_invalid_user_glob_is_an_error() {
+        assert!(ExcludeMatcher::new(&[] as &[&str], &["[invalid"], None).is_err());
+    }
+
+    #[test]
+    fn a_workspace_walk_drops_a_member_by_its_workspace_relative_path() {
+        use std::fs;
+        let ws = tempfile::tempdir().expect("tempdir");
+        let member = ws.path().join("agent");
+        fs::create_dir_all(member.join("src")).expect("mkdir");
+        fs::write(member.join("src/lib.rs"), "fn gone() {}").expect("write");
+        let other = ws.path().join("crates/rules");
+        fs::create_dir_all(other.join("src")).expect("mkdir");
+        fs::write(other.join("src/lib.rs"), "fn kept() {}").expect("write");
+        let m = ExcludeMatcher::new(&[] as &[&str], &["agent/**"], Some(ws.path()))
+            .expect("valid globs");
+
+        assert_eq!(rust_files_matching(&member, &m), Vec::<PathBuf>::new());
+        assert_eq!(rust_files_matching(&other, &m).len(), 1);
+        let fns = analyze_tree_matching(&member, &m, 1.0);
+        assert!(fns.is_empty(), "got: {fns:?}");
+    }
+
+    #[test]
+    fn a_cached_workspace_walk_drops_a_member_by_its_workspace_relative_path() {
+        use crate::cache::complexity::{ComplexityCache, Executable, Header};
+        use std::fs;
+        let ws = tempfile::tempdir().expect("tempdir");
+        let member = ws.path().join("agent");
+        fs::create_dir_all(member.join("src/generated")).expect("mkdir");
+        fs::write(member.join("src/lib.rs"), "fn kept() {}").expect("write");
+        fs::write(member.join("src/generated/gen.rs"), "fn gone() {}").expect("write");
+        let cache = ComplexityCache::empty(Header {
+            executable: Executable {
+                path: "/x".to_owned(),
+                len: 1,
+                mtime_ns: 1,
+            },
+            try_weight: 1.0,
+        });
+        let m = ExcludeMatcher::new(&[] as &[&str], &["agent/src/generated/**"], Some(ws.path()))
+            .expect("valid globs");
+
+        let analysis = analyze_tree_cached(&member, &m, &cache);
+
+        let names: Vec<&str> = analysis.functions.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["kept"]);
+        assert_eq!(analysis.records.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_is_skipped_and_the_walk_goes_on() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("lib.rs"), "fn kept() {}").expect("write");
+        let locked = dir.path().join("locked");
+        fs::create_dir(&locked).expect("mkdir");
+        fs::write(locked.join("hidden.rs"), "fn hidden() {}").expect("write");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("chmod");
+        if fs::read_dir(&locked).is_ok() {
+            // Root ignores the mode, so there is no walk error to provoke.
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("chmod back");
+            return;
+        }
+
+        let files = rust_files_matching(dir.path(), &ExcludeMatcher::default());
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("chmod back");
+        assert_eq!(files, vec![dir.path().join("lib.rs")]);
+    }
+
+    /// One path component drawn from a small alphabet, so generated globs
+    /// and generated paths actually meet.
+    fn component() -> impl Strategy<Value = String> {
+        prop::sample::select(vec!["ws", "agent", "src", "tests", "gen", "x"])
+            .prop_map(str::to_owned)
+    }
+
+    fn rel_path() -> impl Strategy<Value = Vec<String>> {
+        prop::collection::vec(component(), 1..5)
+    }
+
+    fn glob() -> impl Strategy<Value = String> {
+        (prop::collection::vec(component(), 0..3), any::<bool>()).prop_map(|(parts, deep)| {
+            let mut glob = if deep {
+                "**/".to_owned()
+            } else {
+                String::new()
+            };
+            glob.push_str(&parts.join("/"));
+            glob.push_str(if parts.is_empty() { "**" } else { "/**" });
+            glob
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn the_workspace_base_never_changes_a_single_path_run(
+            member_only in prop::collection::vec(glob(), 0..3),
+            user in prop::collection::vec(glob(), 0..3),
+            below in rel_path(),
+        ) {
+            let root = Path::new("/r");
+            let file = root.join(below.join("/")).with_extension("rs");
+            let m = ExcludeMatcher::new(&member_only, &user, None).expect("valid");
+            let all: Vec<&String> = member_only.iter().chain(&user).collect();
+            let flat = build_exclude_set(&all).expect("valid");
+            let rel = file.strip_prefix(root).expect("below root");
+            prop_assert_eq!(m.check(root, &file).excluded, flat.is_match(rel));
+        }
+
+        #[test]
+        fn the_workspace_base_only_adds_exclusions(
+            member_only in prop::collection::vec(glob(), 0..3),
+            user in prop::collection::vec(glob(), 0..3),
+            member in rel_path(),
+            below in rel_path(),
+        ) {
+            let ws = Path::new("/w");
+            let root = ws.join(member.join("/"));
+            let file = root.join(below.join("/")).with_extension("rs");
+            let with_root = ExcludeMatcher::new(&member_only, &user, Some(ws)).expect("valid");
+            let without = ExcludeMatcher::new(&member_only, &user, None).expect("valid");
+            let narrow = without.check(&root, &file);
+            let wide = with_root.check(&root, &file);
+            prop_assert!(!narrow.excluded || wide.excluded);
+            prop_assert!(narrow.user_globs.iter().all(|i| wide.user_globs.contains(i)));
+        }
+    }
+
     /// One statement of a generated function body, with what it contributes
     /// to the *enclosing* function: fixed-cost decision points and `?`
     /// operators. Closures and nested items contribute nothing, whatever
@@ -1240,7 +1540,7 @@ fn allowed() -> i32 { 42 }
             },
             try_weight: 0.5,
         });
-        let analysis = analyze_tree_cached(dir.path(), &[] as &[&str], &cache).expect("walks");
+        let analysis = analyze_tree_cached(dir.path(), &ExcludeMatcher::default(), &cache);
         assert!((analysis.functions[0].cyclomatic - 1.5).abs() < f64::EPSILON);
     }
 
@@ -1309,7 +1609,7 @@ fn allowed() -> i32 { 42 }
                     write_tree(&root, &edits);
                 }
                 let cache = ComplexityCache::load(&file, header.clone());
-                let cached = analyze_tree_cached(&root, &[] as &[&str], &cache).expect("walks");
+                let cached = analyze_tree_cached(&root, &ExcludeMatcher::default(), &cache);
                 let plain = analyze_tree_weighted(&root, &[] as &[&str], 1.0).expect("walks");
                 prop_assert_eq!(rows(&cached.functions), rows(&plain));
                 cache.save(&file, std::slice::from_ref(&root), cached.records).expect("writable");

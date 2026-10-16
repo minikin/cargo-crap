@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc f0fb000731e13233aaee0ca4e071d81802dff0f0574f1983f6441b95311d6457 # shrinks to rows = [("a", [], "_a_a___a____a", 189.50715812047164)], width = 60
+cc e8ec86ae57cc155fbee7d876911fb656d2add8762c855e765d8055fc293069f5 # shrinks to rows = [("d_:mx:yt:j::wqp::_:m_ihe:a:__i_i:", ["d__u", "_"], "cz", None), ("c:pih:_:_u:", ["__rr_ansg_", "j___pkmqk", "_pb_hj__kpq"], "_v_ai__f___", None), ("__ki:_j:_:_m:iy_m:y_v:_:sg:::", [], "_neo_qth_g_x", None)], width = 62
