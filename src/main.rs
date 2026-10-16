@@ -305,6 +305,9 @@ struct Excludes {
     defaults: Vec<String>,
     /// Config `exclude`, then `--exclude`.
     user: Vec<String>,
+    /// Where the `--exclude` globs start in `user`: the only ones a no-match
+    /// warning names (spec 40).
+    cli_start: usize,
 }
 
 /// Assemble the effective excludes (spec 14 precedence): the default list
@@ -323,9 +326,60 @@ fn effective_excludes(
         config_default_excludes
             .unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(ToString::to_string).collect())
     };
+    let cli_start = config_exclude.len();
     let mut user = config_exclude;
     user.extend(cli_exclude);
-    Excludes { defaults, user }
+    Excludes {
+        defaults,
+        user,
+        cli_start,
+    }
+}
+
+/// The `--exclude` globs that `matched` (one flag per `excludes.user`
+/// glob) says excluded no file in the run.
+fn unmatched_cli_excludes<'a>(
+    excludes: &'a Excludes,
+    matched: &[bool],
+) -> Vec<&'a str> {
+    debug_assert_eq!(excludes.user.len(), matched.len());
+    let mut unmatched: Vec<&str> = Vec::new();
+    for (glob, _) in excludes
+        .user
+        .iter()
+        .zip(matched)
+        .skip(excludes.cli_start)
+        .filter(|(_, hit)| !**hit)
+    {
+        if !unmatched.contains(&glob.as_str()) {
+            unmatched.push(glob);
+        }
+    }
+    unmatched
+}
+
+/// One stderr warning per `--exclude` glob the walk never matched (spec 40).
+fn warn_unmatched_excludes(
+    excludes: &Excludes,
+    matched: &[bool],
+    roots: &[ScanRoot],
+) {
+    let workspace = roots.iter().any(|r| r.workspace_root.is_some());
+    for glob in unmatched_cli_excludes(excludes, matched) {
+        eprintln!("{}", no_match_warning(glob, workspace));
+    }
+}
+
+fn no_match_warning(
+    glob: &str,
+    workspace: bool,
+) -> String {
+    let base = if workspace {
+        "each member's directory or the workspace root"
+    } else {
+        "`--path`"
+    };
+    format!("warning: --exclude '{glob}' excluded no file; globs are relative to {base}")
 }
 
 /// Strip the leading `crap` token inserted by cargo when invoked as a subcommand.
@@ -464,6 +518,9 @@ struct AnalyzedSources {
     fns: Vec<complexity::FunctionComplexity>,
     /// Every root walked, in order, with its effective excludes.
     roots: Vec<ScanRoot>,
+    /// One flag per user exclude glob: whether the complexity walk excluded
+    /// any file with it, in any root.
+    user_globs_matched: Vec<bool>,
     /// The analyzed workspace members: all of them under `--workspace`, the
     /// selected subset under `-p/--package`, empty for single-root runs.
     members: Vec<WorkspaceMember>,
@@ -498,10 +555,11 @@ fn analyze_sources(
     }
     if !workspace && packages.is_empty() {
         let root = ScanRoot::new(path.to_path_buf(), excludes, Vec::new(), None);
-        let (fns, target) = analyze_path(&root, knobs)?;
+        let (fns, user_globs_matched, target) = analyze_path(&root, knobs)?;
         return Ok(AnalyzedSources {
             fns,
             roots: vec![root],
+            user_globs_matched,
             members: Vec::new(),
             member_scope: None,
             target,
@@ -516,7 +574,11 @@ fn analyze_sources(
 fn analyze_path(
     root: &ScanRoot,
     knobs: &AnalysisKnobs,
-) -> Result<(Vec<complexity::FunctionComplexity>, Option<PathBuf>)> {
+) -> Result<(
+    Vec<complexity::FunctionComplexity>,
+    Vec<bool>,
+    Option<PathBuf>,
+)> {
     let path = &root.dir;
     let config_dir = knobs.config_dir.as_deref();
     let target = target_dir(None, path, config_dir, &knobs.cwd, |name| {
@@ -527,30 +589,32 @@ fn analyze_path(
         .filter(|_| knobs.cache)
         .and_then(|target| Session::open(target, knobs.try_weight));
     let mut records = Vec::new();
-    let fns = analyze_root(root, knobs.try_weight, session.as_ref(), &mut records)?;
+    let (fns, matched) = analyze_root(root, knobs.try_weight, session.as_ref(), &mut records)?;
     if let Some(session) = session {
         session.save(std::slice::from_ref(path), records);
     }
-    Ok((fns, target))
+    Ok((fns, matched, target))
 }
 
 /// Walk one root, through `session`'s cache when there is one, adding the
-/// records to store to `records`.
+/// records to store to `records`. Returns the functions and, per user glob,
+/// whether it excluded any file under this root.
 fn analyze_root(
     root: &ScanRoot,
     try_weight: f64,
     session: Option<&Session>,
     records: &mut Vec<FileRecord>,
-) -> Result<Vec<complexity::FunctionComplexity>> {
+) -> Result<(Vec<complexity::FunctionComplexity>, Vec<bool>)> {
     let excludes = root.matcher()?;
-    let Some(session) = session else {
-        return Ok(complexity::analyze_tree_matching(
-            &root.dir, &excludes, try_weight,
-        ));
+    let fns = match session {
+        None => complexity::analyze_tree_matching(&root.dir, &excludes, try_weight),
+        Some(session) => {
+            let analysis = complexity::analyze_tree_cached(&root.dir, &excludes, session.cache());
+            records.extend(analysis.records);
+            analysis.functions
+        },
     };
-    let analysis = complexity::analyze_tree_cached(&root.dir, &excludes, session.cache());
-    records.extend(analysis.records);
-    Ok(analysis.functions)
+    Ok((fns, excludes.user_globs_matched()))
 }
 
 /// The workspace side of [`analyze_sources`]: discover members, narrow to
@@ -581,6 +645,7 @@ fn analyze_workspace_members(
     let mut records = Vec::new();
     let mut fns = Vec::new();
     let mut roots = Vec::new();
+    let mut user_globs_matched = vec![false; excludes.user.len()];
     for m in &members {
         // Nested exclusion is computed against every discovered member, not
         // just the selected ones: an unselected nested member's files must
@@ -591,7 +656,11 @@ fn analyze_workspace_members(
             nested_member_excludes(&m.dir, &discovered),
             Some(workspace_root.clone()),
         );
-        fns.extend(analyze_root(&root, knobs.try_weight, cache, &mut records)?);
+        let (member_fns, matched) = analyze_root(&root, knobs.try_weight, cache, &mut records)?;
+        fns.extend(member_fns);
+        for (any, hit) in user_globs_matched.iter_mut().zip(matched) {
+            *any |= hit;
+        }
         roots.push(root);
     }
     save_members(session, &discovered, &members, records);
@@ -600,6 +669,7 @@ fn analyze_workspace_members(
     Ok(AnalyzedSources {
         fns,
         roots,
+        user_globs_matched,
         members,
         member_scope,
         target: Some(target),
@@ -1983,6 +2053,7 @@ fn run() -> Result<ExitCode> {
     let AnalyzedSources {
         fns,
         roots,
+        user_globs_matched,
         members,
         member_scope,
         target,
@@ -1995,6 +2066,7 @@ fn run() -> Result<ExitCode> {
     )?;
 
     pb.set_message("Parsing coverage report…");
+    pb.suspend(|| warn_unmatched_excludes(&effective_exclude, &user_globs_matched, &roots));
     let coverage = load_coverage(cli.lcov.as_ref())?;
     pb.finish_and_clear();
 
@@ -2773,6 +2845,50 @@ mod tests {
         );
         assert_eq!(out.defaults, strs(&["benches/**"]));
         assert_eq!(out.user, strs(&["src/legacy/**", "src/generated/**"]));
+        assert_eq!(out.cli_start, 1, "the CLI globs follow the config ones");
+    }
+
+    #[test]
+    fn only_command_line_globs_that_matched_nothing_are_unmatched() {
+        let excludes = Excludes {
+            defaults: strs(&["tests/**"]),
+            user: strs(&["config/**", "hit/**", "miss/**"]),
+            cli_start: 1,
+        };
+        assert_eq!(
+            unmatched_cli_excludes(&excludes, &[false, true, false]),
+            ["miss/**"]
+        );
+        assert_eq!(
+            unmatched_cli_excludes(&excludes, &[false, false, true]),
+            ["hit/**"]
+        );
+    }
+
+    #[test]
+    fn a_command_line_glob_given_twice_is_unmatched_once() {
+        let excludes = Excludes {
+            defaults: Vec::new(),
+            user: strs(&["miss/**", "miss/**"]),
+            cli_start: 0,
+        };
+        assert_eq!(
+            unmatched_cli_excludes(&excludes, &[false, false]),
+            ["miss/**"]
+        );
+    }
+
+    #[test]
+    fn the_no_match_warning_names_the_base_of_the_mode() {
+        assert_eq!(
+            no_match_warning("x/**", false),
+            "warning: --exclude 'x/**' excluded no file; globs are relative to `--path`"
+        );
+        assert_eq!(
+            no_match_warning("x/**", true),
+            "warning: --exclude 'x/**' excluded no file; globs are relative to \
+             each member's directory or the workspace root"
+        );
     }
 
     #[test]
@@ -2859,6 +2975,7 @@ mod tests {
         Excludes {
             defaults: strs(globs),
             user: Vec::new(),
+            cli_start: 0,
         }
     }
 
@@ -2890,6 +3007,7 @@ mod tests {
             &Excludes {
                 defaults: Vec::new(),
                 user: strs(&["src/generated/**"]),
+                cli_start: 0,
             },
             &[],
             vec![PathBuf::from(".")],
@@ -2922,6 +3040,7 @@ mod tests {
         let filter = workspace_filter(&Excludes {
             defaults: Vec::new(),
             user: strs(&["agent/**"]),
+            cli_start: 0,
         });
         let mut entries = vec![
             baseline_entry("/ws/agent/src/lib.rs", "dropped"),

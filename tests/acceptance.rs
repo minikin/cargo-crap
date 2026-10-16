@@ -1033,6 +1033,151 @@ fn a_baseline_entry_under_a_workspace_relative_exclude_is_not_reported_removed()
     assert_eq!(current, ["harness_src", "rules_generated", "rules_src"]);
 }
 
+// ---- Spec 40 · T5 ----
+
+const NO_FILE: &str = "excluded no file";
+
+fn stderr_of(
+    dir: &Path,
+    args: &[&str],
+) -> String {
+    let out = crap().current_dir(dir).args(args).assert().success();
+    String::from_utf8(out.get_output().stderr.clone()).expect("utf-8")
+}
+
+fn no_match_warnings(stderr: &str) -> Vec<&str> {
+    stderr.lines().filter(|l| l.contains(NO_FILE)).collect()
+}
+
+/// A crate at the root of a temp dir with `src/lib.rs`, plus `extra` files.
+fn spec40_crate(extra: &[(&str, &str)]) -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    for (path, body) in [("src/lib.rs", "pub fn kept() {}\n")].iter().chain(extra) {
+        let file = dir.path().join(path);
+        fs::create_dir_all(file.parent().expect("a parent")).expect("mkdir");
+        fs::write(file, body).expect("write");
+    }
+    dir
+}
+
+#[test]
+fn the_warning_in_single_path_mode_names_path_as_the_base() {
+    // Given a crate at crate/ with functions in crate/src/
+    let dir = spec40_crate(&[("crate/src/lib.rs", "pub fn inner() {}\n")]);
+    // When I run `cargo crap --path crate/ --exclude 'crate/src/**'`
+    let stderr = stderr_of(
+        dir.path(),
+        &["--path", "crate/", "--exclude", "crate/src/**"],
+    );
+    // Then stderr contains one warning naming the glob 'crate/src/**' as excluding no file
+    // And the warning says globs are relative to `--path`
+    assert_eq!(
+        no_match_warnings(&stderr),
+        ["warning: --exclude 'crate/src/**' excluded no file; globs are relative to `--path`"]
+    );
+}
+
+#[test]
+fn a_command_line_exclude_that_excludes_nothing_is_warned_about() {
+    // Given the workspace
+    let ws = spec40_workspace();
+    // When I run `cargo crap --workspace --exclude 'agnet/**'`
+    let out = crap()
+        .current_dir(ws.path())
+        .args(["--workspace", "--exclude", "agnet/**"])
+        .assert();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).expect("utf-8");
+    // Then stderr contains one warning naming the glob 'agnet/**' as excluding no file
+    // And the warning says globs are relative to each member's directory or the workspace root
+    assert_eq!(
+        no_match_warnings(&stderr),
+        [
+            "warning: --exclude 'agnet/**' excluded no file; globs are relative to \
+          each member's directory or the workspace root"
+        ]
+    );
+    // And the exit code is the one the run would have without the glob
+    let without = crap().current_dir(ws.path()).arg("--workspace").assert();
+    assert_eq!(
+        out.get_output().status.code(),
+        without.get_output().status.code()
+    );
+}
+
+#[test]
+fn a_command_line_exclude_that_excludes_something_is_not_warned_about() {
+    // Given the workspace
+    let ws = spec40_workspace();
+    // When I run `cargo crap --workspace --exclude 'agent/**' --exclude 'agnet/**'`
+    let stderr = stderr_of(
+        ws.path(),
+        &[
+            "--workspace",
+            "--exclude",
+            "agent/**",
+            "--exclude",
+            "agnet/**",
+        ],
+    );
+    let warnings = no_match_warnings(&stderr);
+    // Then stderr contains a warning naming 'agnet/**'
+    // And stderr contains no warning naming 'agent/**'
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("'agnet/**'"), "{warnings:?}");
+}
+
+#[test]
+fn overlapping_command_line_excludes_are_both_counted() {
+    // Given the workspace
+    let ws = spec40_workspace();
+    // When I run `cargo crap --workspace --exclude 'agent/**' --exclude 'agent/src/**'`
+    let stderr = stderr_of(
+        ws.path(),
+        &[
+            "--workspace",
+            "--exclude",
+            "agent/**",
+            "--exclude",
+            "agent/src/**",
+        ],
+    );
+    // Then stderr contains no warning naming 'agent/**'
+    // And stderr contains no warning naming 'agent/src/**'
+    assert_eq!(no_match_warnings(&stderr), Vec::<&str>::new());
+}
+
+#[test]
+fn a_command_line_exclude_equal_to_a_default_is_counted() {
+    // Given a crate with functions in tests/common.rs
+    let dir = spec40_crate(&[("tests/common.rs", "pub fn helper() {}\n")]);
+    // When I run `cargo crap --exclude 'tests/**'`
+    let stderr = stderr_of(dir.path(), &["--exclude", "tests/**"]);
+    // Then stderr contains no warning naming 'tests/**'
+    assert_eq!(no_match_warnings(&stderr), Vec::<&str>::new());
+}
+
+#[test]
+fn a_config_exclude_that_excludes_nothing_is_not_warned_about() {
+    // Given the workspace
+    // And a .cargo-crap.toml at the workspace root with exclude = ["agent/**"]
+    let ws = spec40_workspace();
+    write(ws.path(), ".cargo-crap.toml", "exclude = [\"agent/**\"]\n");
+    // When I run `cargo crap -p agent2-rules`
+    let stderr = stderr_of(ws.path(), &["-p", "agent2-rules"]);
+    // Then stderr contains no warning naming 'agent/**'
+    assert_eq!(no_match_warnings(&stderr), Vec::<&str>::new());
+}
+
+#[test]
+fn default_excludes_that_exclude_nothing_are_not_warned_about() {
+    // Given a crate with no tests/, benches/ or examples/ directory
+    let dir = spec40_crate(&[]);
+    // When I run `cargo crap`
+    let stderr = stderr_of(dir.path(), &[]);
+    // Then stderr contains no warning naming 'tests/**', 'benches/**' or 'examples/**'
+    assert_eq!(no_match_warnings(&stderr), Vec::<&str>::new());
+}
+
 // --- Spec 30 · Duplicate-pair triage ----------------------------------------
 //
 // Each task fills only its own heading, so parallel branches never touch the

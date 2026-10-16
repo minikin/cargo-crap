@@ -12,6 +12,7 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use rayon::prelude::*;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use syn::{
     BinOp, ImplItemFn, ItemFn, ItemImpl, ItemTrait, TraitItemFn,
     visit::{self, Visit},
@@ -355,6 +356,8 @@ pub struct ExcludeMatcher {
     member_only: GlobSet,
     user: GlobSet,
     workspace_root: Option<PathBuf>,
+    /// One flag per user glob: whether any [`check`](Self::check) matched it.
+    matched: Vec<AtomicBool>,
 }
 
 /// What [`ExcludeMatcher::check`] decided for one file.
@@ -381,6 +384,7 @@ impl ExcludeMatcher {
             member_only: build_exclude_set(member_only)?,
             user: build_exclude_set(user)?,
             workspace_root: workspace_root.map(Path::to_path_buf),
+            matched: user.iter().map(|_| AtomicBool::new(false)).collect(),
         })
     }
 
@@ -394,7 +398,10 @@ impl ExcludeMatcher {
         Self::new(excludes, &[] as &[&str], None)
     }
 
-    /// Match `file`, found by walking `root`.
+    /// Match `file`, found by walking `root`, and remember every user glob
+    /// that matched for [`user_globs_matched`](Self::user_globs_matched).
+    /// The record is this matcher's own: a pass that must not count toward
+    /// the no-match warning builds its own matcher.
     #[must_use]
     pub fn check(
         &self,
@@ -413,12 +420,25 @@ impl ExcludeMatcher {
             .collect();
         user_globs.sort_unstable();
         user_globs.dedup();
+        for &i in &user_globs {
+            self.matched[i].store(true, Ordering::Relaxed);
+        }
         let excluded =
             !user_globs.is_empty() || below_root.is_some_and(|rel| self.member_only.is_match(rel));
         Exclusion {
             excluded,
             user_globs,
         }
+    }
+
+    /// For each user glob, in order: whether any file checked so far matched
+    /// it under either base.
+    #[must_use]
+    pub fn user_globs_matched(&self) -> Vec<bool> {
+        self.matched
+            .iter()
+            .map(|flag| flag.load(Ordering::Relaxed))
+            .collect()
     }
 }
 
@@ -1238,6 +1258,20 @@ fn allowed() -> i32 { 42 }
         let hit = check(&m, "/elsewhere/outside", "/elsewhere/outside/src/lib.rs");
         assert!(hit.excluded);
         assert_eq!(hit.user_globs, vec![1]);
+    }
+
+    #[test]
+    fn the_matcher_remembers_which_user_globs_ever_matched() {
+        let m = matcher(
+            &["tests/**"],
+            &["agent/**", "nope/**", "src/**"],
+            Some("/ws"),
+        );
+        assert_eq!(m.user_globs_matched(), [false, false, false]);
+        let _ = check(&m, "/ws/agent", "/ws/agent/src/lib.rs");
+        assert_eq!(m.user_globs_matched(), [true, false, true]);
+        let _ = check(&m, "/ws/nope", "/ws/nope/lib.rs");
+        assert_eq!(m.user_globs_matched(), [true, true, true]);
     }
 
     #[test]
