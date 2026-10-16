@@ -1178,6 +1178,25 @@ fn default_excludes_that_exclude_nothing_are_not_warned_about() {
     assert_eq!(no_match_warnings(&stderr), Vec::<&str>::new());
 }
 
+// ---- Spec 40 · T6 ----
+
+#[test]
+fn the_help_text_names_both_bases() {
+    // When I run `cargo crap --help`
+    let out = crap().arg("--help").assert().success();
+    let help = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Then the --exclude description contains "relative to `--path`, or in
+    // workspace mode to each member's directory or the workspace root"
+    assert!(
+        help.contains(
+            "relative to `--path`, or in workspace mode to each member's directory \
+             or the workspace root"
+        ),
+        "{help}"
+    );
+}
+
 // --- Spec 30 · Duplicate-pair triage ----------------------------------------
 //
 // Each task fills only its own heading, so parallel branches never touch the

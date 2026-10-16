@@ -12,7 +12,8 @@ always take precedence. The per-run selectors are flags only: `--path`,
 threshold = 30.0
 fail-above = true
 missing = "pessimistic"   # pessimistic | optimistic | skip
-# `exclude` appends to the default exclusions.
+# `exclude` appends to the default exclusions. In workspace mode a glob
+# also matches below the workspace root: "agent/**" drops that member.
 exclude = ["src/generated/**"]
 # `default-excludes` replaces the built-in default list
 # (tests/**, benches/**, examples/**). Set to [] to disable it;

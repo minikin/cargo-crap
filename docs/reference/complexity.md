@@ -5,7 +5,8 @@ item inside a `#[cfg(test)] mod` is skipped by the complexity pass, so it
 never reaches the table. (Only that exact spelling: `#[cfg(not(test))]`
 and `#[cfg(any(test, …))]` are left alone.) On top of that, `tests/**`,
 `benches/**` and `examples/**` are excluded at walk time, matched relative to
-each analyzed root. Integration tests exist to cover production code, and
+each analyzed root (each member's directory in workspace mode, never the
+workspace root, so `tests/**` is a crate's own `tests/`). Integration tests exist to cover production code, and
 benches and examples are not executed during a coverage run, so all three
 would only add 0%-coverage noise. Pass `--no-default-excludes` to analyze them
 like any other source. Missing test helpers are that filter working, not a

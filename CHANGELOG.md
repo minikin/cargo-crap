@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An `--exclude` glob that excludes no file prints a warning naming the
+  base globs are matched against. Config `exclude` globs and the default
+  exclusions never warn, and the exit code does not change (spec 40).
+
+### Changed
+
+- In `--workspace` and `-p` mode, `exclude` and `--exclude` globs also
+  match a file's path below the workspace root, so `exclude = ["agent/**"]`
+  in a root `.cargo-crap.toml` drops that member. Member-relative globs
+  such as `src/generated/**` work as before, and the default exclusions
+  still match below each member only. The duplicate scan and the baseline
+  filter follow the same rule (spec 40).
+- **BREAKING (library API):** `complexity::analyze_tree_cached` takes a
+  `complexity::ExcludeMatcher` and returns `CachedAnalysis` directly.
+  `ExcludeMatcher`, `Exclusion`, `complexity::rust_files_matching`,
+  `complexity::analyze_tree_matching` and `duplicates::scan::scan_matching`
+  are new; the `&[S]` entry points are unchanged (spec 40).
+
 
 ## [0.8.0] - 2026-10-14
 

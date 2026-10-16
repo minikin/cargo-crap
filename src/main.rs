@@ -83,9 +83,11 @@ struct Cli {
     )]
     package: Vec<String>,
 
-    /// Glob patterns for files to skip (relative to `--path`).
+    /// Glob patterns for files to skip, relative to `--path`, or in workspace
+    /// mode to each member's directory or the workspace root.
     /// Use `**` to cross directory boundaries. May be repeated.
     /// Appends to the default exclusions (see `--no-default-excludes`).
+    /// A glob that excludes no file gets a warning.
     ///
     /// Examples: `--exclude 'src/generated/**'`  `--exclude '**/build.rs'`
     #[arg(long, value_name = "GLOB")]

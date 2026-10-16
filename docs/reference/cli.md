@@ -37,8 +37,12 @@ See [Output formats](output-formats.md) for the seven `--format` renderers.
 
 `--exclude` and `--allow` hide code at different stages. `--exclude` skips
 files at walk time, so they are never parsed, and `**` crosses directory
-boundaries. `--allow` analyzes the file and drops matching functions from the
-report. An `--allow` entry containing `/` or `**` is a path glob matched
+boundaries. Its globs are relative to `--path`. In `--workspace` and `-p`
+mode they match a file's path below its member's directory and its path below
+the workspace root, so both `src/generated/**` (in every member) and
+`agent/**` (one whole member) work. An `--exclude` glob that excludes no file
+gets a warning on stderr; the exit code does not change. `--allow` analyzes
+the file and drops matching functions from the report. An `--allow` entry containing `/` or `**` is a path glob matched
 against the file a function lives in (`src/generated/**`); anything else
 matches the function name, where `*` crosses `::` (`Foo::*`). Both flags are
 repeatable, and `--exclude` appends to the default exclusions instead of
