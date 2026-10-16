@@ -307,14 +307,6 @@ struct Excludes {
     user: Vec<String>,
 }
 
-impl Excludes {
-    /// Defaults first, then user globs: the one list every consumer that
-    /// matches on a single base reads.
-    fn all(&self) -> Vec<String> {
-        self.defaults.iter().chain(&self.user).cloned().collect()
-    }
-}
-
 /// Assemble the effective excludes (spec 14 precedence): the default list
 /// (built-in, or replaced by `default-excludes`, or emptied by
 /// `--no-default-excludes`), and the config and CLI `exclude` globs, which
@@ -891,52 +883,54 @@ fn slice_of(
 /// leaves those stale entries eligible for the delta's pass-2 name matcher,
 /// which can pair them with unrelated new functions as phantom moves.
 struct BaselineFilter {
-    exclude_set: GlobSet,
+    /// Each analyzed root with the exclude matcher its walk used, sorted
+    /// longest-first so the deepest root claims the prefix — the same
+    /// longest-match rule as [`assign_crate_names`].
+    roots: Vec<(PathBuf, complexity::ExcludeMatcher)>,
     name_allow: GlobSet,
     path_allow: GlobSet,
-    /// Analyzed roots (workspace member dirs, or the single `--path` root),
-    /// sorted longest-first so the deepest root claims the prefix — the same
-    /// longest-match rule as [`assign_crate_names`].
-    roots: Vec<PathBuf>,
 }
 
 impl BaselineFilter {
     fn new(
-        excludes: &[String],
+        roots: &[ScanRoot],
         allow_patterns: &[String],
-        mut roots: Vec<PathBuf>,
     ) -> Result<Self> {
-        let exclude_pats: Vec<&str> = excludes.iter().map(String::as_str).collect();
         let (path_pats, name_pats): (Vec<&str>, Vec<&str>) = allow_patterns
             .iter()
             .map(String::as_str)
             .partition(|p| is_path_allow_pattern(p));
-        roots.sort_by_key(|r| std::cmp::Reverse(r.as_os_str().len()));
+        let mut roots = roots
+            .iter()
+            .map(|root| Ok((root.dir.clone(), root.matcher()?)))
+            .collect::<Result<Vec<_>>>()?;
+        roots.sort_by_key(|(dir, _)| std::cmp::Reverse(dir.as_os_str().len()));
         Ok(Self {
-            exclude_set: build_path_set(&exclude_pats, "exclude")?,
+            roots,
             name_allow: build_allow_set(&name_pats)?,
             path_allow: build_path_set(&path_pats, "allow")?,
-            roots,
         })
     }
 
-    /// True when the exclude globs match `file` once it is normalized to
-    /// forward slashes (cross-platform baselines) and stripped of the
-    /// deepest analyzed-root prefix (excludes are root-relative).
+    /// True when the walk would have excluded `file`, normalized to forward
+    /// slashes (cross-platform baselines): matched by the deepest analyzed
+    /// root's matcher. A path under no root is matched whole.
     fn is_excluded(
         &self,
         file: &Path,
     ) -> bool {
-        if self.exclude_set.is_empty() {
-            return false;
-        }
         let normalized = PathBuf::from(file.to_string_lossy().replace('\\', "/"));
-        let rel = self
+        let owner = self
             .roots
             .iter()
-            .find_map(|root| normalized.strip_prefix(root).ok())
-            .unwrap_or(&normalized);
-        self.exclude_set.is_match(rel)
+            .find(|(dir, _)| normalized.starts_with(dir))
+            .map(|(dir, excludes)| (dir.as_path(), excludes))
+            .or_else(|| {
+                self.roots
+                    .last()
+                    .map(|(_, excludes)| (Path::new(""), excludes))
+            });
+        owner.is_some_and(|(dir, excludes)| excludes.check(dir, &normalized).excluded)
     }
 
     /// Drop every duplicate group member the current run's duplicate scan
@@ -1368,10 +1362,8 @@ fn effective_summary(
 /// proceeds.
 fn load_filtered_baseline(
     baseline: Option<&PathBuf>,
-    excludes: &[String],
     allow_patterns: &[String],
-    path: &Path,
-    members: &[WorkspaceMember],
+    roots: &[ScanRoot],
     member_scope: Option<&MemberScope>,
     try_weight: f64,
 ) -> Result<Option<Baseline>> {
@@ -1381,12 +1373,7 @@ fn load_filtered_baseline(
     let baseline = load_baseline_with_weight(baseline_path)?;
     warn_on_try_weight_mismatch(baseline.try_weight, try_weight);
     let mut baseline = baseline;
-    let roots = if members.is_empty() {
-        vec![path.to_path_buf()]
-    } else {
-        members.iter().map(|m| m.dir.clone()).collect()
-    };
-    let filter = BaselineFilter::new(excludes, allow_patterns, roots)?;
+    let filter = BaselineFilter::new(roots, allow_patterns)?;
     filter.retain(&mut baseline.entries);
     apply_member_scope(&mut baseline.entries, member_scope);
     // At most one record: `for_each` filters it when the baseline has one.
@@ -2026,10 +2013,8 @@ fn run() -> Result<ExitCode> {
     // --- Baseline (loaded here, filtered per specs 18 + 25) ---
     let baseline_data = load_filtered_baseline(
         cli.baseline.as_ref(),
-        &effective_exclude.all(),
         &effective_allow,
-        &cli.path,
-        &members,
+        &roots,
         member_scope.as_ref(),
         try_weight,
     )?;
@@ -2793,7 +2778,7 @@ mod tests {
     #[test]
     fn effective_excludes_defaults_to_builtin_list() {
         let out = effective_excludes(false, None, vec![], vec![]);
-        assert_eq!(out.all(), strs(&["tests/**", "benches/**", "examples/**"]));
+        assert_eq!(flat(&out), strs(&["tests/**", "benches/**", "examples/**"]));
     }
 
     #[test]
@@ -2804,19 +2789,19 @@ mod tests {
             vec![],
             vec![],
         );
-        assert_eq!(out.all(), strs(&["benches/**", "examples/**"]));
+        assert_eq!(flat(&out), strs(&["benches/**", "examples/**"]));
     }
 
     #[test]
     fn effective_excludes_empty_config_list_disables_defaults() {
         let out = effective_excludes(false, Some(vec![]), vec![], vec![]);
-        assert_eq!(out.all(), Vec::<String>::new());
+        assert_eq!(flat(&out), Vec::<String>::new());
     }
 
     #[test]
     fn effective_excludes_flag_overrides_config_replacement() {
         let out = effective_excludes(true, Some(strs(&["tests/**"])), vec![], vec![]);
-        assert_eq!(out.all(), Vec::<String>::new());
+        assert_eq!(flat(&out), Vec::<String>::new());
     }
 
     #[test]
@@ -2828,7 +2813,7 @@ mod tests {
             strs(&["src/generated/**"]),
         );
         assert_eq!(
-            out.all(),
+            flat(&out),
             strs(&[
                 "tests/**",
                 "benches/**",
@@ -2861,12 +2846,109 @@ mod tests {
         entries.iter().map(|e| e.function.as_str()).collect()
     }
 
+    fn flat(excludes: &Excludes) -> Vec<String> {
+        excludes
+            .defaults
+            .iter()
+            .chain(&excludes.user)
+            .cloned()
+            .collect()
+    }
+
+    fn defaults_only(globs: &[&str]) -> Excludes {
+        Excludes {
+            defaults: strs(globs),
+            user: Vec::new(),
+        }
+    }
+
+    /// A filter over `dirs`, each walked under `excludes`, as
+    /// `load_filtered_baseline` builds one from the run's roots.
+    fn filter_for(
+        excludes: &Excludes,
+        allow: &[String],
+        dirs: Vec<PathBuf>,
+        workspace_root: Option<&Path>,
+    ) -> Result<BaselineFilter> {
+        let roots: Vec<ScanRoot> = dirs
+            .into_iter()
+            .map(|dir| {
+                ScanRoot::new(
+                    dir,
+                    excludes,
+                    Vec::new(),
+                    workspace_root.map(Path::to_path_buf),
+                )
+            })
+            .collect();
+        BaselineFilter::new(&roots, allow)
+    }
+
     #[test]
-    fn baseline_filter_drops_root_level_target_dirs() {
-        let filter = BaselineFilter::new(
-            &strs(&["tests/**", "benches/**", "examples/**"]),
+    fn baseline_filter_matches_a_user_glob_below_a_single_root() {
+        let filter = filter_for(
+            &Excludes {
+                defaults: Vec::new(),
+                user: strs(&["src/generated/**"]),
+            },
             &[],
             vec![PathBuf::from(".")],
+            None,
+        )
+        .unwrap();
+        let mut entries = vec![
+            baseline_entry("./src/generated/api.rs", "dropped"),
+            baseline_entry("./src/lib.rs", "kept"),
+        ];
+        filter.retain(&mut entries);
+        assert_eq!(names(&entries), ["kept"]);
+    }
+
+    fn workspace_filter(excludes: &Excludes) -> BaselineFilter {
+        filter_for(
+            excludes,
+            &[],
+            vec![
+                PathBuf::from("/ws/agent"),
+                PathBuf::from("/ws/tests/harness"),
+            ],
+            Some(Path::new("/ws")),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn baseline_filter_matches_a_user_glob_below_the_workspace_root() {
+        let filter = workspace_filter(&Excludes {
+            defaults: Vec::new(),
+            user: strs(&["agent/**"]),
+        });
+        let mut entries = vec![
+            baseline_entry("/ws/agent/src/lib.rs", "dropped"),
+            baseline_entry("/ws/tests/harness/src/lib.rs", "kept"),
+        ];
+        filter.retain(&mut entries);
+        assert_eq!(names(&entries), ["kept"]);
+    }
+
+    #[test]
+    fn baseline_filter_never_matches_a_default_below_the_workspace_root() {
+        let filter = workspace_filter(&defaults_only(&["tests/**"]));
+        let mut entries = vec![
+            baseline_entry("/ws/tests/harness/src/lib.rs", "kept"),
+            baseline_entry("/ws/agent/tests/it.rs", "dropped"),
+        ];
+        filter.retain(&mut entries);
+        assert_eq!(names(&entries), ["kept"]);
+    }
+
+    #[test]
+    fn baseline_filter_drops_root_level_target_dirs() {
+        let filter = filter_for(
+            &defaults_only(&["tests/**", "benches/**", "examples/**"]),
+            &[],
+            vec![PathBuf::from(".")],
+            None,
         )
         .unwrap();
         let mut entries = vec![
@@ -2883,8 +2965,13 @@ mod tests {
     fn baseline_filter_keeps_nested_tests_dir_inside_src() {
         // Excludes are root-relative: `tests/**` must not match a module
         // directory that happens to be named tests/ deeper in the tree.
-        let filter =
-            BaselineFilter::new(&strs(&["tests/**"]), &[], vec![PathBuf::from(".")]).unwrap();
+        let filter = filter_for(
+            &defaults_only(&["tests/**"]),
+            &[],
+            vec![PathBuf::from(".")],
+            None,
+        )
+        .unwrap();
         let mut entries = vec![baseline_entry("./src/tests/helpers.rs", "nested_helper")];
         filter.retain(&mut entries);
         assert_eq!(names(&entries), ["nested_helper"]);
@@ -2894,10 +2981,11 @@ mod tests {
     fn baseline_filter_drops_duplicate_members_only_by_the_exclude_globs() {
         // `--allow` hides CRAP rows, and the duplicate scan never reads it:
         // a member it names is still in the current run's groups.
-        let filter = BaselineFilter::new(
-            &strs(&["tests/**"]),
+        let filter = filter_for(
+            &defaults_only(&["tests/**"]),
             &strs(&["skip_me", "gen/**"]),
             vec![PathBuf::from(".")],
+            None,
         )
         .unwrap();
         let at = |file: &str, name: &str| Location {
@@ -2927,7 +3015,8 @@ mod tests {
             end_line: 9,
             name: name.to_string(),
         };
-        let filter = BaselineFilter::new(&[], &[], vec![PathBuf::from("/ws")]).unwrap();
+        let filter =
+            filter_for(&Excludes::default(), &[], vec![PathBuf::from("/ws")], None).unwrap();
         let mut groups = vec![
             vec![
                 at("/ws/crates/alpha/src/lib.rs", "f"),
@@ -3042,8 +3131,13 @@ mod tests {
     fn baseline_filter_normalizes_backslash_paths() {
         // Baseline written on Windows: separators must be normalized before
         // glob matching, as in merge's path_key.
-        let filter =
-            BaselineFilter::new(&strs(&["tests/**"]), &[], vec![PathBuf::from(".")]).unwrap();
+        let filter = filter_for(
+            &defaults_only(&["tests/**"]),
+            &[],
+            vec![PathBuf::from(".")],
+            None,
+        )
+        .unwrap();
         let mut entries = vec![baseline_entry("tests\\integration.rs", "test_helper")];
         filter.retain(&mut entries);
         assert!(entries.is_empty(), "backslash path must match tests/**");
@@ -3054,10 +3148,11 @@ mod tests {
         // Workspace mode: globs apply relative to each member root, so
         // crates/foo/tests/it.rs is tested as tests/it.rs. A nested member
         // (crates/foo/sub) must claim its files before the shallower root.
-        let filter = BaselineFilter::new(
-            &strs(&["tests/**"]),
+        let filter = filter_for(
+            &defaults_only(&["tests/**"]),
             &[],
             vec![PathBuf::from("crates/foo"), PathBuf::from("crates/foo/sub")],
+            None,
         )
         .unwrap();
         let mut entries = vec![
@@ -3071,8 +3166,13 @@ mod tests {
 
     #[test]
     fn baseline_filter_applies_name_allow_patterns() {
-        let filter =
-            BaselineFilter::new(&[], &strs(&["generated_*"]), vec![PathBuf::from(".")]).unwrap();
+        let filter = filter_for(
+            &Excludes::default(),
+            &strs(&["generated_*"]),
+            vec![PathBuf::from(".")],
+            None,
+        )
+        .unwrap();
         let mut entries = vec![
             baseline_entry("src/codegen.rs", "generated_parse_v1"),
             baseline_entry("src/lib.rs", "kept"),
@@ -3085,9 +3185,13 @@ mod tests {
     fn baseline_filter_applies_path_allow_patterns() {
         // Path-shaped allow patterns use the same suffix matching as
         // apply_filters, so they work against absolute baseline paths too.
-        let filter =
-            BaselineFilter::new(&[], &strs(&["src/generated/**"]), vec![PathBuf::from(".")])
-                .unwrap();
+        let filter = filter_for(
+            &Excludes::default(),
+            &strs(&["src/generated/**"]),
+            vec![PathBuf::from(".")],
+            None,
+        )
+        .unwrap();
         let mut entries = vec![
             baseline_entry("/abs/proj/src/generated/api.rs", "dropped"),
             baseline_entry("/abs/proj/src/lib.rs", "kept"),
@@ -3098,7 +3202,7 @@ mod tests {
 
     #[test]
     fn baseline_filter_with_no_patterns_is_a_no_op() {
-        let filter = BaselineFilter::new(&[], &[], vec![PathBuf::from(".")]).unwrap();
+        let filter = filter_for(&Excludes::default(), &[], vec![PathBuf::from(".")], None).unwrap();
         let mut entries = vec![
             baseline_entry("tests/integration.rs", "test_helper"),
             baseline_entry("src/lib.rs", "lib_fn"),

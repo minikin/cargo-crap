@@ -798,25 +798,12 @@ fn copy_tree(
     }
 }
 
-/// The function names a JSON run in `dir` reports.
+/// The function names a JSON run in `dir` reports, sorted.
 fn reported_functions(
     dir: &Path,
     args: &[&str],
 ) -> Vec<String> {
-    let out = crap()
-        .current_dir(dir)
-        .args(args)
-        .args(["--format", "json"])
-        .assert()
-        .success();
-    let json: serde_json::Value =
-        serde_json::from_slice(&out.get_output().stdout).expect("json envelope");
-    let mut names: Vec<String> = json["entries"]
-        .as_array()
-        .expect("entries")
-        .iter()
-        .map(|e| e["function"].as_str().expect("function").to_owned())
-        .collect();
+    let mut names = strings_at(&json_in(dir, args)["entries"], "function");
     names.sort();
     names
 }
@@ -985,6 +972,65 @@ fn the_duplicate_scan_honours_a_workspace_relative_exclude() {
         pairs,
         [("rules_dup_a".to_owned(), "rules_dup_b".to_owned())]
     );
+}
+
+// ---- Spec 40 · T4 ----
+
+fn json_in(
+    dir: &Path,
+    args: &[&str],
+) -> serde_json::Value {
+    let out = crap()
+        .current_dir(dir)
+        .args(args)
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    serde_json::from_slice(&out.get_output().stdout).expect("json envelope")
+}
+
+fn strings_at(
+    rows: &serde_json::Value,
+    key: &str,
+) -> Vec<String> {
+    rows.as_array()
+        .expect("an array")
+        .iter()
+        .filter_map(|row| row[key].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn a_baseline_entry_under_a_workspace_relative_exclude_is_not_reported_removed() {
+    // Given a baseline recorded with `cargo crap --workspace --format json` in the
+    // same checkout, including functions from agent/
+    let ws = spec40_workspace();
+    let recorded = json_in(ws.path(), &["--workspace"]);
+    assert!(strings_at(&recorded["entries"], "function").contains(&"agent_src".to_owned()));
+    fs::write(ws.path().join("baseline.json"), recorded.to_string()).expect("write baseline");
+    // When I run `cargo crap --workspace --exclude 'agent/**' --baseline baseline.json`
+    let delta = json_in(
+        ws.path(),
+        &[
+            "--workspace",
+            "--exclude",
+            "agent/**",
+            "--baseline",
+            "baseline.json",
+        ],
+    );
+    // Then no function from agent/ is reported as removed
+    assert_eq!(
+        strings_at(&delta["removed"], "function"),
+        Vec::<String>::new()
+    );
+    // And no function from agent/ is paired with a current function as a move
+    let moved_from = strings_at(&delta["entries"], "previous_file");
+    let under_agent = |f: &String| Path::new(f).components().any(|c| c.as_os_str() == "agent");
+    assert!(!moved_from.iter().any(under_agent), "{moved_from:?}");
+    let mut current = strings_at(&delta["entries"], "function");
+    current.sort();
+    assert_eq!(current, ["harness_src", "rules_generated", "rules_src"]);
 }
 
 // --- Spec 30 · Duplicate-pair triage ----------------------------------------
