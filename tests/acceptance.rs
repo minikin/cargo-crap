@@ -916,6 +916,77 @@ fn single_path_matching_is_unchanged() {
     assert_eq!(names, ["kept"]);
 }
 
+// ---- Spec 40 · T3 ----
+
+/// A function long enough to clear the duplicate pass's node floor, named
+/// `name`; any two are exact structural duplicates.
+fn spec40_duplicate(name: &str) -> String {
+    format!(
+        "pub fn {name}(xs: &[i32]) -> Vec<i32> {{
+    let mut ys = Vec::new();
+    for x in xs {{
+        if x % 2 == 1 {{
+            ys.push(x + 1);
+        }}
+    }}
+    ys
+}}
+"
+    )
+}
+
+#[test]
+fn the_duplicate_scan_honours_a_workspace_relative_exclude() {
+    // Given the workspace
+    let ws = spec40_workspace();
+    // And a pair of near-identical functions, one in agent/ and one in crates/rules/
+    // And a second pair of near-identical functions, both in crates/rules/
+    write(
+        &ws.path().join("agent/src"),
+        "dup.rs",
+        &spec40_duplicate("agent_dup"),
+    );
+    write(
+        &ws.path().join("crates/rules/src"),
+        "dup.rs",
+        &format!(
+            "{}{}",
+            spec40_duplicate("rules_dup_a"),
+            spec40_duplicate("rules_dup_b")
+        ),
+    );
+    // When I run `cargo crap --workspace --duplicates --exclude 'agent/**'`
+    let out = crap()
+        .current_dir(ws.path())
+        .args([
+            "--workspace",
+            "--duplicates",
+            "--exclude",
+            "agent/**",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success();
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.get_output().stdout).expect("json envelope");
+    let pairs: Vec<(String, String)> = doc["duplicates"]
+        .as_array()
+        .expect("a duplicates array")
+        .iter()
+        .map(|p| {
+            let name = |key: &str| p[key].as_str().expect("a function").to_owned();
+            (name("first_function"), name("second_function"))
+        })
+        .collect();
+    // Then the pair spanning agent/ and crates/rules/ is not reported
+    // And the pair inside crates/rules/ is still reported
+    assert_eq!(
+        pairs,
+        [("rules_dup_a".to_owned(), "rules_dup_b".to_owned())]
+    );
+}
+
 // --- Spec 30 · Duplicate-pair triage ----------------------------------------
 //
 // Each task fills only its own heading, so parallel branches never touch the

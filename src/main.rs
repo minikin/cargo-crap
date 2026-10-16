@@ -465,12 +465,6 @@ impl ScanRoot {
         )
         .with_context(|| format!("analyzing {}", self.dir.display()))
     }
-
-    /// Every glob as one list, for the consumers that still match on a
-    /// single base.
-    fn flat_excludes(&self) -> Vec<String> {
-        self.member_only.iter().chain(&self.user).cloned().collect()
-    }
 }
 
 /// What [`analyze_sources`] hands back to `main`.
@@ -1571,7 +1565,7 @@ fn duplicate_pairs(
     }
     let mut functions = Vec::new();
     for root in roots {
-        functions.extend(duplicates::scan::scan(&root.dir, &root.flat_excludes())?);
+        functions.extend(duplicates::scan::scan_matching(&root.dir, &root.matcher()?));
     }
     // Small functions are dropped before comparison rather than filtered out
     // of the results: every pair of trivial accessors is a genuine structural

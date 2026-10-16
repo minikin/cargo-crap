@@ -6,7 +6,7 @@ use anyhow::Result;
 use rayon::prelude::*;
 
 use super::extract::{FunctionPrint, functions_in_source};
-use crate::complexity::rust_files;
+use crate::complexity::{ExcludeMatcher, rust_files_matching};
 
 /// Fingerprint every function under `root`, skipping excluded paths.
 ///
@@ -20,8 +20,17 @@ pub fn scan<S: AsRef<str>>(
     root: &Path,
     excludes: &[S],
 ) -> Result<Vec<FunctionPrint>> {
-    let paths = rust_files(root, excludes)?;
-    let mut found: Vec<FunctionPrint> = paths
+    Ok(scan_matching(root, &ExcludeMatcher::member_only(excludes)?))
+}
+
+/// [`scan`], with the files to skip decided by `excludes`: the same walk the
+/// complexity pass makes with the same matcher.
+#[must_use]
+pub fn scan_matching(
+    root: &Path,
+    excludes: &ExcludeMatcher,
+) -> Vec<FunctionPrint> {
+    let mut found: Vec<FunctionPrint> = rust_files_matching(root, excludes)
         .par_iter()
         .flat_map_iter(|path| match read_and_fingerprint(path) {
             Ok(fns) => fns,
@@ -35,7 +44,7 @@ pub fn scan<S: AsRef<str>>(
     // report are both order-sensitive, and a parallel walk has no order to
     // speak of.
     found.sort_by(|a, b| a.location.cmp(&b.location));
-    Ok(found)
+    found
 }
 
 fn read_and_fingerprint(path: &Path) -> Result<Vec<FunctionPrint>> {
@@ -107,6 +116,22 @@ mod tests {
             all.contains(&"t"),
             "without the exclude it is found: {all:?}"
         );
+    }
+
+    #[test]
+    fn a_user_glob_excludes_through_the_workspace_relative_path() {
+        let ws = tree();
+        let member = ws.path().join("nested");
+        let excludes = ExcludeMatcher::new(&[] as &[&str], &["nested/deeper/**"], Some(ws.path()))
+            .expect("valid globs");
+        let names = |excludes: &ExcludeMatcher| -> Vec<String> {
+            scan_matching(&member, excludes)
+                .into_iter()
+                .map(|f| f.location.name)
+                .collect()
+        };
+        assert_eq!(names(&ExcludeMatcher::default()), ["b"]);
+        assert_eq!(names(&excludes), Vec::<String>::new());
     }
 
     #[test]
