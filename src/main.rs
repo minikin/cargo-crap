@@ -297,25 +297,43 @@ impl From<FormatArg> for Format {
 /// `--no-default-excludes`.
 const DEFAULT_EXCLUDES: &[&str] = &["tests/**", "benches/**", "examples/**"];
 
-/// Assemble the effective exclude list (spec 14 precedence): the default
-/// list (built-in, or replaced by `default-excludes`, or emptied by
-/// `--no-default-excludes`), followed by config and CLI `exclude` globs,
-/// which always append and never replace.
+/// A run's exclude globs, kept apart by how they match (spec 40): the
+/// defaults only ever below each walked root, the user's also below the
+/// workspace root in workspace mode.
+#[derive(Debug, Clone, Default)]
+struct Excludes {
+    defaults: Vec<String>,
+    /// Config `exclude`, then `--exclude`.
+    user: Vec<String>,
+}
+
+impl Excludes {
+    /// Defaults first, then user globs: the one list every consumer that
+    /// matches on a single base reads.
+    fn all(&self) -> Vec<String> {
+        self.defaults.iter().chain(&self.user).cloned().collect()
+    }
+}
+
+/// Assemble the effective excludes (spec 14 precedence): the default list
+/// (built-in, or replaced by `default-excludes`, or emptied by
+/// `--no-default-excludes`), and the config and CLI `exclude` globs, which
+/// always add to it and never replace it.
 fn effective_excludes(
     no_default_excludes: bool,
     config_default_excludes: Option<Vec<String>>,
     config_exclude: Vec<String>,
     cli_exclude: Vec<String>,
-) -> Vec<String> {
-    let mut out = if no_default_excludes {
+) -> Excludes {
+    let defaults = if no_default_excludes {
         Vec::new()
     } else {
         config_default_excludes
             .unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(ToString::to_string).collect())
     };
-    out.extend(config_exclude);
-    out.extend(cli_exclude);
-    out
+    let mut user = config_exclude;
+    user.extend(cli_exclude);
+    Excludes { defaults, user }
 }
 
 /// Strip the leading `crap` token inserted by cargo when invoked as a subcommand.
@@ -412,7 +430,47 @@ struct WorkspaceMember {
 #[derive(Debug, Clone)]
 struct ScanRoot {
     dir: PathBuf,
-    excludes: Vec<String>,
+    /// The defaults and the nested-member excludes: matched below `dir` only.
+    member_only: Vec<String>,
+    /// Config and CLI globs: matched below `dir` and below `workspace_root`.
+    user: Vec<String>,
+    /// `None` outside workspace mode, where `dir` is the only base.
+    workspace_root: Option<PathBuf>,
+}
+
+impl ScanRoot {
+    /// `dir` under the run's `excludes`, plus `nested` (other members' roots
+    /// below `dir`), which match below `dir` only, like the defaults.
+    fn new(
+        dir: PathBuf,
+        excludes: &Excludes,
+        nested: Vec<String>,
+        workspace_root: Option<PathBuf>,
+    ) -> Self {
+        let mut member_only = excludes.defaults.clone();
+        member_only.extend(nested);
+        Self {
+            dir,
+            member_only,
+            user: excludes.user.clone(),
+            workspace_root,
+        }
+    }
+
+    fn matcher(&self) -> Result<complexity::ExcludeMatcher> {
+        complexity::ExcludeMatcher::new(
+            &self.member_only,
+            &self.user,
+            self.workspace_root.as_deref(),
+        )
+        .with_context(|| format!("analyzing {}", self.dir.display()))
+    }
+
+    /// Every glob as one list, for the consumers that still match on a
+    /// single base.
+    fn flat_excludes(&self) -> Vec<String> {
+        self.member_only.iter().chain(&self.user).cloned().collect()
+    }
 }
 
 /// What [`analyze_sources`] hands back to `main`.
@@ -443,7 +501,7 @@ fn analyze_sources(
     workspace: bool,
     packages: &[String],
     path: &std::path::Path,
-    excludes: &[String],
+    excludes: &Excludes,
     knobs: &AnalysisKnobs,
 ) -> Result<AnalyzedSources> {
     if let Some(n) = knobs.jobs {
@@ -453,13 +511,11 @@ fn analyze_sources(
             .with_context(|| format!("configuring rayon thread pool to {n} threads"))?;
     }
     if !workspace && packages.is_empty() {
-        let (fns, target) = analyze_path(path, excludes, knobs)?;
+        let root = ScanRoot::new(path.to_path_buf(), excludes, Vec::new(), None);
+        let (fns, target) = analyze_path(&root, knobs)?;
         return Ok(AnalyzedSources {
             fns,
-            roots: vec![ScanRoot {
-                dir: path.to_path_buf(),
-                excludes: excludes.to_vec(),
-            }],
+            roots: vec![root],
             members: Vec::new(),
             member_scope: None,
             target,
@@ -472,10 +528,10 @@ fn analyze_sources(
 /// target directory to keep it in (spec 10). Without one, or when the
 /// running executable cannot be identified, the walk is uncached.
 fn analyze_path(
-    path: &Path,
-    excludes: &[String],
+    root: &ScanRoot,
     knobs: &AnalysisKnobs,
 ) -> Result<(Vec<complexity::FunctionComplexity>, Option<PathBuf>)> {
+    let path = &root.dir;
     let config_dir = knobs.config_dir.as_deref();
     let target = target_dir(None, path, config_dir, &knobs.cwd, |name| {
         std::env::var(name).ok()
@@ -485,15 +541,9 @@ fn analyze_path(
         .filter(|_| knobs.cache)
         .and_then(|target| Session::open(target, knobs.try_weight));
     let mut records = Vec::new();
-    let fns = analyze_root(
-        path,
-        excludes,
-        knobs.try_weight,
-        session.as_ref(),
-        &mut records,
-    )?;
+    let fns = analyze_root(root, knobs.try_weight, session.as_ref(), &mut records)?;
     if let Some(session) = session {
-        session.save(&[path.to_path_buf()], records);
+        session.save(std::slice::from_ref(path), records);
     }
     Ok((fns, target))
 }
@@ -501,20 +551,18 @@ fn analyze_path(
 /// Walk one root, through `session`'s cache when there is one, adding the
 /// records to store to `records`.
 fn analyze_root(
-    dir: &Path,
-    excludes: &[String],
+    root: &ScanRoot,
     try_weight: f64,
     session: Option<&Session>,
     records: &mut Vec<FileRecord>,
 ) -> Result<Vec<complexity::FunctionComplexity>> {
-    let excludes = complexity::ExcludeMatcher::member_only(excludes)
-        .with_context(|| format!("analyzing {}", dir.display()))?;
+    let excludes = root.matcher()?;
     let Some(session) = session else {
         return Ok(complexity::analyze_tree_matching(
-            dir, &excludes, try_weight,
+            &root.dir, &excludes, try_weight,
         ));
     };
-    let analysis = complexity::analyze_tree_cached(dir, &excludes, session.cache());
+    let analysis = complexity::analyze_tree_cached(&root.dir, &excludes, session.cache());
     records.extend(analysis.records);
     Ok(analysis.functions)
 }
@@ -524,7 +572,7 @@ fn analyze_root(
 /// walk each selected member's root.
 fn analyze_workspace_members(
     packages: &[String],
-    excludes: &[String],
+    excludes: &Excludes,
     knobs: &AnalysisKnobs,
 ) -> Result<AnalyzedSources> {
     let Workspace {
@@ -551,19 +599,14 @@ fn analyze_workspace_members(
         // Nested exclusion is computed against every discovered member, not
         // just the selected ones: an unselected nested member's files must
         // not leak into its parent's walk either.
-        let mut walk_excludes = excludes.to_vec();
-        walk_excludes.extend(nested_member_excludes(&m.dir, &discovered));
-        fns.extend(analyze_root(
-            &m.dir,
-            &walk_excludes,
-            knobs.try_weight,
-            cache,
-            &mut records,
-        )?);
-        roots.push(ScanRoot {
-            dir: m.dir.clone(),
-            excludes: walk_excludes,
-        });
+        let root = ScanRoot::new(
+            m.dir.clone(),
+            excludes,
+            nested_member_excludes(&m.dir, &discovered),
+            Some(workspace_root.clone()),
+        );
+        fns.extend(analyze_root(&root, knobs.try_weight, cache, &mut records)?);
+        roots.push(root);
     }
     save_members(session, &discovered, &members, records);
     let member_scope =
@@ -1528,7 +1571,7 @@ fn duplicate_pairs(
     }
     let mut functions = Vec::new();
     for root in roots {
-        functions.extend(duplicates::scan::scan(&root.dir, &root.excludes)?);
+        functions.extend(duplicates::scan::scan(&root.dir, &root.flat_excludes())?);
     }
     // Small functions are dropped before comparison rather than filtered out
     // of the results: every pair of trivial accessors is a genuine structural
@@ -1989,7 +2032,7 @@ fn run() -> Result<ExitCode> {
     // --- Baseline (loaded here, filtered per specs 18 + 25) ---
     let baseline_data = load_filtered_baseline(
         cli.baseline.as_ref(),
-        &effective_exclude,
+        &effective_exclude.all(),
         &effective_allow,
         &cli.path,
         &members,
@@ -2742,9 +2785,21 @@ mod tests {
     }
 
     #[test]
+    fn effective_excludes_keep_user_globs_apart_from_the_defaults() {
+        let out = effective_excludes(
+            false,
+            Some(strs(&["benches/**"])),
+            strs(&["src/legacy/**"]),
+            strs(&["src/generated/**"]),
+        );
+        assert_eq!(out.defaults, strs(&["benches/**"]));
+        assert_eq!(out.user, strs(&["src/legacy/**", "src/generated/**"]));
+    }
+
+    #[test]
     fn effective_excludes_defaults_to_builtin_list() {
         let out = effective_excludes(false, None, vec![], vec![]);
-        assert_eq!(out, strs(&["tests/**", "benches/**", "examples/**"]));
+        assert_eq!(out.all(), strs(&["tests/**", "benches/**", "examples/**"]));
     }
 
     #[test]
@@ -2755,19 +2810,19 @@ mod tests {
             vec![],
             vec![],
         );
-        assert_eq!(out, strs(&["benches/**", "examples/**"]));
+        assert_eq!(out.all(), strs(&["benches/**", "examples/**"]));
     }
 
     #[test]
     fn effective_excludes_empty_config_list_disables_defaults() {
         let out = effective_excludes(false, Some(vec![]), vec![], vec![]);
-        assert_eq!(out, Vec::<String>::new());
+        assert_eq!(out.all(), Vec::<String>::new());
     }
 
     #[test]
     fn effective_excludes_flag_overrides_config_replacement() {
         let out = effective_excludes(true, Some(strs(&["tests/**"])), vec![], vec![]);
-        assert_eq!(out, Vec::<String>::new());
+        assert_eq!(out.all(), Vec::<String>::new());
     }
 
     #[test]
@@ -2779,7 +2834,7 @@ mod tests {
             strs(&["src/generated/**"]),
         );
         assert_eq!(
-            out,
+            out.all(),
             strs(&[
                 "tests/**",
                 "benches/**",

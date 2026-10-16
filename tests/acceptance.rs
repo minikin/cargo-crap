@@ -764,6 +764,158 @@ fn matching_weights_compare_silently() {
     assert_eq!(delta["entries"][0]["status"], "unchanged", "{delta}");
 }
 
+// --- Spec 40 · Exclude globs also match workspace-relative paths -----------
+
+// ---- Spec 40 · T2 ----
+
+/// A fresh copy of `tests/fixtures/spec40_workspace`: a virtual manifest,
+/// `agent2` at `agent/`, `agent2-rules` at `crates/rules/` and `harness` at
+/// `tests/harness/`, with `src/generated/gen.rs` in the first two. Every
+/// function's name says where it lives. Copied so a test can add a config
+/// and the run's cache lands outside the repository.
+fn spec40_workspace() -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/spec40_workspace"),
+        dir.path(),
+    );
+    dir
+}
+
+fn copy_tree(
+    from: &Path,
+    to: &Path,
+) {
+    for entry in fs::read_dir(from).expect("read fixture dir") {
+        let entry = entry.expect("fixture entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            fs::create_dir_all(&target).expect("mkdir");
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).expect("copy fixture file");
+        }
+    }
+}
+
+/// The function names a JSON run in `dir` reports.
+fn reported_functions(
+    dir: &Path,
+    args: &[&str],
+) -> Vec<String> {
+    let out = crap()
+        .current_dir(dir)
+        .args(args)
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.get_output().stdout).expect("json envelope");
+    let mut names: Vec<String> = json["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|e| e["function"].as_str().expect("function").to_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_workspace_relative_exclude_drops_a_whole_member() {
+    // Given the workspace
+    let ws = spec40_workspace();
+    // When I run `cargo crap --workspace --exclude 'agent/**'`
+    let names = reported_functions(ws.path(), &["--workspace", "--exclude", "agent/**"]);
+    // Then no function from agent/ appears in the output
+    // And the functions from crates/rules/ are still shown
+    assert_eq!(names, ["harness_src", "rules_generated", "rules_src"]);
+}
+
+#[test]
+fn a_workspace_relative_exclude_in_the_config_file_drops_a_member() {
+    // Given the workspace
+    // And a .cargo-crap.toml at the workspace root with exclude = ["crates/rules/**"]
+    let ws = spec40_workspace();
+    write(
+        ws.path(),
+        ".cargo-crap.toml",
+        "exclude = [\"crates/rules/**\"]\n",
+    );
+    // When I run `cargo crap --workspace`
+    let names = reported_functions(ws.path(), &["--workspace"]);
+    // Then no function from crates/rules/ appears in the output
+    // And the functions from agent/ are still shown
+    assert_eq!(names, ["agent_generated", "agent_src", "harness_src"]);
+}
+
+#[test]
+fn a_leading_double_star_glob_matches_through_the_workspace_relative_path() {
+    // Given the workspace
+    let ws = spec40_workspace();
+    let unexcluded = reported_functions(ws.path(), &["-p", "agent2"]);
+    assert_eq!(
+        unexcluded,
+        ["agent_generated", "agent_src"],
+        "the control run"
+    );
+    // When I run `cargo crap -p agent2 --exclude '**/agent/src/**'`
+    let names = reported_functions(ws.path(), &["-p", "agent2", "--exclude", "**/agent/src/**"]);
+    // Then no function from agent/src/ appears in the output
+    assert_eq!(names, Vec::<String>::new());
+}
+
+#[test]
+fn member_relative_user_excludes_keep_working_in_every_member() {
+    // Given the workspace, with src/generated/gen.rs in both agent/ and crates/rules/
+    let ws = spec40_workspace();
+    // When I run `cargo crap --workspace --exclude 'src/generated/**'`
+    let names = reported_functions(ws.path(), &["--workspace", "--exclude", "src/generated/**"]);
+    // Then no function from either member's src/generated/ appears in the output
+    // And the other functions in each member's src/ are still shown
+    assert_eq!(names, ["agent_src", "harness_src", "rules_src"]);
+}
+
+#[test]
+fn default_excludes_do_not_get_the_workspace_base() {
+    // Given a workspace with a member `harness` at tests/harness/ holding functions in src/lib.rs
+    let ws = spec40_workspace();
+    // When I run `cargo crap --workspace`
+    let names = reported_functions(ws.path(), &["--workspace"]);
+    // Then the functions in tests/harness/src/lib.rs are shown
+    assert!(names.contains(&"harness_src".to_owned()), "{names:?}");
+}
+
+#[test]
+fn a_user_glob_equal_to_a_default_does_get_the_workspace_base() {
+    // Given a workspace with a member `harness` at tests/harness/ holding functions in src/lib.rs
+    let ws = spec40_workspace();
+    // When I run `cargo crap --workspace --exclude 'tests/**'`
+    let names = reported_functions(ws.path(), &["--workspace", "--exclude", "tests/**"]);
+    // Then no function from tests/harness/ appears in the output
+    assert!(!names.contains(&"harness_src".to_owned()), "{names:?}");
+    assert!(names.contains(&"agent_src".to_owned()), "{names:?}");
+}
+
+#[test]
+fn single_path_matching_is_unchanged() {
+    // Given a crate at crate/ with functions in crate/src/
+    let dir = TempDir::new().expect("temp dir");
+    fs::create_dir_all(dir.path().join("crate/src")).expect("mkdir");
+    write(
+        &dir.path().join("crate/src"),
+        "lib.rs",
+        "pub fn kept() {}\n",
+    );
+    // When I run `cargo crap --path crate/ --exclude 'crate/src/**'`
+    let names = reported_functions(
+        dir.path(),
+        &["--path", "crate/", "--exclude", "crate/src/**"],
+    );
+    // Then the functions in crate/src/ are still shown
+    assert_eq!(names, ["kept"]);
+}
+
 // --- Spec 30 · Duplicate-pair triage ----------------------------------------
 //
 // Each task fills only its own heading, so parallel branches never touch the
