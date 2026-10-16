@@ -1666,6 +1666,20 @@ impl DuplicateSection<'_> {
             model: self.model,
         })
     }
+
+    /// Render options carrying this section, every other field at its
+    /// default.
+    fn render_options(&self) -> RenderOptions<'_> {
+        RenderOptions {
+            duplicates: self.pairs.as_deref(),
+            groups: self.groups.as_deref(),
+            triage: self.triage.as_deref(),
+            triaged_by: self.triaged_by(),
+            novelty: self.novelty.as_ref(),
+            untriaged: self.untriaged,
+            ..RenderOptions::default()
+        }
+    }
 }
 
 /// Find the duplicate pairs and group them, measure the groups against the
@@ -2111,12 +2125,7 @@ fn run() -> Result<ExitCode> {
             delta_counts: None,
             width: output_width(cli.output.is_none()),
             cwd: &knobs.cwd,
-            duplicates: dups.pairs.as_deref(),
-            groups: dups.groups.as_deref(),
-            triage: dups.triage.as_deref(),
-            triaged_by: dups.triaged_by(),
-            novelty: dups.novelty.as_ref(),
-            untriaged: dups.untriaged,
+            ..dups.render_options()
         },
         epsilon,
         summary: cli.summary,

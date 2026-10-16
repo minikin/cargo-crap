@@ -170,6 +170,10 @@ pub struct RenderOptions<'a> {
     /// say so under the groups, and both JSON envelopes carry it as
     /// `untriaged_groups` beside the groups.
     pub untriaged: usize,
+    /// The workspace root in `--workspace` and `-p` mode, below which every
+    /// written path is relative (spec 41). `None` writes paths as the walk
+    /// found them.
+    pub workspace_root: Option<&'a Path>,
 }
 
 /// The provider and model that judged the duplicate pairs.
@@ -238,6 +242,7 @@ impl Default for RenderOptions<'_> {
             groups: None,
             novelty: None,
             untriaged: 0,
+            workspace_root: None,
         }
     }
 }
@@ -423,6 +428,11 @@ pub fn crappy_count(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn render_options_default_to_no_workspace_root() {
+        assert_eq!(RenderOptions::default().workspace_root, None);
+    }
     use super::*;
     use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
     use test_support::sample;

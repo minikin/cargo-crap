@@ -357,6 +357,22 @@ pub(crate) fn write_truncation_footer(
     Ok(())
 }
 
+/// `path` as a workspace-mode report writes it (spec 41): below `root` when
+/// it is inside it, else as given. Workspace-mode paths are absolute, as
+/// `cargo metadata` reports the members, and for an absolute `path` joining
+/// the result to `root` gives `path` back. `None` (single-path mode) writes
+/// every path as given.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the renderers call it from spec 41 T2 on")
+)]
+pub(crate) fn workspace_relative<'a>(
+    path: &'a Path,
+    root: Option<&Path>,
+) -> &'a Path {
+    root.map_or(path, |root| cwd_relative(path, root))
+}
+
 /// `path` relative to `cwd` when it is under it, else `path` as given.
 pub(crate) fn cwd_relative<'a>(
     path: &'a Path,
@@ -448,6 +464,53 @@ pub(crate) fn format_location_with_prev(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_path_inside_the_workspace_root_is_written_below_it() {
+        let root = Path::new("/ws");
+        assert_eq!(
+            workspace_relative(Path::new("/ws/crates/a/src/lib.rs"), Some(root)),
+            Path::new("crates/a/src/lib.rs")
+        );
+    }
+
+    #[test]
+    fn a_path_outside_the_workspace_root_is_written_as_given() {
+        let path = Path::new("/elsewhere/src/lib.rs");
+        assert_eq!(workspace_relative(path, Some(Path::new("/ws"))), path);
+    }
+
+    #[test]
+    fn the_workspace_root_itself_is_written_empty() {
+        assert_eq!(
+            workspace_relative(Path::new("/ws"), Some(Path::new("/ws"))),
+            Path::new("")
+        );
+    }
+
+    #[test]
+    fn without_a_workspace_root_every_path_is_written_as_given() {
+        let path = Path::new("/ws/src/lib.rs");
+        assert_eq!(workspace_relative(path, None), path);
+    }
+
+    proptest! {
+        #[test]
+        fn a_written_path_resolves_back_to_the_analysed_file(
+            root in prop::collection::vec("[a-z]{1,4}", 1..3),
+            below in prop::collection::vec("[a-z]{1,4}", 1..4),
+            inside in any::<bool>(),
+        ) {
+            let root = Path::new("/").join(root.join("/"));
+            let file = if inside {
+                root.join(below.join("/"))
+            } else {
+                Path::new("/elsewhere").join(below.join("/"))
+            };
+            let written = workspace_relative(&file, Some(&root));
+            prop_assert_eq!(root.join(written), file);
+        }
+    }
 
     #[test]
     fn colour_switched_on_by_a_test_is_not_seen_by_a_test_on_another_thread() {
