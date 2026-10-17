@@ -1231,12 +1231,20 @@ fn code_span_locations(text: &str) -> Vec<&str> {
         .collect()
 }
 
+/// `text` with Windows separators written as `/`: spec 41 leaves the
+/// separator alone, and these tests check where a path starts, not how it
+/// is spelled.
+fn slashes(text: &str) -> String {
+    text.replace('\\', "/")
+}
+
+/// Stdout of a successful run in `dir`, separators as [`slashes`] writes them.
 fn stdout_in(
     dir: &Path,
     args: &[&str],
 ) -> String {
     let out = crap().current_dir(dir).args(args).assert().success();
-    String::from_utf8(out.get_output().stdout.clone()).expect("utf-8")
+    slashes(&String::from_utf8(out.get_output().stdout.clone()).expect("utf-8"))
 }
 
 // ---- Spec 41 · T2 ----
@@ -1252,8 +1260,11 @@ fn the_human_table_shows_workspace_relative_locations() {
     // And no Location contains the workspace root's absolute path
     let root = ws.path().canonicalize().expect("canonical");
     for absolute in [ws.path(), root.as_path()] {
-        let absolute = absolute.to_str().expect("utf-8");
-        assert!(!stdout.contains(absolute), "{absolute} in {stdout}");
+        let absolute = slashes(absolute.to_str().expect("utf-8"));
+        assert!(
+            !stdout.contains(absolute.as_str()),
+            "{absolute} in {stdout}"
+        );
     }
 }
 
@@ -1400,8 +1411,11 @@ fn the_pr_comment_writes_workspace_relative_locations_and_links() {
     // spec 41 too; this pins that the workspace-relative copy keeps it so.
     let root = ws.path().canonicalize().expect("canonical");
     for absolute in [ws.path(), root.as_path()] {
-        let absolute = absolute.to_str().expect("utf-8");
-        assert!(!stdout.contains(absolute), "{absolute} in {stdout}");
+        let absolute = slashes(absolute.to_str().expect("utf-8"));
+        assert!(
+            !stdout.contains(absolute.as_str()),
+            "{absolute} in {stdout}"
+        );
     }
     // And each link keeps the full workspace-relative path
     assert!(
@@ -1415,7 +1429,10 @@ fn the_pr_comment_writes_workspace_relative_locations_and_links() {
 // ---- Spec 41 · T3 ----
 
 fn entry_files(json: &serde_json::Value) -> Vec<String> {
-    let mut files = strings_at(&json["entries"], "file");
+    let mut files: Vec<String> = strings_at(&json["entries"], "file")
+        .iter()
+        .map(|f| slashes(f))
+        .collect();
     files.sort();
     files.dedup();
     files
@@ -1452,9 +1469,12 @@ fn json_duplicate_locations_are_workspace_relative() {
     let json = json_in(ws.path(), &["--workspace", "--duplicates"]);
     // Then each duplicate member's file is "crates/alpha/src/lib.rs" or "crates/beta/src/lib.rs"
     let pair = &json["duplicates"][0];
-    assert_eq!(pair["first_file"], "crates/alpha/src/dup.rs", "{json}");
-    assert_eq!(pair["second_file"], "crates/beta/src/dup.rs", "{json}");
-    let members = json["duplicate_groups"][0]["members"].to_string();
+    let file = |key: &str| slashes(pair[key].as_str().expect("a path"));
+    assert_eq!(file("first_file"), "crates/alpha/src/dup.rs", "{json}");
+    assert_eq!(file("second_file"), "crates/beta/src/dup.rs", "{json}");
+    let members = json["duplicate_groups"][0]["members"]
+        .to_string()
+        .replace("\\\\", "/");
     assert!(members.contains("\"crates/alpha/src/dup.rs\""), "{members}");
     assert!(members.contains("\"crates/beta/src/dup.rs\""), "{members}");
 }
@@ -1546,7 +1566,10 @@ fn a_member_outside_the_workspace_root_keeps_its_absolute_path() {
     let outside = root.join("outside/src/lib.rs");
     assert_eq!(
         entry_files(&json),
-        [outside.to_str().expect("utf-8"), "inside/src/lib.rs"]
+        [
+            slashes(outside.to_str().expect("utf-8")),
+            "inside/src/lib.rs".to_owned()
+        ]
     );
 }
 
@@ -1701,7 +1724,9 @@ fn the_baseline_exclude_filter_applies_to_relative_baseline_paths() {
     let baseline = json_in(ws.path(), &["--workspace", "--no-default-excludes"]);
     let files = strings_at(&baseline["entries"], "file");
     assert!(
-        files.iter().any(|f| f.starts_with("crates/alpha/tests/")),
+        files
+            .iter()
+            .any(|f| slashes(f).starts_with("crates/alpha/tests/")),
         "{files:?}"
     );
     fs::write(ws.path().join("baseline.json"), baseline.to_string()).expect("write");

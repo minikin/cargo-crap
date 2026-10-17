@@ -164,21 +164,24 @@ mod tests {
 
     #[test]
     fn a_workspace_relative_path_links_as_its_absolute_path_would() {
+        // A root without a drive letter is not absolute on Windows.
+        let ws = PathBuf::from(if cfg!(windows) { r"C:\ws" } else { "/ws" });
         let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into())
-            .with_root(PathBuf::from("/ws/crates/beta"))
-            .with_workspace_root(PathBuf::from("/ws"));
-        let at = |file: &str| linkify("x".into(), Some(&links), Path::new(file), 3);
+            .with_root(ws.join("crates/beta"))
+            .with_workspace_root(ws.clone());
+        let at = |file: &Path| linkify("x".into(), Some(&links), file, 3);
+        let relative = Path::new("crates/beta/src/a.rs");
         assert_eq!(
-            at("crates/beta/src/a.rs"),
-            at("/ws/crates/beta/src/a.rs"),
+            at(relative),
+            at(&ws.join(relative)),
             "the relative and the absolute path link alike"
         );
         assert_eq!(
-            at("crates/beta/src/a.rs"),
+            at(relative),
             "[x](https://github.com/o/r/blob/abc/src/a.rs#L3)"
         );
         assert_eq!(
-            at("crates/alpha/src/a.rs"),
+            at(Path::new("crates/alpha/src/a.rs")),
             "x",
             "outside the root: no link"
         );
