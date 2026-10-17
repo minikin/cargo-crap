@@ -1275,6 +1275,19 @@ fn allowed() -> i32 { 42 }
     }
 
     #[test]
+    fn rust_files_skips_what_its_globs_match() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("mkdir");
+        fs::create_dir_all(dir.path().join("gen")).expect("mkdir");
+        fs::write(dir.path().join("src/a.rs"), "fn a() {}").expect("write");
+        fs::write(dir.path().join("gen/b.rs"), "fn b() {}").expect("write");
+        let files = rust_files(dir.path(), &["gen/**"]).expect("valid glob");
+        assert_eq!(files, vec![dir.path().join("src/a.rs")]);
+        assert!(rust_files(dir.path(), &["[invalid"]).is_err());
+    }
+
+    #[test]
     fn an_invalid_user_glob_is_an_error() {
         assert!(ExcludeMatcher::new(&[] as &[&str], &["[invalid"], None).is_err());
     }

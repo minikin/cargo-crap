@@ -614,15 +614,25 @@ fn analyze_root(
     records: &mut Vec<FileRecord>,
 ) -> Result<(Vec<complexity::FunctionComplexity>, Vec<bool>)> {
     let excludes = root.matcher()?;
-    let fns = match session {
-        None => complexity::analyze_tree_matching(&root.dir, &excludes, try_weight),
-        Some(session) => {
+    let fns = session.map_or_else(
+        || complexity::analyze_tree_matching(&root.dir, &excludes, try_weight),
+        |session| {
             let analysis = complexity::analyze_tree_cached(&root.dir, &excludes, session.cache());
             records.extend(analysis.records);
             analysis.functions
         },
-    };
+    );
     Ok((fns, excludes.user_globs_matched()))
+}
+
+/// Mark in `all` every user glob `root` says matched under one more root.
+fn add_matches(
+    all: &mut [bool],
+    root: &[bool],
+) {
+    for (any, &hit) in all.iter_mut().zip(root) {
+        *any |= hit;
+    }
 }
 
 /// The workspace side of [`analyze_sources`]: discover members, narrow to
@@ -666,9 +676,7 @@ fn analyze_workspace_members(
         );
         let (member_fns, matched) = analyze_root(&root, knobs.try_weight, cache, &mut records)?;
         fns.extend(member_fns);
-        for (any, hit) in user_globs_matched.iter_mut().zip(matched) {
-            *any |= hit;
-        }
+        add_matches(&mut user_globs_matched, &matched);
         roots.push(root);
     }
     save_members(session, &discovered, &members, records);
@@ -1944,10 +1952,9 @@ fn resolve_source_links(
     })?;
     let commit_ref = cli_commit_ref.or_else(|| std::env::var("GITHUB_SHA").ok())?;
     let links = SourceLinks::new(repo_url, commit_ref).with_root(root.to_path_buf());
-    Some(match workspace_root {
-        Some(workspace_root) => links.with_workspace_root(workspace_root.to_path_buf()),
-        None => links,
-    })
+    Some(workspace_root.map_or(links.clone(), |workspace_root| {
+        links.with_workspace_root(workspace_root.to_path_buf())
+    }))
 }
 
 /// Parse argv, validate flag combinations, and load the optional

@@ -1,6 +1,7 @@
 //! Rendering candidate duplicates: pairs, and groups of functions that all
 //! resemble each other.
 
+use std::borrow::Cow;
 use std::io::Write;
 use std::path::Path;
 
@@ -82,10 +83,11 @@ pub(crate) fn render_human_section(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    match opts.workspace_root {
-        Some(root) => render_grouped(&groups_below_root(groups, root), opts.triage, out)?,
-        None => render_grouped(groups, opts.triage, out)?,
-    }
+    let shown: Cow<'_, [DuplicateGroup]> =
+        opts.workspace_root.map_or(Cow::Borrowed(groups), |root| {
+            Cow::Owned(groups_below_root(groups, root))
+        });
+    render_grouped(&shown, opts.triage, out)?;
     let reported = covering_comparison(opts, groups.len()).map(|c| c.reported().count());
     // Never more than the groups listed, and so nothing under an empty section.
     let untriaged = opts.untriaged.min(reported.unwrap_or(groups.len()));
@@ -636,10 +638,10 @@ fn location(
     at: &Location,
     opts: &RenderOptions,
 ) -> String {
-    let file = match opts.workspace_root {
-        Some(root) => workspace_relative(&at.file, Some(root)),
-        None => cwd_relative(&at.file, opts.cwd),
-    };
+    let file = opts.workspace_root.map_or_else(
+        || cwd_relative(&at.file, opts.cwd),
+        |root| workspace_relative(&at.file, Some(root)),
+    );
     code_span(&format!(
         "{}:{}-{}",
         file.display(),

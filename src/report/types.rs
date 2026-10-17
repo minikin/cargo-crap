@@ -28,11 +28,17 @@ pub fn set_color_enabled(enabled: bool) {
 }
 
 pub(crate) fn color_enabled() -> bool {
-    #[cfg(test)]
-    if let Some(enabled) = COLOR_OVERRIDE.with(std::cell::Cell::get) {
-        return enabled;
-    }
-    COLOR_ENABLED.load(Ordering::Relaxed)
+    color_override().unwrap_or_else(|| COLOR_ENABLED.load(Ordering::Relaxed))
+}
+
+#[cfg(not(test))]
+fn color_override() -> Option<bool> {
+    None
+}
+
+#[cfg(test)]
+fn color_override() -> Option<bool> {
+    COLOR_OVERRIDE.with(std::cell::Cell::get)
 }
 
 // `cargo test` runs every test of a crate in one process, one thread each.
