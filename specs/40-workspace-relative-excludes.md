@@ -1,6 +1,6 @@
 # Spec 40: Exclude globs also match workspace-relative paths
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/main.rs`, `src/complexity.rs`
 

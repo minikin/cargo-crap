@@ -1,6 +1,6 @@
 # Spec 41: Workspace-mode reports show paths relative to the workspace root
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/main.rs`, `src/report/`
 

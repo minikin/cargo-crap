@@ -8,7 +8,7 @@ branding:
 inputs:
   version:
     description: The cargo-crap release to install, or `latest`. The release this Action was cut with by default.
-    default: "0.8.0"
+    default: "0.9.0"
   binary:
     description: A cargo-crap binary, relative to the working directory, to use instead of downloading one.
     default: ""
