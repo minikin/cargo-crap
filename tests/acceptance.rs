@@ -1373,6 +1373,45 @@ fn github_annotations_are_unchanged() {
     assert!(!from_beta.contains("file=crates/"), "{from_beta}");
 }
 
+#[test]
+fn the_pr_comment_writes_workspace_relative_locations_and_links() {
+    // Given the workspace
+    let ws = spec41_workspace();
+    // When I run `cargo crap --workspace --format pr-comment --threshold 0
+    //   --repo-url https://github.com/o/r --commit-ref abc`
+    let stdout = stdout_in(
+        ws.path(),
+        &[
+            "--workspace",
+            "--lcov",
+            "lcov.info",
+            "--format",
+            "pr-comment",
+            "--threshold",
+            "0",
+            "--repo-url",
+            "https://github.com/o/r",
+            "--commit-ref",
+            "abc",
+        ],
+    );
+    // Then no location is absolute. The comment strips the rows' shared
+    // directory prefix (spec 12), which kept absolute paths out of it before
+    // spec 41 too; this pins that the workspace-relative copy keeps it so.
+    let root = ws.path().canonicalize().expect("canonical");
+    for absolute in [ws.path(), root.as_path()] {
+        let absolute = absolute.to_str().expect("utf-8");
+        assert!(!stdout.contains(absolute), "{absolute} in {stdout}");
+    }
+    // And each link keeps the full workspace-relative path
+    assert!(
+        stdout.contains(
+            "[`alpha/src/lib.rs:5`](https://github.com/o/r/blob/abc/crates/alpha/src/lib.rs#L5)"
+        ),
+        "{stdout}"
+    );
+}
+
 // ---- Spec 41 · T3 ----
 
 fn entry_files(json: &serde_json::Value) -> Vec<String> {
