@@ -1208,7 +1208,7 @@ fn spec41_workspace() -> TempDir {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample_workspace"),
         dir.path(),
     );
-    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let root = os_path(dir.path());
     let mut lcov = String::new();
     for (member, lines) in [("alpha", 15), ("beta", 3)] {
         let file = root.join(format!("crates/{member}/src/lib.rs"));
@@ -1258,7 +1258,7 @@ fn the_human_table_shows_workspace_relative_locations() {
     // Then the Location of alpha's functions starts with "crates/alpha/src/lib.rs:"
     assert!(stdout.contains("crates/alpha/src/lib.rs:"), "{stdout}");
     // And no Location contains the workspace root's absolute path
-    let root = ws.path().canonicalize().expect("canonical");
+    let root = os_path(ws.path());
     for absolute in [ws.path(), root.as_path()] {
         let absolute = slashes(absolute.to_str().expect("utf-8"));
         assert!(
@@ -1409,7 +1409,7 @@ fn the_pr_comment_writes_workspace_relative_locations_and_links() {
     // Then no location is absolute. The comment strips the rows' shared
     // directory prefix (spec 12), which kept absolute paths out of it before
     // spec 41 too; this pins that the workspace-relative copy keeps it so.
-    let root = ws.path().canonicalize().expect("canonical");
+    let root = os_path(ws.path());
     for absolute in [ws.path(), root.as_path()] {
         let absolute = slashes(absolute.to_str().expect("utf-8"));
         assert!(
@@ -1531,7 +1531,7 @@ fn a_member_outside_the_workspace_root_keeps_its_absolute_path() {
     // Given a workspace at ws/ with a member `outside` at a sibling directory,
     // joined with package.workspace = "../ws"
     let dir = TempDir::new().expect("temp dir");
-    let root = dir.path().canonicalize().expect("canonical");
+    let root = os_path(dir.path());
     fs::create_dir_all(root.join("ws/inside/src")).expect("mkdir");
     fs::create_dir_all(root.join("outside/src")).expect("mkdir");
     write(
@@ -1649,7 +1649,7 @@ fn an_absolute_baseline_from_the_same_checkout_compares_unchanged() {
     // Given a baseline written by cargo-crap 0.8.0 with `--workspace --format json
     // --duplicates` in this checkout
     let ws = spec41_workspace_with_duplicates();
-    let root = ws.path().canonicalize().expect("canonical");
+    let root = os_path(ws.path());
     let mut baseline = json_in(
         ws.path(),
         &["--workspace", "--lcov", "lcov.info", "--duplicates"],
