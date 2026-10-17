@@ -1649,9 +1649,12 @@ fn an_absolute_baseline_from_the_same_checkout_compares_unchanged() {
     // Given a baseline written by cargo-crap 0.8.0 with `--workspace --format json
     // --duplicates` in this checkout
     let ws = spec41_workspace_with_duplicates();
+    // Both runs start in the resolved spelling of the checkout, as 0.8.0
+    // wrote it: on Windows `TEMP` is an 8.3 short path (`RUNNER~1`), and a
+    // run started there reports short member paths the baseline must match.
     let root = os_path(ws.path());
     let mut baseline = json_in(
-        ws.path(),
+        &root,
         &["--workspace", "--lcov", "lcov.info", "--duplicates"],
     );
     let absolute = |v: &mut serde_json::Value| {
@@ -1670,7 +1673,7 @@ fn an_absolute_baseline_from_the_same_checkout_compares_unchanged() {
     // And no source change since
     // When I run `cargo crap --workspace --lcov lcov.info --duplicates --baseline baseline.json`
     let delta = json_in(
-        ws.path(),
+        &root,
         &[
             "--workspace",
             "--lcov",
