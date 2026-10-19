@@ -2189,7 +2189,6 @@ fn run() -> Result<ExitCode> {
             uncovered_hints: settings.uncovered_hints,
             try_weight,
             sliced: is_sliced(min, top),
-            delta_counts: None,
             width: output_width(cli.output.is_none()),
             cwd: &knobs.cwd,
             workspace_root: workspace_root.as_deref(),
