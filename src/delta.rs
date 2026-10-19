@@ -14,7 +14,7 @@
 //! ```
 
 use crate::duplicates::extract::Location;
-use crate::merge::{CrapEntry, SortOrder, path_key};
+use crate::merge::{CrapEntry, SortOrder, path_key, unique_best_by_suffix};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -349,54 +349,6 @@ fn apply_suffix_pairing(
     entry.baseline_crap = Some(baseline_entry.crap);
     entry.delta = Some(d);
     entry.status = classify_score(d, epsilon);
-}
-
-/// Number of trailing path components two files share, after forward-slash
-/// normalization. `0` means not even the filename matches.
-fn common_suffix_len(
-    a: &Path,
-    b: &Path,
-) -> usize {
-    let a = path_key(a);
-    let b = path_key(b);
-    a.split('/')
-        .rev()
-        .zip(b.split('/').rev())
-        .take_while(|(x, y)| x == y)
-        .count()
-}
-
-/// For `from`, find the index in `candidates` whose file shares the longest
-/// common path suffix with it. Returns `None` when no candidate shares at
-/// least the filename, or when the best score is tied (ambiguous).
-fn unique_best_by_suffix<T>(
-    from: &Path,
-    candidates: &[T],
-    file_of: impl Fn(&T) -> &Path,
-) -> Option<usize> {
-    let mut best: Option<(usize, usize)> = None; // (candidate idx, score)
-    let mut tied = false;
-    for (i, c) in candidates.iter().enumerate() {
-        let score = common_suffix_len(from, file_of(c));
-        if score == 0 {
-            continue;
-        }
-        match best {
-            None => best = Some((i, score)),
-            Some((_, s)) => match score.cmp(&s) {
-                std::cmp::Ordering::Equal => tied = true,
-                std::cmp::Ordering::Greater => {
-                    best = Some((i, score));
-                    tied = false;
-                },
-                std::cmp::Ordering::Less => {},
-            },
-        }
-    }
-    match (best, tied) {
-        (Some((i, _)), false) => Some(i),
-        _ => None,
-    }
 }
 
 /// Pass 1.5 — suffix-aware file match (spec 21). Among entries pass 1 left

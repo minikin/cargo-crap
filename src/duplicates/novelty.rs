@@ -2,10 +2,11 @@
 //! the groups a baseline recorded, by the pairs of functions they share.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use crate::duplicates::extract::Location;
 use crate::duplicates::group::DuplicateGroup;
-use crate::merge::path_key;
+use crate::merge::{path_key, unique_best_by_suffix};
 
 /// What a current group is, measured against the baseline's groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,8 +61,9 @@ impl Comparison {
 ///
 /// A function is the same on both sides when its name matches in the same
 /// file, whatever its lines. Among the functions whose file and name are on
-/// one side only, a name found once on each side is a move and keeps its
-/// groups. Same-named functions in one file cannot be told apart, so each
+/// one side only, a same-named function whose file shares the longest path
+/// suffix is the same function under another root (spec 42), and then a
+/// name found once on each side is a move and keeps its groups. Same-named functions in one file cannot be told apart, so each
 /// stands for any of its namesakes. A baseline group with fewer than two
 /// members has no pair and is ignored.
 #[must_use]
@@ -76,7 +78,12 @@ pub fn compare(
         .collect();
     let before: Vec<&Location> = distinct(recorded.iter().copied().flatten());
     let now: Vec<&Location> = distinct(current.iter().flat_map(|g| &g.members));
-    let moved: BTreeMap<&Location, &Location> = moves(&before, &now)
+    let suffix_paired = suffix_pairs(&before, &now);
+    let current_id = |l: &Location| {
+        let own = id(l);
+        suffix_paired.get(&own).cloned().unwrap_or(own)
+    };
+    let moved: BTreeMap<&Location, &Location> = moves(&before, &now, &current_id)
         .into_iter()
         .map(|(b, n)| (n, b))
         .collect();
@@ -89,7 +96,7 @@ pub fn compare(
         .map(|g| {
             g.members
                 .iter()
-                .map(|m| id(moved.get(m).copied().unwrap_or(m)))
+                .map(|m| moved.get(m).map_or_else(|| current_id(m), |b| id(b)))
                 .collect()
         })
         .collect();
@@ -168,30 +175,111 @@ fn pairs<T: Ord>(members: &[T]) -> Vec<(&T, &T)> {
     out
 }
 
+/// The current identities the suffix pass pairs (spec 42), each with the
+/// baseline identity it is: among the identities on one side only, the one
+/// of the same name whose file shares the longest component-suffix with
+/// it, at least the file name, when each is the other's unique best. A tie
+/// pairs nothing, and no baseline identity is claimed twice.
+fn suffix_pairs(
+    before: &[&Location],
+    now: &[&Location],
+) -> BTreeMap<Id, Id> {
+    let before_ids: BTreeSet<Id> = before.iter().map(|l| id(l)).collect();
+    let now_ids: BTreeSet<Id> = now.iter().map(|l| id(l)).collect();
+    let mut gone = by_name(before_ids.difference(&now_ids));
+    let arrived = by_name(now_ids.difference(&before_ids));
+    let mut paired = BTreeMap::new();
+    for (name, current) in arrived {
+        if let Some(baseline) = gone.remove(name) {
+            pair_by_suffix(current, baseline, &mut paired);
+        }
+    }
+    paired
+}
+
+fn by_name<'a>(ids: impl Iterator<Item = &'a Id>) -> BTreeMap<&'a str, Vec<&'a Id>> {
+    let mut named: BTreeMap<&str, Vec<&Id>> = BTreeMap::new();
+    for i in ids {
+        named.entry(i.1.as_str()).or_default().push(i);
+    }
+    named
+}
+
+/// Pair same-named `current` and `baseline` identities into `paired`, in
+/// rounds: a round pairs every identity that is the other's unique best by
+/// path suffix, and the next runs without what it paired, until a round
+/// pairs nothing. A baseline identity claimed by a closer match stops
+/// competing, so it no longer ties the rest.
+fn pair_by_suffix(
+    mut current: Vec<&Id>,
+    mut baseline: Vec<&Id>,
+    paired: &mut BTreeMap<Id, Id>,
+) {
+    // A round that pairs nothing ends the loop, and every other round pairs
+    // at least one of each side, so there are never more rounds than this.
+    for _ in 0..current.len().min(baseline.len()) {
+        let round: Vec<(usize, usize)> = current
+            .iter()
+            .enumerate()
+            .filter_map(|(c, cur)| {
+                let b = unique_best_by_suffix(Path::new(&cur.0), &baseline, |i| Path::new(&i.0))?;
+                let back =
+                    unique_best_by_suffix(Path::new(&baseline[b].0), &current, |i| Path::new(&i.0));
+                (back == Some(c)).then_some((c, b))
+            })
+            .collect();
+        if round.is_empty() {
+            return;
+        }
+        for &(c, b) in &round {
+            paired.insert(current[c].clone(), baseline[b].clone());
+        }
+        current = without(&current, round.iter().map(|&(c, _)| c));
+        baseline = without(&baseline, round.iter().map(|&(_, b)| b));
+    }
+}
+
+/// `items` without the ones at `taken`.
+fn without<'a>(
+    items: &[&'a Id],
+    taken: impl Iterator<Item = usize>,
+) -> Vec<&'a Id> {
+    let taken: BTreeSet<usize> = taken.collect();
+    items
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !taken.contains(i))
+        .map(|(_, item)| *item)
+        .collect()
+}
+
 /// The functions that moved, as `(before, now)`: among the functions whose
 /// file and name are on one side only, those whose name is found once on
-/// each side.
+/// each side. `current_id` is a current function's identity after the
+/// suffix pass, so what that pass paired is no longer on one side only.
 fn moves<'b, 'n>(
     before: &[&'b Location],
     now: &[&'n Location],
+    current_id: &dyn Fn(&Location) -> Id,
 ) -> Vec<(&'b Location, &'n Location)> {
     let before_ids: BTreeSet<Id> = before.iter().map(|l| id(l)).collect();
-    let now_ids: BTreeSet<Id> = now.iter().map(|l| id(l)).collect();
-    let arrived = unique_names(now, &before_ids);
-    unique_names(before, &now_ids)
+    let now_ids: BTreeSet<Id> = now.iter().map(|l| current_id(l)).collect();
+    let arrived = unique_names(now, &before_ids, current_id);
+    unique_names(before, &now_ids, &id)
         .into_iter()
         .filter_map(|(name, b)| arrived.get(&name).map(|n| (b, *n)))
         .collect()
 }
 
-/// Each name found exactly once among `side`'s functions whose identity is
-/// not in `other`, with that function.
+/// Each name found exactly once among `side`'s functions whose identity,
+/// as `id_of` gives it, is not in `other`, with that function.
 fn unique_names<'a>(
     side: &[&'a Location],
     other: &BTreeSet<Id>,
+    id_of: &dyn Fn(&Location) -> Id,
 ) -> BTreeMap<String, &'a Location> {
     let mut seen: BTreeMap<String, Vec<&Location>> = BTreeMap::new();
-    for l in side.iter().filter(|l| !other.contains(&id(l))) {
+    for l in side.iter().filter(|l| !other.contains(&id_of(l))) {
         seen.entry(l.name.clone()).or_default().push(l);
     }
     seen.into_iter()
@@ -571,6 +659,91 @@ mod tests {
         assert_eq!(statuses(&[group(&now)], &[before]), [Novelty::Unchanged]);
     }
 
+    // ---- Spec 42 · the suffix pass ----
+
+    #[test]
+    fn same_named_functions_pair_by_their_directory() {
+        // Pairing `fmt` in a.rs with the baseline's `fmt` in b.rs would make
+        // the first group new: only the matching directory keeps it.
+        let before = vec![
+            vec![at("/app/src/a.rs", "fmt", 1), at("/app/src/c.rs", "g", 1)],
+            vec![at("/app/src/b.rs", "fmt", 1), at("/app/src/d.rs", "h", 1)],
+        ];
+        let now = [
+            group(&[at("/work/src/a.rs", "fmt", 1), at("/work/src/c.rs", "g", 1)]),
+            group(&[at("/work/src/b.rs", "fmt", 1), at("/work/src/d.rs", "h", 1)]),
+        ];
+        assert_eq!(
+            statuses(&now, &before),
+            [Novelty::Unchanged, Novelty::Unchanged]
+        );
+    }
+
+    #[test]
+    fn a_relative_current_path_pairs_with_an_absolute_baseline_path() {
+        let before = vec![at("/app/src/a.rs", "f", 1), at("/app/src/b.rs", "f", 1)];
+        let now = [at("./src/a.rs", "f", 1), at("./src/b.rs", "f", 1)];
+        assert_eq!(statuses(&[group(&now)], &[before]), [Novelty::Unchanged]);
+    }
+
+    #[test]
+    fn a_tie_for_the_longest_suffix_pairs_nothing() {
+        // Each current `util.rs` shares only the file name with both
+        // baseline ones: no pairing, so the group is new, as without the pass.
+        let before = vec![
+            at("/app/x/util.rs", "fmt", 1),
+            at("/app/y/util.rs", "fmt", 1),
+        ];
+        let now = [at("a/util.rs", "fmt", 1), at("b/util.rs", "fmt", 1)];
+        assert_eq!(statuses(&[group(&now)], &[before]), [Novelty::New]);
+    }
+
+    #[test]
+    fn an_exact_match_is_not_re_paired() {
+        let before = vec![at("src/a.rs", "fmt", 1), at("src/b.rs", "fmt", 1)];
+        let now = [at("src/a.rs", "fmt", 1), at("/work/src/b.rs", "fmt", 1)];
+        assert_eq!(statuses(&[group(&now)], &[before]), [Novelty::Unchanged]);
+    }
+
+    #[test]
+    fn a_move_to_a_differently_named_file_still_pairs_by_name() {
+        let before = vec![at("src/old.rs", "render", 1), at("src/old.rs", "paint", 20)];
+        let now = [at("src/new.rs", "render", 1), at("src/new.rs", "paint", 20)];
+        assert_eq!(statuses(&[group(&now)], &[before]), [Novelty::Unchanged]);
+    }
+
+    #[test]
+    fn a_claimed_baseline_function_stops_competing() {
+        // The x/ files pair first; src/a.rs ties between src/a.rs and
+        // x/src/a.rs only while x/src/a.rs is still unclaimed.
+        let before = vec![
+            vec![at("src/a.rs", "fmt", 1), at("src/b.rs", "fmt", 1)],
+            vec![at("x/src/a.rs", "fmt", 1), at("x/src/b.rs", "fmt", 1)],
+        ];
+        let now = [
+            group(&[at("/w/src/a.rs", "fmt", 1), at("/w/src/b.rs", "fmt", 1)]),
+            group(&[at("/w/x/src/a.rs", "fmt", 1), at("/w/x/src/b.rs", "fmt", 1)]),
+        ];
+        assert_eq!(
+            statuses(&now, &before),
+            [Novelty::Unchanged, Novelty::Unchanged]
+        );
+    }
+
+    #[test]
+    fn a_group_that_grew_across_roots_is_reported_grown() {
+        let before = vec![at("/app/src/a.rs", "f", 1), at("/app/src/b.rs", "f", 1)];
+        let now = [
+            at("/work/src/a.rs", "f", 1),
+            at("/work/src/b.rs", "f", 1),
+            at("/work/src/c.rs", "g", 1),
+        ];
+        assert_eq!(
+            statuses(&[group(&now)], &[before]),
+            [Novelty::Grown { from: 2 }]
+        );
+    }
+
     #[test]
     fn a_baseline_group_of_one_is_ignored() {
         // What the current filters leave of an excluded pair: one member.
@@ -614,7 +787,14 @@ mod tests {
         );
     }
 
-    const FILES: [&str; 3] = ["src/a.rs", "src/b.rs", "src/c.rs"];
+    // Nested files whose paths end like others' give the suffix pass its ties.
+    const FILES: [&str; 5] = [
+        "src/a.rs",
+        "src/b.rs",
+        "src/c.rs",
+        "x/src/a.rs",
+        "x/src/b.rs",
+    ];
     const NAMES: [&str; 3] = ["f", "g", "fmt"];
 
     fn location() -> impl Strategy<Value = Location> {
@@ -658,7 +838,7 @@ mod tests {
         ) {
             let before: Vec<&Location> = before.iter().collect();
             let now: Vec<&Location> = now.iter().collect();
-            let pairs = moves(&before, &now);
+            let pairs = moves(&before, &now, &id);
             let olds: std::collections::BTreeSet<_> = pairs.iter().map(|(b, _)| *b).collect();
             let news: std::collections::BTreeSet<_> = pairs.iter().map(|(_, n)| *n).collect();
             prop_assert_eq!(olds.len(), pairs.len());
@@ -669,6 +849,30 @@ mod tests {
         #[test]
         fn every_group_gets_one_status(now in groups(), before in records()) {
             prop_assert_eq!(compare(&now, &before).novelty.len(), now.len());
+        }
+
+        #[test]
+        fn the_comparison_does_not_depend_on_the_checkout_root(
+            now in groups(),
+            current_rooted in any::<bool>(),
+        ) {
+            let rooted = |members: &[Location]| -> Vec<Location> {
+                members
+                    .iter()
+                    .map(|m| Location { file: Path::new("/other/root").join(&m.file), ..m.clone() })
+                    .collect()
+            };
+            let (now, before): (Vec<DuplicateGroup>, Vec<Vec<Location>>) = if current_rooted {
+                (
+                    now.iter().map(|g| group(&rooted(&g.members))).collect(),
+                    now.iter().map(|g| g.members.clone()).collect(),
+                )
+            } else {
+                (now.clone(), now.iter().map(|g| rooted(&g.members)).collect())
+            };
+            let result = compare(&now, &before);
+            prop_assert!(result.novelty.iter().all(|n| *n == Novelty::Unchanged), "{:?}", result);
+            prop_assert_eq!(result.resolved, 0);
         }
 
         #[test]
