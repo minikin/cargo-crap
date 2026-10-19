@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A delta run with `--duplicates` pairs a function with its baseline
+  record when the two runs see the file under different roots: an
+  absolute baseline from another checkout, `./src/a.rs` against
+  `/app/src/a.rs`, or another `--path` spelling. Same-named functions,
+  such as two copies of `dup`, used to be reported as new duplicates;
+  now a function pairs with the same-named one whose file shares the
+  longest path suffix, as the CRAP delta already did (spec 21). This
+  narrows the 0.9.0 migration note: an absolute baseline from another
+  checkout no longer needs re-recording for the duplicate comparison,
+  only for the baseline exclude filter and `-p` scoping, which still
+  expect one root (spec 42).
+
 
 ## [0.9.0] - 2026-10-17
 

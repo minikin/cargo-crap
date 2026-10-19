@@ -1770,6 +1770,54 @@ fn the_p_member_scope_applies_to_relative_baseline_paths() {
     assert_eq!(strings_at(&delta["removed"], "file"), Vec::<String>::new());
 }
 
+// --- Spec 42 · The duplicate delta matches files across checkouts --------
+
+// ---- Spec 42 · T2 ----
+
+#[test]
+fn an_absolute_baseline_from_another_checkout_reports_no_new_duplicates() {
+    // Given a crate with two near-identical functions named `dup`, in src/a.rs and src/b.rs
+    let dir = spec40_crate(&[]);
+    write(&dir.path().join("src"), "a.rs", &spec40_duplicate("dup"));
+    write(&dir.path().join("src"), "b.rs", &spec40_duplicate("dup"));
+    // And a JSON baseline recorded with `--duplicates` whose member paths are
+    // absolute under another checkout root
+    let mut baseline = json_in(dir.path(), &["--duplicates"]);
+    let elsewhere = |v: &mut serde_json::Value| {
+        let rel = slashes(v.as_str().expect("a path"));
+        *v = format!("/elsewhere/checkout/{}", rel.trim_start_matches("./")).into();
+    };
+    for entry in baseline["entries"].as_array_mut().expect("entries") {
+        elsewhere(&mut entry["file"]);
+    }
+    for group in baseline["duplicate_groups"].as_array_mut().expect("groups") {
+        for member in group["members"].as_array_mut().expect("members") {
+            elsewhere(&mut member["file"]);
+        }
+    }
+    fs::write(dir.path().join("baseline.json"), baseline.to_string()).expect("write");
+    // When I run `cargo crap --duplicates --baseline baseline.json --format json`
+    let delta = json_in(dir.path(), &["--duplicates", "--baseline", "baseline.json"]);
+    // Then every duplicate group's status is "unchanged"
+    let groups = strings_at(&delta["duplicate_groups"], "status");
+    assert_eq!(groups, ["unchanged"], "{delta}");
+    // And no group is reported as resolved
+    let markdown = stdout_in(
+        dir.path(),
+        &[
+            "--duplicates",
+            "--baseline",
+            "baseline.json",
+            "--format",
+            "markdown",
+        ],
+    );
+    assert!(
+        markdown.contains("## No new duplicate candidates\n\n1 existing candidate unchanged.\n"),
+        "{markdown}"
+    );
+}
+
 // --- Spec 30 · Duplicate-pair triage ----------------------------------------
 //
 // Each task fills only its own heading, so parallel branches never touch the
