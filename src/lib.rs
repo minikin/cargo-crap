@@ -161,3 +161,4 @@ pub mod duplicates;
 pub mod merge;
 pub mod report;
 pub mod score;
+pub mod signals;

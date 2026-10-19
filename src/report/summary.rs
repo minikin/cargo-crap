@@ -140,6 +140,8 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: crate_name.map(std::string::ToString::to_string),
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
     }
@@ -220,11 +222,15 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             baseline_crap: Some(1.0),
             delta: Some(0.0),
             status,
+            baseline_signals: None,
+            reasons: Vec::new(),
             previous_file: None,
         };
         let report = DeltaReport {

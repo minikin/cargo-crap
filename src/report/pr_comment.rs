@@ -271,6 +271,20 @@ impl<'a> DeltaBuckets<'a> {
 
 // ─── Section writers ────────────────────────────────────────────────────────
 
+/// The headline, unless no CRAP score regressed while gating signal
+/// reasons (spec 43) fail the gate: then it says so instead.
+fn write_pr_comment_headline(
+    out: &mut dyn Write,
+    regressions: usize,
+    signal_gates: usize,
+) -> Result<()> {
+    if regressions == 0 && signal_gates > 0 {
+        writeln!(out, "{}\n", super::reasons::signal_headline(signal_gates))?;
+        return Ok(());
+    }
+    write_pr_comment_delta_headline(out, regressions)
+}
+
 fn write_pr_comment_delta_headline(
     out: &mut dyn Write,
     regressions: usize,
@@ -457,10 +471,40 @@ pub(crate) fn render_delta_pr_comment(
     }
     let buckets = DeltaBuckets::from_report(report, threshold);
     let prefix = buckets.common_prefix(cwd);
-    write_pr_comment_delta_headline(out, counts.regressed)?;
+    write_pr_comment_headline(
+        out,
+        counts.regressed,
+        super::reasons::gating_signal_count(report),
+    )?;
     write_pr_comment_breakdown(out, counts)?;
     write_pr_comment_primary(out, &buckets, threshold, &prefix, links, uncovered_hints)?;
-    write_pr_comment_secondary_sections(out, &buckets, threshold, &prefix, links, uncovered_hints)
+    write_pr_comment_reasons(out, report, links, cwd).and_then(|()| {
+        write_pr_comment_secondary_sections(
+            out,
+            &buckets,
+            threshold,
+            &prefix,
+            links,
+            uncovered_hints,
+        )
+    })
+}
+
+/// The "Harder to maintain" section (spec 43). Its rows can be Unchanged
+/// ones no bucket holds, so its path prefix comes from its own paths,
+/// chosen the same way.
+fn write_pr_comment_reasons(
+    out: &mut dyn Write,
+    report: &DeltaReport,
+    links: Option<&SourceLinks>,
+    cwd: &Path,
+) -> Result<()> {
+    let files: Vec<PathBuf> = super::reasons::rows(report)
+        .iter()
+        .map(|(e, _)| e.current.file.clone())
+        .collect();
+    let prefix = compute_render_prefix(&files, cwd);
+    super::reasons::write_markdown(report, links, Some(MAX_ROWS_PER_SECTION), &prefix, out)
 }
 
 /// Emit the four secondary sections (Improved / Moved / Hot spots /
@@ -573,11 +617,15 @@ mod tests {
                 coverage: Some(80.0),
                 crap,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             baseline_crap: baseline,
             delta: baseline.map(|b| crap - b),
             status,
+            baseline_signals: None,
+            reasons: Vec::new(),
             previous_file: None,
         }
     }
@@ -1156,6 +1204,8 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
@@ -1174,6 +1224,8 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
@@ -1218,6 +1270,8 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 29.9,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             CrapEntry {
@@ -1228,6 +1282,8 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 30.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             CrapEntry {
@@ -1238,6 +1294,8 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 30.1,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
         ];
@@ -1270,6 +1328,8 @@ mod tests {
             coverage: Some(0.0),
             crap: 110.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
@@ -1573,6 +1633,8 @@ mod tests {
             coverage: Some(0.0),
             crap: 110.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into());

@@ -28,6 +28,7 @@
 # Explanation
 
 - [The CRAP metric](explanation/crap-metric.md)
+- [Structural signals](explanation/signals.md)
 - [Design](explanation/how-it-works.md)
 - [The path-matching problem](explanation/path-matching.md)
 

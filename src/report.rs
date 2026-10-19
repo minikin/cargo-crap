@@ -39,6 +39,7 @@ mod links;
 mod markdown;
 mod per_crate;
 mod pr_comment;
+mod reasons;
 mod sarif;
 mod shields;
 mod summary;
@@ -602,6 +603,8 @@ mod tests {
                 baseline_crap: Some(1.0),
                 delta: Some(0.0),
                 status: crate::delta::DeltaStatus::Moved,
+                baseline_signals: None,
+                reasons: Vec::new(),
                 previous_file: Some(PathBuf::from("/ws/crates/a/src/old.rs")),
             }],
             removed: vec![crate::delta::RemovedEntry {
@@ -864,6 +867,8 @@ mod tests {
                 baseline_crap: Some(0.5),
                 delta: Some(0.5),
                 status: DeltaStatus::Regressed,
+                baseline_signals: None,
+                reasons: Vec::new(),
                 previous_file: None,
             }],
             removed: vec![],

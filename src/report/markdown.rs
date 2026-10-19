@@ -128,6 +128,20 @@ fn write_markdown_removed(
     Ok(())
 }
 
+/// The heading, unless no CRAP score regressed while gating signal reasons
+/// (spec 43) fail the gate: then it says so instead of "No CRAP regressions".
+fn write_markdown_delta_headline(
+    regressions: usize,
+    signal_gates: usize,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if regressions == 0 && signal_gates > 0 {
+        writeln!(out, "{}\n", super::reasons::signal_headline(signal_gates))?;
+        return Ok(());
+    }
+    write_markdown_delta_heading(regressions, out)
+}
+
 fn write_markdown_delta_heading(
     regressions: usize,
     out: &mut dyn Write,
@@ -206,7 +220,11 @@ pub(crate) fn render_delta_markdown(
         writeln!(out, "_No functions found._")?;
         return Ok(());
     }
-    write_markdown_delta_heading(counts.regressed, out)?;
+    write_markdown_delta_headline(
+        counts.regressed,
+        super::reasons::gating_signal_count(report),
+        out,
+    )?;
     // Unchanged rows are hidden by default (spec 16); the stats line below
     // still counts every entry.
     let visible = visible_delta_entries(&report.entries, show_unchanged);
@@ -219,6 +237,17 @@ pub(crate) fn render_delta_markdown(
         counts,
         out,
     )?;
+    write_markdown_reasons_and_stats(report, links, counts, out)
+}
+
+/// The "Harder to maintain" section (spec 43), then the stats line.
+fn write_markdown_reasons_and_stats(
+    report: &DeltaReport,
+    links: Option<&SourceLinks>,
+    counts: &DeltaCounts,
+    out: &mut dyn Write,
+) -> Result<()> {
+    super::reasons::write_markdown(report, links, None, std::path::Path::new(""), out)?;
     write_markdown_delta_stats(counts, out)
 }
 
@@ -263,6 +292,8 @@ mod tests {
             coverage: Some(50.0),
             crap: 5.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let links = SourceLinks::new("https://github.com/o/r".into(), "main".into());
@@ -300,11 +331,15 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             baseline_crap: Some(1.0),
             delta: Some(0.0),
             status,
+            baseline_signals: None,
+            reasons: Vec::new(),
             previous_file: None,
         };
         let report = DeltaReport {
@@ -355,11 +390,15 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             baseline_crap: Some(1.0),
             delta: Some(0.0),
             status: DeltaStatus::Unchanged,
+            baseline_signals: None,
+            reasons: Vec::new(),
             previous_file: None,
         };
         let moved = DeltaEntry {
@@ -371,11 +410,15 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             baseline_crap: Some(1.0),
             delta: Some(0.0),
             status: DeltaStatus::Moved,
+            baseline_signals: None,
+            reasons: Vec::new(),
             previous_file: Some(PathBuf::from("src/old.rs")),
         };
         let report = DeltaReport {
@@ -411,11 +454,15 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 50.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             baseline_crap: Some(40.0),
             delta: Some(10.0),
             status,
+            baseline_signals: None,
+            reasons: Vec::new(),
             previous_file: None,
         }
     }
@@ -614,11 +661,15 @@ mod tests {
                     coverage: Some(100.0),
                     crap: 2.0,
                     crate_name: None,
+                    signals: None,
+                    signal_spans: crate::signals::Spans::default(),
                     uncovered: Vec::new(),
                 },
                 baseline_crap: Some(1.0),
                 delta: Some(1.0),
                 status: DeltaStatus::Regressed,
+                baseline_signals: None,
+                reasons: Vec::new(),
                 previous_file: None,
             }],
             removed: vec![],

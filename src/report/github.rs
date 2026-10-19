@@ -107,6 +107,48 @@ pub(crate) fn render_delta_github(
             msg = gha_escape(&message),
         )?;
     }
+    write_reason_annotations(report, cwd, out)
+}
+
+/// One `::warning` per gated signal reason (spec 43), spanning the lines
+/// to change. CRAP regressions are already annotated above.
+fn write_reason_annotations(
+    report: &DeltaReport,
+    cwd: &Path,
+    out: &mut dyn Write,
+) -> Result<()> {
+    for de in &report.entries {
+        let reasons = de
+            .reasons
+            .iter()
+            .filter(|r| r.gating && r.signal != crate::delta::Subject::Crap);
+        for reason in reasons {
+            let file = super::types::cwd_relative(&de.current.file, cwd);
+            let (line, end) = reason
+                .spans
+                .first()
+                .map_or((de.current.line, de.current.line), |s| {
+                    (s.start as usize, s.end as usize)
+                });
+            let title = format!(
+                "{} {}",
+                reason.signal.name(),
+                super::reasons::change(reason)
+            );
+            let message = format!(
+                "{} got harder to maintain: {}",
+                de.current.function,
+                reason.action.name()
+            );
+            writeln!(
+                out,
+                "::warning file={file},line={line},endLine={end},title={title}::{msg}",
+                file = gha_escape_property(&file.display().to_string()),
+                title = gha_escape_property(&title),
+                msg = gha_escape(&message),
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -173,6 +215,8 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
@@ -195,6 +239,8 @@ mod tests {
             coverage: Some(0.0),
             crap: 110.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
@@ -235,6 +281,8 @@ mod tests {
             coverage: Some(0.0),
             crap: 110.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
@@ -266,11 +314,15 @@ mod tests {
                     coverage: Some(50.0),
                     crap: 35.0,
                     crate_name: None,
+                    signals: None,
+                    signal_spans: crate::signals::Spans::default(),
                     uncovered: Vec::new(),
                 },
                 baseline_crap: Some(20.0),
                 delta: Some(15.0),
                 status: DeltaStatus::Regressed,
+                baseline_signals: None,
+                reasons: Vec::new(),
                 previous_file: Some(PathBuf::from("src/old.rs")),
             }],
             removed: vec![],
@@ -300,11 +352,15 @@ mod tests {
                     coverage: Some(80.0),
                     crap: 5.0,
                     crate_name: None,
+                    signals: None,
+                    signal_spans: crate::signals::Spans::default(),
                     uncovered: Vec::new(),
                 },
                 baseline_crap: Some(5.0),
                 delta: Some(0.0),
                 status: DeltaStatus::Moved,
+                baseline_signals: None,
+                reasons: Vec::new(),
                 previous_file: Some(PathBuf::from("src/old.rs")),
             }],
             removed: vec![],
@@ -349,6 +405,8 @@ mod tests {
             coverage: Some(0.0),
             crap: 90.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         };
         let mut buf = Vec::new();

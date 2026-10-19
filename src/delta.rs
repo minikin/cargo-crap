@@ -13,8 +13,10 @@
 //! cargo crap --lcov lcov.info --baseline baseline.json --fail-regression
 //! ```
 
+use crate::coverage::LineRange;
 use crate::duplicates::extract::Location;
 use crate::merge::{CrapEntry, SortOrder, path_key, unique_best_by_suffix};
+use crate::signals::{Signal, SignalSettings, Signals};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -60,6 +62,208 @@ pub struct DeltaEntry {
     /// first-pass exact matches and genuinely-new entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_file: Option<PathBuf>,
+    /// The paired baseline function's signals (spec 43); `None` for a new
+    /// function, or when the baseline was recorded without signals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline_signals: Option<Signals>,
+    /// What got harder to maintain, and where (spec 43). Empty unless
+    /// signals are enabled.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<Reason>,
+}
+
+/// What a [`Reason`] is about: one structural signal, or the CRAP score.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subject {
+    Signal(Signal),
+    Crap,
+}
+
+impl Subject {
+    /// The name as it appears in JSON and messages.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Signal(signal) => signal.name(),
+            Self::Crap => "crap",
+        }
+    }
+}
+
+impl Serialize for Subject {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+/// What to do about a [`Reason`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Action {
+    FlattenNesting,
+    SplitFunction,
+    ExtractCondition,
+    RemoveStub,
+    HandleError,
+    AddTests,
+}
+
+impl Action {
+    /// The fix each subject calls for.
+    #[must_use]
+    pub const fn for_subject(subject: Subject) -> Self {
+        match subject {
+            Subject::Signal(Signal::Nesting) => Self::FlattenNesting,
+            Subject::Signal(Signal::Lines | Signal::Bumps) => Self::SplitFunction,
+            Subject::Signal(Signal::BoolOps) => Self::ExtractCondition,
+            Subject::Signal(Signal::Stubs) => Self::RemoveStub,
+            Subject::Signal(Signal::Panics) => Self::HandleError,
+            Subject::Crap => Self::AddTests,
+        }
+    }
+
+    /// The name as it appears in JSON and reports.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::FlattenNesting => "flatten-nesting",
+            Self::SplitFunction => "split-function",
+            Self::ExtractCondition => "extract-condition",
+            Self::RemoveStub => "remove-stub",
+            Self::HandleError => "handle-error",
+            Self::AddTests => "add-tests",
+        }
+    }
+}
+
+/// A signal's count or a CRAP score, serialized as an integer or a float.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum Measure {
+    Count(u32),
+    Score(f64),
+}
+
+impl std::fmt::Display for Measure {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        match self {
+            Self::Count(n) => write!(f, "{n}"),
+            Self::Score(x) => write!(f, "{x:.1}"),
+        }
+    }
+}
+
+/// One way a function got harder to maintain since the baseline (spec 43):
+/// what moved, from what to what, where to look and what to do.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Reason {
+    pub signal: Subject,
+    pub value: Measure,
+    /// The paired baseline value; `None` for a new function.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<Measure>,
+    /// The configured limit a new function exceeded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// Whether this reason trips `--fail-regression`.
+    pub gating: bool,
+    pub action: Action,
+    /// The line ranges to change.
+    pub spans: Vec<LineRange>,
+}
+
+/// Gating reasons about a signal, not the CRAP score: what fails the gate
+/// even when no CRAP score regressed.
+#[must_use]
+pub fn gating_signal_count(report: &DeltaReport) -> usize {
+    report
+        .entries
+        .iter()
+        .flat_map(|e| &e.reasons)
+        .filter(|r| r.gating && r.signal != Subject::Crap)
+        .count()
+}
+
+/// Attach the [`Reason`]s to every entry of `report` whose function was
+/// measured with signals (spec 43).
+///
+/// A paired function gets a reason for each signal that rose against its
+/// baseline record. A new function gets one for each stub or panic site
+/// (compared against zero) and for each shape signal above a configured
+/// limit. A regressed CRAP score always gets an `add-tests` reason. Signal
+/// reasons need `baseline_has_signals`: against a baseline recorded without
+/// them nothing is compared.
+pub fn attach_reasons(
+    report: &mut DeltaReport,
+    settings: &SignalSettings,
+    baseline_has_signals: bool,
+) {
+    for entry in &mut report.entries {
+        entry.reasons = reasons_for(entry, settings, baseline_has_signals);
+    }
+}
+
+/// The reasons for one entry, CRAP first, then the signals in report order.
+fn reasons_for(
+    entry: &DeltaEntry,
+    settings: &SignalSettings,
+    baseline_has_signals: bool,
+) -> Vec<Reason> {
+    let current = &entry.current;
+    let Some(signals) = current.signals else {
+        return Vec::new();
+    };
+    let mut reasons = Vec::new();
+    if entry.status == DeltaStatus::Regressed {
+        reasons.push(Reason {
+            signal: Subject::Crap,
+            value: Measure::Score(current.crap),
+            baseline: entry.baseline_crap.map(Measure::Score),
+            limit: None,
+            gating: true,
+            action: Action::AddTests,
+            spans: current.uncovered.clone(),
+        });
+    }
+    if !baseline_has_signals {
+        return reasons;
+    }
+    for signal in Signal::ALL {
+        let now = signal.value(&signals);
+        let found = match (entry.baseline_signals, entry.status) {
+            (Some(baseline), _) => {
+                let before = signal.value(&baseline);
+                (now > before).then(|| (Some(before), None, settings.gate.contains(&signal)))
+            },
+            (None, DeltaStatus::New) if signal.is_count() => {
+                (now > 0).then(|| (Some(0), None, settings.gate.contains(&signal)))
+            },
+            (None, DeltaStatus::New) => settings
+                .limits
+                .get(signal)
+                .filter(|limit| now > *limit)
+                .map(|limit| (None, Some(limit), true)),
+            (None, _) => None,
+        };
+        if let Some((before, limit, gating)) = found {
+            reasons.push(Reason {
+                signal: Subject::Signal(signal),
+                value: Measure::Count(now),
+                baseline: before.map(Measure::Count),
+                limit,
+                gating,
+                action: Action::for_subject(Subject::Signal(signal)),
+                spans: signal.spans(&current.signal_spans).to_vec(),
+            });
+        }
+    }
+    reasons
 }
 
 /// A function present in the baseline but absent in the current run.
@@ -172,6 +376,17 @@ impl DeltaReport {
                 e.current.line,
             ))
         });
+    }
+
+    /// Reasons that trip `--fail-regression` (spec 43), across every row,
+    /// CRAP `add-tests` reasons included.
+    #[must_use]
+    pub fn gating_reason_count(&self) -> usize {
+        self.entries
+            .iter()
+            .flat_map(|e| &e.reasons)
+            .filter(|r| r.gating)
+            .count()
     }
 
     /// Number of functions whose CRAP score increased since the baseline.
@@ -289,6 +504,8 @@ fn build_pass_one_entry(
         baseline_crap,
         delta,
         status,
+        baseline_signals: baseline_entry.and_then(|b| b.signals),
+        reasons: Vec::new(),
         previous_file: None,
     }
 }
@@ -331,6 +548,7 @@ fn apply_move_pairing(
     entry.baseline_crap = Some(baseline_entry.crap);
     entry.delta = Some(d);
     entry.previous_file = Some(baseline_entry.file.clone());
+    entry.baseline_signals = baseline_entry.signals;
     entry.status = match score_status {
         DeltaStatus::Unchanged => DeltaStatus::Moved,
         other => other,
@@ -348,6 +566,7 @@ fn apply_suffix_pairing(
     let d = entry.current.crap - baseline_entry.crap;
     entry.baseline_crap = Some(baseline_entry.crap);
     entry.delta = Some(d);
+    entry.baseline_signals = baseline_entry.signals;
     entry.status = classify_score(d, epsilon);
 }
 
@@ -522,6 +741,8 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
     }
@@ -668,6 +889,8 @@ mod tests {
             coverage: Some(100.0),
             crap: 5.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let baseline = vec![CrapEntry {
@@ -678,6 +901,8 @@ mod tests {
             coverage: Some(100.0),
             crap: 5.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
@@ -709,6 +934,8 @@ mod tests {
             coverage: Some(100.0),
             crap: 10.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let baseline = vec![CrapEntry {
@@ -719,6 +946,8 @@ mod tests {
             coverage: Some(100.0),
             crap: 5.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
@@ -902,6 +1131,8 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
     }
@@ -1103,6 +1334,8 @@ mod tests {
                 coverage: Some(0.0),
                 crap: 30.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             CrapEntry {
@@ -1113,6 +1346,8 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
         ];
@@ -1147,6 +1382,8 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
     }
@@ -1544,6 +1781,381 @@ mod tests {
             );
             proptest::prop_assert_eq!(c.removed, report.removed.len());
             proptest::prop_assert_eq!(c.regressed, report.regression_count());
+        }
+    }
+
+    // --- Spec 43 · signal reasons -------------------------------------------
+
+    fn r(
+        start: u32,
+        end: u32,
+    ) -> LineRange {
+        LineRange { start, end }
+    }
+
+    fn with_signals(
+        function: &str,
+        file: &str,
+        crap: f64,
+        signals: Signals,
+    ) -> CrapEntry {
+        CrapEntry {
+            file: PathBuf::from(file),
+            signals: Some(signals),
+            ..entry(function, crap)
+        }
+    }
+
+    fn shape(
+        nesting: u32,
+        lines: u32,
+    ) -> Signals {
+        Signals {
+            nesting,
+            lines,
+            ..Signals::default()
+        }
+    }
+
+    fn reasons_for(
+        current: &[CrapEntry],
+        baseline: &[CrapEntry],
+    ) -> DeltaReport {
+        reasons_under(current, baseline, &SignalSettings::default())
+    }
+
+    fn reasons_under(
+        current: &[CrapEntry],
+        baseline: &[CrapEntry],
+        settings: &SignalSettings,
+    ) -> DeltaReport {
+        let mut report = compute_delta(current, baseline, DEFAULT_EPSILON);
+        attach_reasons(
+            &mut report,
+            settings,
+            baseline.iter().any(|b| b.signals.is_some()),
+        );
+        report
+    }
+
+    /// A baseline that has signals but not `f`, which is therefore new.
+    fn other_baseline() -> Vec<CrapEntry> {
+        vec![with_signals(
+            "other",
+            "src/other.rs",
+            1.0,
+            Signals::default(),
+        )]
+    }
+
+    #[test]
+    fn a_new_function_with_a_stub_gets_a_gating_reason_against_zero() {
+        let mut current = with_signals(
+            "f",
+            "src/lib.rs",
+            1.0,
+            Signals {
+                stubs: 1,
+                panics: 2,
+                ..shape(7, 10)
+            },
+        );
+        current.signal_spans.stubs = vec![r(3, 3)];
+        let report = reasons_for(&[current], &other_baseline());
+        let entry = &report.entries[0];
+        assert_eq!(entry.status, DeltaStatus::New);
+        assert_eq!(subjects(entry), ["stubs", "panics"]);
+        assert_eq!(entry.reasons[0].baseline, Some(Measure::Count(0)));
+        assert_eq!(entry.reasons[0].value, Measure::Count(1));
+        assert_eq!(entry.reasons[0].spans, [r(3, 3)]);
+        assert!(entry.reasons[0].gating);
+        assert!(!entry.reasons[1].gating, "panics is report-only by default");
+    }
+
+    #[test]
+    fn a_new_function_is_not_shape_checked_without_limits() {
+        let report = reasons_for(
+            &[with_signals("f", "src/lib.rs", 1.0, shape(7, 300))],
+            &other_baseline(),
+        );
+        assert!(report.entries[0].reasons.is_empty());
+    }
+
+    #[test]
+    fn a_new_function_above_a_configured_limit_gets_a_gating_limit_reason() {
+        let settings = SignalSettings {
+            limits: crate::signals::Limits {
+                nesting: Some(4),
+                lines: Some(80),
+                ..Default::default()
+            },
+            ..SignalSettings::default()
+        };
+        let report = reasons_under(
+            &[with_signals("f", "src/lib.rs", 1.0, shape(5, 80))],
+            &other_baseline(),
+            &settings,
+        );
+        let entry = &report.entries[0];
+        assert_eq!(
+            subjects(entry),
+            ["nesting"],
+            "lines 80 is at, not above, its limit"
+        );
+        assert_eq!(entry.reasons[0].limit, Some(4));
+        assert_eq!(entry.reasons[0].baseline, None);
+        assert!(entry.reasons[0].gating);
+        // A configured ceiling is enforced whether or not the signal is in
+        // the gate set.
+        let lines_only = reasons_under(
+            &[with_signals("f", "src/lib.rs", 1.0, shape(0, 81))],
+            &other_baseline(),
+            &settings,
+        );
+        assert!(lines_only.entries[0].reasons[0].gating);
+    }
+
+    #[test]
+    fn the_gate_set_decides_which_regressions_gate() {
+        let settings = SignalSettings {
+            gate: vec![Signal::Lines],
+            ..SignalSettings::default()
+        };
+        let report = reasons_under(
+            &[with_signals("f", "src/lib.rs", 1.0, shape(4, 60))],
+            &[with_signals("f", "src/lib.rs", 1.0, shape(2, 48))],
+            &settings,
+        );
+        let gating: Vec<(&str, bool)> = report.entries[0]
+            .reasons
+            .iter()
+            .map(|r| (r.signal.name(), r.gating))
+            .collect();
+        assert_eq!(gating, [("nesting", false), ("lines", true)]);
+    }
+
+    #[test]
+    fn a_new_function_against_a_baseline_without_signals_gets_no_reason() {
+        let mut old = entry("other", 1.0);
+        old.signals = None;
+        let current = with_signals(
+            "f",
+            "src/lib.rs",
+            1.0,
+            Signals {
+                stubs: 1,
+                ..Signals::default()
+            },
+        );
+        let report = reasons_for(&[current], &[old]);
+        assert!(report.entries[0].reasons.is_empty());
+    }
+
+    #[test]
+    fn gating_reasons_are_counted() {
+        let report = reasons_for(
+            &[
+                with_signals("f", "src/lib.rs", 1.0, shape(4, 60)),
+                with_signals("g", "src/lib.rs", 1.0, shape(0, 90)),
+            ],
+            &[
+                with_signals("f", "src/lib.rs", 1.0, shape(2, 60)),
+                with_signals("g", "src/lib.rs", 1.0, shape(0, 10)),
+            ],
+        );
+        assert_eq!(
+            report.gating_reason_count(),
+            1,
+            "g's lines reason does not gate"
+        );
+        assert_eq!(reasons_for(&[], &[]).gating_reason_count(), 0);
+    }
+
+    fn subjects(entry: &DeltaEntry) -> Vec<&'static str> {
+        entry.reasons.iter().map(|r| r.signal.name()).collect()
+    }
+
+    #[test]
+    fn an_unchanged_or_improved_signal_produces_no_reason() {
+        let report = reasons_for(
+            &[with_signals("f", "src/lib.rs", 5.0, shape(3, 10))],
+            &[with_signals("f", "src/lib.rs", 5.0, shape(5, 10))],
+        );
+        assert!(report.entries[0].reasons.is_empty());
+        assert_eq!(report.entries[0].baseline_signals, Some(shape(5, 10)));
+    }
+
+    #[test]
+    fn a_risen_signal_is_a_reason_with_values_gating_action_and_spans() {
+        let mut current = with_signals("f", "src/lib.rs", 18.0, shape(5, 96));
+        current.signal_spans.nesting = vec![r(151, 188)];
+        current.signal_spans.lines = vec![r(140, 235)];
+        let report = reasons_for(
+            &[current],
+            &[with_signals("f", "src/lib.rs", 18.0, shape(3, 48))],
+        );
+        let reasons = &report.entries[0].reasons;
+        assert_eq!(
+            reasons[0],
+            Reason {
+                signal: Subject::Signal(Signal::Nesting),
+                value: Measure::Count(5),
+                baseline: Some(Measure::Count(3)),
+                limit: None,
+                gating: true,
+                action: Action::FlattenNesting,
+                spans: vec![r(151, 188)],
+            }
+        );
+        assert_eq!(reasons[1].signal, Subject::Signal(Signal::Lines));
+        assert!(!reasons[1].gating, "lines is report-only by default");
+        assert_eq!(reasons[1].action, Action::SplitFunction);
+        assert_eq!(reasons.len(), 2);
+    }
+
+    #[test]
+    fn every_signal_maps_to_its_action() {
+        let all = Signals {
+            nesting: 1,
+            lines: 1,
+            bumps: 1,
+            bool_ops: 1,
+            stubs: 1,
+            panics: 1,
+        };
+        let report = reasons_for(
+            &[with_signals("f", "src/lib.rs", 1.0, all)],
+            &[with_signals("f", "src/lib.rs", 1.0, Signals::default())],
+        );
+        let pairs: Vec<(&str, &str, bool)> = report.entries[0]
+            .reasons
+            .iter()
+            .map(|r| (r.signal.name(), r.action.name(), r.gating))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("nesting", "flatten-nesting", true),
+                ("lines", "split-function", false),
+                ("bumps", "split-function", true),
+                ("bool_ops", "extract-condition", true),
+                ("stubs", "remove-stub", true),
+                ("panics", "handle-error", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_moved_function_is_compared_with_its_old_location() {
+        let bumpy = Signals {
+            bumps: 2,
+            ..Signals::default()
+        };
+        let one = Signals {
+            bumps: 1,
+            ..Signals::default()
+        };
+        let report = reasons_for(
+            &[with_signals("apply_patch", "src/sync/patch.rs", 5.0, bumpy)],
+            &[with_signals("apply_patch", "src/sync.rs", 5.0, one)],
+        );
+        let entry = &report.entries[0];
+        assert_eq!(entry.previous_file, Some(PathBuf::from("src/sync.rs")));
+        assert_eq!(subjects(entry), ["bumps"]);
+        assert_eq!(entry.reasons[0].value, Measure::Count(2));
+        assert_eq!(entry.reasons[0].baseline, Some(Measure::Count(1)));
+    }
+
+    #[test]
+    fn a_crap_regression_gets_an_add_tests_reason() {
+        let mut current = with_signals("f", "src/lib.rs", 41.0, shape(1, 10));
+        current.uncovered = vec![r(142, 158), r(171, 171)];
+        let report = reasons_for(
+            &[current],
+            &[with_signals("f", "src/lib.rs", 18.0, shape(1, 10))],
+        );
+        assert_eq!(
+            report.entries[0].reasons,
+            [Reason {
+                signal: Subject::Crap,
+                value: Measure::Score(41.0),
+                baseline: Some(Measure::Score(18.0)),
+                limit: None,
+                gating: true,
+                action: Action::AddTests,
+                spans: vec![r(142, 158), r(171, 171)],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_baseline_without_signals_compares_no_signal() {
+        let mut old = entry("f", 5.0);
+        old.signals = None;
+        let report = reasons_for(
+            &[with_signals("f", "src/lib.rs", 5.0, shape(9, 99))],
+            &[old],
+        );
+        assert!(report.entries[0].reasons.is_empty());
+        assert_eq!(report.entries[0].baseline_signals, None);
+    }
+
+    #[test]
+    fn a_run_without_signals_gets_no_reasons_at_all() {
+        let report = reasons_for(&[entry("f", 41.0)], &[entry("f", 18.0)]);
+        assert_eq!(report.entries[0].status, DeltaStatus::Regressed);
+        assert!(report.entries[0].reasons.is_empty());
+    }
+
+    #[test]
+    fn reasons_serialize_names_counts_and_skip_what_is_absent() {
+        let reason = Reason {
+            signal: Subject::Signal(Signal::BoolOps),
+            value: Measure::Count(3),
+            baseline: Some(Measure::Count(1)),
+            limit: None,
+            gating: true,
+            action: Action::ExtractCondition,
+            spans: vec![r(4, 4)],
+        };
+        assert_eq!(
+            serde_json::to_value(&reason).expect("serializes"),
+            serde_json::json!({
+                "signal": "bool_ops", "value": 3, "baseline": 1, "gating": true,
+                "action": "extract-condition", "spans": [{"start": 4, "end": 4}]
+            })
+        );
+        assert_eq!(Measure::Count(3).to_string(), "3");
+        assert_eq!(Measure::Score(41.0).to_string(), "41.0");
+    }
+
+    fn arb_signals() -> impl proptest::strategy::Strategy<Value = Signals> {
+        use proptest::prelude::*;
+        (0u32..6, 1u32..200, 0u32..4, 0u32..5, 0u32..3, 0u32..3).prop_map(
+            |(nesting, lines, bumps, bool_ops, stubs, panics)| Signals {
+                nesting,
+                lines,
+                bumps,
+                bool_ops,
+                stubs,
+                panics,
+            },
+        )
+    }
+
+    proptest::proptest! {
+        /// Spec 43: "A run compared with itself has no reasons".
+        #[test]
+        fn a_run_compared_with_itself_has_no_reasons(
+            rows in proptest::collection::vec((arb_signals(), 1.0f64..100.0), 0..8),
+        ) {
+            let entries: Vec<CrapEntry> = rows
+                .iter()
+                .enumerate()
+                .map(|(i, (signals, crap))| with_signals(&format!("f{i}"), "src/lib.rs", *crap, *signals))
+                .collect();
+            let report = reasons_for(&entries, &entries);
+            proptest::prop_assert!(report.entries.iter().all(|e| e.reasons.is_empty()));
         }
     }
 }

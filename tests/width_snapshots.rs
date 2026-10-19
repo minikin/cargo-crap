@@ -27,6 +27,8 @@ fn entry(
         coverage,
         crap,
         crate_name: None,
+        signals: None,
+        signal_spans: cargo_crap::signals::Spans::default(),
         uncovered: Vec::new(),
     }
 }
@@ -153,6 +155,8 @@ fn delta(
         current,
         baseline_crap,
         status,
+        baseline_signals: None,
+        reasons: Vec::new(),
         previous_file: previous_file.map(PathBuf::from),
     }
 }

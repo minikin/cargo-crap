@@ -7920,3 +7920,1116 @@ fn a_budget_of_0_on_a_cold_cache_still_explains_the_table() {
         "{section}"
     );
 }
+
+// --- Spec 43 · Structural maintainability signals ---------------------------
+
+// ---- Spec 43 · T4 ----
+
+/// A tree with one trivial function under the given `.cargo-crap.toml`.
+fn signals_tree(config: &str) -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), "lib.rs", "fn run() -> i32 {\n    1\n}\n");
+    write(dir.path(), ".cargo-crap.toml", config);
+    dir
+}
+
+#[test]
+fn an_unknown_signal_in_the_gate_list_is_a_tool_error() {
+    // Given `[signals] gate = ["nestng"]`
+    let dir = signals_tree("[signals]\ngate = [\"nestng\"]\n");
+    // When the tool runs
+    let out = crap()
+        .current_dir(dir.path())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .output()
+        .expect("runs");
+    // Then it exits 2
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    // And stderr names "nestng" and lists the valid signal names
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(stderr.contains("\"nestng\""), "{stderr}");
+    for name in ["nesting", "lines", "bumps", "bool-ops", "stubs", "panics"] {
+        assert!(stderr.contains(name), "{name}: {stderr}");
+    }
+}
+
+#[test]
+fn a_negative_limit_is_a_tool_error() {
+    // Given `[signals.limits] nesting = -1`
+    let dir = signals_tree("[signals.limits]\nnesting = -1\n");
+    // When the tool runs
+    let out = crap()
+        .current_dir(dir.path())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .output()
+        .expect("runs");
+    // Then it exits 2
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    // And stderr names `signals.limits.nesting`
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(stderr.contains("signals.limits.nesting"), "{stderr}");
+}
+
+// ---- Spec 43 · T5 ----
+
+/// One function per line shape the signals tell apart, under an optional
+/// `.cargo-crap.toml`.
+fn shaped_tree(config: Option<&str>) -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    write(
+        dir.path(),
+        "lib.rs",
+        "fn straight() -> i32 {
+    let a = 1;
+    a + 1
+}
+
+fn shaped(xs: &[i32]) -> i32 {
+    let mut n = 0;
+    for x in xs {
+        if *x > 0 && *x < 9 {
+            n += x.checked_add(1).unwrap();
+        }
+    }
+    n
+}
+",
+    );
+    if let Some(config) = config {
+        write(dir.path(), ".cargo-crap.toml", config);
+    }
+    dir
+}
+
+const SIGNALS_ON: &str = "[signals]\nenabled = true\n";
+
+/// Run `format` from `dir` and return stdout.
+fn stdout_of(
+    dir: &Path,
+    extra: &[&str],
+) -> String {
+    let out = crap()
+        .current_dir(dir)
+        .args(["--path", dir.to_str().expect("utf-8")])
+        .args(extra)
+        .assert()
+        .success();
+    String::from_utf8(out.get_output().stdout.clone()).expect("utf-8")
+}
+
+/// The entry for `function` in a JSON report or delta.
+fn entry<'a>(
+    doc: &'a serde_json::Value,
+    function: &str,
+) -> &'a serde_json::Value {
+    doc["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .find(|e| e["function"] == function)
+        .unwrap_or_else(|| panic!("no entry for {function}: {doc}"))
+}
+
+#[test]
+fn straight_line_code_has_zero_shape_signals() {
+    // Given a function whose body is `let a = 1; a + 1`
+    // And `[signals] enabled = true`
+    let dir = shaped_tree(Some(SIGNALS_ON));
+    // When the run writes JSON
+    let doc = json_run(dir.path(), &["--path", dir.path().to_str().expect("utf-8")]);
+    // Then the entry's signals are nesting 0, bumps 0, bool_ops 0, stubs 0, panics 0
+    let signals = &entry(&doc, "straight")["signals"];
+    for key in ["nesting", "bumps", "bool_ops", "stubs", "panics"] {
+        assert_eq!(signals[key], 0, "{key}: {signals}");
+    }
+    assert_eq!(signals["lines"], 4, "{signals}");
+}
+
+#[test]
+fn signals_are_off_by_default_and_nothing_changes() {
+    // Given a project with no `[signals]` table in `.cargo-crap.toml`
+    let plain = shaped_tree(None);
+    let off = shaped_tree(Some("[signals]\nenabled = false\n"));
+    let baseline_of = |dir: &Path| {
+        let file = dir.join("baseline.json");
+        fs::write(&file, stdout_of(dir, &["--format", "json"])).expect("write");
+        file.to_str().expect("utf-8").to_owned()
+    };
+    let (plain_base, off_base) = (baseline_of(plain.path()), baseline_of(off.path()));
+    // When the tool runs in any format, with or without --baseline
+    for format in [
+        "human",
+        "json",
+        "github",
+        "markdown",
+        "pr-comment",
+        "sarif",
+        "shields",
+    ] {
+        let normalize = |s: String, dir: &Path| s.replace(dir.to_str().expect("utf-8"), "<root>");
+        let a = normalize(stdout_of(plain.path(), &["--format", format]), plain.path());
+        let b = normalize(stdout_of(off.path(), &["--format", format]), off.path());
+        // Then the output is the same as with signals explicitly off
+        assert_eq!(a, b, "{format}");
+        assert!(
+            !a.contains("signals") && !a.contains("reasons"),
+            "{format}: {a}"
+        );
+        if format == "sarif" {
+            continue; // SARIF refuses --baseline.
+        }
+        let a = normalize(
+            stdout_of(
+                plain.path(),
+                &["--format", format, "--baseline", &plain_base],
+            ),
+            plain.path(),
+        );
+        let b = normalize(
+            stdout_of(off.path(), &["--format", format, "--baseline", &off_base]),
+            off.path(),
+        );
+        assert_eq!(a, b, "{format} --baseline");
+        // And no JSON entry has a `signals`, `baseline_signals` or `reasons` key
+        assert!(
+            !a.contains("signals") && !a.contains("reasons"),
+            "{format} --baseline: {a}"
+        );
+    }
+    // And a baseline recorded with signals changes nothing for a run
+    // without them: it reads exactly like the same baseline without signals
+    let dir = shaped_tree(Some(SIGNALS_ON));
+    let with = baseline_of(dir.path());
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&with).expect("read")).expect("JSON");
+    assert!(doc.to_string().contains("\"signals\""), "{doc}");
+    for e in doc["entries"].as_array_mut().expect("entries") {
+        e.as_object_mut().expect("object").remove("signals");
+    }
+    let without = dir.path().join("plain-baseline.json");
+    fs::write(&without, doc.to_string()).expect("write");
+    let without = without.to_str().expect("utf-8").to_owned();
+    fs::remove_file(dir.path().join(".cargo-crap.toml")).expect("signals off");
+    for format in ["human", "json", "github", "markdown", "pr-comment"] {
+        let a = stdout_of(dir.path(), &["--format", format, "--baseline", &with]);
+        let b = stdout_of(dir.path(), &["--format", format, "--baseline", &without]);
+        assert_eq!(a, b, "{format} against a baseline with signals");
+        assert!(
+            !a.contains("signals") && !a.contains("reasons"),
+            "{format}: {a}"
+        );
+    }
+}
+
+#[test]
+fn enabling_signals_leaves_every_crap_score_untouched() {
+    // Given the same project
+    let off = shaped_tree(None);
+    let on = shaped_tree(Some(SIGNALS_ON));
+    // When the tool runs once without `[signals]` and once with it enabled
+    let a = json_run(off.path(), &["--path", off.path().to_str().expect("utf-8")]);
+    let b = json_run(on.path(), &["--path", on.path().to_str().expect("utf-8")]);
+    // Then every entry's cyclomatic, coverage and crap values are equal
+    for function in ["straight", "shaped"] {
+        for key in ["cyclomatic", "coverage", "crap"] {
+            assert_eq!(
+                entry(&a, function)[key],
+                entry(&b, function)[key],
+                "{function}.{key}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_json_report_carries_signals_per_entry() {
+    // Given `[signals] enabled = true` and `--format json`
+    let dir = shaped_tree(Some(SIGNALS_ON));
+    // When the envelope is written
+    let doc = json_run(dir.path(), &["--path", dir.path().to_str().expect("utf-8")]);
+    // Then every entry has a `signals` object with the six keys, all
+    // non-negative integers
+    for e in doc["entries"].as_array().expect("entries") {
+        let signals = e["signals"].as_object().expect("a signals object");
+        let mut keys: Vec<&str> = signals.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["bool_ops", "bumps", "lines", "nesting", "panics", "stubs"]
+        );
+        assert!(signals.values().all(|v| v.as_u64().is_some()), "{e}");
+    }
+    let shaped = &entry(&doc, "shaped")["signals"];
+    assert_eq!(shaped["nesting"], 2, "{shaped}");
+    assert_eq!(shaped["bool_ops"], 1, "{shaped}");
+    assert_eq!(shaped["panics"], 1, "{shaped}");
+    assert_matches_schema("schemas/report-v1.json", &doc);
+}
+
+// ---- Spec 43 · T6 ----
+
+/// Record `dir`'s JSON report as `baseline.json`, letting `edit` change it
+/// first, and return the file's path.
+fn edited_baseline(
+    dir: &Path,
+    edit: impl FnOnce(&mut serde_json::Value),
+) -> String {
+    let mut doc = json_run(dir, &["--path", dir.to_str().expect("utf-8")]);
+    edit(&mut doc);
+    let file = dir.join("baseline.json");
+    fs::write(&file, doc.to_string()).expect("write baseline");
+    file.to_str().expect("utf-8").to_owned()
+}
+
+/// The baseline entry for `function`, mutably.
+fn entry_mut<'a>(
+    doc: &'a mut serde_json::Value,
+    function: &str,
+) -> &'a mut serde_json::Value {
+    doc["entries"]
+        .as_array_mut()
+        .expect("entries")
+        .iter_mut()
+        .find(|e| e["function"] == function)
+        .unwrap_or_else(|| panic!("no entry for {function}"))
+}
+
+/// The JSON delta of `dir` against `baseline`, with any extra arguments.
+fn delta_run(
+    dir: &Path,
+    baseline: &str,
+    extra: &[&str],
+) -> std::process::Output {
+    crap()
+        .current_dir(dir)
+        .args(["--path", dir.to_str().expect("utf-8")])
+        .args(["--format", "json", "--baseline", baseline])
+        .args(extra)
+        .output()
+        .expect("runs")
+}
+
+fn delta_doc(out: &std::process::Output) -> serde_json::Value {
+    serde_json::from_slice(&out.stdout).expect("one JSON document")
+}
+
+/// The reasons of `function`'s delta entry, as (signal, value, baseline).
+fn reasons_of(
+    doc: &serde_json::Value,
+    function: &str,
+) -> Vec<serde_json::Value> {
+    entry(doc, function)["reasons"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn reason<'a>(
+    reasons: &'a [serde_json::Value],
+    signal: &str,
+) -> &'a serde_json::Value {
+    reasons
+        .iter()
+        .find(|r| r["signal"] == signal)
+        .unwrap_or_else(|| panic!("no {signal} reason in {reasons:?}"))
+}
+
+#[test]
+fn an_unchanged_or_improved_signal_produces_no_reason() {
+    // Given a baseline where a function has nesting 5
+    let dir = shaped_tree(Some(SIGNALS_ON));
+    let baseline = edited_baseline(dir.path(), |doc| {
+        entry_mut(doc, "shaped")["signals"]["nesting"] = 5.into();
+    });
+    // And a current run where it has nesting 2 (it is 2 in the tree)
+    // When the tool runs with --baseline
+    let out = delta_run(dir.path(), &baseline, &[]);
+    assert!(out.status.success(), "{out:?}");
+    // Then the delta entry has no reason for "nesting"
+    let doc = delta_doc(&out);
+    assert_eq!(entry(&doc, "shaped")["signals"]["nesting"], 2);
+    assert!(
+        reasons_of(&doc, "shaped")
+            .iter()
+            .all(|r| r["signal"] != "nesting"),
+        "{doc}"
+    );
+    assert_matches_schema("schemas/delta-v2.json", &doc);
+}
+
+#[test]
+fn a_moved_function_is_compared_with_its_old_location() {
+    // Given a baseline where `apply_patch` lives in `src/sync.rs` with bumps 1
+    let dir = TempDir::new().expect("temp dir");
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("sync")).expect("mkdir");
+    write(dir.path(), ".cargo-crap.toml", SIGNALS_ON);
+    let one_bump = "fn apply_patch(a: bool, b: bool) {\n    if a {\n        if b {\n            f();\n        }\n    }\n}\n";
+    write(&src, "sync.rs", one_bump);
+    let baseline = edited_baseline(dir.path(), |_| {});
+    // And a current run where it lives in `src/sync/patch.rs` with bumps 2
+    fs::remove_file(src.join("sync.rs")).expect("move away");
+    let two_bumps = "fn apply_patch(a: bool, b: bool) {\n    if a {\n        if b {\n            f();\n        }\n    }\n    if b {\n        if a {\n            g();\n        }\n    }\n}\n";
+    write(&src.join("sync"), "patch.rs", two_bumps);
+    // When the tool runs with --baseline
+    let out = delta_run(dir.path(), &baseline, &[]);
+    assert!(out.status.success(), "{out:?}");
+    let doc = delta_doc(&out);
+    // Then the delta entry has previous_file `src/sync.rs`
+    let moved = entry(&doc, "apply_patch");
+    assert!(
+        moved["previous_file"]
+            .as_str()
+            .is_some_and(|p| p.replace('\\', "/").ends_with("src/sync.rs")),
+        "{moved}"
+    );
+    // And a reason with signal "bumps", value 2 and baseline 1
+    let reasons = reasons_of(&doc, "apply_patch");
+    let bumps = reason(&reasons, "bumps");
+    assert_eq!(
+        (&bumps["value"], &bumps["baseline"]),
+        (&2.into(), &1.into())
+    );
+}
+
+/// `apply_patch` with a `todo!()` on line 31, a `.unwrap()` on line 44 and
+/// its deepest nesting in the top-level statement spanning lines 151–188.
+fn located_source() -> String {
+    let mut lines = vec!["fn apply_patch(x: Option<i32>) {".to_owned()];
+    let pad = |lines: &mut Vec<String>, upto: usize| {
+        while lines.len() < upto - 1 {
+            lines.push("    // padding".to_owned());
+        }
+    };
+    pad(&mut lines, 31);
+    lines.push("    todo!();".to_owned());
+    pad(&mut lines, 44);
+    lines.push("    let v = x.unwrap();".to_owned());
+    pad(&mut lines, 151);
+    lines.push("    if v > 0 {".to_owned()); // line 151
+    lines.push("        if v < 9 {".to_owned());
+    lines.push("            for _ in 0..v {".to_owned());
+    pad(&mut lines, 186);
+    lines.push("            }".to_owned()); // line 186
+    lines.push("        }".to_owned()); // line 187
+    lines.push("    }".to_owned()); // line 188
+    lines.push("}".to_owned());
+    lines.join("\n") + "\n"
+}
+
+#[test]
+fn each_reason_points_at_the_code_to_change() {
+    // Given a function with a `todo!()` on line 31, a `.unwrap()` on line
+    // 44, and a nesting regression whose deepest construct sits in the
+    // top-level statement spanning lines 151–188
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), ".cargo-crap.toml", SIGNALS_ON);
+    write(dir.path(), "lib.rs", &located_source());
+    let baseline = edited_baseline(dir.path(), |doc| {
+        let signals = &mut entry_mut(doc, "apply_patch")["signals"];
+        signals["nesting"] = 1.into();
+        signals["stubs"] = 0.into();
+        signals["panics"] = 0.into();
+    });
+    // When the delta JSON is written
+    let out = delta_run(dir.path(), &baseline, &[]);
+    let doc = delta_doc(&out);
+    let reasons = reasons_of(&doc, "apply_patch");
+    let spans = |signal: &str| reason(&reasons, signal)["spans"].clone();
+    // Then the "stubs" reason has spans [31–31]
+    assert_eq!(
+        spans("stubs"),
+        serde_json::json!([{"start": 31, "end": 31}])
+    );
+    // And the "panics" reason has spans [44–44]
+    assert_eq!(
+        spans("panics"),
+        serde_json::json!([{"start": 44, "end": 44}])
+    );
+    // And the "nesting" reason has spans [151–188]
+    assert_eq!(
+        spans("nesting"),
+        serde_json::json!([{"start": 151, "end": 188}])
+    );
+    assert_matches_schema("schemas/delta-v2.json", &doc);
+}
+
+#[test]
+fn a_crap_regression_gets_an_add_tests_reason() {
+    // Given `[signals] enabled = true`
+    // And a function whose CRAP regressed from 18.0 with uncovered ranges
+    // 142–158 and 171
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), ".cargo-crap.toml", SIGNALS_ON);
+    let mut source: Vec<String> = (1..140).map(|_| "// padding".to_owned()).collect();
+    source.push("fn grow(a: bool, b: bool, c: bool) -> i32 {".to_owned()); // line 140
+    for _ in 141..175 {
+        source.push("    if a && b || c { f(); }".to_owned());
+    }
+    source.push("    0".to_owned());
+    source.push("}".to_owned());
+    write(dir.path(), "lib.rs", &(source.join("\n") + "\n"));
+    let path = dir.path().join("lib.rs");
+    let mut lcov = format!("SF:{}\n", path.display());
+    for line in 141..175 {
+        let hits = u32::from(!((142..=158).contains(&line) || line == 171));
+        writeln!(lcov, "DA:{line},{hits}").expect("a String");
+    }
+    lcov.push_str("end_of_record\n");
+    write(dir.path(), "lcov.info", &lcov);
+    let lcov_path = dir.path().join("lcov.info");
+    let lcov_arg = lcov_path.to_str().expect("utf-8");
+    let mut doc = json_run(
+        dir.path(),
+        &[
+            "--path",
+            dir.path().to_str().expect("utf-8"),
+            "--lcov",
+            lcov_arg,
+        ],
+    );
+    let now = entry(&doc, "grow")["crap"].clone();
+    entry_mut(&mut doc, "grow")["crap"] = 18.0.into();
+    let baseline = dir.path().join("baseline.json");
+    fs::write(&baseline, doc.to_string()).expect("write");
+    // When the delta JSON is written
+    let out = delta_run(
+        dir.path(),
+        baseline.to_str().expect("utf-8"),
+        &["--lcov", lcov_arg],
+    );
+    let doc = delta_doc(&out);
+    // Then the entry has a reason with signal "crap", its score, baseline
+    // 18.0, action "add-tests" and spans [142–158, 171–171]
+    let reasons = reasons_of(&doc, "grow");
+    let crap_reason = reason(&reasons, "crap");
+    assert_eq!(crap_reason["value"], now);
+    assert_eq!(crap_reason["baseline"], 18.0);
+    assert_eq!(crap_reason["action"], "add-tests");
+    assert_eq!(
+        crap_reason["spans"],
+        serde_json::json!([{"start": 142, "end": 158}, {"start": 171, "end": 171}])
+    );
+}
+
+#[test]
+fn a_baseline_recorded_without_signals_warns_and_skips_the_comparison() {
+    // Given a baseline JSON whose entries have no `signals` key
+    let dir = shaped_tree(None);
+    let baseline = edited_baseline(dir.path(), |_| {});
+    assert!(
+        !fs::read_to_string(&baseline)
+            .expect("read")
+            .contains("signals")
+    );
+    // And `[signals] enabled = true`
+    write(dir.path(), ".cargo-crap.toml", SIGNALS_ON);
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    // Then stderr carries one warning that the baseline has no signals
+    let stderr = String::from_utf8(out.stderr.clone()).expect("utf-8");
+    assert_eq!(
+        stderr.matches("the baseline has no signals").count(),
+        1,
+        "{stderr}"
+    );
+    // And no delta entry has a signal reason
+    let doc = delta_doc(&out);
+    for e in doc["entries"].as_array().expect("entries") {
+        assert!(e.get("reasons").is_none(), "{e}");
+    }
+    // And the exit code depends only on CRAP regressions (there are none)
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+}
+
+// ---- Spec 43 · T7 ----
+
+/// A tree holding `body` as `sync::apply_patch`-style function `name`,
+/// under `config`.
+fn one_function_tree(
+    name: &str,
+    body: &str,
+    config: &str,
+) -> TempDir {
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), ".cargo-crap.toml", config);
+    write(
+        dir.path(),
+        "lib.rs",
+        &format!("fn {name}(a: bool, b: bool) {{\n{body}\n}}\n"),
+    );
+    dir
+}
+
+const NESTED_3: &str = "    if a {\n        if b {\n            for _ in 0..1 {\n                f();\n            }\n        }\n    }";
+
+#[test]
+fn a_gated_signal_regression_trips_the_gate_even_when_crap_is_unchanged() {
+    // Given a baseline where `apply_patch` has nesting 1 and the same CRAP
+    let dir = one_function_tree("apply_patch", NESTED_3, SIGNALS_ON);
+    let baseline = edited_baseline(dir.path(), |doc| {
+        entry_mut(doc, "apply_patch")["signals"]["nesting"] = 1.into();
+    });
+    // And a current run where it has nesting 3 and CRAP unchanged
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    // Then the exit code is 1
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    // And the delta entry has a nesting reason, value 3, baseline 1,
+    // gating true and action "flatten-nesting"
+    let doc = delta_doc(&out);
+    assert_eq!(entry(&doc, "apply_patch")["status"], "unchanged");
+    let reasons = reasons_of(&doc, "apply_patch");
+    let nesting = reason(&reasons, "nesting");
+    assert_eq!(nesting["value"], 3);
+    assert_eq!(nesting["baseline"], 1);
+    assert_eq!(nesting["gating"], true);
+    assert_eq!(nesting["action"], "flatten-nesting");
+}
+
+#[test]
+fn a_report_only_signal_increase_is_reported_but_does_not_gate() {
+    // Given a baseline where a function has lines 48 … and a current run
+    // where it has more, with no other signal or CRAP change
+    let dir = one_function_tree("long", "    f();", SIGNALS_ON);
+    let baseline = edited_baseline(dir.path(), |doc| {
+        entry_mut(doc, "long")["signals"]["lines"] = 1.into();
+    });
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    // Then the exit code is 0
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    // And the delta entry has a lines reason, gating false, "split-function"
+    let doc = delta_doc(&out);
+    let reasons = reasons_of(&doc, "long");
+    let lines = reason(&reasons, "lines");
+    assert_eq!(
+        (&lines["value"], &lines["baseline"]),
+        (&3.into(), &1.into())
+    );
+    assert_eq!(lines["gating"], false);
+    assert_eq!(lines["action"], "split-function");
+}
+
+#[test]
+fn a_new_function_with_a_stub_trips_the_gate() {
+    // Given a current run with a function `parse_header` absent from the
+    // baseline, whose body contains `todo!()`
+    let dir = one_function_tree("existing", "    f();", SIGNALS_ON);
+    let baseline = edited_baseline(dir.path(), |_| {});
+    write(
+        dir.path(),
+        "header.rs",
+        "fn parse_header() {\n    todo!()\n}\n",
+    );
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    // Then the exit code is 1
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    // And the delta entry has a stubs reason, value 1, baseline 0, gating
+    let doc = delta_doc(&out);
+    assert_eq!(entry(&doc, "parse_header")["status"], "new");
+    let reasons = reasons_of(&doc, "parse_header");
+    let stubs = reason(&reasons, "stubs");
+    assert_eq!(
+        (&stubs["value"], &stubs["baseline"]),
+        (&1.into(), &0.into())
+    );
+    assert_eq!(stubs["gating"], true);
+}
+
+#[test]
+fn a_new_function_above_a_configured_limit_trips_the_gate() {
+    // Given `[signals.limits] nesting = 2`
+    let config = "[signals]\nenabled = true\n[signals.limits]\nnesting = 2\n";
+    let dir = one_function_tree("existing", "    f();", config);
+    let baseline = edited_baseline(dir.path(), |_| {});
+    // And a function absent from the baseline with nesting 3
+    write(
+        dir.path(),
+        "deep.rs",
+        &format!("fn deep(a: bool, b: bool) {{\n{NESTED_3}\n}}\n"),
+    );
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    // Then the exit code is 1
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    // And the delta entry has a nesting reason, value 3, limit 2, no baseline
+    let doc = delta_doc(&out);
+    let reasons = reasons_of(&doc, "deep");
+    let nesting = reason(&reasons, "nesting");
+    assert_eq!(
+        (&nesting["value"], &nesting["limit"]),
+        (&3.into(), &2.into())
+    );
+    assert!(nesting.get("baseline").is_none(), "{nesting}");
+}
+
+#[test]
+fn a_new_function_is_not_shape_checked_without_limits() {
+    // Given no `[signals.limits]` table
+    let dir = one_function_tree("existing", "    f();", SIGNALS_ON);
+    let baseline = edited_baseline(dir.path(), |_| {});
+    // And a function absent from the baseline with deep nesting and no
+    // stubs or panics
+    write(
+        dir.path(),
+        "deep.rs",
+        &format!("fn deep(a: bool, b: bool) {{\n{NESTED_3}\n}}\n"),
+    );
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    // Then the exit code is 0
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    // And the delta entry has no reasons
+    assert!(reasons_of(&delta_doc(&out), "deep").is_empty());
+}
+
+#[test]
+fn the_gate_set_is_configurable() {
+    // Given `[signals] gate = ["lines"]`
+    let config = "[signals]\nenabled = true\ngate = [\"lines\"]\n";
+    let dir = one_function_tree("apply_patch", NESTED_3, config);
+    // And a function whose lines and nesting both rose
+    let baseline = edited_baseline(dir.path(), |doc| {
+        let signals = &mut entry_mut(doc, "apply_patch")["signals"];
+        signals["lines"] = 2.into();
+        signals["nesting"] = 1.into();
+    });
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    // Then the exit code is 1
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    // And the "lines" reason gates and the "nesting" reason does not
+    let reasons = reasons_of(&delta_doc(&out), "apply_patch");
+    assert_eq!(reason(&reasons, "lines")["gating"], true);
+    assert_eq!(reason(&reasons, "nesting")["gating"], false);
+}
+
+#[test]
+fn without_fail_regression_signals_only_report() {
+    // Given a function whose nesting rose
+    let dir = one_function_tree("apply_patch", NESTED_3, SIGNALS_ON);
+    let baseline = edited_baseline(dir.path(), |doc| {
+        entry_mut(doc, "apply_patch")["signals"]["nesting"] = 1.into();
+    });
+    // When the tool runs with --baseline and without --fail-regression
+    let out = delta_run(dir.path(), &baseline, &[]);
+    // Then the exit code is 0
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    // And the delta entry still has the "nesting" reason
+    let reasons = reasons_of(&delta_doc(&out), "apply_patch");
+    assert_eq!(reason(&reasons, "nesting")["value"], 3);
+}
+
+// ---- Spec 43 · T8 ----
+
+/// `apply_patch` with nesting 3 against a baseline that recorded nesting 1
+/// (gated) and fewer lines (report-only): one reason of each kind.
+fn two_reason_delta() -> (TempDir, String) {
+    let dir = one_function_tree("apply_patch", NESTED_3, SIGNALS_ON);
+    let baseline = edited_baseline(dir.path(), |doc| {
+        let signals = &mut entry_mut(doc, "apply_patch")["signals"];
+        signals["nesting"] = 1.into();
+        signals["lines"] = 2.into();
+    });
+    (dir, baseline)
+}
+
+fn delta_text(
+    dir: &Path,
+    baseline: &str,
+    format: &str,
+) -> String {
+    let out = crap()
+        .current_dir(dir)
+        .args(["--path", dir.to_str().expect("utf-8")])
+        .args(["--format", format, "--baseline", baseline])
+        .output()
+        .expect("runs");
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8(out.stdout).expect("utf-8")
+}
+
+#[test]
+fn human_and_markdown_delta_output_list_what_got_harder() {
+    // Given a delta run with one gated nesting reason and one report-only
+    // lines reason
+    let (dir, baseline) = two_reason_delta();
+    for format in ["human", "markdown"] {
+        // When the human or markdown format renders
+        let out = delta_text(dir.path(), &baseline, format);
+        // Then a "Harder to maintain" section lists the function, each
+        // signal as `old → new`, its line span and its action
+        let section = &out[out
+            .find("Harder to maintain")
+            .unwrap_or_else(|| panic!("{format}: {out}"))..];
+        let nesting = section
+            .find("nesting 1 → 3")
+            .or_else(|| section.find("| nesting | 1 → 3 |"));
+        let lines = section
+            .find("lines 2 → 9")
+            .or_else(|| section.find("| lines | 2 → 9 |"));
+        assert!(section.contains("apply_patch"), "{format}: {section}");
+        assert!(
+            section.contains("2–8") && section.contains("1–9"),
+            "{format}: {section}"
+        );
+        assert!(
+            section.contains("flatten-nesting") && section.contains("split-function"),
+            "{format}: {section}"
+        );
+        // And gated reasons are listed before report-only ones
+        let (nesting, lines) = (nesting.expect("nesting row"), lines.expect("lines row"));
+        assert!(nesting < lines, "{format}: {section}");
+    }
+}
+
+// ---- Spec 43 · T9 ----
+
+#[test]
+fn the_pr_comment_has_a_capped_section() {
+    // Given a delta run with more gated reasons than the PR comment's
+    // per-section cap (25)
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), ".cargo-crap.toml", SIGNALS_ON);
+    let mut source = String::new();
+    for i in 0..27 {
+        writeln!(source, "fn stub_{i:02}() {{\n    todo!()\n}}").expect("a String");
+    }
+    write(dir.path(), "lib.rs", &source);
+    let baseline = edited_baseline(dir.path(), |doc| {
+        for e in doc["entries"].as_array_mut().expect("entries") {
+            e["signals"]["stubs"] = 0.into();
+        }
+    });
+    // When the pr-comment format renders
+    let out = delta_text(dir.path(), &baseline, "pr-comment");
+    // Then a "Harder to maintain" section shows up to the cap
+    let section = &out[out.find("### Harder to maintain").expect(&out)..];
+    let (table, folded) = section.split_once("<details>").expect("overflow folded");
+    assert_eq!(table.matches("| stubs |").count(), 25, "{section}");
+    // And the rest inside a `<details>` block
+    assert!(folded.starts_with("<summary>2 more</summary>"), "{section}");
+    assert_eq!(folded.matches("| stubs |").count(), 2, "{section}");
+}
+
+// ---- Spec 43 · T10 ----
+
+#[test]
+fn github_annotations_mark_each_gated_reason() {
+    // Given a delta run with a gated nesting reason spanning lines 2–8 in
+    // `lib.rs` (and a report-only lines reason)
+    let (dir, baseline) = two_reason_delta();
+    // When the github format renders
+    let out = delta_text(dir.path(), &baseline, "github");
+    // Then it emits one annotation for the gated reason, with its span
+    let annotations: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("title=nesting"))
+        .collect();
+    assert_eq!(annotations.len(), 1, "{out}");
+    let a = annotations[0];
+    assert!(a.starts_with("::warning file="), "{a}");
+    assert!(
+        a.contains("lib.rs,line=2,endLine=8,title=nesting 1 → 3::"),
+        "{a}"
+    );
+    // And its message names the function and the action
+    assert!(
+        a.contains("apply_patch") && a.contains("flatten-nesting"),
+        "{a}"
+    );
+    // And the report-only reason gets no annotation
+    assert!(!out.contains("title=lines"), "{out}");
+}
+
+// ---- Spec 43 · T11 ----
+
+/// The repository's own `.cargo-crap.toml`.
+fn own_config() -> String {
+    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(".cargo-crap.toml"))
+        .expect("the repository has its own config")
+}
+
+#[test]
+fn the_repositorys_own_config_enables_signals() {
+    // Given cargo-crap's repository root, when its config is read
+    let own = own_config();
+    let parsed: toml::Table = own.parse().expect("valid TOML");
+    // Then it has `[signals] enabled = true` and no limits
+    assert_eq!(parsed["signals"]["enabled"].as_bool(), Some(true), "{own}");
+    assert!(parsed["signals"].get("limits").is_none(), "{own}");
+}
+
+#[test]
+fn under_the_repositorys_config_a_deeper_function_fails_the_delta_gate() {
+    // Given a project under a copy of the repository's config
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), ".cargo-crap.toml", &own_config());
+    let before = "pub fn route(a: bool, b: bool) {\n    if a {\n        if b {\n            f();\n        }\n    }\n}\n";
+    write(dir.path(), "lib.rs", before);
+    // And a baseline recorded with signals
+    let baseline = edited_baseline(dir.path(), |_| {});
+    // And a function that gained one nesting level since
+    let after = "pub fn route(a: bool, b: bool) {\n    if a {\n        if b {\n            for _ in 0..1 {\n                f();\n            }\n        }\n    }\n}\n";
+    write(dir.path(), "lib.rs", after);
+    // When the tool runs with --baseline and --fail-regression
+    let out = crap()
+        .current_dir(dir.path())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .args(["--baseline", &baseline, "--fail-regression"])
+        .output()
+        .expect("runs");
+    // Then it exits 1
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    // And its output names that function with a "nesting" reason, 2 → 3
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    let section = &stdout[stdout.find("Harder to maintain").expect(&stdout)..];
+    assert!(
+        section.contains("route") && section.contains("nesting 2 → 3"),
+        "{section}"
+    );
+}
+
+// ---- Spec 43 · gate visibility ----
+
+/// Run the signal-only failure of [`two_reason_delta`] with `extra`,
+/// asserting exit 1, and return stdout.
+fn signal_gated(extra: &[&str]) -> String {
+    let (dir, baseline) = two_reason_delta();
+    let out = crap()
+        .current_dir(dir.path())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .args(["--baseline", &baseline, "--fail-regression"])
+        .args(extra)
+        .output()
+        .expect("runs");
+    assert_eq!(out.status.code(), Some(1), "{extra:?}: {out:?}");
+    String::from_utf8(out.stdout).expect("utf-8")
+}
+
+#[test]
+fn the_summary_notes_signal_regressions() {
+    // Given a delta run that fails on a gated signal while no CRAP score
+    // regressed
+    // When the tool runs with --summary and --fail-regression
+    let summary = signal_gated(&["--summary"]);
+    // Then the output shows `↑ 0 regressed` and `✗ 1 signal regression(s)`
+    // (and the exit code is 1, asserted by `signal_gated`)
+    assert!(summary.contains("↑ 0 regressed"), "{summary}");
+    assert!(summary.contains("✗ 1 signal regression(s)"), "{summary}");
+}
+
+#[test]
+fn headlines_say_when_only_signals_fail() {
+    for format in ["markdown", "pr-comment"] {
+        // When the markdown or pr-comment format renders
+        let out = signal_gated(&["--format", format]);
+        // Then the headline reads "No CRAP regressions, but 1 signal
+        // regression(s) detected" and carries no ✅
+        assert!(
+            out.contains("No CRAP regressions, but 1 signal regression(s) detected"),
+            "{format}: {out}"
+        );
+        assert!(!out.contains("✅"), "{format}: {out}");
+    }
+}
+
+#[test]
+fn the_pr_comment_section_strips_the_common_path_prefix_like_its_tables() {
+    let (dir, baseline) = two_reason_delta();
+    let out = delta_text(dir.path(), &baseline, "pr-comment");
+    let section = &out[out.find("### Harder to maintain").expect(&out)..];
+    let root = dir.path().to_str().expect("utf-8");
+    assert!(!section.contains(root), "{section}");
+    assert!(section.contains("`lib.rs:1`"), "{section}");
+}
+
+// ---- Spec 43 · T12 ----
+
+/// Two functions, `existing` (trivial) and a deep `body` one named `name`,
+/// recorded as a baseline under `config`; then `name` is replaced by
+/// `replacement` source. Returns the tree and the baseline path.
+fn with_new_function(
+    config: &str,
+    replacement: &str,
+) -> (TempDir, String) {
+    let dir = one_function_tree("existing", "    f();", config);
+    let baseline = edited_baseline(dir.path(), |_| {});
+    write(dir.path(), "new.rs", replacement);
+    (dir, baseline)
+}
+
+#[test]
+fn a_limit_gates_whatever_the_gate_set() {
+    // Given `[signals] gate = []` and `[signals.limits] nesting = 2`
+    // And a function absent from the baseline with nesting 3
+    let config = "[signals]\nenabled = true\ngate = []\n[signals.limits]\nnesting = 2\n";
+    let (dir, baseline) = with_new_function(
+        config,
+        &format!("fn deep(a: bool, b: bool) {{\n{NESTED_3}\n}}\n"),
+    );
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    // Then the exit code is 1 and the "nesting" reason gates
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let reasons = reasons_of(&delta_doc(&out), "deep");
+    assert_eq!(reason(&reasons, "nesting")["gating"], true);
+}
+
+#[test]
+fn a_renamed_function_counts_as_new() {
+    // Given a baseline with `apply_patch` at nesting 1
+    let dir = one_function_tree("apply_patch", NESTED_3, SIGNALS_ON);
+    let baseline = edited_baseline(dir.path(), |doc| {
+        entry_mut(doc, "apply_patch")["signals"]["nesting"] = 1.into();
+    });
+    // And a current run where it is renamed `apply_patch_v2` with nesting 3
+    // and a `todo!()`
+    let renamed = format!("fn apply_patch_v2(a: bool, b: bool) {{\n{NESTED_3}\n    todo!()\n}}\n");
+    write(dir.path(), "lib.rs", &renamed);
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    let doc = delta_doc(&out);
+    // Then `apply_patch_v2` has status new and no "nesting" reason
+    assert_eq!(entry(&doc, "apply_patch_v2")["status"], "new");
+    let reasons = reasons_of(&doc, "apply_patch_v2");
+    assert!(
+        reasons.iter().all(|r| r["signal"] != "nesting"),
+        "{reasons:?}"
+    );
+    // And its "stubs" reason gates, so the exit code is 1
+    assert_eq!(reason(&reasons, "stubs")["gating"], true);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+}
+
+#[test]
+fn an_empty_gate_set_gates_on_crap_alone() {
+    // Given `[signals] gate = []`
+    let config = "[signals]\nenabled = true\ngate = []\n";
+    let dir = one_function_tree("apply_patch", NESTED_3, config);
+    // And a function whose nesting rose and whose CRAP score did not
+    let baseline = edited_baseline(dir.path(), |doc| {
+        entry_mut(doc, "apply_patch")["signals"]["nesting"] = 1.into();
+    });
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    // Then the exit code is 0 and the "nesting" reason does not gate
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let reasons = reasons_of(&delta_doc(&out), "apply_patch");
+    assert_eq!(reason(&reasons, "nesting")["gating"], false);
+}
+
+#[test]
+fn a_gate_name_may_use_either_spelling_and_repeat() {
+    // Given `[signals] gate = ["bool-ops", "bool_ops"]`
+    let config = "[signals]\nenabled = true\ngate = [\"bool-ops\", \"bool_ops\"]\n";
+    let dir = one_function_tree("check", "    if a && b {\n        f();\n    }", config);
+    // And a function whose bool_ops rose
+    let baseline = edited_baseline(dir.path(), |doc| {
+        entry_mut(doc, "check")["signals"]["bool_ops"] = 0.into();
+    });
+    // When the tool runs with --baseline and --fail-regression
+    let out = delta_run(dir.path(), &baseline, &["--fail-regression"]);
+    // Then the exit code is 1
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    // And the delta entry has exactly one "bool_ops" reason
+    let reasons = reasons_of(&delta_doc(&out), "check");
+    assert_eq!(
+        reasons.iter().filter(|r| r["signal"] == "bool_ops").count(),
+        1
+    );
+}
+
+#[test]
+fn a_baseline_where_only_some_entries_have_signals_compares_those() {
+    // Given a baseline where `a` has signals and `b` has none
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), ".cargo-crap.toml", SIGNALS_ON);
+    let both = format!(
+        "fn a(a: bool, b: bool) {{\n{NESTED_3}\n}}\n\nfn b(a: bool, b: bool) {{\n{NESTED_3}\n}}\n"
+    );
+    write(dir.path(), "lib.rs", &both);
+    let baseline = edited_baseline(dir.path(), |doc| {
+        entry_mut(doc, "a")["signals"]["nesting"] = 1.into();
+        entry_mut(doc, "b")
+            .as_object_mut()
+            .expect("object")
+            .remove("signals");
+    });
+    // And a current run where both functions' nesting rose
+    // When the tool runs with --baseline
+    let out = delta_run(dir.path(), &baseline, &[]);
+    let doc = delta_doc(&out);
+    // Then `a` has a "nesting" reason and `b` has none
+    assert_eq!(reason(&reasons_of(&doc, "a"), "nesting")["value"], 3);
+    assert!(reasons_of(&doc, "b").is_empty(), "{doc}");
+    // And stderr has no missing-signals warning
+    let stderr = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(!stderr.contains("has no signals"), "{stderr}");
+}
+
+/// Run `dir` under `config` and return the exit code and stderr.
+fn config_error(config: &str) -> (Option<i32>, String) {
+    let dir = signals_tree(config);
+    let out = crap()
+        .current_dir(dir.path())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .output()
+        .expect("runs");
+    (
+        out.status.code(),
+        String::from_utf8(out.stderr).expect("utf-8"),
+    )
+}
+
+#[test]
+fn a_limit_too_large_is_a_tool_error() {
+    // Given `[signals.limits] bool-ops = 5000000000`
+    let (code, stderr) = config_error("[signals.limits]\nbool-ops = 5000000000\n");
+    // Then it exits 2 and stderr names `signals.limits.bool-ops`
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("signals.limits.bool-ops"), "{stderr}");
+}
+
+#[test]
+fn an_unknown_limit_key_is_a_tool_error() {
+    // Given `[signals.limits] stubs = 1`
+    let (code, stderr) = config_error("[signals.limits]\nstubs = 1\n");
+    // Then it exits 2 and stderr names `stubs`
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("stubs"), "{stderr}");
+}
+
+#[test]
+fn top_and_min_narrow_the_section_but_not_the_gate() {
+    // Given two functions with gated signal reasons, one with the higher
+    // CRAP score
+    let dir = TempDir::new().expect("temp dir");
+    write(dir.path(), ".cargo-crap.toml", SIGNALS_ON);
+    let source = format!(
+        "fn small(a: bool, b: bool) {{\n{NESTED_3}\n}}\n\n\
+         fn big(a: bool, b: bool, c: bool) {{\n{NESTED_3}\n    if c && a || b {{ f(); }}\n}}\n"
+    );
+    write(dir.path(), "lib.rs", &source);
+    let baseline = edited_baseline(dir.path(), |doc| {
+        for name in ["small", "big"] {
+            entry_mut(doc, name)["signals"]["nesting"] = 1.into();
+        }
+    });
+    // When the tool runs with --top 1, --baseline and --fail-regression
+    let out = crap()
+        .current_dir(dir.path())
+        .args(["--path", dir.path().to_str().expect("utf-8")])
+        .args(["--baseline", &baseline, "--fail-regression", "--top", "1"])
+        .output()
+        .expect("runs");
+    // Then the section lists only the shown function
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf-8");
+    let section = &stdout[stdout.find("Harder to maintain").expect(&stdout)..];
+    assert!(section.contains("big"), "{section}");
+    assert!(!section.contains("small"), "{section}");
+    // And the exit code is 1
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+}

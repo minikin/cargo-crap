@@ -154,6 +154,8 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: crate_name.map(std::string::ToString::to_string),
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
     }

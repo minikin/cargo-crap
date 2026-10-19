@@ -59,6 +59,22 @@ model            = "jev-latest" # default: the provider's own
 confidence-floor = 0.5   # below this a verdict says "uncertain"; 0.0..=1.0
 # Since 0.8.0. Candidates asked per run; cached ones are free; default: no limit.
 max-requests     = 100
+# Since 0.10.0. Structural maintainability signals per function: nesting,
+# lines, bumps, bool-ops, stubs, panics. Off by default; see
+# docs/explanation/signals.md.
+[signals]
+enabled = false
+# Signals whose regression against --baseline trips --fail-regression.
+# This is the default set; `lines` and `panics` are reported only.
+gate = ["nesting", "bumps", "bool-ops", "stubs"]
+# Optional ceilings for functions new since the baseline. A new function
+# above one always fails --fail-regression, gate set or not. Unset: new
+# functions are checked only for stubs and panics.
+[signals.limits]
+nesting  = 4
+lines    = 80
+bumps    = 1
+bool-ops = 3
 ```
 
 All keys are optional. Unknown keys are rejected to catch typos.
@@ -88,6 +104,7 @@ its snake_case alias (`show-unchanged` / `show_unchanged`), except
 | *(no flag)*           | `duplicates.triage.*`  |
 | *(no flag)*           | `uncovered-hints`      |
 | *(no flag)*           | `try-weight`           |
+| *(no flag)*           | `signals.*`            |
 | *(no key)*            | `--path`, `--lcov`, `--format`, `--output`, `--summary`, `--workspace`, `-p`/`--package`, `--baseline`, `--no-default-excludes`, `--repo-url`, `--commit-ref` |
 
 `default-excludes` has no flag that does the same job, since it *replaces*

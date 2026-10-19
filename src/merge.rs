@@ -31,6 +31,7 @@
 use crate::complexity::FunctionComplexity;
 use crate::coverage::{FileCoverage, LineRange};
 use crate::score::crap;
+use crate::signals::{Signals, Spans};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
@@ -62,6 +63,14 @@ pub struct CrapEntry {
     /// part of any delta pairing key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uncovered: Vec<LineRange>,
+    /// Structural maintainability signals (spec 43). `None` unless
+    /// `[signals] enabled = true`, and for baselines recorded without them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signals: Option<Signals>,
+    /// Where each signal comes from, for reasons. Never serialized: only the
+    /// current run's spans are ever pointed at.
+    #[serde(skip)]
+    pub signal_spans: Spans,
 }
 
 /// Final ordering applied to the report entries (spec 17).
@@ -283,6 +292,8 @@ pub fn merge(
                 coverage: cov,
                 crap: crap_score,
                 crate_name: None,
+                signals: Some(fc.signals),
+                signal_spans: fc.spans,
                 uncovered,
             })
         })
@@ -571,6 +582,8 @@ mod tests {
                 start_line: 1,
                 end_line: 1,
                 cyclomatic: 1.0,
+                signals: crate::signals::Signals::default(),
+                spans: crate::signals::Spans::default(),
             },
             FunctionComplexity {
                 file: PathBuf::from("/repo/vendor/dep/src/lib.rs"),
@@ -578,6 +591,8 @@ mod tests {
                 start_line: 1,
                 end_line: 1,
                 cyclomatic: 1.0,
+                signals: crate::signals::Signals::default(),
+                spans: crate::signals::Spans::default(),
             },
         ];
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
@@ -618,6 +633,8 @@ mod tests {
             start_line: 1,
             end_line: 2,
             cyclomatic: 1.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }];
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
         let diag = result.diagnostics.expect("diagnostics present");
@@ -655,6 +672,8 @@ mod tests {
             start_line: 1,
             end_line: 1,
             cyclomatic: 1.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }];
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
         let diag = result.diagnostics.expect("diagnostics present");
@@ -708,6 +727,8 @@ mod tests {
             start_line: 1,
             end_line: 2,
             cyclomatic: 1.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }];
 
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
@@ -730,6 +751,8 @@ mod tests {
                 start_line: 1,
                 end_line: 3,
                 cyclomatic: 1.0,
+                signals: crate::signals::Signals::default(),
+                spans: crate::signals::Spans::default(),
             },
             FunctionComplexity {
                 file: PathBuf::from("a.rs"),
@@ -737,6 +760,8 @@ mod tests {
                 start_line: 10,
                 end_line: 30,
                 cyclomatic: 10.0,
+                signals: crate::signals::Signals::default(),
+                spans: crate::signals::Spans::default(),
             },
         ];
         let result = merge(
@@ -756,6 +781,8 @@ mod tests {
             start_line: 1,
             end_line: 5,
             cyclomatic: 3.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }];
         let result = merge(complexity, HashMap::new(), MissingCoveragePolicy::Skip);
         assert!(result.entries.is_empty());
@@ -803,6 +830,8 @@ mod tests {
                 start_line: 1,
                 end_line: 3,
                 cyclomatic: 1.0,
+                signals: crate::signals::Signals::default(),
+                spans: crate::signals::Spans::default(),
             },
             FunctionComplexity {
                 file: PathBuf::from("/project/src/bar.rs"),
@@ -810,6 +839,8 @@ mod tests {
                 start_line: 1,
                 end_line: 3,
                 cyclomatic: 1.0,
+                signals: crate::signals::Signals::default(),
+                spans: crate::signals::Spans::default(),
             },
         ];
 
@@ -840,6 +871,8 @@ mod tests {
             start_line: 1,
             end_line: 3,
             cyclomatic: 1.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }];
 
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
@@ -881,6 +914,8 @@ mod tests {
             start_line: 1,
             end_line: 1,
             cyclomatic: 1.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }];
 
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
@@ -916,6 +951,8 @@ mod tests {
             start_line: 1,
             end_line: 1,
             cyclomatic: 1.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }];
 
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
@@ -942,6 +979,8 @@ mod tests {
                 start_line: 1,
                 end_line: 3,
                 cyclomatic: 1.0,
+                signals: crate::signals::Signals::default(),
+                spans: crate::signals::Spans::default(),
             },
             FunctionComplexity {
                 file: PathBuf::from("/b/src/lib.rs"),
@@ -949,6 +988,8 @@ mod tests {
                 start_line: 1,
                 end_line: 3,
                 cyclomatic: 1.0,
+                signals: crate::signals::Signals::default(),
+                spans: crate::signals::Spans::default(),
             },
         ];
 
@@ -999,6 +1040,8 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
     }
@@ -1074,6 +1117,8 @@ mod tests {
             start_line: 1,
             end_line: 3,
             cyclomatic: 1.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }];
         let result = merge(
             complexity,
@@ -1096,6 +1141,8 @@ mod tests {
             start_line: 10,
             end_line: 20,
             cyclomatic: 3.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }];
         let mut cov_map = HashMap::new();
         cov_map.insert(
@@ -1123,6 +1170,8 @@ mod tests {
             start_line: 10,
             end_line: 20,
             cyclomatic: 3.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }];
         let mut cov_map = HashMap::new();
         cov_map.insert(PathBuf::from("src/other.rs"), cov_with(&[(10, 0)]));
@@ -1156,6 +1205,8 @@ mod tests {
             coverage: Some(50.0),
             crap: 4.5,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: vec![LineRange { start: 3, end: 5 }],
         };
         let ser = serde_json::to_string(&e).expect("serialize");

@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Structural maintainability signals (spec 43), opt-in with
+  `[signals] enabled = true`. Each function gets `nesting`, `lines`,
+  `bumps`, `bool_ops`, `stubs` and `panics`, measured in the same pass
+  as cyclomatic complexity; CRAP scores do not change. With
+  `--baseline`, a rise in a gated signal (`nesting`, `bumps`,
+  `bool_ops`, `stubs` by default; `[signals] gate` changes the set)
+  fails `--fail-regression`, a new function fails on any gated stub or
+  panic site and on any `[signals.limits]` ceiling it exceeds, and each
+  finding carries a reason: old and new value, line spans and a
+  suggested action. Reasons appear in the JSON delta (`reasons`,
+  `baseline_signals`), a "Harder to maintain" section in the human,
+  markdown and PR-comment output, and GitHub annotations. A baseline
+  recorded without signals warns and compares none. The repository's
+  own gate now runs with signals on. The complexity cache moves to
+  format 2, so the first run after upgrading re-analyses every file.
+
 ### Fixed
 
 - A delta run with `--duplicates` pairs a function with its baseline

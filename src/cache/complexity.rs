@@ -11,6 +11,7 @@
 use crate::cache::file::{read_retrying, write_atomic};
 use crate::complexity::FunctionComplexity;
 use crate::duplicates::fingerprint::Fnv1a;
+use crate::signals::{Signals, Spans};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::hash::Hasher;
@@ -19,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 /// The cache file's own format. Bump it when [`Raw`] changes shape.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 /// The version a cache must have been written by to be read.
 const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -78,6 +79,11 @@ struct CachedFunction {
     start_line: usize,
     end_line: usize,
     cyclomatic: f64,
+    /// Spec 43's signals and their spans; format 2 onwards.
+    #[serde(default)]
+    signals: Signals,
+    #[serde(default)]
+    spans: Spans,
 }
 
 /// One file's entry: its content key and its functions.
@@ -142,6 +148,8 @@ impl FileRecord {
                 start_line: f.start_line,
                 end_line: f.end_line,
                 cyclomatic: f.cyclomatic,
+                signals: f.signals,
+                spans: f.spans.clone(),
             })
             .collect();
         Self {
@@ -224,6 +232,8 @@ impl ComplexityCache {
                 start_line: f.start_line,
                 end_line: f.end_line,
                 cyclomatic: f.cyclomatic,
+                signals: f.signals,
+                spans: f.spans.clone(),
             })
             .collect();
         let record = FileRecord {
@@ -420,6 +430,8 @@ mod tests {
             start_line: 3,
             end_line: 9,
             cyclomatic: cc,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
         }
     }
 
@@ -472,6 +484,51 @@ mod tests {
             shape(&hit.functions),
             [("a".to_owned(), 3, 9, 2.0f64.to_bits(), walked.to_path_buf())]
         );
+    }
+
+    #[test]
+    fn a_hit_carries_the_signals_and_spans_it_was_stored_with() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join(FILE_NAME);
+        let key = PathBuf::from("/p/src/lib.rs");
+        let bytes = b"fn a() { if x { if y { z.unwrap(); } } }";
+        let mut stored = function("a", 3.0);
+        stored.signals = crate::signals::Signals {
+            nesting: 2,
+            lines: 7,
+            bumps: 1,
+            bool_ops: 0,
+            stubs: 0,
+            panics: 1,
+        };
+        stored.spans.panics = vec![crate::coverage::LineRange { start: 5, end: 5 }];
+        let record = FileRecord::new(key.clone(), bytes, std::slice::from_ref(&stored));
+        ComplexityCache::empty(header())
+            .save(&file, &[PathBuf::from("/p")], vec![record])
+            .expect("writable");
+        let hit = ComplexityCache::load(&file, header())
+            .lookup(&key, bytes, &key)
+            .expect("a hit");
+        assert_eq!(hit.functions[0].signals, stored.signals);
+        assert_eq!(hit.functions[0].spans, stored.spans);
+    }
+
+    #[test]
+    fn a_format_1_cache_is_discarded() {
+        // Written before spec 43, it holds no signals to hand back.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join(FILE_NAME);
+        let key = PathBuf::from("/p/src/lib.rs");
+        let record = FileRecord::new(key.clone(), SOURCE, &[function("a", 1.0)]);
+        ComplexityCache::empty(header())
+            .save(&file, &[PathBuf::from("/p")], vec![record])
+            .expect("writable");
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).expect("read")).expect("json");
+        raw["format"] = 1.into();
+        std::fs::write(&file, raw.to_string()).expect("write");
+        let cache = ComplexityCache::load(&file, header());
+        assert!(cache.lookup(&key, SOURCE, &key).is_none());
     }
 
     #[test]

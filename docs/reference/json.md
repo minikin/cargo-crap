@@ -38,7 +38,11 @@ the `uri` format from `ajv-formats` (or pass `strict: false`), then
       "crate": "my-crate",     // present only with --workspace or -p
       "uncovered": [           // uncovered line ranges; omitted when empty
         { "start": 15, "end": 16 }
-      ]
+      ],
+      "signals": {             // present only with [signals] enabled = true
+        "nesting": 2, "lines": 18, "bumps": 1,
+        "bool_ops": 1, "stubs": 0, "panics": 1
+      }
     }
   ],
   "try_weight": 0.5       // present only when try-weight is not the default 1.0
@@ -51,7 +55,28 @@ the `uri` format from `ajv-formats` (or pass `strict: false`), then
   "entries": [ /* DeltaEntry — current + baseline_crap + delta + status (+ optional previous_file when moved) */ ],
   "removed": [ /* RemovedEntry — function, file, baseline_crap */ ]
 }
+
+// With [signals] enabled, a delta entry also carries:
+{
+  "baseline_signals": { "nesting": 1, /* … */ },  // the paired baseline function's
+  "reasons": [                                      // omitted when empty
+    {
+      "signal": "nesting",       // a signal name, or "crap"
+      "value": 3,                // the current value
+      "baseline": 1,             // omitted for a new function
+      "limit": 4,                // present when a new function exceeded [signals.limits]
+      "gating": true,            // trips --fail-regression
+      "action": "flatten-nesting",
+      "spans": [ { "start": 151, "end": 188 } ]
+    }
+  ]
+}
 ```
+
+A reason's `action` is one of `flatten-nesting`, `split-function`,
+`extract-condition`, `remove-stub`, `handle-error` or `add-tests`. See
+[Structural signals](../explanation/signals.md) for what each signal counts
+and when a reason gates.
 
 `--baseline` only reads files in this envelope shape. Bare-array baselines
 from older runs must be regenerated.

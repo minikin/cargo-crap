@@ -380,6 +380,16 @@ pub(crate) fn render_delta_human(
         counts,
     };
     write_delta_body(report, &visible, &view, out)?;
+    write_reasons_and_counts(report, counts, out)
+}
+
+/// The "Harder to maintain" section (spec 43), then the counts line.
+fn write_reasons_and_counts(
+    report: &DeltaReport,
+    counts: &DeltaCounts,
+    out: &mut dyn Write,
+) -> Result<()> {
+    super::reasons::write_human(report, out)?;
     super::summary::render_delta_counts(counts, out)
 }
 
@@ -647,6 +657,8 @@ mod tests {
             coverage: Some(100.0),
             crap,
             crate_name: crate_name.map(std::string::ToString::to_string),
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
     }
@@ -671,6 +683,8 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
@@ -719,6 +733,8 @@ mod tests {
             coverage: None,
             crap: 1.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
@@ -738,6 +754,8 @@ mod tests {
             coverage: Some(44.4),
             crap: 1.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
@@ -758,6 +776,8 @@ mod tests {
                 coverage: Some(0.0),
                 crap: 72.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             CrapEntry {
@@ -768,6 +788,8 @@ mod tests {
                 coverage: Some(0.0),
                 crap: 110.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
         ];
@@ -790,6 +812,8 @@ mod tests {
             coverage: Some(0.0),
             crap: 20.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
         let mut buf = Vec::new();
@@ -840,11 +864,15 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 1.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             baseline_crap: Some(1.0),
             delta: Some(0.0),
             status,
+            baseline_signals: None,
+            reasons: Vec::new(),
             previous_file: None,
         };
         let report = DeltaReport {
@@ -896,11 +924,15 @@ mod tests {
                 coverage: Some(100.0),
                 crap: 50.0,
                 crate_name: None,
+                signals: None,
+                signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
             baseline_crap: Some(40.0),
             delta: Some(10.0),
             status,
+            baseline_signals: None,
+            reasons: Vec::new(),
             previous_file: None,
         }
     }
@@ -1299,6 +1331,8 @@ mod tests {
                 baseline_crap: Some(crap),
                 delta: Some(0.0),
                 status,
+                baseline_signals: None,
+                reasons: Vec::new(),
                 previous_file: None,
             })
             .collect();
@@ -1413,6 +1447,8 @@ mod tests {
             coverage: Some(42.0),
             crap,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
     }
@@ -1499,6 +1535,8 @@ mod tests {
             baseline_crap: Some(9.0),
             delta: Some(0.0),
             status: DeltaStatus::Moved,
+            baseline_signals: None,
+            reasons: Vec::new(),
             previous_file: Some(PathBuf::from(previous)),
         }
     }

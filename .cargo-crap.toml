@@ -1,0 +1,9 @@
+# cargo-crap's own configuration: the tool scores itself (dogfood).
+#
+# Structural maintainability signals (spec 43): `just crap-delta` and CI's
+# Self-score job fail when a change makes a function deeper, bumpier, adds
+# a complex condition or leaves a stub, on top of the CRAP regression gate.
+# No limits: like any adopter starting out, the repository gates on
+# regressions only.
+[signals]
+enabled = true

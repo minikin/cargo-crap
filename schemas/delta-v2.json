@@ -85,6 +85,19 @@
           "items": { "$ref": "#/definitions/LineRange" },
           "description": "Maximal runs of instrumented-but-never-hit lines inside the function's span, from the current run. Omitted when empty or when the file had no coverage data at all."
         },
+        "signals": {
+          "$ref": "#/definitions/Signals",
+          "description": "Structural maintainability signals (spec 43). Omitted unless signals are enabled."
+        },
+        "baseline_signals": {
+          "$ref": "#/definitions/Signals",
+          "description": "The paired baseline function's signals (spec 43). Omitted for new functions and baselines recorded without signals."
+        },
+        "reasons": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Reason" },
+          "description": "What got harder to maintain since the baseline, and where (spec 43). Omitted when empty."
+        },
         "baseline_crap": {
           "type": ["number", "null"],
           "description": "CRAP score from the baseline run; null when this function is new."
@@ -102,6 +115,35 @@
           "type": "string",
           "description": "Baseline location when this entry was paired across files. Omitted when the entry was matched on the exact (file, function) pair (the common case) or is genuinely new."
         }
+      }
+    },
+    "Signals": {
+      "type": "object",
+      "description": "Structural maintainability signals (spec 43). Present only when `[signals] enabled = true`.",
+      "required": ["nesting", "lines", "bumps", "bool_ops", "stubs", "panics"],
+      "additionalProperties": false,
+      "properties": {
+        "nesting": { "type": "integer", "minimum": 0, "description": "Deepest number of nested bodies (`if`, `match`, loops, `let ... else`, closures, `async` blocks)." },
+        "lines": { "type": "integer", "minimum": 1, "description": "The function's span in lines, signature to closing brace." },
+        "bumps": { "type": "integer", "minimum": 0, "description": "Top-level statements whose own nesting reaches 2." },
+        "bool_ops": { "type": "integer", "minimum": 0, "description": "Most `&&` / `||` operators in one `if` / `while` condition or match guard." },
+        "stubs": { "type": "integer", "minimum": 0, "description": "`todo!`, `unimplemented!` and `dbg!` invocations." },
+        "panics": { "type": "integer", "minimum": 0, "description": "`.unwrap()`, `.expect(...)` calls and `panic!` invocations." }
+      }
+    },
+    "Reason": {
+      "type": "object",
+      "description": "One way a function got harder to maintain since the baseline (spec 43).",
+      "required": ["signal", "value", "gating", "action", "spans"],
+      "additionalProperties": false,
+      "properties": {
+        "signal": { "enum": ["nesting", "lines", "bumps", "bool_ops", "stubs", "panics", "crap"], "description": "The signal that rose, or `crap` for a regressed CRAP score." },
+        "value": { "type": "number", "minimum": 0, "description": "The current value: an integer for signals, the score for `crap`." },
+        "baseline": { "type": "number", "minimum": 0, "description": "The paired baseline value. Omitted for a new function." },
+        "limit": { "type": "integer", "minimum": 0, "description": "The configured limit a new function exceeded." },
+        "gating": { "type": "boolean", "description": "Whether this reason trips `--fail-regression`." },
+        "action": { "enum": ["flatten-nesting", "split-function", "extract-condition", "remove-stub", "handle-error", "add-tests"], "description": "The suggested fix." },
+        "spans": { "type": "array", "items": { "$ref": "#/definitions/LineRange" }, "description": "The line ranges to change." }
       }
     },
     "LineRange": {

@@ -92,7 +92,25 @@
           "type": "array",
           "items": { "$ref": "#/definitions/LineRange" },
           "description": "Maximal runs of instrumented-but-never-hit lines inside the function's span. Omitted when empty or when the file had no coverage data at all."
+        },
+        "signals": {
+          "$ref": "#/definitions/Signals",
+          "description": "Structural maintainability signals (spec 43). Omitted unless signals are enabled."
         }
+      }
+    },
+    "Signals": {
+      "type": "object",
+      "description": "Structural maintainability signals (spec 43). Present only when `[signals] enabled = true`.",
+      "required": ["nesting", "lines", "bumps", "bool_ops", "stubs", "panics"],
+      "additionalProperties": false,
+      "properties": {
+        "nesting": { "type": "integer", "minimum": 0, "description": "Deepest number of nested bodies (`if`, `match`, loops, `let ... else`, closures, `async` blocks)." },
+        "lines": { "type": "integer", "minimum": 1, "description": "The function's span in lines, signature to closing brace." },
+        "bumps": { "type": "integer", "minimum": 0, "description": "Top-level statements whose own nesting reaches 2." },
+        "bool_ops": { "type": "integer", "minimum": 0, "description": "Most `&&` / `||` operators in one `if` / `while` condition or match guard." },
+        "stubs": { "type": "integer", "minimum": 0, "description": "`todo!`, `unimplemented!` and `dbg!` invocations." },
+        "panics": { "type": "integer", "minimum": 0, "description": "`.unwrap()`, `.expect(...)` calls and `panic!` invocations." }
       }
     },
     "LineRange": {

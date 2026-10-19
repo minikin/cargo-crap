@@ -7,6 +7,7 @@
 //! line — the span has to come from the AST.
 
 use crate::cache::complexity::{ComplexityCache, FileRecord};
+use crate::signals::{self, Signals, Spans};
 use anyhow::{Context, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use rayon::prelude::*;
@@ -37,6 +38,12 @@ pub struct FunctionComplexity {
     /// analysis's try weight rather than a fixed 1, so the value is
     /// fractional whenever that weight is.
     pub cyclomatic: f64,
+    /// Structural maintainability signals (spec 43). Always computed;
+    /// whether they are reported is the caller's decision.
+    pub signals: Signals,
+    /// Where each signal comes from (spec 43): the line ranges a reason
+    /// points at.
+    pub spans: Spans,
 }
 
 /// Analyze a single Rust source file and return every function found.
@@ -140,12 +147,15 @@ impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
         let start_line = node.sig.fn_token.span.start().line;
         let end_line = node.block.brace_token.span.close().end().line;
         let cyclomatic = count_cyclomatic(&node.block, self.try_weight);
+        let measured = signals::compute(&node.block, start_line, end_line);
         self.out.push(FunctionComplexity {
             file: self.file.to_path_buf(),
             name,
             start_line,
             end_line,
             cyclomatic,
+            signals: measured.signals,
+            spans: measured.spans,
         });
         // Do NOT recurse: skip nested fn items inside function bodies.
     }
@@ -219,12 +229,17 @@ impl FunctionVisitor<'_> {
             Some(ty) => format!("{ty}::{method}"),
             None => method,
         };
+        let start_line = sig.fn_token.span.start().line;
+        let end_line = block.brace_token.span.close().end().line;
+        let measured = signals::compute(block, start_line, end_line);
         self.out.push(FunctionComplexity {
             file: self.file.to_path_buf(),
             name,
-            start_line: sig.fn_token.span.start().line,
-            end_line: block.brace_token.span.close().end().line,
+            start_line,
+            end_line,
             cyclomatic: count_cyclomatic(block, self.try_weight),
+            signals: measured.signals,
+            spans: measured.spans,
         });
     }
 }
@@ -1484,6 +1499,15 @@ fn allowed() -> i32 { 42 }
     }
 
     proptest! {
+        /// Spec 43: measuring signals never moves CC, whatever the body.
+        #[test]
+        fn signals_never_change_cyclomatic_complexity(picks in picks()) {
+            let (body, _, _) = assemble(&picks);
+            let source = format!("fn f(x: Option<i32>) -> Option<i32> {{ {body} }}");
+            let analysed = analyze_source(Path::new("lib.rs"), &source, 1.0).expect("valid");
+            prop_assert_eq!(analysed[0].cyclomatic.to_bits(), cc_of_body(&body, 1.0).to_bits());
+        }
+
         /// Weighting `?` shifts CC by exactly `w` per `?`, and the weight-0
         /// count is the fixed-cost decision points alone.
         #[test]
@@ -1607,7 +1631,17 @@ fn allowed() -> i32 { 42 }
             for (j, ifs) in fns.iter().enumerate() {
                 writeln!(source, "fn f{i}_{j}(x: i32) {{").expect("a String");
                 for k in 0..*ifs {
-                    writeln!(source, "    if x > {k} {{ }}").expect("a String");
+                    // Alternate flat and nested conditionals, and leave a
+                    // panic site in some, so the signals vary too (spec 43).
+                    if k % 2 == 0 {
+                        writeln!(source, "    if x > {k} {{ }}").expect("a String");
+                    } else {
+                        writeln!(
+                            source,
+                            "    if x > {k} {{ if x < 9 {{ x.checked_add(1).unwrap(); }} }}"
+                        )
+                        .expect("a String");
+                    }
                 }
                 source.push_str("}\n");
             }
@@ -1615,8 +1649,11 @@ fn allowed() -> i32 { 42 }
         }
     }
 
-    /// (file, name, start, end, cc bits): everything a report reads.
-    fn rows(fns: &[FunctionComplexity]) -> Vec<(PathBuf, String, usize, usize, u64)> {
+    /// (file, name, start, end, cc bits, signals, spans): everything a
+    /// report reads.
+    type Row = (PathBuf, String, usize, usize, u64, Signals, Spans);
+
+    fn rows(fns: &[FunctionComplexity]) -> Vec<Row> {
         fns.iter()
             .map(|f| {
                 (
@@ -1625,6 +1662,8 @@ fn allowed() -> i32 { 42 }
                     f.start_line,
                     f.end_line,
                     f.cyclomatic.to_bits(),
+                    f.signals,
+                    f.spans.clone(),
                 )
             })
             .collect()
@@ -1633,6 +1672,7 @@ fn allowed() -> i32 { 42 }
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
 
+        /// The rows compare signals and spans too (spec 43).
         #[test]
         fn a_cached_analysis_equals_an_uncached_one(
             first in generated_tree(),
@@ -1661,6 +1701,32 @@ fn allowed() -> i32 { 42 }
                 prop_assert_eq!(rows(&cached.functions), rows(&plain));
                 cache.save(&file, std::slice::from_ref(&root), cached.records).expect("writable");
             }
+        }
+
+        /// Spec 43: a warm cache hands back exactly the signals and spans a
+        /// fresh analysis computes.
+        #[test]
+        fn cached_and_uncached_analyses_agree_on_signals(files in generated_tree()) {
+            use crate::cache::complexity::{ComplexityCache, Executable, Header};
+            let dir = tempfile::tempdir().expect("temp dir");
+            let root = dir.path().join("src");
+            std::fs::create_dir_all(&root).expect("mkdir");
+            let file = dir.path().join("cache.json");
+            let header = Header {
+                executable: Executable { path: "/x".to_owned(), len: 1, mtime_ns: 1 },
+                try_weight: 1.0,
+            };
+            write_tree(&root, &files);
+            let cold = ComplexityCache::load(&file, header.clone());
+            let first = analyze_tree_cached(&root, &ExcludeMatcher::default(), &cold);
+            cold.save(&file, std::slice::from_ref(&root), first.records).expect("writable");
+            let warm = ComplexityCache::load(&file, header);
+            let cached = analyze_tree_cached(&root, &ExcludeMatcher::default(), &warm);
+            let plain = analyze_tree_weighted(&root, &[] as &[&str], 1.0).expect("walks");
+            let signals = |fns: &[FunctionComplexity]| -> Vec<(String, Signals, Spans)> {
+                fns.iter().map(|f| (f.name.clone(), f.signals, f.spans.clone())).collect()
+            };
+            prop_assert_eq!(signals(&cached.functions), signals(&plain));
         }
     }
 }

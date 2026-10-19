@@ -171,6 +171,28 @@ order of the pairs or the exit code.
 [Triaging duplicates](docs/guides/triage.md) has the details,
 and [the triage demo](examples/triage-demo) has three pairs to try it on.
 
+## Harder to maintain, explained
+
+*Since 0.10.0.*
+
+With `[signals] enabled = true` in `.cargo-crap.toml`, every function also
+gets six structural signals: nesting depth, length, separate nested chunks
+("bumps"), the most `&&`/`||` in one condition, stubs (`todo!`, `dbg!`) and
+panic sites (`unwrap`, `expect`, `panic!`). Against a baseline,
+`--fail-regression` then also fails when a change makes a function deeper,
+bumpier or adds a complex condition or a `todo!`, and every finding says
+where to look and what to do:
+
+```text
+Harder to maintain:
+  ✗ apply_patch  src/sync.rs:142  nesting 3 → 5  lines 151–188  → flatten-nesting
+  · apply_patch  src/sync.rs:142  lines 48 → 96  lines 140–235  → split-function
+```
+
+`--format json` carries the same reasons for coding agents to act on.
+CRAP scores never change. [Structural signals](docs/explanation/signals.md)
+explains what each one counts and why there is no single score.
+
 ## Documentation
 
 - Guides: [integrating with CI](docs/guides/ci.md), [the GitHub Action](docs/guides/github-action.md),
@@ -187,6 +209,7 @@ and [the triage demo](examples/triage-demo) has three pairs to try it on.
   [exit codes](docs/reference/exit-codes.md),
   [what gets a score](docs/reference/complexity.md).
 - How it works: [the CRAP metric](docs/explanation/crap-metric.md),
+  [structural signals](docs/explanation/signals.md),
   [design](docs/explanation/how-it-works.md),
   [the path-matching problem](docs/explanation/path-matching.md).
 - [Troubleshooting](docs/troubleshooting.md) starts with the usual cause of a

@@ -38,6 +38,8 @@ pub(crate) fn sample() -> Vec<CrapEntry> {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         },
         CrapEntry {
@@ -48,6 +50,8 @@ pub(crate) fn sample() -> Vec<CrapEntry> {
             coverage: Some(0.0),
             crap: 110.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         },
     ]
@@ -80,6 +84,8 @@ pub(crate) fn fractional_cc_sample() -> Vec<CrapEntry> {
             coverage: Some(0.0),
             crap: 40.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         },
         CrapEntry {
@@ -90,6 +96,8 @@ pub(crate) fn fractional_cc_sample() -> Vec<CrapEntry> {
             coverage: Some(0.0),
             crap: 60.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         },
     ]
@@ -105,6 +113,8 @@ pub(crate) fn fractional_cc_delta() -> DeltaReport {
                 baseline_crap: Some(current.crap - 10.0),
                 delta: Some(10.0),
                 status: DeltaStatus::Regressed,
+                baseline_signals: None,
+                reasons: Vec::new(),
                 previous_file: None,
                 current,
             })

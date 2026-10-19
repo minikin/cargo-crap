@@ -1425,6 +1425,8 @@ struct RenderOpts<'a> {
     /// Final entry ordering (spec 17). Applied to the `DeltaReport` so
     /// `removed` ordering is deterministic too.
     sort: SortOrder,
+    /// The resolved `[signals]` table (spec 43), for reasons and the gate.
+    signals: &'a cargo_crap::signals::SignalSettings,
 }
 
 /// Whether `--summary` replaces the selected report format's output.
@@ -1452,13 +1454,17 @@ fn load_filtered_baseline(
     roots: &[ScanRoot],
     member_scope: Option<&MemberScope>,
     try_weight: f64,
+    signals_enabled: bool,
 ) -> Result<Option<Baseline>> {
     let Some(baseline_path) = baseline else {
         return Ok(None);
     };
     let baseline = load_baseline_with_weight(baseline_path)?;
     warn_on_try_weight_mismatch(baseline.try_weight, try_weight);
+    warn_on_missing_signals(&baseline.entries, signals_enabled);
     let mut baseline = baseline;
+    // A run with signals off must not show a baseline's signals either.
+    keep_signals(&mut baseline.entries, signals_enabled);
     resolve_relative_paths(&mut baseline, workspace_root(roots));
     let filter = BaselineFilter::new(roots, allow_patterns)?;
     filter.retain(&mut baseline.entries);
@@ -1516,6 +1522,30 @@ fn try_weight_mismatch_warning(
             "warning: the baseline was recorded with try-weight {baseline} and this run \
              uses {current} — deltas reflect the weight change, not code changes"
         )
+    })
+}
+
+fn warn_on_missing_signals(
+    entries: &[cargo_crap::merge::CrapEntry],
+    signals_enabled: bool,
+) {
+    if let Some(warning) = missing_signals_warning(entries, signals_enabled) {
+        eprintln!("{warning}");
+    }
+}
+
+/// The warning for a run with signals enabled against a baseline recorded
+/// without them (spec 43): no signal can be compared, so none is, and the
+/// gate falls back to CRAP alone. `None` when there is nothing to say.
+fn missing_signals_warning(
+    entries: &[cargo_crap::merge::CrapEntry],
+    signals_enabled: bool,
+) -> Option<String> {
+    let none_recorded = !entries.is_empty() && entries.iter().all(|e| e.signals.is_none());
+    (signals_enabled && none_recorded).then(|| {
+        "warning: the baseline has no signals, so no signal was compared — regenerate it \
+         with [signals] enabled to compare them"
+            .to_owned()
     })
 }
 
@@ -1900,15 +1930,20 @@ fn do_render(
     let summary = effective_summary(opts.summary, opts.render.format);
     let outcome = if let Some(baseline_data) = baseline {
         let mut report = compute_delta(compared, baseline_data, opts.epsilon);
+        let baseline_has_signals = baseline_data.iter().any(|b| b.signals.is_some());
+        cargo_crap::delta::attach_reasons(&mut report, opts.signals, baseline_has_signals);
         // Counted before the rows are narrowed to the slice, so the gate and
-        // the count lines describe the whole comparison.
+        // the count lines describe the whole comparison. A gating reason
+        // (spec 43) trips the regression gate too; a regressed CRAP score
+        // is one whenever signals are on.
         let counts = report.counts();
+        let has_regression = counts.regressed + report.gating_reason_count() > 0;
+        let signal_gates = cargo_crap::delta::gating_signal_count(&report);
         report.restrict_to(entries);
         report.sort(opts.sort);
         let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
-        let has_regression = counts.regressed > 0;
         if summary {
-            render_delta_counts(&counts, out)?;
+            render_delta_summary_lines(&counts, signal_gates, out)?;
         } else {
             let render = RenderOptions {
                 delta_counts: Some(counts),
@@ -1930,6 +1965,23 @@ fn do_render(
     // both branches and every row policy.
     report::render_duplicates(&opts.render, out).context("writing duplicate report")?;
     Ok(outcome)
+}
+
+/// The `--summary` delta: the counts line, then a note when gating signal
+/// reasons (spec 43) fail the gate, since the counts only cover CRAP.
+fn render_delta_summary_lines(
+    counts: &cargo_crap::delta::DeltaCounts,
+    signal_gates: usize,
+    out: &mut dyn Write,
+) -> Result<()> {
+    render_delta_counts(counts, out)?;
+    if signal_gates > 0 {
+        writeln!(
+            out,
+            "✗ {signal_gates} signal regression(s); run without --summary for the reasons"
+        )?;
+    }
+    Ok(())
 }
 
 /// Resolve `--repo-url` / `--commit-ref` against the GitHub Actions env vars,
@@ -2013,6 +2065,8 @@ struct LoadedArgs {
     epsilon: f64,
     /// The knobs the analysis itself reads.
     knobs: AnalysisKnobs,
+    /// Resolved and validated `[signals]` table (spec 43).
+    signals: cargo_crap::signals::SignalSettings,
 }
 
 /// What [`analyze_sources`] needs besides the roots and excludes.
@@ -2050,9 +2104,12 @@ fn parse_and_validate() -> Result<LoadedArgs> {
     // config half of it is invisible to `validate_args`. Resolving the
     // provider is validating it, so it shares the one `?` with the other
     // merged values.
-    let dup = resolve_triage_provider(config.duplicates.triage.provider.as_deref())
+    let (dup, signals) = resolve_triage_provider(config.duplicates.triage.provider.as_deref())
         .map(|provider| DupSettings::resolve(&cli, &config, provider))
-        .and_then(|dup| validate_merged_values(epsilon, jobs, &dup, try_weight).map(|()| dup))?;
+        .and_then(|dup| validate_merged_values(epsilon, jobs, &dup, try_weight).map(|()| dup))
+        .and_then(|dup| {
+            cargo_crap::signals::SignalSettings::resolve(&config.signals).map(|s| (dup, s))
+        })?;
     let cache = cache_enabled(cli.no_cache, config.cache);
     Ok(LoadedArgs {
         cli,
@@ -2066,6 +2123,7 @@ fn parse_and_validate() -> Result<LoadedArgs> {
             cwd: dirs.cwd,
             cache,
         },
+        signals,
     })
 }
 
@@ -2105,6 +2163,20 @@ fn resolve_settings(
     }
 }
 
+/// Signals are always measured; only a run with `[signals] enabled = true`
+/// reports them (spec 43), so every other run's output stays as it was.
+fn keep_signals(
+    entries: &mut [cargo_crap::merge::CrapEntry],
+    enabled: bool,
+) {
+    if !enabled {
+        for entry in entries {
+            entry.signals = None;
+            entry.signal_spans = cargo_crap::signals::Spans::default();
+        }
+    }
+}
+
 fn run() -> Result<ExitCode> {
     let LoadedArgs {
         cli,
@@ -2112,6 +2184,7 @@ fn run() -> Result<ExitCode> {
         dup,
         epsilon,
         knobs,
+        signals,
     } = parse_and_validate()?;
     let try_weight = knobs.try_weight;
     let settings = resolve_settings(&cli, &config);
@@ -2152,6 +2225,7 @@ fn run() -> Result<ExitCode> {
     let diagnostics = merge_result.diagnostics;
     warn_scope_mismatch(diagnostics.as_ref());
     let mut entries = merge_result.entries;
+    keep_signals(&mut entries, signals.enabled);
     assign_crate_names(&mut entries, &members);
     let (min, top) = (cli.min.or(config.min), cli.top.or(config.top));
     apply_filters(&mut entries, &effective_allow)?;
@@ -2166,6 +2240,7 @@ fn run() -> Result<ExitCode> {
         &roots,
         member_scope.as_ref(),
         try_weight,
+        signals.enabled,
     )?;
 
     // --- Render ---
@@ -2197,6 +2272,7 @@ fn run() -> Result<ExitCode> {
         epsilon,
         summary: cli.summary,
         sort: settings.sort_order,
+        signals: &signals,
     };
     let (has_crappy, has_regression) = do_render(
         sliced_rows.as_deref().unwrap_or(&entries),
@@ -2219,6 +2295,55 @@ fn run() -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An entry with or without signals, for the spec 43 baseline checks.
+    fn signal_entry(signals: Option<cargo_crap::signals::Signals>) -> cargo_crap::merge::CrapEntry {
+        cargo_crap::merge::CrapEntry {
+            file: PathBuf::from("src/lib.rs"),
+            function: "f".into(),
+            line: 1,
+            cyclomatic: 1.0,
+            coverage: None,
+            crap: 2.0,
+            crate_name: None,
+            signals,
+            signal_spans: cargo_crap::signals::Spans::default(),
+            uncovered: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_baseline_without_signals_warns_only_when_signals_are_on() {
+        let without = [signal_entry(None), signal_entry(None)];
+        assert!(missing_signals_warning(&without, true).is_some());
+        assert!(missing_signals_warning(&without, false).is_none());
+        // Nothing to compare is not a baseline without signals.
+        assert!(missing_signals_warning(&[], true).is_none());
+        // One recorded entry means the baseline has signals.
+        let mixed = [signal_entry(None), signal_entry(Some(Default::default()))];
+        assert!(missing_signals_warning(&mixed, true).is_none());
+    }
+
+    #[test]
+    fn the_summary_notes_signal_regressions_only_when_there_are_some() {
+        let counts = cargo_crap::delta::DeltaCounts::default();
+        let text = |gates| {
+            let mut out = Vec::new();
+            render_delta_summary_lines(&counts, gates, &mut out).expect("writes");
+            String::from_utf8(out).expect("utf-8")
+        };
+        assert!(!text(0).contains("signal regression"), "{}", text(0));
+        assert!(text(1).contains("✗ 1 signal regression(s)"), "{}", text(1));
+    }
+
+    #[test]
+    fn signals_are_stripped_only_from_a_run_with_them_off() {
+        let mut entries = vec![signal_entry(Some(Default::default()))];
+        keep_signals(&mut entries, true);
+        assert!(entries[0].signals.is_some());
+        keep_signals(&mut entries, false);
+        assert!(entries[0].signals.is_none());
+    }
     use cargo_crap::merge::StrayFiles;
 
     fn diag(
@@ -2768,6 +2893,8 @@ mod tests {
                     coverage: Some(0.0),
                     crap,
                     crate_name: None,
+                    signals: None,
+                    signal_spans: cargo_crap::signals::Spans::default(),
                     uncovered: Vec::new(),
                 })
                 .collect()
@@ -2802,6 +2929,8 @@ mod tests {
                 coverage: Some(0.0),
                 crap,
                 crate_name: None,
+                signals: None,
+                signal_spans: cargo_crap::signals::Spans::default(),
                 uncovered: Vec::new(),
             })
             .collect();
@@ -3032,6 +3161,8 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            signals: None,
+            signal_spans: cargo_crap::signals::Spans::default(),
             uncovered: Vec::new(),
         }
     }

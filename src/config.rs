@@ -46,6 +46,14 @@
 //! enabled = false
 //! model = "jev-latest"
 //! confidence-floor = 0.5
+//! # Structural maintainability signals (spec 43).
+//! [signals]
+//! enabled = true
+//! # Signals whose regression trips --fail-regression (this is the default).
+//! gate = ["nesting", "bumps", "bool-ops", "stubs"]
+//! # Optional ceilings for functions new since the baseline.
+//! [signals.limits]
+//! nesting = 4
 //! ```
 
 use crate::merge::{MissingCoveragePolicy, SortOrder};
@@ -142,6 +150,41 @@ pub struct Config {
     /// similarity threshold cannot be confused with the CRAP `threshold`.
     #[serde(default)]
     pub duplicates: DuplicatesConfig,
+
+    /// Structural maintainability signals (spec 43). Its own table, off
+    /// unless `enabled = true`.
+    #[serde(default)]
+    pub signals: SignalsConfig,
+}
+
+/// The `[signals]` table (spec 43).
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SignalsConfig {
+    /// Compute and report the signals. Defaults to `false`.
+    pub enabled: Option<bool>,
+
+    /// Signals whose regression trips `--fail-regression`, by name (`-` or
+    /// `_` accepted). Defaults to `nesting`, `bumps`, `bool-ops`, `stubs`.
+    /// Validated against the known names after loading.
+    pub gate: Option<Vec<String>>,
+
+    /// Ceilings for the shape signals of functions new since the baseline.
+    #[serde(default)]
+    pub limits: SignalLimitsConfig,
+}
+
+/// The `[signals.limits]` table, as written. Signed so a negative value
+/// reaches validation and is reported by its key.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SignalLimitsConfig {
+    pub nesting: Option<i64>,
+    pub lines: Option<i64>,
+    pub bumps: Option<i64>,
+    /// Accepted as `bool-ops` (house style) or `bool_ops`.
+    #[serde(alias = "bool_ops")]
+    pub bool_ops: Option<i64>,
 }
 
 /// The `[duplicates]` table.
@@ -258,6 +301,37 @@ pub fn find(start: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn the_signals_table_is_absent_by_default() {
+        let config: Config = toml::from_str("").expect("valid");
+        assert_eq!(config.signals, SignalsConfig::default());
+    }
+
+    #[test]
+    fn the_signals_table_reads_enabled_gate_and_limits() {
+        let config: Config = toml::from_str(
+            "[signals]\nenabled = true\ngate = [\"lines\", \"bool_ops\"]\n\
+             [signals.limits]\nnesting = 4\nbool-ops = 3\n",
+        )
+        .expect("valid");
+        assert_eq!(config.signals.enabled, Some(true));
+        assert_eq!(
+            config.signals.gate,
+            Some(vec!["lines".to_owned(), "bool_ops".to_owned()])
+        );
+        assert_eq!(config.signals.limits.nesting, Some(4));
+        assert_eq!(config.signals.limits.bool_ops, Some(3));
+        let snake: Config =
+            toml::from_str("[signals.limits]\nbool_ops = 2\n").expect("alias accepted");
+        assert_eq!(snake.signals.limits.bool_ops, Some(2));
+    }
+
+    #[test]
+    fn an_unknown_signals_key_is_rejected() {
+        assert!(toml::from_str::<Config>("[signals]\nenable = true\n").is_err());
+        assert!(toml::from_str::<Config>("[signals.limits]\nstubs = 1\n").is_err());
+    }
 
     fn write_config(
         dir: &Path,

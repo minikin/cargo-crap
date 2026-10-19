@@ -183,6 +183,8 @@ mod tests {
             coverage: Some(100.0),
             crap: 1.0,
             crate_name: None,
+            signals: None,
+            signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         });
         let report = compute_delta(&entries, &baseline, 0.01);
