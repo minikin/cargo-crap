@@ -72,16 +72,57 @@ crap-delta:
     {{crap_bin}} --lcov lcov.info {{crap_scope}} --threshold 15 --fail-above \
         --baseline crap-baseline.json --fail-regression
 
+# The baseline is the crap-baseline artifact of the first main commit at or
+# below this branch's merge base whose CI run succeeded and still has one, as
+# CI's Self-score job picks it. No committed baseline needed; `gh` must be
+# logged in.
+# CRAP regressions vs main, exactly as CI's Self-score job finds them
+crap-delta-main:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+    git fetch -q origin main
+    base="$(git merge-base HEAD origin/main)"
+    run=""
+    for sha in $(git rev-list --first-parent -n 30 "$base"); do
+        id="$(gh api "repos/$repo/actions/workflows/ci.yml/runs?branch=main&head_sha=$sha&status=success" \
+            --jq '.workflow_runs[0].id // empty')"
+        [ -n "$id" ] || continue
+        found="$(gh api "repos/$repo/actions/runs/$id/artifacts" \
+            --jq '[.artifacts[] | select(.name == "crap-baseline" and .expired == false)] | length')"
+        if [ "$found" -gt 0 ]; then run="$id"; break; fi
+    done
+    if [ -z "$run" ]; then
+        echo "No main CI run with a crap-baseline artifact within 30 commits of $base." >&2
+        exit 1
+    fi
+    dir="$(mktemp -d)"
+    trap 'rm -rf "$dir"' EXIT
+    gh run download "$run" --repo "$repo" --name crap-baseline --dir "$dir"
+    echo "Baseline: CI run $run, main at or below $(git rev-parse --short "$base")"
+    cargo llvm-cov --lcov --output-path lcov.info --workspace --all-features
+    {{crap_bin}} --lcov lcov.info {{crap_scope}} --baseline "$dir/crap-current.json" --fail-regression
+
 # Full local gate: format, lint, tests, CRAP. Note `cov` is NOT part of it —
 # the `crap` recipe runs llvm-cov to produce lcov.info but never applies the
 # 90% line bar; run `just cov` for that.
-dev: fmt lint test action-test crap
+dev: fmt lint test action-test release-test crap
 
 # The GitHub Action's shell pieces: their tests, and shellcheck when it is
 # installed.
 action-test:
     bash scripts/action/test.sh
     if command -v shellcheck > /dev/null; then shellcheck -x scripts/action/*.sh; fi
+
+# Write a release's version everywhere and date the CHANGELOG:
+# just release-prep 0.10.0 (date defaults to today). Prints what is left.
+release-prep VERSION DATE="":
+    bash scripts/release/prep.sh "$VERSION" ${DATE:+"$DATE"}
+
+# The release-prep script's tests, and shellcheck when it is installed.
+release-test:
+    bash scripts/release/test.sh
+    if command -v shellcheck > /dev/null; then shellcheck -x scripts/release/*.sh; fi
 
 # Mutation tests for a specific file: just mutants src/delta.rs
 mutants FILE:

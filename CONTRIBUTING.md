@@ -59,6 +59,11 @@ both commands.
 `just cov` prints line coverage and fails below 90%. It is not part of
 `just dev`, but new code should have no uncovered lines.
 
+`just crap-delta-main` runs CI's Self-score check locally: it downloads the
+CRAP baseline CI recorded for `main` and fails when any function scores
+higher on your branch. It needs `gh` logged in, and is worth running before
+a pull request that adds branches to existing functions.
+
 CI runs the same gates and adds:
 
 - the tests on Linux, macOS and Windows;
