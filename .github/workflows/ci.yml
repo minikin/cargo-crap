@@ -26,6 +26,7 @@ jobs:
       src: ${{ steps.filter.outputs.src }}
       docs: ${{ steps.filter.outputs.docs }}
       workflow: ${{ steps.filter.outputs.workflow }}
+      release: ${{ steps.filter.outputs.release }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v4
@@ -37,6 +38,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
+              - '.config/**'
               - 'tests/fixtures/**'
               - 'rust-toolchain.toml'
               - 'clippy.toml'
@@ -53,12 +55,38 @@ jobs:
               - 'docs/**'
             workflow:
               - '.github/workflows/ci.yml'
+            release:
+              - 'scripts/release/**'
+              - 'Cargo.toml'
+              - 'CHANGELOG.md'
+              - 'action.yml'
+              - '.github/ISSUE_TEMPLATE/**'
+              - 'docs/reference/json.md'
+              - '.github/workflows/ci.yml'
+
+  # The release-prep script edits these files by their layout, so a change
+  # to any of them runs its tests against the new layout.
+  release-scripts:
+    name: Release scripts
+    needs: [changes]
+    if: needs.changes.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Shell tests
+        run: bash scripts/release/test.sh
+      - name: Shellcheck
+        run: shellcheck -x scripts/release/*.sh
 
   test:
     name: Test (${{ matrix.os }})
     needs: [changes]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
+    env:
+      # Report every failing test, not the first (.config/nextest.toml). Not
+      # set for mutation testing, which wants each mutant to stop early.
+      NEXTEST_PROFILE: ci
     strategy:
       fail-fast: false
       matrix:
@@ -117,6 +145,8 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    env:
+      NEXTEST_PROFILE: ci
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.88
