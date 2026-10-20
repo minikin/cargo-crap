@@ -1878,7 +1878,7 @@ mod tests {
             &[with_signals("f", "src/lib.rs", 1.0, shape(7, 300))],
             &other_baseline(),
         );
-        assert!(report.entries[0].reasons.is_empty());
+        assert_eq!(report.entries[0].reasons, Vec::<Reason>::new());
     }
 
     #[test]
@@ -1948,7 +1948,7 @@ mod tests {
             },
         );
         let report = reasons_for(&[current], &[old]);
-        assert!(report.entries[0].reasons.is_empty());
+        assert_eq!(report.entries[0].reasons, Vec::<Reason>::new());
     }
 
     #[test]
@@ -1981,7 +1981,7 @@ mod tests {
             &[with_signals("f", "src/lib.rs", 5.0, shape(3, 10))],
             &[with_signals("f", "src/lib.rs", 5.0, shape(5, 10))],
         );
-        assert!(report.entries[0].reasons.is_empty());
+        assert_eq!(report.entries[0].reasons, Vec::<Reason>::new());
         assert_eq!(report.entries[0].baseline_signals, Some(shape(5, 10)));
     }
 
@@ -2096,7 +2096,7 @@ mod tests {
             &[with_signals("f", "src/lib.rs", 5.0, shape(9, 99))],
             &[old],
         );
-        assert!(report.entries[0].reasons.is_empty());
+        assert_eq!(report.entries[0].reasons, Vec::<Reason>::new());
         assert_eq!(report.entries[0].baseline_signals, None);
     }
 
@@ -2104,7 +2104,7 @@ mod tests {
     fn a_run_without_signals_gets_no_reasons_at_all() {
         let report = reasons_for(&[entry("f", 41.0)], &[entry("f", 18.0)]);
         assert_eq!(report.entries[0].status, DeltaStatus::Regressed);
-        assert!(report.entries[0].reasons.is_empty());
+        assert_eq!(report.entries[0].reasons, Vec::<Reason>::new());
     }
 
     #[test]

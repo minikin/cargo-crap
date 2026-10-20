@@ -8580,7 +8580,10 @@ fn a_new_function_is_not_shape_checked_without_limits() {
     // Then the exit code is 0
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     // And the delta entry has no reasons
-    assert!(reasons_of(&delta_doc(&out), "deep").is_empty());
+    assert_eq!(
+        reasons_of(&delta_doc(&out), "deep"),
+        Vec::<serde_json::Value>::new()
+    );
 }
 
 #[test]
