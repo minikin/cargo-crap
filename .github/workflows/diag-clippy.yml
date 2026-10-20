@@ -13,12 +13,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: clippy findings as annotations
+      - name: clippy findings in one annotation
         run: |
-          cargo clippy --version
+          out=""
           for f in "" "--all-features"; do
-            cargo clippy --all-targets $f --message-format short -- -D warnings 2>&1 \
-              | grep -E '^(src|tests)/[^:]+:[0-9]+:[0-9]+: (error|warning)' \
-              | sed -E 's/^([^:]+):([0-9]+):[0-9]+: (error|warning): (.*)$/::error file=\1,line=\2::\4/' || true
+            out="$out$(cargo clippy --all-targets $f --message-format short -- -D warnings 2>&1 \
+              | grep -E '^(src|tests)/[^:]+:[0-9]+:[0-9]+: (error|warning)' || true)%0A"
           done
-          echo "::error::$(cargo clippy --version)"
+          echo "::error title=$(cargo clippy --version)::findings:%0A${out//$'\n'/%0A}"

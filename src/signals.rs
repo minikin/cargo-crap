@@ -835,9 +835,9 @@ mod tests {
     #[test]
     fn zero_signals_record_no_spans() {
         let m = measured_of("fn f() {\n    g();\n}\n");
-        assert!(m.spans.nesting.is_empty());
-        assert!(m.spans.bool_ops.is_empty());
-        assert!(m.spans.bumps.is_empty());
+        assert_eq!(m.spans.nesting, Vec::<LineRange>::new());
+        assert_eq!(m.spans.bool_ops, Vec::<LineRange>::new());
+        assert_eq!(m.spans.bumps, Vec::<LineRange>::new());
     }
 
     fn settings(toml_text: &str) -> anyhow::Result<SignalSettings> {
@@ -864,7 +864,7 @@ mod tests {
             settings("[signals]\ngate = [\"bool-ops\", \"lines\", \"bool_ops\"]\n").expect("valid");
         assert_eq!(s.gate, [Signal::Lines, Signal::BoolOps]);
         let none = settings("[signals]\ngate = []\n").expect("valid");
-        assert!(none.gate.is_empty());
+        assert_eq!(none.gate, Vec::<Signal>::new());
     }
 
     #[test]
