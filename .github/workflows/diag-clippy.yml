@@ -1,0 +1,24 @@
+name: Diagnose clippy (temporary)
+on:
+  push:
+    branches: [ci-diagnose-43]
+env:
+  CARGO_TERM_COLOR: never
+  RUSTFLAGS: "-D warnings"
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: clippy findings as annotations
+        run: |
+          cargo clippy --version
+          for f in "" "--all-features"; do
+            cargo clippy --all-targets $f --message-format short -- -D warnings 2>&1 \
+              | grep -E '^(src|tests)/[^:]+:[0-9]+:[0-9]+: (error|warning)' \
+              | sed -E 's/^([^:]+):([0-9]+):[0-9]+: (error|warning): (.*)$/::error file=\1,line=\2::\4/' || true
+          done
+          echo "::error::$(cargo clippy --version)"
