@@ -8047,15 +8047,25 @@ fn straight_line_code_has_zero_shape_signals() {
 
 #[test]
 fn signals_are_off_by_default_and_nothing_changes() {
-    // Given a project with no `[signals]` table in `.cargo-crap.toml`
-    let plain = shaped_tree(None);
-    let off = shaped_tree(Some("[signals]\nenabled = false\n"));
+    // Given a project with no `[signals]` table in `.cargo-crap.toml`.
+    // Both configurations run in this one directory, so every path in the
+    // output is the same and the outputs compare byte for byte on every
+    // platform (JSON escapes Windows separators; GitHub escapes `:`).
+    let dir = shaped_tree(None);
+    let config = dir.path().join(".cargo-crap.toml");
     let baseline_of = |dir: &Path| {
         let file = dir.join("baseline.json");
         fs::write(&file, stdout_of(dir, &["--format", "json"])).expect("write");
         file.to_str().expect("utf-8").to_owned()
     };
-    let (plain_base, off_base) = (baseline_of(plain.path()), baseline_of(off.path()));
+    let baseline = baseline_of(dir.path());
+    let both = |args: &[&str]| {
+        let _ = fs::remove_file(&config);
+        let plain = stdout_of(dir.path(), args);
+        fs::write(&config, "[signals]\nenabled = false\n").expect("write config");
+        let off = stdout_of(dir.path(), args);
+        (plain, off)
+    };
     // When the tool runs in any format, with or without --baseline
     for format in [
         "human",
@@ -8066,9 +8076,7 @@ fn signals_are_off_by_default_and_nothing_changes() {
         "sarif",
         "shields",
     ] {
-        let normalize = |s: String, dir: &Path| s.replace(dir.to_str().expect("utf-8"), "<root>");
-        let a = normalize(stdout_of(plain.path(), &["--format", format]), plain.path());
-        let b = normalize(stdout_of(off.path(), &["--format", format]), off.path());
+        let (a, b) = both(&["--format", format]);
         // Then the output is the same as with signals explicitly off
         assert_eq!(a, b, "{format}");
         assert!(
@@ -8078,17 +8086,7 @@ fn signals_are_off_by_default_and_nothing_changes() {
         if format == "sarif" {
             continue; // SARIF refuses --baseline.
         }
-        let a = normalize(
-            stdout_of(
-                plain.path(),
-                &["--format", format, "--baseline", &plain_base],
-            ),
-            plain.path(),
-        );
-        let b = normalize(
-            stdout_of(off.path(), &["--format", format, "--baseline", &off_base]),
-            off.path(),
-        );
+        let (a, b) = both(&["--format", format, "--baseline", &baseline]);
         assert_eq!(a, b, "{format} --baseline");
         // And no JSON entry has a `signals`, `baseline_signals` or `reasons` key
         assert!(

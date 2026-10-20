@@ -2320,7 +2320,10 @@ mod tests {
         // Nothing to compare is not a baseline without signals.
         assert!(missing_signals_warning(&[], true).is_none());
         // One recorded entry means the baseline has signals.
-        let mixed = [signal_entry(None), signal_entry(Some(Default::default()))];
+        let mixed = [
+            signal_entry(None),
+            signal_entry(Some(cargo_crap::signals::Signals::default())),
+        ];
         assert!(missing_signals_warning(&mixed, true).is_none());
     }
 
@@ -2338,7 +2341,7 @@ mod tests {
 
     #[test]
     fn signals_are_stripped_only_from_a_run_with_them_off() {
-        let mut entries = vec![signal_entry(Some(Default::default()))];
+        let mut entries = vec![signal_entry(Some(cargo_crap::signals::Signals::default()))];
         keep_signals(&mut entries, true);
         assert!(entries[0].signals.is_some());
         keep_signals(&mut entries, false);

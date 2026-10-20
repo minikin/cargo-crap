@@ -584,7 +584,7 @@ mod tests {
             1.0,
         )
         .expect("valid");
-        assert_eq!(f[0].cyclomatic, 1.0);
+        assert_eq!(f[0].cyclomatic.to_bits(), 1.0f64.to_bits());
         assert_eq!(f[0].signals.nesting, 2);
     }
 
