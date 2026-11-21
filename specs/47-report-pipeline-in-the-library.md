@@ -321,7 +321,7 @@ points. Keep the spec 44 snapshots in verification mode throughout.
   Tests: unit (outcome counts, score-only, signal-only and advisory
   reasons) and acceptance (sliced JSON, Human summary and exit status).
 
-- [ ] **T6 — Make the CLI write and flush its report through the public library run.**
+- [x] **T6 — Make the CLI write and flush its report through the public library run.**
   Needs: T5. Put `Analysis`, `Settings`, `RenderExtras` and the public
   `run::run` in `src/run.rs`. Move the existing absolute/delta dispatcher,
   duplicates output and final flush together. Replace the CLI gate block
