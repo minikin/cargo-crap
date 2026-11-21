@@ -4506,3 +4506,99 @@ fn uncovered_hints_default_off_keeps_human_output_unchanged() {
         "without the config key the column must not appear:\n{stdout}"
     );
 }
+
+fn report_input_error(args: &[&str]) -> String {
+    let dir = tempfile::tempdir().expect("isolated input tree");
+    let root = dir.path();
+    write_file(
+        &root.join("src/lib.rs"),
+        include_str!("fixtures/sample_project/src/lib.rs"),
+    );
+    write_file(&root.join(".cargo-crap.toml"), "");
+    write_file(
+        &root.join("p_other.info"),
+        include_str!("fixtures/golden/lcov/p_other.info"),
+    );
+    write_file(&root.join("bad.json"), "oops");
+    let destination = root.join("report.json");
+    write_file(&destination, "original");
+
+    let output = cmd()
+        .current_dir(root)
+        .args(["--output", "report.json"])
+        .args(args)
+        .output()
+        .expect("run cargo-crap");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 diagnostics");
+    assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+    assert!(output.stdout.is_empty(), "{args:?}: unexpected report");
+    assert_eq!(
+        std::fs::read(destination).expect("read report"),
+        b"original",
+        "{args:?}"
+    );
+    stderr
+}
+
+#[test]
+fn invalid_report_inputs_preserve_an_existing_output_file_for_an_invalid_allow() {
+    let stderr = report_input_error(&["--allow", "["]);
+    assert!(stderr.contains("invalid allow pattern"), "{stderr}");
+}
+
+#[test]
+fn invalid_report_inputs_preserve_an_existing_output_file_for_a_bad_baseline() {
+    let stderr = report_input_error(&["--baseline", "bad.json"]);
+    assert!(stderr.contains("parsing baseline bad.json"), "{stderr}");
+}
+
+#[test]
+fn invalid_report_inputs_preserve_an_existing_output_file_and_allow_errors_win_over_baseline_errors()
+ {
+    let stderr = report_input_error(&["--allow", "[", "--baseline", "bad.json"]);
+    assert_eq!(
+        stderr.lines().find(|line| line.starts_with("Error:")),
+        Some("Error: invalid allow pattern: \"[\""),
+        "{stderr}"
+    );
+}
+
+fn diagnostics_after_exclude(coverage: &str) -> Vec<String> {
+    let stderr =
+        report_input_error(&["--exclude", "unused/**", "--allow", "[", "--lcov", coverage]);
+    let mut lines = stderr.lines();
+    assert!(
+        lines.next().is_some_and(|line| line.starts_with("warning: --exclude 'unused/**' excluded no file")),
+        "{stderr}"
+    );
+    lines.map(str::to_owned).collect()
+}
+
+#[test]
+fn analysis_and_coverage_diagnostics_precede_allow_validation_for_missing_coverage() {
+    let diagnostics = diagnostics_after_exclude("missing.info");
+    assert_eq!(
+        diagnostics.first().map(String::as_str),
+        Some("Error: parsing LCOV file missing.info"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn analysis_and_coverage_diagnostics_precede_allow_validation_for_disjoint_coverage() {
+    let diagnostics = diagnostics_after_exclude("p_other.info");
+    assert!(
+        diagnostics
+            .first()
+            .is_some_and(|line| line.starts_with("warning: no overlap")),
+        "{diagnostics:?}"
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .find(|line| line.starts_with("Error:"))
+            .map(String::as_str),
+        Some("Error: invalid allow pattern: \"[\""),
+        "{diagnostics:?}"
+    );
+}
