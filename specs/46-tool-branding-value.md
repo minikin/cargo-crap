@@ -1,6 +1,6 @@
 # Spec 46: Tool branding value
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/report/tool.rs` (new), `src/tool.rs` (new), `src/report.rs`, `src/report/{json,sarif,markdown,pr_comment,human,duplicates,test_support}.rs`, `src/delta.rs`, `src/lib.rs`, `src/main.rs`, `tests/{width_snapshots,integration,acceptance}.rs`, `CHANGELOG.md`
 
