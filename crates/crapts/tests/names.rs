@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crapts::{FileStatus, Mode, analyze};
+use crapts::{FileStatus, Mode, Side, analyze};
 
 fn clean_names(
     path: &str,
@@ -346,4 +346,60 @@ fn emit_encoded_segments_at_bindings_roles_and_namespace_boundaries() {
         clean_names("normalization.ts", r"const é=()=>0; const e\u0301=()=>1"),
         ["é", "e\u{301}"]
     );
+}
+
+#[test]
+fn skip_explicitly_declared_modules_and_name_rows_in_other_string_modules() {
+    let path = Path::new("scope.ts");
+    let ambient =
+        "scope.ts: parse error: An implementation cannot be declared in ambient contexts.";
+    let quoted = "scope.ts: parse error: Only ambient modules can use quoted names.";
+    for (source, names, warning) in [
+        (r#"declare module "x" { function f() {} }"#, None, ambient),
+        (
+            r#"declare module "x" { function f() {} } function keep() {}"#,
+            Some("keep"),
+            ambient,
+        ),
+        ("declare namespace A.B { function f() {} }", None, ambient),
+        (
+            r#"module "x" { function f() {} }"#,
+            Some("\"x\"::f"),
+            quoted,
+        ),
+        (
+            r#"module "p/q" { function f() {} }"#,
+            Some("\"p%2Fq\"::f"),
+            quoted,
+        ),
+    ] {
+        let result = analyze(path, source.as_bytes(), Mode::Ordinary).unwrap();
+        assert_eq!(result.status, FileStatus::Recovered, "{source}");
+        assert_eq!(result.warnings, [warning], "{source}");
+        let rows: Vec<_> = result.rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(rows, names.as_slice(), "{source}");
+        for side in [Side::Base, Side::Head] {
+            let error = analyze(path, source.as_bytes(), Mode::Strict(side)).unwrap_err();
+            let label = match side {
+                Side::Base => "base",
+                Side::Head => "head",
+            };
+            assert_eq!(error.to_string(), format!("{label} {warning}"));
+        }
+    }
+}
+
+#[test]
+fn ambient_signatures_are_clean_in_both_analysis_modes() {
+    let source = br#"declare module "x" { function f(): void; }"#;
+    for mode in [
+        Mode::Ordinary,
+        Mode::Strict(Side::Base),
+        Mode::Strict(Side::Head),
+    ] {
+        let result = analyze(Path::new("scope.ts"), source, mode).unwrap();
+        assert_eq!(result.status, FileStatus::Clean);
+        assert!(result.rows.is_empty(), "{:?}", result.rows);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    }
 }
