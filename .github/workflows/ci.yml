@@ -46,6 +46,7 @@ jobs:
               - '.gitignore'
               - '.cargo-crap.toml'
               - 'tests/golden/encode.proptest-regressions'
+              - 'tests/golden/*.proptest-regressions'
               - 'specs/44-golden-outputs.md'
               - 'rust-toolchain.toml'
               - 'clippy.toml'
@@ -110,13 +111,13 @@ jobs:
       - name: Cargo.lock is tracked
         run: git ls-files --error-unmatch -- Cargo.lock
       - name: Test (default features)
-        run: cargo nextest run --all-targets --locked
+        run: cargo nextest run --workspace --all-targets --locked
       # The `triage` feature compiles the TypeSafe client (spec 30); its tests
       # only exist with it on.
       - name: Test (all features)
-        run: cargo nextest run --all-targets --all-features --locked
+        run: cargo nextest run --workspace --all-targets --all-features --locked
       - name: Doc tests
-        run: cargo test --doc --all-features --locked
+        run: cargo test --doc --workspace --all-features --locked
 
   # A docs-only change runs the docs test alone. When Rust changed too, the
   # test job above already runs it, unless the change is to this file.
@@ -149,9 +150,9 @@ jobs:
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy (default features)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: clippy (all features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   msrv:
     name: MSRV (Rust 1.88)

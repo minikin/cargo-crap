@@ -15,9 +15,9 @@ set export
 # the variables that would record (GOLDEN_RECORD) or force-write (insta's
 # force and pending-dir settings) are cleared.
 test:
-    env -u GOLDEN_RECORD -u INSTA_FORCE_UPDATE -u INSTA_FORCE_UPDATE_SNAPSHOTS -u INSTA_PENDING_DIR INSTA_UPDATE=no cargo nextest run --all-targets
-    env -u GOLDEN_RECORD -u INSTA_FORCE_UPDATE -u INSTA_FORCE_UPDATE_SNAPSHOTS -u INSTA_PENDING_DIR INSTA_UPDATE=no cargo nextest run --all-targets --all-features
-    cargo test --doc --all-features
+    env -u GOLDEN_RECORD -u INSTA_FORCE_UPDATE -u INSTA_FORCE_UPDATE_SNAPSHOTS -u INSTA_PENDING_DIR INSTA_UPDATE=no cargo nextest run --workspace --all-targets
+    env -u GOLDEN_RECORD -u INSTA_FORCE_UPDATE -u INSTA_FORCE_UPDATE_SNAPSHOTS -u INSTA_PENDING_DIR INSTA_UPDATE=no cargo nextest run --workspace --all-targets --all-features
+    cargo test --doc --workspace --all-features
 
 # Apply formatting
 fmt:
@@ -26,13 +26,13 @@ fmt:
 # Check formatting and lints (mirrors CI)
 lint:
     cargo fmt --all -- --check
-    cargo clippy --all-targets -- -D warnings
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Fast compile check without building test binaries
 check:
-    cargo check --all-targets
-    cargo check --all-targets --all-features
+    cargo check --workspace --all-targets
+    cargo check --workspace --all-targets --all-features
 
 # Run all CI checks locally (requires cargo-nextest: cargo binstall cargo-nextest)
 ci: lint test
@@ -50,7 +50,7 @@ crap_scope := "--workspace --exclude 'tests/fixtures/**'"
 
 # Line coverage summary; fails mechanically below 90% lines
 cov:
-    cargo llvm-cov nextest --all-targets --all-features --summary-only --fail-under-lines 90
+    cargo llvm-cov nextest --workspace --all-targets --all-features --summary-only --fail-under-lines 90
 
 # Dogfood: coverage + CRAP gate, fails if any function scores above threshold 15
 crap:
@@ -134,11 +134,11 @@ gates-test:
 
 # Mutation tests for a specific file: just mutants src/delta.rs
 mutants FILE:
-    cargo mutants --file {{FILE}}
+    cargo mutants --workspace --file {{FILE}}
 
 # Mutation tests on every file (slow)
 mutants-all:
-    cargo mutants
+    cargo mutants --workspace
 
 # Mutation tests on changed lines only
 mutants-diff:

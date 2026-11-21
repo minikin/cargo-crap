@@ -126,8 +126,8 @@ All of these must be green before a feature is considered done:
 | Gate       | Command                                               | Bar                                            |
 | ---------- | ----------------------------------------------------- | ---------------------------------------------- |
 | Format     | `cargo fmt --all -- --check`                          | clean                                          |
-| Lints      | `cargo clippy --all-targets -- -D warnings`           | zero warnings (pedantic is on)                 |
-| Tests      | `cargo nextest run --all-targets && cargo test --doc` | all pass                                       |
+| Lints      | `cargo clippy --workspace --all-targets -- -D warnings`           | zero warnings (pedantic is on)                 |
+| Tests      | `cargo nextest run --workspace --all-targets && cargo test --doc --workspace` | all pass                                       |
 | Coverage   | `just cov`                                            | no uncovered lines in changed code             |
 | CRAP       | `just crap`                                           | no function above threshold 15                 |
 | Mutation   | `just mutants-diff`                                   | zero surviving mutants in changed files        |
