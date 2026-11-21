@@ -9037,8 +9037,9 @@ fn top_and_min_narrow_the_section_but_not_the_gate() {
 
 // ── Spec 46: Tool branding value ─────────────────────────────────────────
 
-/// A tool whose every value differs from cargo-crap's and from one another.
+/// A tool whose seven branding strings differ from cargo-crap's and from one another.
 const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
+    policy: cargo_crap::tool::CARGO_CRAP_POLICY,
     name: "other-tool",
     version: "7.7.7-other",
     info_uri: "https://example.test/other-tool",

@@ -9,12 +9,26 @@ use crate::coverage::LineRange;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::duplicates::triage::verdict::Assessment;
 use crate::merge::CrapEntry;
+use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
 use std::path::PathBuf;
 
 /// cargo-crap's branding with a fixed version. The report tests use it in
 /// place of cargo-crap's own `Tool` value, which stays behind in the front
 /// end when the report moves into the core.
 pub(crate) const CARGO_CRAP_FIXTURE: Tool = Tool {
+    policy: Policy {
+        envelope: EnvelopeKind::CargoCrapV1,
+        pairing: PairPolicy::FileFunctionLine,
+        fail_above_counts: Population::Shown,
+        summary_formats: &[
+            Format::Human,
+            Format::Markdown,
+            Format::PrComment,
+            Format::Sarif,
+            Format::Shields,
+        ],
+        tie_order: TieOrder::Stable,
+    },
     name: "cargo-crap",
     version: "0.0.0-test",
     info_uri: "https://github.com/minikin/cargo-crap",
@@ -26,9 +40,10 @@ pub(crate) const CARGO_CRAP_FIXTURE: Tool = Tool {
     baseline_hint: "cargo crap --format json",
 };
 
-/// A tool whose every value differs from cargo-crap's and from one another,
+/// A tool whose seven branding strings differ from cargo-crap's and from one another,
 /// so a field read from the wrong place shows.
 pub(crate) const SECOND_TOOL: Tool = Tool {
+    policy: CARGO_CRAP_FIXTURE.policy,
     name: "other-tool",
     version: "7.7.7-other",
     info_uri: "https://example.test/other-tool",

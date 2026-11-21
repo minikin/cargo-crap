@@ -58,7 +58,7 @@ pub use tool::{Schemas, Tool};
 pub use types::{output_width, set_color_enabled};
 
 /// Output format for the report.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Human,
     Json,
@@ -98,7 +98,15 @@ pub enum Format {
 ///
 /// ```
 /// use cargo_crap::report::{Format, RenderOptions, Schemas, Tool};
+/// use cargo_crap::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
 /// const TOOL: Tool = Tool {
+///     policy: Policy {
+///         envelope: EnvelopeKind::CargoCrapV1,
+///         pairing: PairPolicy::FileFunctionLine,
+///         fail_above_counts: Population::Shown,
+///         summary_formats: &[Format::Human],
+///         tie_order: TieOrder::Stable,
+///     },
 ///     name: "my-tool",
 ///     version: "1.0.0",
 ///     info_uri: "https://example.test/my-tool",
@@ -576,6 +584,7 @@ mod tests {
             let mut v = v.into_iter().map(leaked);
             let mut next = || v.next().expect("seven values");
             Tool {
+                policy: test_support::SECOND_TOOL.policy,
                 name: next(),
                 version: next(),
                 info_uri: next(),

@@ -1429,19 +1429,6 @@ struct RenderOpts<'a> {
     signals: &'a cargo_crap::signals::SignalSettings,
 }
 
-/// Whether `--summary` replaces the selected report format's output.
-///
-/// JSON and GitHub workflow commands are machine-readable formats, so their
-/// full output remains available even when `--summary` is present (the
-/// documented contract on the `--summary` flag). The `&&` lives here rather
-/// than at the call site so `do_render` keeps its baseline CC.
-fn effective_summary(
-    summary: bool,
-    format: Format,
-) -> bool {
-    summary && !matches!(format, Format::Json | Format::GitHub)
-}
-
 /// Load the `--baseline` file (if any) and filter it through the current
 /// run's identity-based filters (spec 18) before delta computation. The
 /// analyzed roots are the workspace member dirs, or the single `--path`
@@ -1927,7 +1914,11 @@ fn do_render(
     opts: &RenderOpts,
     out: &mut dyn Write,
 ) -> Result<(bool, bool)> {
-    let summary = effective_summary(opts.summary, opts.render.format);
+    let summary = opts
+        .render
+        .tool
+        .policy
+        .use_summary(opts.summary, opts.render.format);
     let outcome = if let Some(baseline_data) = baseline {
         let mut report = compute_delta(compared, baseline_data, opts.epsilon);
         let baseline_has_signals = baseline_data.iter().any(|b| b.signals.is_some());
@@ -2297,6 +2288,7 @@ mod tests {
     use super::*;
 
     const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
+        policy: cargo_crap::tool::CARGO_CRAP_POLICY,
         name: "other-tool",
         version: "7.7.7-other",
         info_uri: "https://example.test/other-tool",

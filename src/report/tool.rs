@@ -1,13 +1,17 @@
 //! The identity a front end stamps on its reports.
 //!
 //! A front end fills a [`Tool`] with its own values and passes it in
-//! through [`RenderOptions`](super::RenderOptions). Every value must be
+//! through [`RenderOptions`](super::RenderOptions). Each branding string must be
 //! non-empty and hold no line break: the marker is written as one line, and
 //! the others land in JSON fields and error messages read as single values.
 
-/// The strings that brand a report as one front end's output.
+use crate::policy::Policy;
+
+/// A front end's report identity and behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tool {
+    /// The front end's formatting and gate choices.
+    pub policy: Policy,
     /// The SARIF driver name, such as `cargo-crap`.
     pub name: &'static str,
     /// The version stamped on the JSON envelope and the SARIF driver. It

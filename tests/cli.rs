@@ -4602,3 +4602,37 @@ fn analysis_and_coverage_diagnostics_precede_allow_validation_for_disjoint_cover
         "{diagnostics:?}"
     );
 }
+
+#[test]
+fn cargo_crap_selects_the_summary_before_dispatching_a_sarif_delta() {
+    for summary in [false, true] {
+        let mut command = color_cmd();
+        command.args([
+            "--path",
+            fixture_src(),
+            "--lcov",
+            fixture_lcov(),
+            "--baseline",
+            "tests/fixtures/golden/baselines/p_mixed.json",
+            "--format",
+            "sarif",
+        ]);
+        if summary {
+            command
+                .arg("--summary")
+                .assert()
+                .success()
+                .stdout(predicate::str::contains(
+                    "↑ 1 regressed  ↓ 0 improved  ★ 1 new  ↔ 1 moved  · 0 unchanged  — 1 removed",
+                ));
+        } else {
+            command
+                .assert()
+                .code(2)
+                .stdout("")
+                .stderr(predicate::str::contains(
+                    "--format sarif is incompatible with --baseline",
+                ));
+        }
+    }
+}

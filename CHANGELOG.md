@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING (library API):** A `report::Tool` literal must supply its
+  report and gate policy. Add `policy: cargo_crap::tool::CARGO_CRAP_POLICY`
+  to retain cargo-crap's behavior (spec 47).
+
 - **BREAKING (library API):** reports take their branding from a
   `report::Tool` value: its name, version, URLs, PR-comment marker and
   baseline hint (spec 46). cargo-crap's own value is

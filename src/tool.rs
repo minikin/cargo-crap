@@ -4,7 +4,23 @@
 //! is shared with other front ends, and `env!("CARGO_PKG_VERSION")` must
 //! expand in cargo-crap's package to stamp cargo-crap's version.
 
-use crate::report::{Schemas, Tool};
+use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+use crate::report::{Format, Schemas, Tool};
+
+/// cargo-crap's report, ordering and gate conventions.
+pub const CARGO_CRAP_POLICY: Policy = Policy {
+    envelope: EnvelopeKind::CargoCrapV1,
+    pairing: PairPolicy::FileFunctionLine,
+    fail_above_counts: Population::Shown,
+    summary_formats: &[
+        Format::Human,
+        Format::Markdown,
+        Format::PrComment,
+        Format::Sarif,
+        Format::Shields,
+    ],
+    tie_order: TieOrder::Stable,
+};
 
 /// The published HTTPS URL of a schema file in this repository. `concat!`
 /// takes only literals, so the base URL is repeated by expansion.
@@ -19,6 +35,7 @@ macro_rules! schema_url {
 
 /// cargo-crap's name, version, URLs, PR-comment marker and baseline hint.
 pub const CARGO_CRAP: Tool = Tool {
+    policy: CARGO_CRAP_POLICY,
     name: "cargo-crap",
     version: env!("CARGO_PKG_VERSION"),
     info_uri: "https://github.com/minikin/cargo-crap",
@@ -38,6 +55,27 @@ mod tests {
     use crate::report::Tool;
     use crate::report::test_support::CARGO_CRAP_FIXTURE;
     use std::path::Path;
+
+    #[test]
+    fn cargo_crap_counts_shown_rows_and_summarizes_five_formats() {
+        use crate::policy::{EnvelopeKind, PairPolicy, Population, TieOrder};
+        use crate::report::Format;
+        let policy = CARGO_CRAP.policy;
+        assert_eq!(policy.envelope, EnvelopeKind::CargoCrapV1);
+        assert_eq!(policy.pairing, PairPolicy::FileFunctionLine);
+        assert_eq!(policy.tie_order, TieOrder::Stable);
+        assert_eq!(policy.fail_above_counts, Population::Shown);
+        assert_eq!(
+            policy.summary_formats,
+            &[
+                Format::Human,
+                Format::Markdown,
+                Format::PrComment,
+                Format::Sarif,
+                Format::Shields
+            ]
+        );
+    }
 
     /// What makes a file bound for the shared core name cargo-crap's own
     /// identity: the package variables, the doctest path to this module, or
@@ -435,6 +473,7 @@ mod tests {
         let mut files = vec![
             (src.join("report.rs"), vec!["report".to_string()]),
             (src.join("delta.rs"), vec!["delta".to_string()]),
+            (src.join("policy.rs"), vec!["policy".to_string()]),
         ];
         rust_files(&src.join("report"), &["report".to_string()], &mut files);
         assert!(files.len() > 10, "{files:?}");
