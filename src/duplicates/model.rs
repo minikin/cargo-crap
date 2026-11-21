@@ -14,7 +14,7 @@ pub struct Fingerprint(pub u64);
 /// only the second survives into the report.
 ///
 /// The field order is the ordering. File and start line alone are not a total
-/// order — `fn a() {} fn b() {}` on one line share both, and a tie there would
+/// order: `fn a() {} fn b() {}` on one line share both, and a tie there would
 /// let the order functions happened to be discovered in leak into the report.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Location {

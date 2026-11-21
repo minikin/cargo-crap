@@ -158,6 +158,22 @@ mod tests {
     }
 
     #[test]
+    fn parsed_locations_span_each_function_from_fn_to_closing_brace() {
+        let functions = fns(ALPHA_BETA);
+        let locations: Vec<_> = functions
+            .iter()
+            .map(|f| {
+                (
+                    f.location.name.as_str(),
+                    f.location.start_line,
+                    f.location.end_line,
+                )
+            })
+            .collect();
+        assert_eq!(locations, [("alpha", 2, 6), ("beta", 7, 11)]);
+    }
+
+    #[test]
     fn identical_functions_are_reported_at_one() {
         let f = fns("fn a(x: i32) -> i32 { x + 1 } fn b(x: i32) -> i32 { x + 1 }");
         let pairs = find_pairs(&f, 0.82);
