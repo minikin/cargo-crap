@@ -9034,3 +9034,116 @@ fn top_and_min_narrow_the_section_but_not_the_gate() {
     // And the exit code is 1
     assert_eq!(out.status.code(), Some(1), "{out:?}");
 }
+
+// ── Spec 46: Tool branding value ─────────────────────────────────────────
+
+/// A tool whose every value differs from cargo-crap's and from one another.
+const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
+    name: "other-tool",
+    version: "7.7.7-other",
+    info_uri: "https://example.test/other-tool",
+    schemas: cargo_crap::report::Schemas {
+        report: "https://example.test/schemas/other-report.json",
+        delta: "https://example.test/schemas/other-delta.json",
+    },
+    comment_marker: "<!-- other-tool-marker -->",
+    baseline_hint: "other-tool --json",
+};
+
+/// Entries free of every branding string, one in `demo-crate` so the
+/// per-crate rollups render, and one above every threshold so the
+/// crappy-only formats render it.
+fn spec46_entries() -> Vec<cargo_crap::merge::CrapEntry> {
+    let entry =
+        |function: &str, crap: f64, crate_name: Option<&str>| cargo_crap::merge::CrapEntry {
+            file: PathBuf::from("src/demo.rs"),
+            function: function.into(),
+            line: 1,
+            cyclomatic: 10.0,
+            coverage: Some(0.0),
+            crap,
+            crate_name: crate_name.map(Into::into),
+            signals: None,
+            signal_spans: cargo_crap::signals::Spans::default(),
+            uncovered: Vec::new(),
+        };
+    let mut tidy = entry("tidy", 1.0, None);
+    tidy.line = 20;
+    tidy.cyclomatic = 1.0;
+    tidy.coverage = Some(100.0);
+    vec![entry("tangled", 110.0, Some("demo-crate")), tidy]
+}
+
+/// [`spec46_entries`] as a delta: `tangled` regressed from 100 to 110 and
+/// `tidy` is unchanged at 1.
+fn spec46_delta() -> cargo_crap::delta::DeltaReport {
+    use cargo_crap::delta::DeltaStatus;
+    cargo_crap::delta::DeltaReport {
+        entries: spec46_entries()
+            .into_iter()
+            .map(|current| {
+                let (delta, status) = if current.function == "tangled" {
+                    (10.0, DeltaStatus::Regressed)
+                } else {
+                    (0.0, DeltaStatus::Unchanged)
+                };
+                cargo_crap::delta::DeltaEntry {
+                    baseline_crap: Some(current.crap - delta),
+                    delta: Some(delta),
+                    status,
+                    baseline_signals: None,
+                    reasons: Vec::new(),
+                    previous_file: None,
+                    current,
+                }
+            })
+            .collect(),
+        removed: Vec::new(),
+    }
+}
+
+/// The absolute and the delta render of the spec 46 fixtures in `format`
+/// under `tool`.
+fn spec46_render(
+    tool: &cargo_crap::report::Tool,
+    format: cargo_crap::report::Format,
+) -> (String, String) {
+    let opts = cargo_crap::report::RenderOptions {
+        format,
+        ..cargo_crap::report::RenderOptions::new(tool)
+    };
+    let mut absolute = Vec::new();
+    cargo_crap::report::render(&spec46_entries(), &opts, &mut absolute).expect("renders");
+    let mut delta = Vec::new();
+    cargo_crap::report::render_delta(&spec46_delta(), &opts, &mut delta).expect("renders");
+    (
+        String::from_utf8(absolute).expect("utf-8"),
+        String::from_utf8(delta).expect("utf-8"),
+    )
+}
+
+// Spec 46 T1
+
+#[test]
+fn formats_without_branding_do_not_depend_on_the_tool() {
+    use cargo_crap::report::Format;
+    // Given the spec 46 entries and delta report
+    for format in [Format::Human, Format::GitHub, Format::Shields] {
+        // When they are rendered once with cargo-crap's Tool and once with
+        // the second tool
+        let cargo_crap = spec46_render(&cargo_crap::tool::CARGO_CRAP, format);
+        let second = spec46_render(&SECOND_TOOL, format);
+        // Then the two outputs are byte-identical
+        assert_eq!(cargo_crap, second, "{format:?}");
+    }
+}
+
+// Spec 46 T2
+
+// Spec 46 T3
+
+// Spec 46 T4
+
+// Spec 46 T5
+
+// Spec 46 T6

@@ -301,7 +301,7 @@ mod tests {
         let opts = RenderOptions {
             format: Format::Markdown,
             links: Some(&links),
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         render(&entries, &opts, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
@@ -620,7 +620,7 @@ mod tests {
         let opts = RenderOptions {
             threshold: 30.0,
             format: Format::Markdown,
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         render(&entries, &opts, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
@@ -635,7 +635,7 @@ mod tests {
         let opts = RenderOptions {
             threshold: 30.0,
             format: Format::Markdown,
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         super::super::render_delta(&report, &opts, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();

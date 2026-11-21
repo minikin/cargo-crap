@@ -1642,7 +1642,7 @@ mod tests {
         let opts = RenderOptions {
             format: Format::PrComment,
             links: Some(&links),
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         render(&entries, &opts, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();

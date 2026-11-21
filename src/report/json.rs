@@ -474,7 +474,7 @@ mod tests {
                 threshold: 30.0,
                 format: Format::Json,
                 diagnostics: Some(&diag),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -522,7 +522,7 @@ mod tests {
                 threshold: 30.0,
                 format: Format::Json,
                 links: Some(&links),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -538,7 +538,7 @@ mod tests {
         RenderOptions {
             format: Format::Json,
             try_weight,
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         }
     }
 
@@ -618,7 +618,7 @@ mod tests {
                 format: Format::Json,
                 duplicates: Some(pairs),
                 triage: triage.as_deref(),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -690,7 +690,7 @@ mod tests {
                 format: Format::Json,
                 duplicates: Some(&pairs),
                 triage: Some(&triage),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -761,7 +761,7 @@ mod tests {
             duplicates: Some(&pairs),
             groups: Some(&groups),
             triage: triage.as_deref(),
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         if delta {
@@ -824,7 +824,7 @@ mod tests {
                 groups: Some(&groups),
                 triage: Some(&triage),
                 untriaged,
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             };
             let (mut plain, mut delta) = (Vec::new(), Vec::new());
             render(&sample(), &opts, &mut plain).unwrap();
@@ -846,7 +846,7 @@ mod tests {
             format: Format::Json,
             duplicates: Some(&pairs),
             untriaged: 2,
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         render(&sample(), &opts, &mut buf).unwrap();
@@ -883,7 +883,7 @@ mod tests {
             duplicates: Some(&pairs),
             groups: Some(&groups),
             triage: Some(&triage),
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         render(&sample(), &opts, &mut buf).unwrap();
@@ -915,7 +915,7 @@ mod tests {
             duplicates: Some(&pairs),
             groups: Some(&groups),
             novelty: Some(&comparison),
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         if delta {
@@ -979,7 +979,7 @@ mod tests {
                 &RenderOptions {
                     format: Format::Json,
                     duplicates: Some(&pairs),
-                    ..Default::default()
+                    ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
                 },
                 &mut buf,
             )

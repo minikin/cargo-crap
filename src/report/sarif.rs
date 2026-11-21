@@ -207,7 +207,7 @@ mod tests {
         let opts = RenderOptions {
             threshold,
             format: Format::Sarif,
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         render(&sample(), &opts, &mut buf).unwrap();
         serde_json::from_slice(&buf).expect("output must be valid JSON")

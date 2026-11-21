@@ -892,7 +892,7 @@ mod tests {
                 show_unchanged: false,
                 uncovered_hints: false,
                 sliced: false,
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &report.counts(),
             &mut buf,
@@ -960,7 +960,7 @@ mod tests {
                 show_unchanged: false,
                 uncovered_hints: false,
                 sliced: false,
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mixed_report().counts(),
             &mut buf,
@@ -988,7 +988,7 @@ mod tests {
                 show_unchanged: true,
                 uncovered_hints: false,
                 sliced: false,
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mixed_report().counts(),
             &mut buf,
@@ -1017,7 +1017,7 @@ mod tests {
                 show_unchanged: false,
                 uncovered_hints: false,
                 sliced: false,
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &report.counts(),
             &mut buf,
@@ -1055,7 +1055,7 @@ mod tests {
                 show_unchanged: false,
                 uncovered_hints: false,
                 sliced: false,
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &report.counts(),
             &mut buf,
@@ -1141,7 +1141,7 @@ mod tests {
                 show_unchanged: false,
                 uncovered_hints: true,
                 sliced: false,
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &report.counts(),
             &mut buf,
@@ -1226,7 +1226,7 @@ mod tests {
         let opts = RenderOptions {
             threshold: 30.0,
             sliced: true,
-            ..RenderOptions::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         render(&scoring(&[1.0; 12]), &opts, &mut buf).unwrap();
@@ -1375,7 +1375,7 @@ mod tests {
         let opts = RenderOptions {
             threshold: 30.0,
             show_unchanged: true,
-            ..RenderOptions::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let out = human_delta(&report, &opts);
         assert_eq!(drawn(&out).len(), 12, "{out}");
@@ -1388,7 +1388,7 @@ mod tests {
         let opts = RenderOptions {
             threshold: 30.0,
             sliced: true,
-            ..RenderOptions::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let out = human_delta(&report, &opts);
         assert_eq!(drawn(&out).len(), 12, "{out}");

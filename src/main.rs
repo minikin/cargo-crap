@@ -1743,7 +1743,7 @@ impl DuplicateSection<'_> {
             triaged_by: self.triaged_by(),
             novelty: self.novelty.as_ref(),
             untriaged: self.untriaged,
-            ..RenderOptions::default()
+            ..RenderOptions::new(&cargo_crap::tool::CARGO_CRAP)
         }
     }
 }

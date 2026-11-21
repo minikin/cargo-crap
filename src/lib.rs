@@ -50,6 +50,7 @@
 //!     complexity, coverage,
 //!     merge::{MissingCoveragePolicy, merge},
 //!     report::{RenderOptions, render},
+//!     tool::CARGO_CRAP,
 //! };
 //! use std::io;
 //!
@@ -67,9 +68,9 @@
 //! //    treated as 0% covered (the pessimistic default, safest for CI gates).
 //! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic).entries;
 //!
-//! // 4. Render the human-readable table to stdout. `RenderOptions`
-//! //    defaults to the CLI defaults: threshold 30, human format.
-//! render(&entries, &RenderOptions::default(), &mut io::stdout())?;
+//! // 4. Render the human-readable table to stdout. `RenderOptions::new`
+//! //    takes the CLI defaults: threshold 30, human format.
+//! render(&entries, &RenderOptions::new(&CARGO_CRAP), &mut io::stdout())?;
 //!
 //! # Ok::<(), anyhow::Error>(())
 //! ```
@@ -116,6 +117,7 @@
 //!     delta::{DEFAULT_EPSILON, compute_delta, load_baseline},
 //!     merge::{MissingCoveragePolicy, merge},
 //!     report::{RenderOptions, render_delta},
+//!     tool::CARGO_CRAP,
 //! };
 //! use std::io;
 //!
@@ -132,7 +134,7 @@
 //!
 //! // Exit non-zero if any function regressed.
 //! if report.regression_count() > 0 {
-//!     render_delta(&report, &RenderOptions::default(), &mut io::stdout())?;
+//!     render_delta(&report, &RenderOptions::new(&CARGO_CRAP), &mut io::stdout())?;
 //!     std::process::exit(1);
 //! }
 //! # Ok::<(), anyhow::Error>(())
@@ -151,6 +153,7 @@
 //! | [`duplicates`] | Structural duplicate detection: normalize each function's AST, fingerprint its subtrees, compare pairs by Jaccard similarity. Optional triage of the pairs by a `TypeSafe` model lives in `duplicates::triage` (the HTTP client needs the `triage` feature). |
 //! | [`report`] | Renders `Vec<CrapEntry>` or `DeltaReport` as a human table, JSON, GitHub annotations, Markdown, a PR comment, SARIF, or a Shields.io badge. |
 //! | [`config`] | Loads `.cargo-crap.toml` by walking up from CWD. |
+//! | [`tool`] | cargo-crap's [`report::Tool`]: the name, version and URLs its reports carry. |
 
 pub mod cache;
 pub mod complexity;
@@ -162,3 +165,4 @@ pub mod merge;
 pub mod report;
 pub mod score;
 pub mod signals;
+pub mod tool;
