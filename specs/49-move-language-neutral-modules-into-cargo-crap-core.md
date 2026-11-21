@@ -229,7 +229,7 @@ source guard drops each file as it moves.
   mutant is selected and caught) and a `tests/workspace.rs` test that
   parses `.cargo/mutants.toml` and reads `test_workspace` as TOML `true`.
 
-- [ ] **T2 — Pin the local core and move scoring, LCOV and the signal models into it.**
+- [x] **T2 — Pin the local core and move scoring, LCOV and the signal models into it.**
   Needs: T1. Add the exact `=0.1.0` path dependency through
   `[workspace.dependencies]`, refresh `Cargo.lock` and give the core the
   normal dependencies these files use. Move `score.rs`, `coverage/` and

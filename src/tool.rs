@@ -651,14 +651,9 @@ mod tests {
     fn every_listed_file_and_nested_report_is_checked_for_branding_and_dependencies() {
         let dir = tempfile::tempdir().unwrap();
         let required = [
-            (
-                "src",
-                "score entry paths delta report filter gate run policy",
-            ),
-            ("src/coverage", "mod lcov"),
-            ("src/signals", "model config"),
+            ("src", "entry paths delta report filter gate run policy"),
             ("src/duplicates", "model compare group novelty verdict"),
-            ("src/report/subdirectory", "more"),
+            ("src/report/subdirectory", "mod more"),
         ]
         .into_iter()
         .flat_map(|(dir, stems)| {
@@ -681,8 +676,8 @@ mod tests {
         }
         for (file, line, resolved) in [
             (
-                "src/coverage/mod.rs",
-                "use super::merge::X;",
+                "src/report/subdirectory/mod.rs",
+                "use super::super::merge::X;",
                 "crate::merge",
             ),
             (
@@ -919,13 +914,8 @@ mod tests {
     }
 
     const CORE_BOUND_FILES: &[&str] = &[
-        "src/score.rs",
         "src/entry.rs",
         "src/paths.rs",
-        "src/coverage/mod.rs",
-        "src/coverage/lcov.rs",
-        "src/signals/model.rs",
-        "src/signals/config.rs",
         "src/delta.rs",
         "src/report.rs",
         "src/duplicates/model.rs",

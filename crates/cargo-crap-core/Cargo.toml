@@ -10,5 +10,15 @@ repository.workspace = true
 homepage.workspace = true
 publish = false
 
+[dependencies]
+anyhow.workspace = true
+lcov.workspace = true
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true

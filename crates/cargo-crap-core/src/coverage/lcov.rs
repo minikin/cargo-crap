@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn both_strictness_modes_reject_a_malformed_da_count() {
-        let path = Path::new("tests/fixtures/golden/lcov/p_bad_known.info");
+        let path = Path::new("tests/fixtures/lcov/p_bad_known.info");
         assert!(path.is_file());
         for mode in [Strictness::Strict, Strictness::Lenient] {
             let error = parse_lcov_with(path, mode).unwrap_err().to_string();

@@ -52,6 +52,7 @@ repository = "https://github.com/minikin/cargo-crap"
 homepage = "https://github.com/minikin/cargo-crap"
 
 [workspace.dependencies]
+cargo-crap-core = { path = "crates/cargo-crap-core", version = "=0.1.0" }
 anyhow = "1"
 clap = "4.4"
 comfy-table = "7"
@@ -90,6 +91,7 @@ name = "cargo_crap"
 path = "src/lib.rs"
 
 [dependencies]
+cargo-crap-core.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 comfy-table.workspace = true

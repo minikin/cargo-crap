@@ -291,7 +291,7 @@ mod tests {
     fn signals_are_stripped_only_from_a_run_with_them_off() {
         let mut entries = crate::report::test_support::sample();
         entries[0].signals = Some(crate::signals::Signals::default());
-        let spans = crate::coverage::LineRange::list(&[(3, 5)]);
+        let spans = vec![crate::coverage::LineRange { start: 3, end: 5 }];
         entries[0].signal_spans.lines.clone_from(&spans);
         keep_signals(&mut entries, true);
         assert_eq!(entries[0].signal_spans.lines, spans);

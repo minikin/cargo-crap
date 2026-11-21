@@ -219,6 +219,7 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "cargo-crap-core",
  "clap",
  "comfy-table",
  "globset",
@@ -246,6 +247,14 @@ dependencies = [
 [[package]]
 name = "cargo-crap-core"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lcov",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "cc"

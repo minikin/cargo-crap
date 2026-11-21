@@ -40,7 +40,7 @@ pub const DEFAULT_THRESHOLD: f64 = 30.0;
 /// # Examples
 ///
 /// ```
-/// use cargo_crap::score::crap;
+/// use cargo_crap_core::score::crap;
 /// assert_eq!(crap(1.0, 100.0), 1.0);          // trivial, tested
 /// assert_eq!(crap(6.0, 0.0), 42.0);           // moderately complex, untested
 /// ```

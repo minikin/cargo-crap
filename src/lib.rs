@@ -162,10 +162,11 @@
 //! | [`policy`] | A front end's choices for rendering, row ordering, baseline pairing and gates. |
 //! | [`tool`] | cargo-crap's [`report::Tool`]: the name, version and URLs its reports carry. |
 
+pub use cargo_crap_core::{coverage, score};
+
 pub mod cache;
 pub mod complexity;
 pub mod config;
-pub mod coverage;
 pub mod delta;
 pub mod duplicates;
 pub mod entry;
@@ -176,6 +177,5 @@ pub mod paths;
 pub mod policy;
 pub mod report;
 pub mod run;
-pub mod score;
 pub mod signals;
 pub mod tool;
