@@ -56,7 +56,7 @@ impl LineRange {
 /// and purely declarative lines (use statements, struct definitions) do
 /// not appear here, and we treat them as "not applicable" rather than
 /// "uncovered".
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FileCoverage {
     /// Line number (1-indexed) → hit count.
     pub lines: BTreeMap<u32, u64>,
@@ -144,14 +144,35 @@ impl FileCoverage {
 /// **Path normalization is deliberately NOT done here.** Paths in LCOV may
 /// be absolute, relative to the CWD at the time coverage was generated, or
 /// relative to the workspace root. The caller is responsible for matching
-/// them against the paths [`crate::complexity`] produces — see
-/// [`crate::merge`].
+/// them against the analyzed source paths. A line outside a source record is ignored.
 pub fn parse_lcov(path: &Path) -> Result<HashMap<PathBuf, FileCoverage>> {
+    parse_lcov_with(path, Strictness::Lenient)
+}
+
+/// How the reader handles line data outside an open source record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strictness {
+    /// Ignore stray line data.
+    Lenient,
+    /// Return an error naming the input file and stray record.
+    Strict,
+}
+
+/// Read an LCOV file with the requested treatment of stray line data.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read, a known record is malformed,
+/// or strict reading encounters line data outside a source record.
+pub fn parse_lcov_with(
+    path: &Path,
+    strictness: Strictness,
+) -> Result<HashMap<PathBuf, FileCoverage>> {
     let reader =
         Reader::open_file(path).with_context(|| format!("opening LCOV file {}", path.display()))?;
 
     let mut files: HashMap<PathBuf, FileCoverage> = HashMap::new();
-    let mut current_path: Option<PathBuf> = None;
+    let mut current_file: Option<&mut FileCoverage> = None;
 
     for record in reader {
         let record = match record {
@@ -168,21 +189,17 @@ pub fn parse_lcov(path: &Path) -> Result<HashMap<PathBuf, FileCoverage>> {
         };
         match record {
             Record::SourceFile { path: sf_path } => {
-                current_path = Some(sf_path.clone());
-                files.entry(sf_path).or_default();
+                current_file = Some(files.entry(sf_path).or_default());
             },
             Record::LineData { line, count, .. } => {
-                if let Some(ref p) = current_path
-                    && let Some(fc) = files.get_mut(p)
-                {
-                    // LCOV files can legitimately repeat a line in
-                    // different branches; sum the hits.
-                    *fc.lines.entry(line).or_insert(0) += count;
+                if let Some(file) = current_file.as_deref_mut() {
+                    // LCOV can repeat a line for different branches. Sum their hits.
+                    *file.lines.entry(line).or_default() += count;
+                } else if strictness == Strictness::Strict {
+                    anyhow::bail!("{}: DA:{line} outside a source record", path.display());
                 }
             },
-            Record::EndOfRecord => {
-                current_path = None;
-            },
+            Record::EndOfRecord => current_file = None,
             _ => {},
         }
     }
@@ -212,6 +229,85 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
         f.write_all(content.as_bytes()).expect("write");
         f
+    }
+
+    #[test]
+    fn lenient_lcov_reading_drops_a_stray_da_record() {
+        let f = write_lcov(
+            "SF:src/a.rs\nDA:1,1\nend_of_record\nDA:99,99\nSF:src/b.rs\nDA:2,4\nend_of_record\n",
+        );
+        let files = parse_lcov(f.path()).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[Path::new("src/a.rs")].lines, BTreeMap::from([(1, 1)]));
+        assert_eq!(files[Path::new("src/b.rs")].lines, BTreeMap::from([(2, 4)]));
+    }
+
+    fn strict_error(
+        text: &str,
+        record: &str,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cov.info");
+        std::fs::write(&path, text).unwrap();
+        let error = parse_lcov_with(&path, Strictness::Strict)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("cov.info") && error.contains(record),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn strict_lcov_reading_rejects_a_da_after_end_of_record() {
+        strict_error("SF:src/a.rs\nDA:1,1\nend_of_record\nDA:99,99\n", "DA:99");
+    }
+
+    #[test]
+    fn strict_lcov_reading_rejects_a_da_before_the_first_sf() {
+        strict_error("TN:\nDA:3,1\nSF:src/a.rs\nend_of_record\n", "DA:3");
+    }
+
+    #[test]
+    fn both_strictness_modes_reject_a_malformed_da_count() {
+        let path = Path::new("tests/fixtures/golden/lcov/p_bad_known.info");
+        assert!(path.is_file());
+        for mode in [Strictness::Strict, Strictness::Lenient] {
+            let error = parse_lcov_with(path, mode).unwrap_err().to_string();
+            assert!(
+                error.contains("parsing record") && error.contains("p_bad_known.info"),
+                "{error}"
+            );
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn strict_and_lenient_reading_agree_on_well_formed_lcov(
+            records in proptest::collection::vec(
+                (proptest::bool::ANY, 0u8..4, proptest::collection::vec(
+                    (proptest::prop_oneof![1..=4u32, 1..=u32::MAX], 0..=u32::MAX), 0..8)),
+                0..7)
+        ) {
+            use std::fmt::Write as _;
+            let mut text = String::new();
+            let mut expected: HashMap<PathBuf, FileCoverage> = HashMap::new();
+            for (named, id, hits) in records {
+                if named { writeln!(text, "TN:run-{id}").unwrap(); }
+                let file = format!("src/{id}.rs");
+                writeln!(text, "SF:{file}").unwrap();
+                let lines = &mut expected.entry(file.into()).or_default().lines;
+                for (line, count) in hits {
+                    writeln!(text, "DA:{line},{count}").unwrap();
+                    *lines.entry(line).or_default() += u64::from(count);
+                }
+                text.push_str("end_of_record\n");
+            }
+            let f = write_lcov(&text);
+            for mode in [Strictness::Strict, Strictness::Lenient] {
+                proptest::prop_assert_eq!(&parse_lcov_with(f.path(), mode).unwrap(), &expected);
+            }
+        }
     }
 
     // --- parse_lcov tests (kill missed mutants) ---
@@ -244,7 +340,7 @@ mod tests {
 
     #[test]
     fn parse_lcov_isolates_multiple_source_files() {
-        // Kills: delete EndOfRecord arm (if current_path leaks, lines can bleed).
+        // Kills: delete EndOfRecord arm (if current_file leaks, lines can bleed).
         // Lines from src/a.rs must never appear under src/b.rs.
         let f = write_lcov(
             "TN:\nSF:src/a.rs\nDA:1,1\nend_of_record\nSF:src/b.rs\nDA:2,4\nend_of_record\n",
@@ -269,7 +365,7 @@ mod tests {
     #[test]
     fn stray_da_after_end_of_record_is_not_attributed_to_previous_file() {
         // Kills: delete match arm Record::EndOfRecord in parse_lcov.
-        // If EndOfRecord does not clear current_path, a stray DA line between
+        // If EndOfRecord does not clear current_file, a stray DA line between
         // records would be attributed to the previous file.
         let f = write_lcov(concat!(
             "TN:\n",
@@ -286,7 +382,7 @@ mod tests {
         let a = result.get(Path::new("src/a.rs")).expect("a.rs in result");
         assert!(
             !a.lines.contains_key(&99),
-            "stray DA:99,99 must not bleed into src/a.rs (EndOfRecord not resetting current_path)"
+            "stray DA:99,99 must not bleed into src/a.rs (EndOfRecord not resetting current_file)"
         );
     }
 

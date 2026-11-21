@@ -52,7 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `merge::CrapEntry` gains an optional `fingerprint` and implements
   `Default`. Add `fingerprint: None` to exhaustive literals or end them
   with `..Default::default()`. Name the field in exhaustive patterns or
-  end them with `..`.
+  end them with `..`. `coverage::FileCoverage` implements `PartialEq` and
+  `Eq` so callers can compare per-file hit maps.
 
 ### Fixed
 

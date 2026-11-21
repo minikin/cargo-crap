@@ -599,7 +599,7 @@ modified. The scenario names below identify their owning tasks.
   Tests: docs acceptance for the six named keys, plus the existing
   settings, walker and score unit tests.
 
-- [ ] **T3 — Read LCOV through the old lenient API and the new strict API.**
+- [x] **T3 — Read LCOV through the old lenient API and the new strict API.**
   Move `coverage.rs` to `coverage/lcov.rs`, update its doc links and
   retain the public exports in `coverage/mod.rs`. Keep `parse_lcov`
   lenient. In `parse_lcov_with`, track the open source record and name
