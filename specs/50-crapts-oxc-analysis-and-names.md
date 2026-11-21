@@ -749,7 +749,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _A UTF-8 BOM counts toward source columns_, _Count JavaScript line terminators_, _Identify arrow functions for coverage attribution_.
   Tests: Unit tests for the line index and acceptance for the BOM, CRLF as one break, lone CR, LF and both Unicode separators. Check arrow identity for concise and block arrows, an ordinary function expression and a declaration.
 
-- [ ] **T8 - Compose enclosing segments and choose the row's own segment.** Needs: T7.
+- [x] **T8 - Compose enclosing segments and choose the row's own segment.** Needs: T7.
   Scenarios: _Compose scheme-1 names from ancestors and sites (N1-N3)_, _Choose and absorb the first applicable segment (N4)_.
   Tests: Unit tests for precedence and transparent wrappers. Acceptance for traversal from the outermost site, absorption exactly once and fallback names.
 
