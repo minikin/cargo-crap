@@ -50,8 +50,8 @@ core-bound files and the core's dependencies. Today they do not:
 
 The path index is private to `merge.rs` (`PathIndex`, `:354`) and answers
 one source at a time. The TypeScript front end needs a rule that a
-per-source lookup cannot express: a relative coverage key that is the best
-match of two or more sources (`src/index.ts` against
+per-source lookup cannot express: a relative coverage key that fits
+two or more sources (`src/index.ts` against
 `packages/a/src/index.ts` and `packages/b/src/index.ts`) binds to none of
 them, and the front end warns. cargo-crap binds such a key to every source
 that picks it (`merge.rs` test
@@ -113,11 +113,12 @@ Decisions taken in this draft, for the author to confirm:
   tests and doc comments. The guard parses with syn, so it stays in the
   root package's tests. Spec 49 deletes it once the files sit in
   `crates/cargo-crap-core` and the compiler enforces the boundary.
-- **Tie rule.** Under the tie-rejecting policy each source first picks
-  its longest matching key, as cargo-crap does. A key picked by two or
-  more sources is then withdrawn from all of them, and the withdrawn
-  sources bind nothing. A tied key is consumed by no source, so it counts
-  in `lcov_only`, and each tied source counts in `source_only`.
+- **Tie rule.** Under `Unmatched`, consider every distinct source when
+  deciding which source owns a suffix group. A group that fits multiple
+  sources remains unused and produces one tie for the front end to warn
+  about. A source can appear in a tie while receiving coverage from a
+  real-path group or a different uniquely owned suffix. Only sources
+  without coverage count in `source_only`. cargo-crap uses `PerSource`.
 - **Landed shape of specs 46 and 47.** Both are drafts below this one.
   If spec 47 lands its four files under other names, or spec 46 lands its
   guard in another file or shape, this spec takes the landed shape. That
@@ -350,26 +351,36 @@ And   one tie is reported, naming the key src/index.ts and both sources, sorted
 And   the diagnostics count 0 matched files, src/index.ts in lcov_only and both sources in source_only
 ```
 
-### Scenario: distinct best keys are not a tie
+### Scenario: unique suffix groups bind their respective sources
 
 ```
-Given sources /p/src/a.ts and /p/vendor/x/src/a.ts
-And   the coverage keys src/a.ts and vendor/x/src/a.ts
+Given sources /p/pkg/src/a.ts and /p/vendor/src/a.ts
+And   coverage keys pkg/src/a.ts and vendor/src/a.ts
 When  paths::assign runs with TiePolicy::Unmatched
-Then  /p/src/a.ts binds to src/a.ts
-And   /p/vendor/x/src/a.ts binds to vendor/x/src/a.ts
+Then  each key binds its own source
 And   no tie is reported
 ```
 
-### Scenario: a real-path match takes a source out of the tie
+### Scenario Outline: a shared key stays ambiguous when another key covers one source
 
 ```
-Given existing files <tmp>/packages/a/src/index.ts and <tmp>/packages/b/src/index.ts as sources
-And   the coverage keys <tmp>/packages/a/src/index.ts (absolute) and src/index.ts
+Given existing sources A = <tmp>/packages/a/src/index.ts and B = <tmp>/packages/b/src/index.ts
+And   the relative coverage key src/index.ts and <additional keys>
 When  paths::assign runs with TiePolicy::Unmatched
-Then  <tmp>/packages/a/src/index.ts binds to the absolute key
-And   <tmp>/packages/b/src/index.ts binds to src/index.ts
-And   no tie is reported
+Then  src/index.ts has no owner and its Tie identifies its raw spelling and both sources in sorted order
+And   A binds <A binding> and B binds <B binding>
+And   every tied key is in lcov_only and has one Tie listing A and B
+And   matched_files is <matched> and source_only counts <unmatched>
+And   the front end can issue one warning for each of the <ties> ties
+
+Examples:
+| additional keys                     | A binding               | B binding      | matched | unmatched | ties |
+| none                                | nothing                 | nothing        | 0       | 2         | 1    |
+| a/src/index.ts                      | a/src/index.ts          | nothing        | 1       | 1         | 1    |
+| packages/a/src/index.ts             | packages/a/src/index.ts | nothing        | 1       | 1         | 1    |
+| the existing absolute A             | the existing absolute A | nothing        | 1       | 1         | 1    |
+| a/src/index.ts and b/src/index.ts   | a/src/index.ts          | b/src/index.ts | 2       | 0         | 1    |
+| index.ts                            | nothing                 | nothing        | 0       | 2         | 2    |
 ```
 
 ### Scenario: spellings of one key bind together
@@ -435,9 +446,10 @@ And   every run's diagnostics are equal
 ```
 Given any sources and coverage keys
 When  paths::assign runs under both policies
-Then  every source bound under TiePolicy::Unmatched binds the same keys under TiePolicy::PerSource
-And   every source unbound under TiePolicy::Unmatched but bound under TiePolicy::PerSource appears in exactly one tie
-And   no suffix-tier group binds two sources under TiePolicy::Unmatched
+Then  a surviving binding is the same real-path or longest suffix group selected under PerSource
+And   each suffix group that fits multiple sources appears in exactly one tie listing all its fitting sources
+And   those key spellings are absent from every binding and appear in lcov_only
+And   a source is counted in source_only exactly when it has no surviving binding
 ```
 
 ### Scenario: merge keeps its path-matching results
@@ -662,13 +674,14 @@ modified. The scenario names below identify their owning tasks.
   matching mechanism named in the scenario.
 
 - [ ] **T7 — Withdraw shared suffix groups under the tie-rejecting policy.**
-  Needs: T6. Implement `TiePolicy::Unmatched` after each source has
-  picked its best group. Withdraw a tied suffix group from every claimant
-  without retrying a shorter suffix. Retain real-path matches. Return the
-  tied key indices and sorted claimant paths through their source indices,
-  and build diagnostics from the surviving bindings.
-  Scenarios: _the tie-rejecting policy leaves a tied key unmatched_, _distinct best keys are not a tie_,
-  _a real-path match takes a source out of the tie_, _spellings of one key bind together_,
+  Needs: T6. Implement `TiePolicy::Unmatched` by deciding suffix-group
+  ownership across all distinct sources, including sources with canonical
+  or longer matches. Return one tie per ambiguous group with every raw key
+  index and every fitting source index, sorted by spelling and path. Keep
+  canonical matches and select the longest uniquely owned suffix when
+  a source has no canonical match. Derive scope counts from the final bindings.
+  Scenarios: _the tie-rejecting policy leaves a tied key unmatched_, _unique suffix groups bind their respective sources_,
+  _a shared key stays ambiguous when another key covers one source_, _spellings of one key bind together_,
   _a relative key is never resolved against the working directory_, _a degenerate key matches nothing_,
   _a partial component never matches_, _an assignment does not depend on input order_,
   _the tie-rejecting policy only withdraws ties_.
@@ -676,7 +689,7 @@ modified. The scenario names below identify their owning tasks.
   wherever specified. Two properties compare bindings, ties and
   diagnostics after independently permuting both inputs (map each run's
   indices back to its own spellings, include an unrelated key), and check
-  the subset, exactly-one-tie and unique-suffix-group laws across policies.
+  surviving bindings and every tied group against an independent all-sources owner search.
 
 - [ ] **T8 — Report front-end module imports at their source location.**
   Needs: T7. Extend spec 46's checker in `src/tool.rs` using its existing
@@ -827,13 +840,16 @@ instead of once per function:
 1. An absolute key that canonicalizes joins the real-path tier. Other keys
    join the suffix tier under their `CurDir`-free components. Empty
    needles are dropped. Spellings that share a tier key form one group.
-2. A source that canonicalizes to a real-path group binds it. Otherwise it
-   binds the suffix-tier group with the longest needle that is a
-   component suffix of it. The maximum is unique: two component-distinct
-   needles of equal length cannot both be suffixes of one path.
-3. Under `Unmatched`, a suffix-tier group bound by two or more sources is
-   withdrawn from all of them and recorded as a `Tie`. A real-path group
-   is never a tie.
+2. Under `PerSource`, each source binds its real-path group if available,
+   otherwise its longest matching suffix group. Whole-component comparison
+   makes the longest matching needle unique.
+3. Under `Unmatched`, first compare each suffix group with all distinct
+   sources. A group that fits several sources yields one `Tie` and binds
+   none, even when another key supplies coverage for one or more of its
+   candidates. A uniquely owned group is eligible for that source. Each
+   source uses its real-path group if available, otherwise its longest
+   eligible suffix. A real-path group can cover aliases of the same file.
+   A uniquely owned but unused suffix remains in `lcov_only` without a tie.
 
 Relative keys are never canonicalized. `merge()` calls `assign` with
 `PerSource` over the distinct files of the complexity entries, then merges
@@ -873,8 +889,8 @@ spec.
 
 - `assign` is invariant under permutation of sources and of keys.
 - Under `PerSource`, each source binds the longest matching suffix group.
-- `Unmatched` bindings are a subset of `PerSource` bindings, every
-  withdrawn source is in exactly one tie, and no suffix group binds twice.
+- Under `Unmatched`, every ambiguous suffix group appears in one tie, with
+  every fitting source, regardless of which sources receive other coverage.
 - Strict and lenient LCOV reading agree on well-formed input.
 
 ### Mutation cost
