@@ -1,0 +1,10 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_delta_sarif
+stdout:
+<<end>>
+stderr:
+Error: --format sarif is incompatible with --baseline; use --format json for delta output
+<<end>>
+exit: 2

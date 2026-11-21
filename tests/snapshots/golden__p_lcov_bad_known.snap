@@ -1,0 +1,16 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_lcov_bad_known
+stdout:
+<<end>>
+stderr:
+Error: parsing LCOV file p_bad_known.info
+
+Caused by:
+    0: parsing record in p_bad_known.info
+    1: invalid record syntax at line 3: invalid value of field `count`: invalid digit found in string
+    2: invalid value of field `count`: invalid digit found in string
+    3: invalid digit found in string
+<<end>>
+exit: 2

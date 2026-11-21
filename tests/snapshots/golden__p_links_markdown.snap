@@ -1,0 +1,20 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_links_markdown
+stdout:
+<!-- cargo-crap-report -->
+
+## ⚠️ 1 function(s) exceed CRAP threshold 30
+
+| | CRAP | CC | Cov % | Function | Location |
+|---|---:|---:|---:|---|---|
+| ✗ | 156.0 | 12 | 0.0 | [`crappy`](https://github.com/example/demo/blob/0123abc/./src/lib.rs#L24) | [`./src/lib.rs:24`](https://github.com/example/demo/blob/0123abc/./src/lib.rs#L24) |
+| ✓ | 6.7 | 4 | 44.4 | [`moderate`](https://github.com/example/demo/blob/0123abc/./src/lib.rs#L12) | [`./src/lib.rs:12`](https://github.com/example/demo/blob/0123abc/./src/lib.rs#L12) |
+| ✓ | 1.0 | 1 | 100.0 | [`trivial`](https://github.com/example/demo/blob/0123abc/./src/lib.rs#L8) | [`./src/lib.rs:8`](https://github.com/example/demo/blob/0123abc/./src/lib.rs#L8) |
+
+✗ 1/3 function(s) exceed CRAP threshold 30.
+<<end>>
+stderr:
+<<end>>
+exit: 0

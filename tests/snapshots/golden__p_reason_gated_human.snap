@@ -1,0 +1,13 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_reason_gated_human
+stdout:
+No changes since baseline.
+Harder to maintain:
+  ✗ crappy  ./src/lib.rs:24  nesting 2 → 3  lines 26–56  → flatten-nesting
+↑ 0 regressed  ↓ 0 improved  ★ 0 new  ↔ 0 moved  · 3 unchanged  — 0 removed
+<<end>>
+stderr:
+<<end>>
+exit: 1

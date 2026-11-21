@@ -1,0 +1,10 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_delta_summary_shields
+stdout:
+↑ 1 regressed  ↓ 0 improved  ★ 1 new  ↔ 1 moved  · 0 unchanged  — 1 removed
+<<end>>
+stderr:
+<<end>>
+exit: 0

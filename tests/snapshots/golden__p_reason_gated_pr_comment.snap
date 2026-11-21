@@ -1,0 +1,28 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_reason_gated_pr_comment
+stdout:
+<!-- cargo-crap-report -->
+
+## ⚠️ No CRAP regressions, but 1 signal regression(s) detected
+
+↑ 0 regressed · ★ 0 new · ↔ 0 moved · ↓ 0 improved · 3 unchanged · — 0 removed
+
+### Harder to maintain
+
+| | Function | Signal | Change | Lines | Action |
+|---|---|---|---|---|---|
+| ✗ | `crappy` `./src/lib.rs:24` | nesting | 2 → 3 | 26–56 | flatten-nesting |
+
+<details><summary>🔥 Top hot spots above threshold</summary>
+
+| | CRAP | CC | Cov % | Function | Location |
+|---|---:|---:|---:|---|---|
+| ✗ | 156.0 | 12 | 0.0 | `crappy` | `./src/lib.rs:24` |
+
+</details>
+<<end>>
+stderr:
+<<end>>
+exit: 1

@@ -1,0 +1,13 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_reason_report_only
+stdout:
+No changes since baseline.
+Harder to maintain:
+  · crappy  ./src/lib.rs:24  lines 30 → 35  lines 24–58  → split-function
+↑ 0 regressed  ↓ 0 improved  ★ 0 new  ↔ 0 moved  · 3 unchanged  — 0 removed
+<<end>>
+stderr:
+<<end>>
+exit: 0

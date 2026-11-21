@@ -1,0 +1,10 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_summary_markdown
+stdout:
+✗ Analyzed: 3 · Crappy: 1 (threshold 30) · Worst: crappy (CRAP 156.0)
+<<end>>
+stderr:
+<<end>>
+exit: 0

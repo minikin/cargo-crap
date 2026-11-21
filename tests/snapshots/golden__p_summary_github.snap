@@ -1,0 +1,10 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_summary_github
+stdout:
+::warning file=./src/lib.rs,line=24,title=CRAP (156.0 > 30)::crappy has CRAP score 156.0 (CC=12, cov=0.0%25)
+<<end>>
+stderr:
+<<end>>
+exit: 0

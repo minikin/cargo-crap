@@ -1,0 +1,12 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_signals_old_baseline
+stdout:
+No changes since baseline.
+↑ 0 regressed  ↓ 0 improved  ★ 0 new  ↔ 0 moved  · 3 unchanged  — 0 removed
+<<end>>
+stderr:
+warning: the baseline has no signals, so no signal was compared — regenerate it with [signals] enabled to compare them
+<<end>>
+exit: 0

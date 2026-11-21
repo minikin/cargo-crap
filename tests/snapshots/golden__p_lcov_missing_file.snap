@@ -1,0 +1,14 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_lcov_missing_file
+stdout:
+<<end>>
+stderr:
+Error: parsing LCOV file missing.info
+
+Caused by:
+    0: opening LCOV file missing.info
+    1: No such file or directory (os error 2)
+<<end>>
+exit: 2

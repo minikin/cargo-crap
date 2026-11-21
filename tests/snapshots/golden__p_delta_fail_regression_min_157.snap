@@ -1,0 +1,12 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_delta_fail_regression_min_157
+stdout:
+Removed since baseline:
+  —  gone (was 2.5)
+↑ 1 regressed  ↓ 0 improved  ★ 1 new  ↔ 1 moved  · 0 unchanged  — 1 removed
+<<end>>
+stderr:
+<<end>>
+exit: 1
