@@ -10,10 +10,11 @@ use oxc_ast::ast::{
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{Kind, Token};
 use oxc_span::{GetSpan, Span};
-use oxc_str::JSStr;
+use oxc_str::{JSChar, JSStr};
 use oxc_syntax::identifier::is_identifier_name;
 use oxc_syntax::number::ToJsString;
 use oxc_syntax::operator::AssignmentOperator;
+use sha2::{Digest, Sha256};
 
 // Scheme 1 pins General_Category=Cf to Unicode 16.0.0 across Rust toolchains.
 fn is_format_control(ch: char) -> bool {
@@ -38,11 +39,11 @@ fn reserved(
 }
 
 fn encode(
-    value: JSStr<'_>,
+    points: impl Iterator<Item = JSChar>,
     quoted: bool,
 ) -> String {
     let mut result = String::new();
-    for point in value.chars() {
+    for point in points {
         match point.to_char() {
             Some(ch) if reserved(ch, quoted) => {
                 let mut buf = [0; 4];
@@ -58,11 +59,27 @@ fn encode(
 }
 
 fn unquoted(value: &str) -> String {
-    encode(JSStr::from(value), false)
+    encode(JSStr::from(value).chars(), false)
 }
 
 fn quoted(value: JSStr<'_>) -> String {
-    format!("\"{}\"", encode(value, true))
+    delimited(value, '"', '"')
+}
+
+fn delimited(
+    value: JSStr<'_>,
+    open: char,
+    close: char,
+) -> String {
+    let quoted = open == '"';
+    let encoded = encode(value.chars(), quoted);
+    if value.chars().nth(48).is_none() {
+        return format!("{open}{encoded}{close}");
+    }
+    let prefix = encode(value.chars().take(40), quoted);
+    let [a, b, c, d, ..]: [u8; 32] = Sha256::digest(encoded.as_bytes()).into();
+    let suffix = u32::from_be_bytes([a, b, c, d]);
+    format!("{open}{prefix}{close}~{suffix:08x}")
 }
 
 fn jsx_name(mut raw: &str) -> String {
@@ -107,7 +124,7 @@ fn string_key(value: JSStr<'_>) -> String {
         is_identifier_name(s) || s.parse::<f64>().is_ok_and(|v| v.to_js_string() == s)
     });
     if bare {
-        encode(value, false)
+        encode(value.chars(), false)
     } else {
         quoted(value)
     }
@@ -170,7 +187,7 @@ impl Source<'_> {
             },
             Expression::NumericLiteral(n) => n.value.to_js_string(),
             Expression::BigIntLiteral(n) => n.value.to_string(),
-            _ => format!("({})", unquoted(&self.computed_text(expr))),
+            _ => delimited(JSStr::from(self.computed_text(expr).as_str()), '(', ')'),
         }
     }
 }
@@ -875,6 +892,21 @@ mod tests {
     }
 
     #[test]
+    fn shortened_labels_hash_the_full_quoted_encoding() {
+        let prefix = "x".repeat(39);
+        let value = format!("{prefix}/\"{}", "z".repeat(8));
+        assert_eq!(
+            quoted(JSStr::from(value.as_str())),
+            format!("\"{prefix}%2F\"~b39dd6a2")
+        );
+        let at_limit = format!("{}{}", "x".repeat(40), "/".repeat(8));
+        assert_eq!(
+            quoted(JSStr::from(at_limit.as_str())),
+            format!("\"{}{}\"", "x".repeat(40), "%2F".repeat(8))
+        );
+    }
+
+    #[test]
     fn encode_reserved_code_points_before_joining_segments() {
         for (input, quoted, expected) in [
             (
@@ -895,7 +927,7 @@ mod tests {
             ("\u{13440}\u{e0080}", false, "\u{13440}\u{e0080}"),
         ] {
             assert_eq!(
-                encode(oxc_str::JSStr::from(input), quoted),
+                encode(oxc_str::JSStr::from(input).chars(), quoted),
                 expected,
                 "{input:?}"
             );
@@ -912,7 +944,10 @@ mod tests {
         let Expression::StringLiteral(lit) = expr else {
             panic!("expected a string")
         };
-        assert_eq!(encode(lit.value, true), "%uD800%2F%uDFFF%2F😀%2F%25uD800");
+        assert_eq!(
+            encode(lit.value.chars(), true),
+            "%uD800%2F%uDFFF%2F😀%2F%25uD800"
+        );
     }
 
     fn unicode_members(pattern: &str) -> Vec<char> {

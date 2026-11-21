@@ -67,10 +67,23 @@ fn dependabot_groups_the_workspaces_oxc_updates() {
         .expect("valid package pattern")
         .compile_matcher();
     let direct = member["dependencies"].as_table().expect("[dependencies]");
-    assert_eq!(direct.len(), 7);
-    for name in direct.keys() {
-        assert!(matcher.is_match(name), "group misses direct pin {name}");
-    }
+    let grouped: std::collections::BTreeSet<_> = direct
+        .keys()
+        .map(String::as_str)
+        .filter(|name| matcher.is_match(name))
+        .collect();
+    assert_eq!(
+        grouped,
+        std::collections::BTreeSet::from([
+            "oxc_allocator",
+            "oxc_ast",
+            "oxc_ast_visit",
+            "oxc_parser",
+            "oxc_span",
+            "oxc_str",
+            "oxc_syntax",
+        ])
+    );
 }
 
 pub(super) fn lines(text: &str) -> Vec<&str> {

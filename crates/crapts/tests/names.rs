@@ -638,3 +638,69 @@ fn encode_both_parts_of_namespaced_jsx_roles() {
         ["e::<UI.Button onClick>"]
     );
 }
+
+#[test]
+fn shorten_delimited_content_in_code_points() {
+    let a40 = "a".repeat(40);
+    for (content, label) in [
+        (
+            format!("{}/", "a".repeat(47)),
+            format!("\"{}%2F\"", "a".repeat(47)),
+        ),
+        (
+            format!("{}/", "a".repeat(48)),
+            format!("\"{a40}\"~65942819"),
+        ),
+        (
+            format!("{a40}{}", "😀".repeat(8)),
+            format!("\"{a40}{}\"", "😀".repeat(8)),
+        ),
+        (
+            format!("{a40}{}", "😀".repeat(9)),
+            format!("\"{a40}\"~1e76f166"),
+        ),
+        (
+            format!("{}{}", "a".repeat(39), "😀".repeat(10)),
+            format!("\"{}😀\"~a3312e2f", "a".repeat(39)),
+        ),
+        (
+            format!("{}\\uD800-{}", "x".repeat(39), "z".repeat(9)),
+            format!("\"{}%uD800\"~a27ec89b", "x".repeat(39)),
+        ),
+    ] {
+        for delimiter in ['\'', '\x60'] {
+            let source = format!("on({delimiter}{content}{delimiter},()=>0)");
+            assert_eq!(clean_names("label.ts", &source), [format!("on({label})")]);
+        }
+    }
+    for (content, key) in [
+        (
+            format!("{}\\uD800", "a".repeat(47)),
+            format!("\"{}%uD800\"", "a".repeat(47)),
+        ),
+        (
+            format!("{}\\uD800", "a".repeat(48)),
+            format!("\"{a40}\"~fc8d9416"),
+        ),
+        (
+            format!("{}-", "a".repeat(48)),
+            format!("\"{a40}\"~3552814c"),
+        ),
+    ] {
+        let source = format!("const o = {{'{content}':()=>0}}");
+        assert_eq!(clean_names("key.ts", &source), [format!("o::{key}")]);
+    }
+    let identifier = "k".repeat(48);
+    let source = format!("class C {{ [{identifier} + 1]() {{}} }}");
+    assert_eq!(
+        clean_names("computed.ts", &source),
+        [format!("C::({})~15107db7", "k".repeat(40))]
+    );
+
+    let long = "x".repeat(80);
+    let source = format!("const {long} = {{'{long}':()=>0}}; {long}.{long}(()=>0)");
+    assert_eq!(
+        clean_names("chain.ts", &source),
+        [format!("{long}::{long}"), format!("{long}.{long}()")]
+    );
+}

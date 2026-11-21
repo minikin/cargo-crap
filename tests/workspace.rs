@@ -174,12 +174,12 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
                 .expect("dependency name")
         })
         .collect();
-    let required_helpers: &[&str] = &[];
-    let expected: BTreeSet<_> = parser_pins
-        .into_iter()
-        .chain(required_helpers.iter().copied())
-        .collect();
+    let required_helpers = ["sha2"];
+    let expected: BTreeSet<_> = parser_pins.into_iter().chain(required_helpers).collect();
     assert_eq!(declared, expected, "direct dependencies of crapts");
+    let sha2 = &shared["workspace"]["dependencies"]["sha2"];
+    assert_eq!(sha2["version"].as_str(), Some("=0.10.9"));
+    assert_eq!(sha2["default-features"].as_bool(), Some(false));
     for name in parser_pins {
         assert_eq!(
             shared["workspace"]["dependencies"][name].as_str(),
