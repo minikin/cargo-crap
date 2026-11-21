@@ -587,7 +587,7 @@ modified. The scenario names below identify their owning tasks.
   entry point with cargo-crap's tool, inspect the first row and validate
   the full document using `tests/support/schemas.rs`.
 
-- [ ] **T2 — Resolve signal settings from the shared model and keep all six config keys documented.**
+- [x] **T2 — Resolve signal settings from the shared model and keep all six config keys documented.**
   Needs: T1. Move the walker and parser-based tests to `signals/compute.rs`,
   the signal values and settings to `signals/model.rs`, the two signal
   config structs to `signals/config.rs` and `DEFAULT_TRY_WEIGHT` to

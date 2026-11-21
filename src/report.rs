@@ -152,7 +152,7 @@ pub struct RenderOptions<'a> {
     pub duplicates: Option<&'a [DuplicatePair]>,
     /// The `?` weight the entries were analyzed under. Only the JSON
     /// renderers read it, recording it in the envelope when it is not
-    /// [`DEFAULT_TRY_WEIGHT`](crate::config::DEFAULT_TRY_WEIGHT).
+    /// [`DEFAULT_TRY_WEIGHT`](crate::score::DEFAULT_TRY_WEIGHT).
     pub try_weight: f64,
     /// One triage verdict per duplicate group, in the groups' order, when
     /// `groups` is set, else one per pair in the pairs' order, or `None` when
@@ -230,7 +230,7 @@ impl<'a> RenderOptions<'a> {
             show_unchanged: false,
             uncovered_hints: false,
             duplicates: None,
-            try_weight: crate::config::DEFAULT_TRY_WEIGHT,
+            try_weight: crate::score::DEFAULT_TRY_WEIGHT,
             triage: None,
             sliced: false,
             delta_counts: None,
@@ -561,7 +561,7 @@ mod tests {
         assert!(!opts.show_unchanged);
         assert!(!opts.uncovered_hints);
         assert!(opts.duplicates.is_none());
-        assert_eq!(opts.try_weight, crate::config::DEFAULT_TRY_WEIGHT);
+        assert_eq!(opts.try_weight, crate::score::DEFAULT_TRY_WEIGHT);
         assert!(opts.triage.is_none());
         assert!(!opts.sliced);
         assert!(opts.delta_counts.is_none());

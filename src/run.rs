@@ -1,6 +1,5 @@
 //! Prepare a baseline, select and render score rows, then return the verdict after flushing.
 
-use crate::config::DEFAULT_TRY_WEIGHT;
 use crate::delta::{Baseline, DeltaCounts, attach_reasons, compute_delta, gating_signal_count};
 use crate::duplicates::{
     compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, triage::verdict::Assessment,
@@ -9,6 +8,7 @@ use crate::entry::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::filter::{self, AllowSet};
 use crate::gate::{GateOutcome, threshold_count};
 use crate::report::{self, Format, RenderOptions, SourceLinks, Tool, TriagedBy};
+use crate::score::DEFAULT_TRY_WEIGHT;
 use crate::signals::SignalSettings;
 use anyhow::{Context, Result};
 use std::io::Write;
@@ -450,7 +450,7 @@ mod tests {
             let allow = AllowSet::compile(&["skip".into()]).unwrap();
             let prepared = BaselineFilter::new(&Source, &allow).prepare(Baseline {
                 entries,
-                try_weight: crate::config::DEFAULT_TRY_WEIGHT,
+                try_weight: crate::score::DEFAULT_TRY_WEIGHT,
                 duplicate_groups: Some(vec![group]),
             });
             let scoped = prepared.as_baseline();

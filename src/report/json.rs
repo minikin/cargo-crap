@@ -56,7 +56,7 @@ pub struct Envelope {
 /// `None` (no key on the wire) when it is. Exact comparison on purpose: any
 /// other weight, however close, scored the entries differently.
 fn recorded_try_weight(try_weight: f64) -> Option<f64> {
-    (try_weight != crate::config::DEFAULT_TRY_WEIGHT).then_some(try_weight)
+    (try_weight != crate::score::DEFAULT_TRY_WEIGHT).then_some(try_weight)
 }
 
 /// The envelope's `untriaged_groups`: the count when the budget skipped a

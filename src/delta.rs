@@ -395,7 +395,7 @@ impl DeltaReport {
 pub struct Baseline {
     pub entries: Vec<CrapEntry>,
     /// The envelope's `try_weight`; a baseline without the key was recorded
-    /// at [`DEFAULT_TRY_WEIGHT`](crate::config::DEFAULT_TRY_WEIGHT).
+    /// at [`DEFAULT_TRY_WEIGHT`](crate::score::DEFAULT_TRY_WEIGHT).
     pub try_weight: f64,
     /// Each recorded duplicate group's members, when the baseline ran with
     /// `--duplicates`: an empty list when it found none, `None` when it
@@ -431,7 +431,7 @@ pub fn load_baseline_with_weight(
         entries: envelope.entries,
         try_weight: envelope
             .try_weight
-            .unwrap_or(crate::config::DEFAULT_TRY_WEIGHT),
+            .unwrap_or(crate::score::DEFAULT_TRY_WEIGHT),
         duplicate_groups: envelope.duplicate_groups.map(|groups| {
             groups
                 .into_iter()
@@ -1049,7 +1049,7 @@ mod tests {
         let baseline =
             load_baseline_with_weight(&path, &crate::report::test_support::CARGO_CRAP_FIXTURE)
                 .expect("parse");
-        assert_eq!(baseline.try_weight, crate::config::DEFAULT_TRY_WEIGHT);
+        assert_eq!(baseline.try_weight, crate::score::DEFAULT_TRY_WEIGHT);
         assert_eq!(baseline.entries.len(), 1);
         assert_eq!(baseline.entries[0].function, "foo");
     }

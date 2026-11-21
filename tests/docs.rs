@@ -144,18 +144,37 @@ fn the_flags_table_states_the_default_the_code_uses() {
 /// Every key `.cargo-crap.toml` accepts, as dotted paths in kebab-case,
 /// read from the field lists of `Config` and the tables nested in it.
 fn config_keys() -> BTreeSet<String> {
-    let file = syn::parse_file(&read("src/config.rs")).unwrap();
-    let structs: BTreeMap<String, Vec<(String, String)>> = file
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Struct(s) => Some((s.ident.to_string(), struct_fields(s))),
-            _ => None,
-        })
-        .collect();
+    let mut structs = BTreeMap::new();
+    for source in ["src/config.rs", "src/signals/config.rs"] {
+        for item in syn::parse_file(&read(source)).unwrap().items {
+            if let syn::Item::Struct(item) = item {
+                let previous = structs.insert(item.ident.to_string(), struct_fields(&item));
+                assert!(
+                    previous.is_none(),
+                    "duplicate config struct {} in {source}",
+                    item.ident
+                );
+            }
+        }
+    }
     let mut keys = BTreeSet::new();
     collect_keys("", "Config", &structs, &mut keys);
     keys
+}
+
+#[test]
+fn the_config_docs_test_reads_the_moved_signals_tables() {
+    let keys = config_keys();
+    for key in [
+        "signals.enabled",
+        "signals.gate",
+        "signals.limits.nesting",
+        "signals.limits.lines",
+        "signals.limits.bumps",
+        "signals.limits.bool-ops",
+    ] {
+        assert!(keys.contains(key), "missing config key {key}");
+    }
 }
 
 /// `(field name, last segment of its type)` for each named field.
