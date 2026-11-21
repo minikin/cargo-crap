@@ -140,49 +140,9 @@ mutants FILE:
 mutants-all:
     cargo mutants --workspace
 
-# Mutation tests on changed lines only
+# Mutation tests on changed lines only, in every workspace member
 mutants-diff:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # Which lines: uncommitted changes vs HEAD, else the branch base, else
-    # the last commit.
-    # Both pathspecs: 'src/**/*.rs' catches files inside subdirectories
-    # (src/report/sarif.rs, etc.) while 'src/*.rs' catches the top level.
-    paths=('src/*.rs' 'src/**/*.rs')
-    # New files aren't in `git diff HEAD` — intent-to-add makes their full
-    # content show up in the diff; reset afterwards to leave the index as-is.
-    # NUL-delimited into an array: paths with spaces stay whole.
-    untracked=()
-    while IFS= read -r -d '' f; do untracked+=("$f"); done \
-        < <(git ls-files -z --others --exclude-standard -- "${paths[@]}" 2>/dev/null || true)
-    if [ "${#untracked[@]}" -gt 0 ]; then git add -N -- "${untracked[@]}"; fi
-    diff_file=$(mktemp)
-    trap 'rm -f "$diff_file"' EXIT
-    git diff HEAD -- "${paths[@]}" > "$diff_file" || true
-    if [ "${#untracked[@]}" -gt 0 ]; then git reset -q -- "${untracked[@]}"; fi
-    if [ ! -s "$diff_file" ]; then
-        # A clean tree is not a measured tree: src changes committed earlier
-        # on this branch still need mutating, so diff against the branch base.
-        base=""
-        for ref in origin/main origin/master main master; do
-            if candidate=$(git merge-base HEAD "$ref" 2>/dev/null); then base="$candidate"; break; fi
-        done
-        if [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; then
-            git diff "$base" HEAD -- "${paths[@]}" > "$diff_file" || true
-        fi
-    fi
-    if [ ! -s "$diff_file" ]; then
-        git diff HEAD~1 HEAD -- "${paths[@]}" > "$diff_file" 2>/dev/null || true
-    fi
-    if [ ! -s "$diff_file" ]; then
-        # An honest gate says what it did not measure — it never reports the
-        # absence of survivors as evidence about a change it cannot see.
-        # For everything mutants can measure, use `just mutants-all`.
-        echo "No src/ changes — outside the mutation gate's reach; nothing was measured"
-        exit 0
-    fi
-    echo "Running mutants on changed lines (--in-diff)"
-    cargo mutants --in-diff "$diff_file"
+    bash scripts/gates/mutants-diff.sh
 
 # The pre-commit gate: the full fast gate, then mutants on what changed
 dev-mutants-diff: dev mutants-diff
