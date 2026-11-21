@@ -20,6 +20,7 @@ use cargo_crap::{
     duplicates::triage::provider::{Provider, default_provider},
     duplicates::triage::verdict::Assessment,
     filter::{self, AllowSet},
+    gate::GateOutcome,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge},
     report::{
         self, Format, RenderOptions, SourceLinks, TriagedBy, crappy_count, output_width, render,
@@ -1249,6 +1250,8 @@ struct RenderOpts<'a> {
     render: RenderOptions<'a>,
     epsilon: f64,
     summary: bool,
+    fail_above: bool,
+    fail_regression: bool,
     /// Final entry ordering (spec 17). Applied to the `DeltaReport` so
     /// `removed` ordering is deterministic too.
     sort: SortOrder,
@@ -1686,7 +1689,7 @@ fn triage_assessments(
     }
 }
 
-/// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
+/// Render the final report and evaluate its gates.
 ///
 /// `baseline` arrives pre-loaded and pre-filtered (see [`BaselineFilter`]) so
 /// this stays a pure render dispatcher. `entries` are the rows to show, and
@@ -1698,13 +1701,13 @@ fn do_render(
     baseline: Option<&[cargo_crap::merge::CrapEntry]>,
     opts: &RenderOpts,
     out: &mut dyn Write,
-) -> Result<(bool, bool)> {
+) -> Result<GateOutcome> {
     let summary = opts
         .render
         .tool
         .policy
         .use_summary(opts.summary, opts.render.format);
-    let outcome = if let Some(baseline_data) = baseline {
+    let (regressed, signal_gates) = if let Some(baseline_data) = baseline {
         let mut report = compute_delta(compared, baseline_data, opts.epsilon);
         let baseline_has_signals = baseline_data.iter().any(|b| b.signals.is_some());
         cargo_crap::delta::attach_reasons(&mut report, opts.signals, baseline_has_signals);
@@ -1713,11 +1716,9 @@ fn do_render(
         // (spec 43) trips the regression gate too; a regressed CRAP score
         // is one whenever signals are on.
         let counts = report.counts();
-        let has_regression = counts.regressed + report.gating_reason_count() > 0;
         let signal_gates = cargo_crap::delta::gating_signal_count(&report);
         report.restrict_to(entries);
         report.sort(opts.sort);
-        let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
         if summary {
             render_delta_summary_lines(&counts, signal_gates, out)?;
         } else {
@@ -1727,20 +1728,25 @@ fn do_render(
             };
             render_delta(&report, &render, out)?;
         }
-        (has_crappy, has_regression)
+        (counts.regressed, signal_gates)
     } else {
-        let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
         if summary {
             render_summary(entries, opts.render.threshold, opts.render.width, out)?;
         } else {
             render(entries, &opts.render, out)?;
         }
-        (has_crappy, false)
+        (0, 0)
     };
     // After whichever table was printed, and only once: the section follows
     // both branches and every row policy.
     report::render_duplicates(&opts.render, out).context("writing duplicate report")?;
-    Ok(outcome)
+    Ok(GateOutcome::from_counts(
+        crappy_count(entries, opts.render.threshold),
+        regressed,
+        signal_gates,
+        opts.fail_above,
+        opts.fail_regression,
+    ))
 }
 
 /// The `--summary` delta: the counts line, then a note when gating signal
@@ -2048,25 +2054,24 @@ fn run() -> Result<ExitCode> {
         },
         epsilon,
         summary: cli.summary,
+        fail_above: settings.fail_above,
+        fail_regression: settings.fail_regression,
         sort: settings.sort_order,
         signals: &signals,
     };
-    let (has_crappy, has_regression) = do_render(
+    let outcome = do_render(
         sliced_rows.as_deref().unwrap_or(&entries),
         &entries,
         baseline.map(|b| b.entries.as_slice()),
         &opts,
         out_box.as_mut(),
     )?;
-    // The flush must precede the gate decision: a write failure (e.g.
+    // Flush before returning the verdict. A write failure (e.g.
     // ENOSPC) is a tool error (exit 2), never a gate verdict over a
     // truncated report (#47, spec 23).
     out_box.flush().context("flushing output")?;
 
-    if (settings.fail_above && has_crappy) || (settings.fail_regression && has_regression) {
-        return Ok(ExitCode::from(1));
-    }
-    Ok(ExitCode::SUCCESS)
+    Ok(outcome.exit_code())
 }
 
 #[cfg(test)]
@@ -2100,6 +2105,8 @@ mod tests {
             },
             epsilon: cargo_crap::delta::DEFAULT_EPSILON,
             summary: false,
+            fail_above: false,
+            fail_regression: false,
             sort: SortOrder::Crap,
             signals: &signals,
         };
@@ -2113,6 +2120,46 @@ mod tests {
             doc["$schema"],
             "https://example.test/schemas/other-delta.json"
         );
+    }
+
+    #[test]
+    fn the_delta_outcome_counts_hidden_score_changes_once_each() {
+        use cargo_crap::signals::{SignalSettings, Signals};
+        let before = vec![
+            baseline_entry("leader.rs", "leader"),
+            baseline_entry("hidden.rs", "hidden"),
+        ];
+        let mut current = before.clone();
+        for row in &mut current {
+            row.crap = 40.0;
+            row.signals = Some(Signals::default());
+        }
+        let signals = SignalSettings {
+            enabled: true,
+            ..SignalSettings::default()
+        };
+        let opts = RenderOpts {
+            render: RenderOptions::new(&SECOND_TOOL),
+            epsilon: cargo_crap::delta::DEFAULT_EPSILON,
+            summary: true,
+            fail_above: false,
+            fail_regression: true,
+            sort: SortOrder::Crap,
+            signals: &signals,
+        };
+        let outcome = do_render(
+            &current[..1],
+            &current,
+            Some(&before),
+            &opts,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            (outcome.crappy, outcome.regressed, outcome.section_failures),
+            (1, 2, 0)
+        );
+        assert_eq!(outcome.exit_code(), ExitCode::from(1));
     }
 
     /// An entry with or without signals, for the spec 43 baseline checks.

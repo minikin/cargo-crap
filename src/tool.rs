@@ -473,6 +473,7 @@ mod tests {
         let mut files = vec![
             (src.join("report.rs"), vec!["report".to_string()]),
             (src.join("delta.rs"), vec!["delta".to_string()]),
+            (src.join("gate.rs"), vec!["gate".to_string()]),
             (src.join("filter.rs"), vec!["filter".to_string()]),
             (src.join("run.rs"), vec!["run".to_string()]),
             (src.join("policy.rs"), vec!["policy".to_string()]),

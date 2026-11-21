@@ -153,6 +153,7 @@
 //! | [`duplicates`] | Structural duplicate detection: normalize each function's AST, fingerprint its subtrees, compare pairs by Jaccard similarity. Optional triage of the pairs by a `TypeSafe` model lives in `duplicates::triage` (the HTTP client needs the `triage` feature). |
 //! | [`report`] | Renders `Vec<CrapEntry>` or `DeltaReport` as a human table, JSON, GitHub annotations, Markdown, a PR comment, SARIF, or a Shields.io badge. |
 //! | [`config`] | Loads `.cargo-crap.toml` by walking up from CWD. |
+//! | [`gate`] | Score and signal gate verdicts for a completed report. |
 //! | [`filter`] | Compiles allow patterns and selects rows for display. |
 //! | [`run`] | Prepares score rows and duplicate records from the baseline for this run. |
 //! | [`policy`] | A front end's choices for rendering, row ordering, baseline pairing and gates. |
@@ -165,6 +166,7 @@ pub mod coverage;
 pub mod delta;
 pub mod duplicates;
 pub mod filter;
+pub mod gate;
 pub mod merge;
 pub mod policy;
 pub mod report;

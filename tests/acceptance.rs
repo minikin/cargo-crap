@@ -9543,3 +9543,94 @@ fn allow_filters_hide_score_rows_while_duplicate_members_follow_file_scope() {
         &[group[..3].to_vec()]
     );
 }
+
+// Spec 47 T5
+
+#[test]
+fn a_hidden_regression_trips_the_gate_and_a_genuine_removal_survives_the_slice() {
+    // Given leader at 60, hidden at 20, and a baseline where hidden was 10 and gone was 1.
+    let dir = tree_of(&[
+        ("a.rs".into(), "leader".into(), 60),
+        ("b.rs".into(), "hidden".into(), 20),
+    ]);
+    write(dir.path(), ".cargo-crap.toml", "missing = \"optimistic\"\n");
+    let baseline = edited_baseline(dir.path(), |doc| {
+        assert_eq!(entry_mut(doc, "leader")["crap"], 60.0);
+        let hidden = entry_mut(doc, "hidden");
+        assert_eq!(hidden["crap"], 20.0);
+        hidden["crap"] = 10.0.into();
+        let mut gone = hidden.clone();
+        gone["function"] = "gone".into();
+        gone["crap"] = 1.0.into();
+        doc["entries"].as_array_mut().unwrap().push(gone);
+    });
+    // When only the top row is shown and the regression gate is enabled.
+    let args = ["--top", "1", "--fail-regression"];
+    let out = delta_run(dir.path(), &baseline, &args);
+    // Then the removal survives, the hidden regression trips the gate and the summary counts both.
+    assert_eq!(out.status.code(), Some(1));
+    let doc = delta_doc(&out);
+    let entries = doc["entries"].as_array().unwrap();
+    let removed = doc["removed"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["function"], "leader");
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0]["function"], "gone");
+    let (summary, code) = run_in(
+        dir.path(),
+        &[
+            "--baseline",
+            &baseline,
+            "--summary",
+            "--top",
+            "1",
+            "--fail-regression",
+        ],
+    );
+    assert_eq!(code, Some(1));
+    assert!(
+        summary.contains("↑ 1 regressed") && summary.contains("— 1 removed"),
+        "{summary}"
+    );
+}
+
+fn sliced_signal_summary(
+    signal: &str,
+    code: i32,
+) -> String {
+    let dir = one_function_tree(
+        "work",
+        NESTED_3,
+        "[signals]\nenabled = true\ngate = [\"nesting\"]\n",
+    );
+    let baseline = edited_baseline(dir.path(), |doc| {
+        let row = entry_mut(doc, "work");
+        assert!(row["crap"].as_f64().unwrap() < 999.0);
+        assert!(row["signals"][signal].as_u64().unwrap() > 0);
+        row["signals"][signal] = 0.into();
+    });
+    let (summary, actual) = run_in(
+        dir.path(),
+        &[
+            "--baseline",
+            &baseline,
+            "--summary",
+            "--min",
+            "999",
+            "--fail-regression",
+        ],
+    );
+    assert_eq!(actual, Some(code), "{summary}");
+    assert!(summary.contains("↑ 0 regressed"), "{summary}");
+    summary
+}
+
+#[test]
+fn signal_reasons_affect_the_verdict_independently_of_score_counts_for_nesting() {
+    assert!(sliced_signal_summary("nesting", 1).contains("✗ 1 signal regression(s)"));
+}
+
+#[test]
+fn signal_reasons_affect_the_verdict_independently_of_score_counts_for_lines() {
+    assert!(!sliced_signal_summary("lines", 0).contains("signal regression"));
+}
