@@ -110,12 +110,13 @@ impl fmt::Display for Failure {
 }
 
 /// Every failure of the cases `ids` against `snapshots` in `mode`, with
-/// `run` producing each case's run: what the golden test asserts empty.
+/// `run` producing each case's checked run: what the golden test asserts
+/// empty. A run that fails its output checks is neither compared nor recorded.
 pub fn check(
     mode: Mode,
     snapshots: &Snapshots,
     ids: &[&str],
-    run: &dyn Fn(&str) -> Run,
+    run: &dyn Fn(&str) -> Result<Run, Vec<String>>,
 ) -> Vec<String> {
     let mut failures = snapshots.check_set(ids, mode == Mode::Verify);
     // An unreadable directory is one failure, which check_set reports.
@@ -124,7 +125,13 @@ pub fn check(
         if mode == Mode::Verify && !recorded.contains(*id) {
             continue;
         }
-        let run = run(id);
+        let run = match run(id) {
+            Ok(run) => run,
+            Err(problems) => {
+                failures.extend(problems.into_iter().map(|p| format!("{id}: {p}")));
+                continue;
+            },
+        };
         let outcome = match mode {
             Mode::Verify => snapshots.verify(id, &run).map_err(|f| f.to_string()),
             Mode::Record => snapshots.record(id, &run),
@@ -355,6 +362,24 @@ mod tests {
         })
     }
 
+    #[test]
+    fn a_run_that_fails_its_checks_is_reported_and_not_compared() {
+        let dir = stale_dir();
+        let failures = check(
+            Mode::Verify,
+            &Snapshots::at(dir.path().into()),
+            &["changed", "same"],
+            &|case| {
+                if case == "changed" {
+                    Err(vec!["stdout names the path /tmp".into()])
+                } else {
+                    Ok(fresh(case))
+                }
+            },
+        );
+        assert_eq!(failures, ["changed: stdout names the path /tmp"]);
+    }
+
     const UPDATE_VALUES: [&str; 5] = ["always", "force", "unseen", "new", "auto"];
     const SNAP_DIR: &str = "GOLDEN_SNAP_DIR";
     const RESULT: &str = "GOLDEN_SNAP_RESULT";
@@ -455,7 +480,9 @@ mod tests {
             return;
         };
         let mode = mode(&|key| std::env::var(key).ok()).expect("a mode");
-        let report = check(mode, &Snapshots::at(dir.into()), &CASES, &fresh);
+        let report = check(mode, &Snapshots::at(dir.into()), &CASES, &|case| {
+            Ok(fresh(case))
+        });
         std::fs::write(result, report.join("\n")).expect("report");
     }
 
@@ -543,7 +570,9 @@ mod tests {
                 );
             },
             Mode::Record => {
-                let failures = check(Mode::Record, &Snapshots::at(dir.into()), &CASES, &fresh);
+                let failures = check(Mode::Record, &Snapshots::at(dir.into()), &CASES, &|case| {
+                    Ok(fresh(case))
+                });
                 assert_eq!(failures.len(), 2, "{failures:?}");
             },
             Mode::Verify => panic!("GOLDEN_RECORD=1 did not record"),
@@ -602,7 +631,7 @@ mod tests {
             Mode::Verify,
             &Snapshots::at(dir.path().into()),
             &CASES,
-            &fresh,
+            &|case| Ok(fresh(case)),
         );
         let missing = failures
             .iter()
@@ -615,7 +644,7 @@ mod tests {
     fn an_unreadable_snapshot_dir_is_one_failure_naming_it() {
         let not_a_dir = tempfile::NamedTempFile::new().expect("a file where the directory goes");
         let snapshots = Snapshots::at(not_a_dir.path().into());
-        let failures = check(Mode::Verify, &snapshots, &CASES, &fresh);
+        let failures = check(Mode::Verify, &snapshots, &CASES, &|case| Ok(fresh(case)));
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(failures[0].starts_with("cannot read "), "{failures:?}");
     }

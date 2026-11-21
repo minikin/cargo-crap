@@ -13,6 +13,9 @@
 #[path = "golden/cases.rs"]
 mod cases;
 
+#[path = "golden/checks.rs"]
+mod checks;
+
 #[path = "golden/config.rs"]
 mod config;
 
@@ -24,6 +27,9 @@ mod run;
 
 #[path = "golden/snap.rs"]
 mod snap;
+
+#[path = "support/schemas.rs"]
+mod schemas;
 
 #[test]
 fn every_case_matches_its_golden() {
@@ -41,7 +47,8 @@ fn every_case_matches_its_golden() {
             .iter()
             .find(|case| case.id == id)
             .expect("a listed case");
-        run::run(case)
+        let (run, copy) = run::run(case);
+        checks::finish(case, run, copy.root())
     };
     let failures = snap::check(mode, &snap::Snapshots::committed(), &ids, &run);
     assert!(

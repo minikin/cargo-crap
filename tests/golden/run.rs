@@ -53,6 +53,7 @@ pub struct Case {
     pub config: Option<&'static str>,
     /// Overrides of the defaults: `Some` sets a variable, `None` removes it.
     pub env: &'static [(&'static str, Option<&'static str>)],
+    pub exit: i32,
 }
 
 /// A case's fixture copy. Dropping it deletes the copy.
@@ -207,8 +208,11 @@ pub fn run_with(
 }
 
 /// Runs the case on a fresh copy, with this process's environment as host.
-pub fn run(case: &Case) -> Run {
-    run_with(case, &prepare(case), &|key| std::env::var_os(key))
+/// The copy comes back too: the output checks need its path.
+pub fn run(case: &Case) -> (Run, CaseDir) {
+    let copy = prepare(case);
+    let run = run_with(case, &copy, &|key| std::env::var_os(key));
+    (run, copy)
 }
 
 fn status_of(status: ExitStatus) -> Status {
@@ -230,6 +234,7 @@ mod tests {
         args: &["--format", "json"],
         config: None,
         env: &[],
+        exit: 0,
     };
 
     const P_MARKDOWN: Case = Case {
@@ -238,6 +243,7 @@ mod tests {
         args: &["--format", "markdown"],
         config: None,
         env: &[],
+        exit: 0,
     };
 
     const P_COLOR: Case = Case {
@@ -246,6 +252,7 @@ mod tests {
         args: &[],
         config: None,
         env: &[("FORCE_COLOR", Some("1")), ("NO_COLOR", None)],
+        exit: 0,
     };
 
     const W_HUMAN: Case = Case {
@@ -254,6 +261,7 @@ mod tests {
         args: &["--workspace"],
         config: None,
         env: &[],
+        exit: 0,
     };
 
     const HOSTILE: [(&str, &str); 9] = [
