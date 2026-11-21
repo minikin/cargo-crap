@@ -769,7 +769,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Preserve the analyzer's lexer tokens in computed text (N9)_.
   Tests: Unit tests for token adjacency and embedded expression replacement. Acceptance for computed names with comments, significant token spelling and nested callbacks.
 
-- [ ] **T13 - Canonicalize class and object member names.** Needs: T12.
+- [x] **T13 - Canonicalize class and object member names.** Needs: T12.
   Scenarios: _Preserve member identity when the spelling changes (N5-N6)_.
   Tests: Unit tests for decoded identifiers, literal keys and ECMAScript numeric spellings. Acceptance for marker order, private members, accessors and computed keys.
 
