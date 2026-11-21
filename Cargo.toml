@@ -14,7 +14,7 @@ exclude = [
     "CLAUDE.md",
     "KEELER.md",
     "Justfile",
-    ".cargo-mutants.toml",
+    ".cargo/mutants.toml",
     ".cargo-crap.toml",
     ".claude/",
     ".github/",
