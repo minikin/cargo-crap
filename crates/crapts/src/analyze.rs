@@ -11,6 +11,8 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 use oxc_syntax::scope::ScopeFlags;
 
+use crate::lines::{LineIndex, SourceSpan};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Ordinary,
@@ -39,8 +41,11 @@ pub struct FileAnalysis {
 
 #[derive(Debug)]
 pub struct Row {
+    pub file: PathBuf,
     pub name: String,
+    pub span: SourceSpan,
     pub cyclomatic: u32,
+    pub is_arrow: bool,
 }
 
 #[derive(Debug)]
@@ -100,7 +105,7 @@ pub fn analyze(
         }
         file.status = FileStatus::Recovered;
     }
-    let mut collector = Collector::default();
+    let mut collector = Collector::new(path, source);
     collector.visit_program(&parsed.program);
     file.rows = collector.rows;
     Ok(file)
@@ -110,22 +115,40 @@ fn grammar_for(path: &Path) -> Result<SourceType, oxc_span::UnknownExtension> {
     SourceType::from_path(path).map(|grammar| grammar.with_jsx(grammar.is_javascript()))
 }
 
-#[derive(Default)]
-struct Collector {
+struct Collector<'s> {
+    path: &'s Path,
+    lines: LineIndex,
     rows: Vec<Row>,
     owner: Option<usize>,
 }
 
-impl Collector {
+impl<'s> Collector<'s> {
+    fn new(
+        path: &'s Path,
+        source: &str,
+    ) -> Self {
+        Self {
+            path,
+            lines: LineIndex::new(source),
+            rows: Vec::new(),
+            owner: None,
+        }
+    }
+
     fn in_callable(
         &mut self,
         name: &str,
+        span: oxc_span::Span,
+        is_arrow: bool,
         visit: impl FnOnce(&mut Self),
     ) {
         let previous = self.owner.replace(self.rows.len());
         self.rows.push(Row {
+            file: self.path.to_owned(),
             name: name.to_owned(),
+            span: self.lines.span(span),
             cyclomatic: 1,
+            is_arrow,
         });
         visit(self);
         self.owner = previous;
@@ -149,7 +172,7 @@ fn is_decision(kind: AstKind<'_>) -> bool {
     }
 }
 
-impl<'a> Visit<'a> for Collector {
+impl<'a> Visit<'a> for Collector<'_> {
     fn enter_node(
         &mut self,
         kind: AstKind<'a>,
@@ -171,7 +194,7 @@ impl<'a> Visit<'a> for Collector {
                 .id
                 .as_ref()
                 .map_or("<anonymous>", |id| id.name.as_str());
-            self.in_callable(name, |visitor| {
+            self.in_callable(name, function.span, false, |visitor| {
                 walk::walk_function(visitor, function, flags);
             });
         }
@@ -181,7 +204,7 @@ impl<'a> Visit<'a> for Collector {
         &mut self,
         arrow: &ArrowFunctionExpression<'a>,
     ) {
-        self.in_callable("<anonymous>", |visitor| {
+        self.in_callable("<anonymous>", arrow.span, true, |visitor| {
             walk::walk_arrow_function_expression(visitor, arrow);
         });
     }
@@ -194,7 +217,7 @@ impl<'a> Visit<'a> for Collector {
             && let Some(Expression::ArrowFunctionExpression(arrow)) = &decl.init
         {
             self.visit_binding_pattern(&decl.id);
-            self.in_callable(id.name.as_str(), |visitor| {
+            self.in_callable(id.name.as_str(), arrow.span, true, |visitor| {
                 walk::walk_arrow_function_expression(visitor, arrow);
             });
         } else {
@@ -253,7 +276,7 @@ mod tests {
                 "{body}: {:?}",
                 parsed.diagnostics
             );
-            let mut collector = Collector::default();
+            let mut collector = Collector::new(Path::new("table.ts"), &source);
             collector.visit_program(&parsed.program);
             assert_eq!(collector.rows[0].cyclomatic, expected, "{body}");
         }

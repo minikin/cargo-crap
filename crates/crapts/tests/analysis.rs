@@ -169,3 +169,62 @@ fn a_changed_file_comparison_requires_a_clean_parse_on_both_sides() {
         }
     }
 }
+
+#[test]
+fn a_utf8_bom_counts_toward_source_columns() {
+    // Given offsets refer to the original file, stripping the BOM would shift first-line columns.
+    let path = Path::new("bom.ts");
+    let file = analyze(path, "\u{feff}function f() {}".as_bytes(), Mode::Ordinary).unwrap();
+    assert_eq!(file.status, FileStatus::Clean);
+    assert!(file.warnings.is_empty(), "{:?}", file.warnings);
+    let [row] = file.rows.as_slice() else {
+        panic!("{:?}", file.rows)
+    };
+    assert_eq!(row.file, path);
+    assert_eq!(row.name, "f");
+    assert_eq!((row.span.start.line, row.span.start.column), (1, 1));
+    assert_eq!((row.span.end.line, row.span.end.column), (1, 16));
+}
+
+#[test]
+fn count_javascript_line_terminators() {
+    // When importing coverage, Rust's str::lines() would miss three ECMAScript terminators.
+    for br in ["\n", "\r\n", "\r", "\u{2028}", "\u{2029}"] {
+        let source = ["function f() {", "  return 1", "}"].join(br);
+        let file = analyze(Path::new("break.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+        assert_eq!(file.status, FileStatus::Clean, "{br:?}");
+        let [row] = file.rows.as_slice() else {
+            panic!("{:?}", file.rows)
+        };
+        assert_eq!((row.span.end.line, row.span.end.column), (3, 1), "{br:?}");
+    }
+}
+
+#[test]
+fn identify_arrow_functions_for_coverage_attribution() {
+    // Then the coverage reader can distinguish two functions with brace bodies at the same nesting level.
+    let source = b"const concise = () => 1; const block = () => {}; const expr = function expr() {}; function decl() {}";
+    let file = analyze(Path::new("arrows.ts"), source, Mode::Ordinary).unwrap();
+    let kinds: Vec<_> = file
+        .rows
+        .iter()
+        .map(|row| (row.name.as_str(), row.is_arrow))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("concise", true),
+            ("block", true),
+            ("expr", false),
+            ("decl", false)
+        ]
+    );
+    let args = analyze(
+        Path::new("args.ts"),
+        b"call(function() {}, () => 0)",
+        Mode::Ordinary,
+    )
+    .unwrap();
+    let arrows: Vec<_> = args.rows.iter().map(|row| row.is_arrow).collect();
+    assert_eq!(arrows, [false, true]);
+}
