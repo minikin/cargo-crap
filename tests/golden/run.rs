@@ -206,6 +206,11 @@ pub fn run_with(
     }
 }
 
+/// Runs the case on a fresh copy, with this process's environment as host.
+pub fn run(case: &Case) -> Run {
+    run_with(case, &prepare(case), &|key| std::env::var_os(key))
+}
+
 fn status_of(status: ExitStatus) -> Status {
     match (status.code(), status.signal()) {
         (Some(code), _) => Status::Exit(code),
