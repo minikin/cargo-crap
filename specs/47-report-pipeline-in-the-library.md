@@ -1,6 +1,6 @@
 # Spec 47: Report pipeline in the library
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/{filter,gate,run,policy}.rs` (new), `src/lib.rs`, `src/main.rs`, `src/report.rs`, `src/report/{tool,test_support}.rs`, `src/tool.rs`, `tests/{acceptance,cli}.rs`, `CHANGELOG.md`, `CLAUDE.md`
 **Needs:** Start implementation only after spec 46 is fully built and the orchestrator has rebased this workspace onto it. The handoff includes T2's delta-branding test and T6's shared source-guard file list.
@@ -337,7 +337,7 @@ points. Keep the spec 44 snapshots in verification mode throughout.
   that succeed, fail on write or fail on flush), plus the structural
   checks for delegation and the four core-bound files.
 
-- [ ] **T7 — Count all eligible scores when the caller selects All.**
+- [x] **T7 — Count all eligible scores when the caller selects All.**
   Needs: T6. Add `Population::All` and select the gate input from the
   eligible or shown rows according to `tool.policy.fail_above_counts`.
   Test each population in absolute and delta mode through `run::run`,
