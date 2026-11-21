@@ -761,7 +761,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Encode segment content before joining segments (N11)_.
   Tests: Unit tests for reserved characters, Unicode format controls, UTF-8 percent encoding and lone UTF-16 surrogates. Acceptance checks encoded segments in emitted names.
 
-- [ ] **T11 - Apply namespace and module rules to retained implementations.** Needs: T10.
+- [x] **T11 - Apply namespace and module rules to retained implementations.** Needs: T10.
   Scenarios: _Skip explicitly declared modules and name rows in other string modules_.
   Tests: Acceptance for ambient signatures and recovered implementations in ordinary and strict modes, plus the names of retained functions in quoted modules.
 
