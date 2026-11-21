@@ -11,6 +11,8 @@ use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{Kind, Token};
 use oxc_span::{GetSpan, Span};
 use oxc_str::JSStr;
+use oxc_syntax::identifier::is_identifier_name;
+use oxc_syntax::number::ToJsString;
 use oxc_syntax::operator::AssignmentOperator;
 
 // Scheme 1 pins General_Category=Cf to Unicode 16.0.0 across Rust toolchains.
@@ -61,6 +63,19 @@ fn unquoted(value: &str) -> String {
 
 fn quoted(value: JSStr<'_>) -> String {
     format!("\"{}\"", encode(value, true))
+}
+
+fn string_key(value: JSStr<'_>) -> String {
+    let bare = value.as_str().is_some_and(|s| {
+        // Every canonical finite Number spelling is decimal. Other accepted input
+        // forms, such as hexadecimal, cannot equal Number::toString's output.
+        is_identifier_name(s) || s.parse::<f64>().is_ok_and(|v| v.to_js_string() == s)
+    });
+    if bare {
+        encode(value, false)
+    } else {
+        quoted(value)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -114,10 +129,12 @@ impl Source<'_> {
         expr: &Expression<'_>,
     ) -> String {
         match expr {
-            Expression::StringLiteral(s) => quoted(s.value),
-            Expression::NumericLiteral(_) | Expression::BigIntLiteral(_) => {
-                unquoted(expr.span().source_text(self.text))
+            Expression::StringLiteral(s) => string_key(s.value),
+            Expression::TemplateLiteral(t) if let Some(value) = t.single_quasi() => {
+                string_key(value)
             },
+            Expression::NumericLiteral(n) => n.value.to_js_string(),
+            Expression::BigIntLiteral(n) => n.value.to_string(),
             _ => format!("({})", unquoted(&self.computed_text(expr))),
         }
     }
@@ -641,6 +658,72 @@ mod tests {
     use oxc_allocator::Allocator;
     use oxc_parser::Parser;
     use oxc_span::SourceType;
+
+    #[test]
+    fn member_keys_use_decoded_identifiers_and_ecmascript_literal_values() {
+        for (input, expected) in [
+            (r"n\u0061me", "name"),
+            (r"#n\u0061me", "#name"),
+            ("[0x2a]", "42"),
+            ("[0x2an]", "42"),
+            ("[1e-6]", "0.000001"),
+            ("[5e-324]", "5e-324"),
+            ("[1e400]", "Infinity"),
+            ("[9007199254740993]", "9007199254740992"),
+            ("[9007199254740993n]", "9007199254740993"),
+            (r#"["a b"]"#, "\"a b\""),
+        ] {
+            let text = format!("class K {{ {input}() {{}} }}");
+            let arena = Allocator::default();
+            let parsed = Parser::new(&arena, &text, SourceType::ts())
+                .with_config(oxc_parser::config::TokensParserConfig)
+                .parse();
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "{input}: {:?}",
+                parsed.diagnostics
+            );
+            let oxc_ast::ast::Statement::ClassDeclaration(class) = &parsed.program.body[0] else {
+                panic!("expected a class");
+            };
+            let oxc_ast::ast::ClassElement::MethodDefinition(method) = &class.body.body[0] else {
+                panic!("expected a method");
+            };
+            let src = Source {
+                text: &text,
+                tokens: &parsed.tokens,
+            };
+            assert_eq!(member_key(&method.key, src), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn bare_string_keys_require_an_identifier_or_canonical_number() {
+        for (decoded, expected) in [
+            ("", "\"\""),
+            ("a-b", "\"a-b\""),
+            ("class", "class"),
+            ("$a", "$a"),
+            ("℘", "℘"),
+            ("e\u{301}", "e\u{301}"),
+            ("a\u{200d}b", "a%E2%80%8Db"),
+            ("01", "\"01\""),
+            ("-0", "\"-0\""),
+            ("0", "0"),
+            ("1.0", "\"1.0\""),
+            ("-0.125", "-0.125"),
+            ("-Infinity", "-Infinity"),
+            ("NaN", "NaN"),
+            ("1e-7", "1e-7"),
+            ("1e-07", "\"1e-07\""),
+            ("100000000000000000000", "100000000000000000000"),
+            ("1e+21", "1e+21"),
+            ("1e21", "\"1e21\""),
+            (" 42", "\" 42\""),
+        ] {
+            assert_eq!(string_key(JSStr::from(decoded)), expected, "{decoded:?}");
+        }
+    }
 
     fn computed(input: &str) -> String {
         let text = format!("const key = {input};");

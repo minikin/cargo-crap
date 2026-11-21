@@ -449,3 +449,40 @@ fn preserve_the_analyzers_lexer_tokens_in_computed_text() {
         assert_eq!(names, expected, "{source}");
     }
 }
+
+#[test]
+fn preserve_member_identity_when_the_spelling_changes() {
+    for (source, expected) in [
+        (r#"const o = { "valid"(){} }"#, &["o::valid"][..]),
+        (r#"const o = { ["v\u0061lid"](){} }"#, &["o::valid"]),
+        ("const o = { [`valid`](){} }", &["o::valid"]),
+        (
+            r"class C extends B { static get #\u0061(){} static set #a(v){} protected override async *read(){} }",
+            &["C::static get #a", "C::static set #a", "C::read"],
+        ),
+        (
+            r#"const o = { "042"(){}, 0x2An(){}, [1.50](){}, [1e21](){}, [1e-7](){} }"#,
+            &["o::\"042\"", "o::42", "o::1.5", "o::1e+21", "o::1e-7"],
+        ),
+        (
+            r#"const o = { "1e+21"(){}, "1e21"(){}, "0x2A"(){}, "-0"(){}, "-Infinity"(){} }"#,
+            &[
+                "o::1e+21",
+                "o::\"1e21\"",
+                "o::\"0x2A\"",
+                "o::\"-0\"",
+                "o::-Infinity",
+            ],
+        ),
+        (
+            r#"const o = { "\u00E9"(){}, "e\u0301"(){}, ["\uD800"](){}, [`\uDFFF`](){} }"#,
+            &["o::é", "o::e\u{301}", "o::\"%uD800\"", "o::\"%uDFFF\""],
+        ),
+        (
+            "obj[`a-b`] = () => 0; obj[90_071_992_547_409_931n](() => 0)",
+            &["obj.\"a-b\"", "obj.90071992547409931()"],
+        ),
+    ] {
+        assert_eq!(clean_names("member.ts", source), expected, "{source}");
+    }
+}
