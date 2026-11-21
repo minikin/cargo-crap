@@ -32,7 +32,7 @@ pub fn render_summary(
     }
     let total = entries.len();
     let crappy = super::crappy_count(entries, threshold);
-    // entries are already sorted descending by CRAP score by merge::merge.
+    // The caller hands the rows over sorted by descending CRAP score.
     let worst = entries.first();
 
     if crappy == 0 {

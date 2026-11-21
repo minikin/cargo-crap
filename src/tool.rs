@@ -679,6 +679,25 @@ mod tests {
             expected.push(format!("{file}:1: CARGO_PKG_"));
             expected.push(format!("{file}:2: crate::merge"));
         }
+        for (file, line, resolved) in [
+            (
+                "src/coverage/mod.rs",
+                "use super::merge::X;",
+                "crate::merge",
+            ),
+            (
+                "src/duplicates/compare.rs",
+                "use super::extract::Location;",
+                "crate::duplicates::extract",
+            ),
+        ] {
+            let path = dir.path().join(file);
+            let mut source = std::fs::read_to_string(&path).unwrap();
+            source.push('\n');
+            source.push_str(line);
+            std::fs::write(path, source).unwrap();
+            expected.push(format!("{file}:3: {resolved}"));
+        }
         expected.sort();
         let mut found = check_core(dir.path()).unwrap();
         found.sort();
@@ -1112,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn core_bound_files_reference_only_the_core() {
+    fn the_core_bound_files_reference_only_the_core() {
         let found =
             check_core(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("read the core-bound files");
         assert!(found.is_empty(), "{found:#?}");
