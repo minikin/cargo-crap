@@ -154,6 +154,7 @@
 //! | [`report`] | Renders `Vec<CrapEntry>` or `DeltaReport` as a human table, JSON, GitHub annotations, Markdown, a PR comment, SARIF, or a Shields.io badge. |
 //! | [`config`] | Loads `.cargo-crap.toml` by walking up from CWD. |
 //! | [`filter`] | Compiles allow patterns and selects rows for display. |
+//! | [`run`] | Prepares score rows and duplicate records from the baseline for this run. |
 //! | [`policy`] | A front end's choices for rendering, row ordering, baseline pairing and gates. |
 //! | [`tool`] | cargo-crap's [`report::Tool`]: the name, version and URLs its reports carry. |
 
@@ -167,6 +168,7 @@ pub mod filter;
 pub mod merge;
 pub mod policy;
 pub mod report;
+pub mod run;
 pub mod score;
 pub mod signals;
 pub mod tool;

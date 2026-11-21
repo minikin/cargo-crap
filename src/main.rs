@@ -17,7 +17,6 @@ use cargo_crap::{
     delta::{Baseline, compute_delta, load_baseline_with_weight},
     duplicates,
     duplicates::compare::DuplicatePair,
-    duplicates::extract::Location,
     duplicates::triage::provider::{Provider, default_provider},
     duplicates::triage::verdict::Assessment,
     filter::{self, AllowSet},
@@ -26,6 +25,7 @@ use cargo_crap::{
         self, Format, RenderOptions, SourceLinks, TriagedBy, crappy_count, output_width, render,
         render_delta, render_delta_counts, render_summary, set_color_enabled,
     },
+    run::{BaselineFilter, PreparedBaseline, Scope},
     score::DEFAULT_THRESHOLD,
 };
 use clap::{Parser, ValueEnum};
@@ -834,34 +834,24 @@ fn assign_crate_names(
     }
 }
 
-/// Drops baseline entries that the current run's identity-based filters
-/// would have dropped (spec 18): exclude globs (default + user, matched
-/// relative to the analyzed roots, exactly as the walk applies them) and
-/// `--allow` patterns (same path/name split as [`filter::allow`]).
-///
-/// Without this, changing the exclusion set between the baseline run and the
-/// current run floods `removed` with functions that were not deleted — and
-/// leaves those stale entries eligible for the delta's pass-2 name matcher,
-/// which can pair them with unrelated new functions as phantom moves.
-struct BaselineFilter {
-    /// Each analyzed root with the exclude matcher its walk used, sorted
-    /// longest-first so the deepest root claims the prefix — the same
-    /// longest-match rule as [`assign_crate_names`].
+/// The exclude globs and selected workspace members of cargo-crap's source walk.
+struct CargoScope {
+    /// Deepest root first, so a nested member owns its files.
     roots: Vec<(PathBuf, complexity::ExcludeMatcher)>,
-    allow: AllowSet,
+    members: Option<MemberScope>,
 }
 
-impl BaselineFilter {
+impl CargoScope {
     fn new(
         roots: &[ScanRoot],
-        allow: AllowSet,
+        members: Option<MemberScope>,
     ) -> Result<Self> {
         let mut roots = roots
             .iter()
             .map(|root| Ok((root.dir.clone(), root.matcher()?)))
             .collect::<Result<Vec<_>>>()?;
         roots.sort_by_key(|(dir, _)| std::cmp::Reverse(dir.as_os_str().len()));
-        Ok(Self { roots, allow })
+        Ok(Self { roots, members })
     }
 
     /// True when the walk would have excluded `file`, normalized to forward
@@ -884,28 +874,18 @@ impl BaselineFilter {
             });
         owner.is_some_and(|(dir, excludes)| excludes.check(dir, &normalized).excluded)
     }
+}
 
-    /// Drop every duplicate group member the current run's duplicate scan
-    /// would not have seen: the exclude globs only, since the scan never
-    /// reads the `--allow` patterns.
-    fn retain_members(
+impl Scope for CargoScope {
+    fn keeps(
         &self,
-        groups: &mut [Vec<Location>],
-    ) {
-        for members in groups {
-            members.retain(|m| !self.is_excluded(&m.file));
-        }
-    }
-
-    /// Drop every entry the current run would not have produced. Filtered
-    /// entries vanish for delta purposes: they appear in no bucket
-    /// (`removed` included) and cannot pair in the name-fallback pass.
-    fn retain(
-        &self,
-        entries: &mut Vec<cargo_crap::merge::CrapEntry>,
-    ) {
-        entries.retain(|entry| !self.is_excluded(&entry.file));
-        filter::allow(entries, &self.allow);
+        file: &Path,
+    ) -> bool {
+        !self.is_excluded(file)
+            && self
+                .members
+                .as_ref()
+                .is_none_or(|scope| !scope.is_out_of_scope(file))
     }
 }
 
@@ -1284,12 +1264,12 @@ struct RenderOpts<'a> {
 /// proceeds.
 fn load_filtered_baseline(
     baseline: Option<&PathBuf>,
-    allow: AllowSet,
+    allow: &AllowSet,
     roots: &[ScanRoot],
-    member_scope: Option<&MemberScope>,
+    member_scope: Option<MemberScope>,
     try_weight: f64,
     signals_enabled: bool,
-) -> Result<Option<Baseline>> {
+) -> Result<Option<PreparedBaseline>> {
     let Some(baseline_path) = baseline else {
         return Ok(None);
     };
@@ -1300,15 +1280,8 @@ fn load_filtered_baseline(
     // A run with signals off must not show a baseline's signals either.
     keep_signals(&mut baseline.entries, signals_enabled);
     resolve_relative_paths(&mut baseline, workspace_root(roots));
-    let filter = BaselineFilter::new(roots, allow)?;
-    filter.retain(&mut baseline.entries);
-    apply_member_scope(&mut baseline.entries, member_scope);
-    // At most one record: `for_each` filters it when the baseline has one.
-    baseline
-        .duplicate_groups
-        .iter_mut()
-        .for_each(|groups| filter_duplicate_record(groups, &filter, member_scope));
-    Ok(Some(baseline))
+    let scope = CargoScope::new(roots, member_scope)?;
+    Ok(Some(BaselineFilter::new(&scope, allow).prepare(baseline)))
 }
 
 /// In workspace mode, read every relative path in `baseline` as relative to
@@ -1321,8 +1294,8 @@ fn resolve_relative_paths(
     let Some(root) = workspace_root else {
         return;
     };
-    // `join` keeps an absolute path as it is. Separators are unified first,
-    // as `BaselineFilter` does, so a baseline written on Windows resolves.
+    // Normalize separators so paths recorded on Windows resolve. Joining an absolute
+    // path preserves it, so both path forms can use the same operation.
     let resolve = |file: &mut PathBuf| *file = root.join(file.to_string_lossy().replace('\\', "/"));
     for entry in &mut baseline.entries {
         resolve(&mut entry.file);
@@ -1381,41 +1354,6 @@ fn missing_signals_warning(
          with [signals] enabled to compare them"
             .to_owned()
     })
-}
-
-/// Drop baseline entries owned by unselected members (spec 25): a `-p` run
-/// never walked them, so they must vanish rather than flood `removed`.
-/// No-op without a scope (single-root and `--workspace` runs).
-fn apply_member_scope(
-    data: &mut Vec<cargo_crap::merge::CrapEntry>,
-    member_scope: Option<&MemberScope>,
-) {
-    retain_in_scope(data, member_scope, |e| &e.file);
-}
-
-/// Keep the `items` whose file `member_scope` covers, or every item without
-/// a scope.
-fn retain_in_scope<T>(
-    items: &mut Vec<T>,
-    member_scope: Option<&MemberScope>,
-    file: impl Fn(&T) -> &Path,
-) {
-    if let Some(scope) = member_scope {
-        items.retain(|item| !scope.is_out_of_scope(file(item)));
-    }
-}
-
-/// Narrow a baseline's duplicate record to the members the current run's
-/// duplicate scan would see: its exclude globs and member scope.
-fn filter_duplicate_record(
-    groups: &mut [Vec<Location>],
-    filter: &BaselineFilter,
-    member_scope: Option<&MemberScope>,
-) {
-    filter.retain_members(groups);
-    for members in groups {
-        retain_in_scope(members, member_scope, |m| &m.file);
-    }
 }
 
 /// Everything the duplicate pass needs, resolved before `cli` and `config`
@@ -2075,9 +2013,9 @@ fn run() -> Result<ExitCode> {
     // --- Baseline (loaded here, filtered per specs 18 + 25) ---
     let baseline_data = load_filtered_baseline(
         cli.baseline.as_ref(),
-        allow,
+        &allow,
         &roots,
-        member_scope.as_ref(),
+        member_scope,
         try_weight,
         signals.enabled,
     )?;
@@ -2091,7 +2029,7 @@ fn run() -> Result<ExitCode> {
         &knobs.cwd,
         workspace_root.as_deref(),
     );
-    let baseline = baseline_data.as_ref();
+    let baseline = baseline_data.as_ref().map(PreparedBaseline::as_baseline);
     let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref(), baseline)?;
     let opts = RenderOpts {
         render: RenderOptions {
@@ -2134,6 +2072,7 @@ fn run() -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cargo_crap::duplicates::extract::Location;
 
     const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
         policy: cargo_crap::tool::CARGO_CRAP_POLICY,
@@ -2945,6 +2884,25 @@ mod tests {
         }
     }
 
+    struct Selection {
+        scope: CargoScope,
+        allow: AllowSet,
+    }
+
+    impl Selection {
+        fn prepare(
+            &self,
+            entries: Vec<cargo_crap::merge::CrapEntry>,
+            duplicate_groups: Option<Vec<Vec<Location>>>,
+        ) -> PreparedBaseline {
+            BaselineFilter::new(&self.scope, &self.allow).prepare(Baseline {
+                entries,
+                duplicate_groups,
+                try_weight: cargo_crap::config::DEFAULT_TRY_WEIGHT,
+            })
+        }
+    }
+
     /// A filter over `dirs`, each walked under `excludes`, as
     /// `load_filtered_baseline` builds one from the run's roots.
     fn filter_for(
@@ -2952,7 +2910,7 @@ mod tests {
         allow: &[String],
         dirs: Vec<PathBuf>,
         workspace_root: Option<&Path>,
-    ) -> Result<BaselineFilter> {
+    ) -> Result<Selection> {
         let roots: Vec<ScanRoot> = dirs
             .into_iter()
             .map(|dir| {
@@ -2964,7 +2922,10 @@ mod tests {
                 )
             })
             .collect();
-        BaselineFilter::new(&roots, AllowSet::compile(allow)?)
+        Ok(Selection {
+            scope: CargoScope::new(&roots, None)?,
+            allow: AllowSet::compile(allow)?,
+        })
     }
 
     #[test]
@@ -3021,15 +2982,16 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("./src/generated/api.rs", "dropped"),
             baseline_entry("./src/lib.rs", "kept"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
-    fn workspace_filter(excludes: &Excludes) -> BaselineFilter {
+    fn workspace_filter(excludes: &Excludes) -> Selection {
         filter_for(
             excludes,
             &[],
@@ -3049,23 +3011,25 @@ mod tests {
             user: strs(&["agent/**"]),
             cli_start: 0,
         });
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("/ws/agent/src/lib.rs", "dropped"),
             baseline_entry("/ws/tests/harness/src/lib.rs", "kept"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
     fn baseline_filter_never_matches_a_default_below_the_workspace_root() {
         let filter = workspace_filter(&defaults_only(&["tests/**"]));
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("/ws/tests/harness/src/lib.rs", "kept"),
             baseline_entry("/ws/agent/tests/it.rs", "dropped"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
@@ -3077,14 +3041,15 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("./src/lib.rs", "kept"),
             baseline_entry("./tests/integration.rs", "test_helper"),
             baseline_entry("benches/bench.rs", "bench_helper"),
             baseline_entry("examples/demo.rs", "example_helper"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
@@ -3098,9 +3063,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![baseline_entry("./src/tests/helpers.rs", "nested_helper")];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["nested_helper"]);
+        let entries = vec![baseline_entry("./src/tests/helpers.rs", "nested_helper")];
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["nested_helper"]);
     }
 
     #[test]
@@ -3125,12 +3091,28 @@ mod tests {
             at("src/b.rs", "skip_me"),
             at("gen/c.rs", "h"),
         ];
-        let mut groups = vec![
+        let groups = vec![
             vec![at("tests/it.rs", "helper"), at("src/a.rs", "g")],
             kept.clone(),
         ];
-        filter.retain_members(&mut groups);
-        assert_eq!(groups, vec![vec![at("src/a.rs", "g")], kept]);
+        let prepared = filter.prepare(Vec::new(), Some(groups));
+        let groups = prepared.as_baseline().duplicate_groups.as_ref().unwrap();
+        assert_eq!(groups, &[vec![at("src/a.rs", "g")], kept]);
+    }
+
+    #[test]
+    fn baseline_scores_keep_only_selected_member_files_that_the_walk_included() {
+        let excludes = defaults_only(&["tests/**"]);
+        let root = PathBuf::from("/ws/crates/alpha");
+        let mut selection = filter_for(&excludes, &[], vec![root], Some(Path::new("/ws"))).unwrap();
+        selection.scope.members = Some(root_layout_scope());
+        let rows = vec![
+            baseline_entry("/ws/crates/alpha/src/lib.rs", "selected"),
+            baseline_entry("/ws/crates/alpha/tests/helper.rs", "excluded"),
+            baseline_entry("/ws/crates/beta/src/lib.rs", "unselected"),
+        ];
+        let prepared = selection.prepare(rows, None);
+        assert_eq!(names(&prepared.as_baseline().entries), ["selected"]);
     }
 
     #[test]
@@ -3141,9 +3123,10 @@ mod tests {
             end_line: 9,
             name: name.to_string(),
         };
-        let filter =
+        let mut filter =
             filter_for(&Excludes::default(), &[], vec![PathBuf::from("/ws")], None).unwrap();
-        let mut groups = vec![
+        filter.scope.members = Some(root_layout_scope());
+        let groups = vec![
             vec![
                 at("/ws/crates/alpha/src/lib.rs", "f"),
                 at("/ws/crates/beta/src/lib.rs", "g"),
@@ -3153,10 +3136,11 @@ mod tests {
                 at("/ws/crates/alpha/src/b.rs", "k"),
             ],
         ];
-        filter_duplicate_record(&mut groups, &filter, Some(&root_layout_scope()));
+        let prepared = filter.prepare(Vec::new(), Some(groups));
+        let groups = prepared.as_baseline().duplicate_groups.as_ref().unwrap();
         assert_eq!(
             groups,
-            vec![
+            &[
                 vec![at("/ws/crates/alpha/src/lib.rs", "f")],
                 vec![
                     at("/ws/crates/alpha/src/a.rs", "h"),
@@ -3264,8 +3248,9 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![baseline_entry("tests\\integration.rs", "test_helper")];
-        filter.retain(&mut entries);
+        let entries = vec![baseline_entry("tests\\integration.rs", "test_helper")];
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
         assert!(entries.is_empty(), "backslash path must match tests/**");
     }
 
@@ -3281,13 +3266,14 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("crates/foo/tests/it.rs", "member_test"),
             baseline_entry("crates/foo/sub/tests/it.rs", "nested_member_test"),
             baseline_entry("crates/foo/src/lib.rs", "kept"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
@@ -3299,12 +3285,13 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("src/codegen.rs", "generated_parse_v1"),
             baseline_entry("src/lib.rs", "kept"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
@@ -3318,22 +3305,24 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("/abs/proj/src/generated/api.rs", "dropped"),
             baseline_entry("/abs/proj/src/lib.rs", "kept"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
     fn baseline_filter_with_no_patterns_is_a_no_op() {
         let filter = filter_for(&Excludes::default(), &[], vec![PathBuf::from(".")], None).unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("tests/integration.rs", "test_helper"),
             baseline_entry("src/lib.rs", "lib_fn"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["test_helper", "lib_fn"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["test_helper", "lib_fn"]);
     }
 }

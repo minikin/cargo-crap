@@ -9448,3 +9448,98 @@ fn top_selects_by_score_before_file_order_sorts_the_selected_rows() {
         .collect();
     assert_eq!(rows, [("b.rs", "second"), ("z.rs", "first")]);
 }
+
+// Spec 47 T4
+
+struct Roots<'a>(&'a [&'a str]);
+
+impl cargo_crap::run::Scope for Roots<'_> {
+    fn keeps(
+        &self,
+        file: &std::path::Path,
+    ) -> bool {
+        self.0.iter().any(|root| file.starts_with(root))
+    }
+}
+
+fn scored_baseline(entries: Vec<cargo_crap::merge::CrapEntry>) -> cargo_crap::delta::Baseline {
+    cargo_crap::delta::Baseline {
+        entries,
+        try_weight: cargo_crap::config::DEFAULT_TRY_WEIGHT,
+        duplicate_groups: None,
+    }
+}
+
+#[test]
+fn the_callers_file_scope_applies_before_baseline_pairing() {
+    use cargo_crap::{delta, filter::AllowSet, report, run::BaselineFilter};
+    // Given an unselected function whose name would otherwise pair with the new row.
+    let raw = scored_baseline(vec![
+        scored_row("old/work.rs", "work", 5.0),
+        scored_row("old/dead.rs", "dead", 5.0),
+        scored_row("src/gone.rs", "gone", 5.0),
+    ]);
+    let current = vec![scored_row("src/new.rs", "work", 5.0)];
+    let scope = Roots(&["src"]);
+    let allow = AllowSet::compile(&[]).unwrap();
+    // When the caller prepares the baseline and writes the delta.
+    let prepared = BaselineFilter::new(&scope, &allow).prepare(raw);
+    let delta = delta::compute_delta(
+        &current,
+        &prepared.as_baseline().entries,
+        delta::DEFAULT_EPSILON,
+    );
+    let opts = report::RenderOptions {
+        format: report::Format::Json,
+        ..report::RenderOptions::new(&SECOND_TOOL)
+    };
+    let mut out = Vec::new();
+    report::render_delta(&delta, &opts, &mut out).unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    // Then work is genuinely new and gone is the only removal.
+    let entries = doc["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["function"], "work");
+    assert_eq!(entries[0]["file"], "src/new.rs");
+    assert_eq!(entries[0]["status"], "new");
+    assert!(entries[0].get("previous_file").is_none());
+    let removed = doc["removed"].as_array().unwrap();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0]["function"], "gone");
+    assert_eq!(removed[0]["file"], "src/gone.rs");
+}
+
+#[test]
+fn allow_filters_hide_score_rows_while_duplicate_members_follow_file_scope() {
+    use cargo_crap::{duplicates::extract::Location, filter::AllowSet, run::BaselineFilter};
+    // Given the same four locations recorded as score rows and as one duplicate group.
+    let mut baseline = scored_baseline(vec![
+        scored_row("src/a.rs", "Worker::run", 5.0),
+        scored_row("gen/b.rs", "build", 5.0),
+        scored_row("src/c.rs", "keep", 5.0),
+        scored_row("old/d.rs", "gone", 5.0),
+    ]);
+    let group: Vec<_> = baseline
+        .entries
+        .iter()
+        .map(|row| Location {
+            name: row.function.clone(),
+            file: row.file.clone(),
+            start_line: row.line,
+            end_line: row.line + 2,
+        })
+        .collect();
+    baseline.duplicate_groups = Some(vec![group.clone()]);
+    let allow = AllowSet::compile(&["Worker::*".into(), "gen/**".into()]).unwrap();
+    // When the caller prepares this baseline for the selected directories.
+    let prepared = BaselineFilter::new(&Roots(&["src", "gen"]), &allow).prepare(baseline);
+    let scoped = prepared.as_baseline();
+    // Then allow patterns suppress score rows and the group follows only the file scope.
+    assert_eq!(scoped.entries.len(), 1);
+    assert_eq!(scoped.entries[0].function, "keep");
+    assert_eq!(scoped.entries[0].file, std::path::Path::new("src/c.rs"));
+    assert_eq!(
+        scoped.duplicate_groups.as_ref().unwrap(),
+        &[group[..3].to_vec()]
+    );
+}

@@ -474,6 +474,7 @@ mod tests {
             (src.join("report.rs"), vec!["report".to_string()]),
             (src.join("delta.rs"), vec!["delta".to_string()]),
             (src.join("filter.rs"), vec!["filter".to_string()]),
+            (src.join("run.rs"), vec!["run".to_string()]),
             (src.join("policy.rs"), vec!["policy".to_string()]),
         ];
         rust_files(&src.join("report"), &["report".to_string()], &mut files);
