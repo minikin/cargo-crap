@@ -12,3 +12,6 @@ mod config;
 
 #[path = "golden/encode.rs"]
 mod encode;
+
+#[path = "golden/run.rs"]
+mod run;
