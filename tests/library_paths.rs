@@ -57,3 +57,21 @@ fn the_old_library_paths_still_resolve() {
     assert_eq!(worth.level(), 1);
     assert_eq!(assessment, verdict::Assessment::Kind(judged));
 }
+
+mod cargo_crap_fixture {
+    use cargo_crap::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+    use cargo_crap::report::{Format, Schemas, Tool};
+    use cargo_crap::tool::CARGO_CRAP;
+
+    const CARGO_CRAP_FIXTURE: Tool =
+        include!("../crates/cargo-crap-core/tests/fixtures/cargo_crap_tool.inc.rs");
+
+    #[test]
+    fn cargo_crap_fixture_matches_cargo_crap_but_its_version() {
+        let fixture = Tool {
+            version: CARGO_CRAP.version,
+            ..CARGO_CRAP_FIXTURE
+        };
+        assert_eq!(fixture, CARGO_CRAP);
+    }
+}

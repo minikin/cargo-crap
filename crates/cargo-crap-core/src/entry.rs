@@ -59,8 +59,7 @@ pub enum SortOrder {
 
 /// Stable `(file, function, line)` sort key. The file path is normalized to
 /// forward slashes so baselines written on different platforms sort the same.
-#[must_use]
-pub fn file_order_key(e: &CrapEntry) -> (String, &str, usize) {
+pub(crate) fn file_order_key(e: &CrapEntry) -> (String, &str, usize) {
     (path_key(&e.file), e.function.as_str(), e.line)
 }
 

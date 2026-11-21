@@ -95,8 +95,8 @@ pub enum Format {
 ///
 ///
 /// ```
-/// use cargo_crap::report::{Format, RenderOptions, Schemas, Tool};
-/// use cargo_crap::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+/// use cargo_crap_core::report::{Format, RenderOptions, Schemas, Tool};
+/// use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
 /// const TOOL: Tool = Tool {
 ///     policy: Policy {
 ///         envelope: EnvelopeKind::CargoCrapV1,

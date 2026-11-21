@@ -94,21 +94,16 @@ path = "src/lib.rs"
 cargo-crap-core.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
-comfy-table.workspace = true
 globset.workspace = true
 ignore.workspace = true
 rayon.workspace = true
 indicatif.workspace = true
-lcov.workspace = true
-owo-colors.workspace = true
-percent-encoding.workspace = true
 proc-macro2 = { workspace = true, features = ["span-locations"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 quote.workspace = true
 syn = { workspace = true, features = ["full", "visit", "printing"] }
 toml = { workspace = true, features = ["parse"] }
-unicode-width.workspace = true
 ureq = { workspace = true, optional = true, features = ["rustls"] }
 
 [features]
@@ -124,6 +119,7 @@ predicates.workspace = true
 jsonschema.workspace = true
 proptest.workspace = true
 insta.workspace = true
+unicode-width.workspace = true
 
 # docs.rs documents every feature, so the triage client appears in the docs.
 [package.metadata.docs.rs]

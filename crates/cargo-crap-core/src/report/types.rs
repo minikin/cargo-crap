@@ -476,13 +476,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn line_ranges(pairs: &[(u32, u32)]) -> Vec<LineRange> {
-        pairs
-            .iter()
-            .map(|&(start, end)| LineRange { start, end })
-            .collect()
-    }
-
     #[test]
     fn a_path_inside_the_workspace_root_is_written_below_it() {
         let root = Path::new("/ws");
@@ -721,7 +714,7 @@ mod tests {
         // Kills: swapping start/end, rendering `17–17` instead of `17`,
         // wrong separator.
         assert_eq!(
-            uncovered_display(&line_ranges(&[(12, 14), (17, 17)])),
+            uncovered_display(&LineRange::list(&[(12, 14), (17, 17)])),
             "12–14, 17"
         );
     }
@@ -735,7 +728,13 @@ mod tests {
     fn uncovered_display_caps_at_three_and_counts_the_rest() {
         // Kills: cap off-by-one, dropping the `+N more` tail, wrong count.
         assert_eq!(
-            uncovered_display(&line_ranges(&[(1, 2), (4, 5), (7, 8), (10, 11), (13, 14)])),
+            uncovered_display(&LineRange::list(&[
+                (1, 2),
+                (4, 5),
+                (7, 8),
+                (10, 11),
+                (13, 14)
+            ])),
             "1–2, 4–5, 7–8 +2 more"
         );
     }
@@ -744,7 +743,7 @@ mod tests {
     fn uncovered_display_shows_exactly_three_without_tail() {
         // Kills: `> cap` replaced with `>= cap` (a spurious `+0 more`).
         assert_eq!(
-            uncovered_display(&line_ranges(&[(1, 2), (4, 5), (7, 8)])),
+            uncovered_display(&LineRange::list(&[(1, 2), (4, 5), (7, 8)])),
             "1–2, 4–5, 7–8"
         );
     }
@@ -755,7 +754,10 @@ mod tests {
     fn uncovered_suffixes_are_empty_when_hints_are_off() {
         // Off must be byte-identical to the pre-hint output.
         assert_eq!(uncovered_header_suffix(false), ("", ""));
-        assert_eq!(uncovered_cell_suffix(false, &line_ranges(&[(1, 2)])), "");
+        assert_eq!(
+            uncovered_cell_suffix(false, &LineRange::list(&[(1, 2)])),
+            ""
+        );
     }
 
     #[test]
@@ -763,7 +765,7 @@ mod tests {
         // Kills: mismatched header/separator arity, missing cell padding.
         assert_eq!(uncovered_header_suffix(true), (" Uncovered |", "---|"));
         assert_eq!(
-            uncovered_cell_suffix(true, &line_ranges(&[(1, 2)])),
+            uncovered_cell_suffix(true, &LineRange::list(&[(1, 2)])),
             " 1–2 |"
         );
         assert_eq!(uncovered_cell_suffix(true, &[]), "  |");

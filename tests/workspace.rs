@@ -229,11 +229,10 @@ fn the_root_resolves_exactly_the_local_core() {
     );
 }
 
-/// Every file under `src` that names a Cargo package variable, as its path
-/// relative to `src`.
-fn package_identity_reads(src: &Path) -> Vec<String> {
+/// Every file below `dir`, as its path relative to `dir` with `/` separators.
+fn files_under(dir: &Path) -> Vec<String> {
     fn walk(
-        src: &Path,
+        base: &Path,
         dir: &Path,
         found: &mut Vec<String>,
     ) {
@@ -242,20 +241,29 @@ fn package_identity_reads(src: &Path) -> Vec<String> {
         for entry in entries {
             let path = entry.expect("directory entry").path();
             if path.is_dir() {
-                walk(src, &path, found);
-            } else if std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
-                .contains("CARGO_PKG_")
-            {
-                let relative = path.strip_prefix(src).expect("under src");
-                found.push(format!("{}: CARGO_PKG_", relative.display()).replace('\\', "/"));
+                walk(base, &path, found);
+            } else {
+                let relative = path.strip_prefix(base).expect("under the base");
+                found.push(relative.to_string_lossy().replace('\\', "/"));
             }
         }
     }
     let mut found = Vec::new();
-    walk(src, src, &mut found);
+    walk(dir, dir, &mut found);
     found.sort();
     found
+}
+
+fn package_identity_reads(src: &Path) -> Vec<String> {
+    files_under(src)
+        .into_iter()
+        .filter(|file| {
+            std::fs::read_to_string(src.join(file))
+                .unwrap_or_else(|e| panic!("reading {file}: {e}"))
+                .contains("CARGO_PKG_")
+        })
+        .map(|file| format!("{file}: CARGO_PKG_"))
+        .collect()
 }
 
 #[test]
@@ -336,4 +344,104 @@ fn mutants_of_the_core_run_the_whole_workspace_s_tests() {
         config.get("test_workspace"),
         Some(&toml::Value::Boolean(true))
     );
+}
+
+#[test]
+fn the_core_dependency_graph_excludes_language_parsers() {
+    // Given the populated core and the committed lockfile
+    // When cargo tree -p cargo-crap-core --all-features -e no-proc-macro
+    // --prefix none --locked runs
+    let tree = cargo(
+        &root(),
+        &[
+            "tree",
+            "-p",
+            "cargo-crap-core",
+            "--all-features",
+            "-e",
+            "no-proc-macro",
+            "--prefix",
+            "none",
+            "--locked",
+        ],
+    );
+    let lines: Vec<&str> = tree.lines().collect();
+
+    // Then it succeeds with a nonempty tree rooted at cargo-crap-core
+    assert!(
+        lines
+            .first()
+            .is_some_and(|l| l.starts_with("cargo-crap-core ")),
+        "{tree}"
+    );
+    // And it contains lines starting with "lcov " and "comfy-table "
+    for dependency in ["lcov ", "comfy-table "] {
+        assert!(
+            lines.iter().any(|l| l.starts_with(dependency)),
+            "no {dependency:?} line in:\n{tree}"
+        );
+    }
+    // And no line starts with "syn " or "oxc_"
+    let parsers: Vec<&&str> = lines
+        .iter()
+        .filter(|l| l.starts_with("syn ") || l.starts_with("oxc_"))
+        .collect();
+    assert!(parsers.is_empty(), "{parsers:?}");
+}
+
+/// The seeds the moved properties replay, relative to the core's
+/// `proptest-regressions/`.
+const CORE_SEEDS: &[&str] = &[
+    "duplicates/compare.txt",
+    "duplicates/group.txt",
+    "duplicates/novelty.txt",
+    "report/duplicates.txt",
+    "report/human.txt",
+    "report/pr_comment.txt",
+    "report/types.txt",
+];
+
+/// The module whose properties replay `seed` in the package rooted at
+/// `package`, when that module defines any.
+fn seed_owner(
+    package: &Path,
+    seed: &str,
+) -> Option<PathBuf> {
+    let module = package.join("src").join(seed).with_extension("rs");
+    std::fs::read_to_string(&module)
+        .is_ok_and(|source| source.contains("proptest!"))
+        .then_some(module)
+}
+
+#[test]
+fn recorded_property_test_seeds_follow_the_tests_that_replay_them() {
+    let core = root().join("crates/cargo-crap-core");
+
+    // Given the recorded seeds of both packages
+    let core_seeds = files_under(&core.join("proptest-regressions"));
+    let root_seeds = files_under(&root().join("proptest-regressions"));
+
+    // When each seed path is checked against the module that owns its
+    // property
+    // Then each moved seed file is present under the core's
+    // proptest-regressions/ at its test's lookup path
+    assert_eq!(core_seeds, CORE_SEEDS);
+    for seed in CORE_SEEDS {
+        assert!(
+            seed_owner(&core, seed).is_some(),
+            "no core module replays {seed}"
+        );
+    }
+    // And no seed file under the root proptest-regressions/ names a core
+    // module
+    for seed in &root_seeds {
+        assert!(
+            !core.join("src").join(seed).with_extension("rs").exists(),
+            "the root keeps {seed}, a core module's seed"
+        );
+        assert!(
+            seed_owner(&root(), seed).is_some(),
+            "no root module replays {seed}"
+        );
+    }
 }

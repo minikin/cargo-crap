@@ -1,6 +1,6 @@
 //! Select score rows before display or baseline comparison.
 
-use crate::entry::{CrapEntry, SortOrder, sort_entries};
+use crate::merge::{CrapEntry, SortOrder, sort_entries};
 use anyhow::{Context, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use std::path::{Path, PathBuf};
@@ -29,6 +29,7 @@ impl AllowSet {
     }
 }
 
+/// Remove score rows matching any allowed function name or file.
 pub fn allow(
     entries: &mut Vec<CrapEntry>,
     allow_set: &AllowSet,
@@ -42,6 +43,7 @@ pub fn allow(
     });
 }
 
+/// A slash or double star selects a file glob. Other patterns match function names.
 fn is_path_allow_pattern(pattern: &str) -> bool {
     pattern.contains('/') || pattern.contains("**")
 }
@@ -136,6 +138,7 @@ mod tests {
 
     #[test]
     fn without_a_slice_the_run_keeps_one_list_in_the_requested_order() {
+        // Merge order: highest CRAP first.
         let merged = || -> Vec<CrapEntry> {
             [("b", 9.0), ("a", 7.0)]
                 .iter()
@@ -148,7 +151,6 @@ mod tests {
                     crap,
                     crate_name: None,
                     signals: None,
-                    fingerprint: None,
                     signal_spans: crate::signals::Spans::default(),
                     uncovered: Vec::new(),
                 })
@@ -185,7 +187,6 @@ mod tests {
                 crap,
                 crate_name: None,
                 signals: None,
-                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             })
@@ -333,6 +334,7 @@ mod tests {
                 );
             }
 
+            // Qualifying rows form a prefix. Their file names run in reverse input order.
             let qualifying = scores
                 .iter()
                 .take_while(|&&score| score >= min.unwrap_or(0))

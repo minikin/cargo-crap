@@ -221,15 +221,11 @@ dependencies = [
  "assert_cmd",
  "cargo-crap-core",
  "clap",
- "comfy-table",
  "globset",
  "ignore",
  "indicatif",
  "insta",
  "jsonschema",
- "lcov",
- "owo-colors",
- "percent-encoding",
  "predicates",
  "proc-macro2",
  "proptest",
@@ -249,11 +245,16 @@ name = "cargo-crap-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "comfy-table",
+ "globset",
  "lcov",
+ "owo-colors",
+ "percent-encoding",
  "proptest",
  "serde",
  "serde_json",
  "tempfile",
+ "unicode-width",
 ]
 
 [[package]]

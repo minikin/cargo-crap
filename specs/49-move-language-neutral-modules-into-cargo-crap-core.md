@@ -259,7 +259,7 @@ source guard drops each file as it moves.
   Tests: the moved unit and property tests, and the existing
   `tests/library_paths.rs`.
 
-- [ ] **T4 — Move the baseline, report and gate pipeline and retire the transitional source guard.**
+- [x] **T4 — Move the baseline, report and gate pipeline and retire the transitional source guard.**
   Needs: T3. Move `delta.rs`, `report.rs`, `report/`, `filter.rs`,
   `gate.rs`, `run.rs` and `policy.rs`, re-export them from `src/lib.rs`
   and switch their doctests to `cargo_crap_core`. Put the fixed-version

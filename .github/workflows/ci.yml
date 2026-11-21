@@ -61,6 +61,7 @@ jobs:
               - 'deny.toml'
               - 'schemas/**'
               - 'proptest-regressions/**'
+              - 'crates/*/proptest-regressions/**'
               - '.github/workflows/ci.yml'
               # tests/golden/gates.rs reads the Action workflow's paths.
               - '.github/workflows/action.yml'

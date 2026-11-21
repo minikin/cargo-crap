@@ -15,45 +15,11 @@ use std::path::PathBuf;
 /// cargo-crap's branding with a fixed version. The report tests use it in
 /// place of cargo-crap's own `Tool` value, which stays behind in the front
 /// end when the report moves into the core.
-pub(crate) const CARGO_CRAP_FIXTURE: Tool = Tool {
-    policy: Policy {
-        envelope: EnvelopeKind::CargoCrapV1,
-        pairing: PairPolicy::FileFunctionLine,
-        fail_above_counts: Population::Shown,
-        summary_formats: &[
-            Format::Human,
-            Format::Markdown,
-            Format::PrComment,
-            Format::Sarif,
-            Format::Shields,
-        ],
-        tie_order: TieOrder::Stable,
-    },
-    name: "cargo-crap",
-    version: "0.0.0-test",
-    info_uri: "https://github.com/minikin/cargo-crap",
-    schemas: Schemas {
-        report: "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
-        delta: "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json",
-    },
-    comment_marker: "<!-- cargo-crap-report -->",
-    baseline_hint: "cargo crap --format json",
-};
+pub(crate) const CARGO_CRAP_FIXTURE: Tool = include!("../../tests/fixtures/cargo_crap_tool.inc.rs");
 
 /// A tool whose seven branding strings differ from cargo-crap's and from one another,
 /// so a field read from the wrong place shows.
-pub(crate) const SECOND_TOOL: Tool = Tool {
-    policy: CARGO_CRAP_FIXTURE.policy,
-    name: "other-tool",
-    version: "7.7.7-other",
-    info_uri: "https://example.test/other-tool",
-    schemas: Schemas {
-        report: "https://example.test/schemas/other-report.json",
-        delta: "https://example.test/schemas/other-delta.json",
-    },
-    comment_marker: "<!-- other-tool-marker -->",
-    baseline_hint: "other-tool --json",
-};
+pub(crate) const SECOND_TOOL: Tool = include!("../../tests/fixtures/second_tool.inc.rs");
 
 /// Shorthand for the common test shape: a threshold and a format, every
 /// other knob at its default. Sites needing links / diagnostics /

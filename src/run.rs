@@ -1,20 +1,22 @@
 //! Prepare a baseline, select and render score rows, then return the verdict after flushing.
 
+use crate::config::DEFAULT_TRY_WEIGHT;
 use crate::delta::{Baseline, DeltaCounts, attach_reasons, compute_delta, gating_signal_count};
 use crate::duplicates::{
-    compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, verdict::Assessment,
+    compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, triage::verdict::Assessment,
 };
-use crate::entry::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::filter::{self, AllowSet};
 use crate::gate::{GateOutcome, threshold_count};
+use crate::merge::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::report::{self, Format, RenderOptions, SourceLinks, Tool, TriagedBy};
-use crate::score::DEFAULT_TRY_WEIGHT;
 use crate::signals::SignalSettings;
 use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::Path;
 
+/// The files the front end selected for this run.
 pub trait Scope {
+    /// Whether a recorded file is in the run's scope.
     fn keeps(
         &self,
         file: &Path,
@@ -32,6 +34,7 @@ pub struct BaselineFilter<'a> {
 }
 
 impl<'a> BaselineFilter<'a> {
+    /// Bind the scope and compiled allow patterns used by the current run.
     #[must_use]
     pub fn new(
         scope: &'a dyn Scope,
@@ -43,6 +46,7 @@ impl<'a> BaselineFilter<'a> {
         }
     }
 
+    /// Filter score rows by scope and allow patterns, and duplicate members by scope alone.
     #[must_use]
     pub fn prepare(
         &self,
@@ -59,10 +63,12 @@ impl<'a> BaselineFilter<'a> {
     }
 }
 
+/// A baseline prepared with the scope and allow patterns for a particular run.
 #[derive(Debug)]
 pub struct PreparedBaseline(Baseline);
 
 impl PreparedBaseline {
+    /// Read the scoped score rows and duplicate record.
     #[must_use]
     pub fn as_baseline(&self) -> &Baseline {
         &self.0
@@ -73,11 +79,13 @@ impl PreparedBaseline {
 pub struct Analysis<'a> {
     /// Scored functions before allow patterns or display limits are applied.
     pub entries: Vec<CrapEntry>,
+    /// Coverage overlap diagnostics for the report envelope.
     pub diagnostics: Option<ScopeDiagnostics>,
     /// The predicate used to prepare this run's baseline.
     pub scope: &'a dyn Scope,
 }
 
+/// Resolved report and gate settings for one run.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "callers select each independent gate and display option"
@@ -87,38 +95,53 @@ pub struct Settings<'a> {
     pub allow: &'a AllowSet,
     /// Inclusive lower score bound for display.
     pub min: Option<f64>,
+    /// Maximum number of qualifying rows to show.
     pub top: Option<usize>,
     /// Display order after selection.
     pub sort: SortOrder,
     /// Scores strictly above this value count toward the threshold gate.
     pub threshold: f64,
+    /// Score difference tolerated in a delta.
     pub epsilon: f64,
+    /// Signal reasons and gates for the comparison.
     pub signals: &'a SignalSettings,
+    /// Trip the gate on scores above the threshold.
     pub fail_above: bool,
+    /// Trip the gate on score or gating signal regressions.
     pub fail_regression: bool,
+    /// Requested report format.
     pub format: Format,
     /// Request a summary in formats selected by the caller's policy.
     pub summary: bool,
+    /// Include unchanged rows in delta tables.
     pub show_unchanged: bool,
+    /// Show uncovered line ranges in supported tables.
     pub uncovered_hints: bool,
     /// Available table width in terminal columns.
     pub width: Option<usize>,
+    /// Source links for linked report formats.
     pub links: Option<&'a SourceLinks>,
     /// Working directory for relative duplicate paths.
     pub cwd: &'a Path,
+    /// Workspace root for report paths, when applicable.
     pub workspace_root: Option<&'a Path>,
 }
 
+/// Optional duplicate analysis and scoring metadata supplied by the caller.
 pub struct RenderExtras<'a> {
     /// Ordered duplicate pairs.
     pub duplicates: Option<&'a [DuplicatePair]>,
     /// Duplicate groups in report order.
     pub groups: Option<&'a [DuplicateGroup]>,
+    /// Comparison of duplicate groups with the prepared baseline.
     pub novelty: Option<&'a Comparison>,
+    /// Triage assessment for each group or pair.
     pub triage: Option<&'a [Option<Assessment>]>,
+    /// Provider and model that supplied the assessments.
     pub triaged_by: Option<TriagedBy<'a>>,
     /// Number of groups beyond the triage budget.
     pub untriaged: usize,
+    /// Weight applied to question-mark operators during scoring.
     pub try_weight: f64,
 }
 
@@ -136,6 +159,7 @@ impl Default for RenderExtras<'_> {
     }
 }
 
+/// Omit measured signals and their source spans when signal reporting is disabled.
 fn keep_signals(
     entries: &mut [CrapEntry],
     enabled: bool,
@@ -244,6 +268,7 @@ pub fn run(
     ))
 }
 
+/// Write the CRAP change counts and report any signal regressions separately.
 fn render_delta_summary_lines(
     counts: &DeltaCounts,
     signal_gates: usize,
@@ -291,7 +316,7 @@ mod tests {
     fn signals_are_stripped_only_from_a_run_with_them_off() {
         let mut entries = crate::report::test_support::sample();
         entries[0].signals = Some(crate::signals::Signals::default());
-        let spans = vec![crate::coverage::LineRange { start: 3, end: 5 }];
+        let spans = crate::coverage::LineRange::list(&[(3, 5)]);
         entries[0].signal_spans.lines.clone_from(&spans);
         keep_signals(&mut entries, true);
         assert_eq!(entries[0].signal_spans.lines, spans);
@@ -390,8 +415,8 @@ mod tests {
         fn score_and_duplicate_selections_preserve_the_order_of_their_survivors(
             choices in proptest::collection::vec((proptest::bool::ANY, proptest::bool::ANY), 0..30)
         ) {
-            use crate::duplicates::model::Location;
-            use crate::entry::CrapEntry;
+            use crate::duplicates::extract::Location;
+            use crate::merge::CrapEntry;
             use proptest::prop_assert_eq;
             struct Source;
             impl Scope for Source {
@@ -425,7 +450,7 @@ mod tests {
             let allow = AllowSet::compile(&["skip".into()]).unwrap();
             let prepared = BaselineFilter::new(&Source, &allow).prepare(Baseline {
                 entries,
-                try_weight: crate::score::DEFAULT_TRY_WEIGHT,
+                try_weight: crate::config::DEFAULT_TRY_WEIGHT,
                 duplicate_groups: Some(vec![group]),
             });
             let scoped = prepared.as_baseline();

@@ -6,8 +6,7 @@ use std::path::{Component, Path, PathBuf};
 
 /// A path with its separators unified, so a baseline written on Windows
 /// matches a run on Unix.
-#[must_use]
-pub fn path_key(p: &Path) -> String {
+pub(crate) fn path_key(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
@@ -29,7 +28,7 @@ fn common_suffix_len(
 /// For `from`, find the index in `candidates` whose file shares the longest
 /// common path suffix with it. Returns `None` when no candidate shares at
 /// least the filename, or when the best score is tied (ambiguous).
-pub fn unique_best_by_suffix<T>(
+pub(crate) fn unique_best_by_suffix<T>(
     from: &Path,
     candidates: &[T],
     file_of: impl Fn(&T) -> &Path,
