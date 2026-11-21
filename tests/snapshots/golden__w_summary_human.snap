@@ -1,0 +1,18 @@
+---
+source: tests/golden/snap.rs
+---
+case: w_summary_human
+stdout:
+Per-crate summary:
+┌───────┬───────────┬────────┐
+│ Crate ┆ Functions ┆ Crappy │
+╞═══════╪═══════════╪════════╡
+│ alpha ┆         2 ┆      0 │
+├╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┤
+│ beta  ┆         1 ┆      0 │
+└───────┴───────────┴────────┘
+✓ Analyzed: 3 · Crappy: 0 (threshold 30)
+<<end>>
+stderr:
+<<end>>
+exit: 0

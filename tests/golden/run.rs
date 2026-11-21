@@ -10,7 +10,7 @@ use std::process::ExitStatus;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-use crate::encode::{Run, Status};
+use crate::encode::{Run, Status, encode};
 
 /// Host variables a case keeps, each only when set: what `cargo metadata`
 /// and rustup need to find the toolchain in workspace mode.
@@ -207,12 +207,50 @@ pub fn run_with(
     }
 }
 
+/// The case that runs twice on one copy: once with a cold complexity cache
+/// and once reading the cache the first run wrote.
+pub const WARM_CACHE: &str = "w_warm_cache";
+
 /// Runs the case on a fresh copy, with this process's environment as host.
 /// The copy comes back too: the output checks need its path.
-pub fn run(case: &Case) -> (Run, CaseDir) {
+pub fn run(case: &Case) -> Result<(Run, CaseDir), Vec<String>> {
     let copy = prepare(case);
-    let run = run_with(case, &copy, &|key| std::env::var_os(key));
-    (run, copy)
+    let host = |key: &str| std::env::var_os(key);
+    let run = if case.id == WARM_CACHE {
+        cold_then_warm(case.id, &copy, &mut || run_with(case, &copy, &host))?
+    } else {
+        run_with(case, &copy, &host)
+    };
+    Ok((run, copy))
+}
+
+fn cache_file(copy: &CaseDir) -> PathBuf {
+    copy.root().join("target/cargo-crap/complexity.json")
+}
+
+/// `runner` runs the case once on `copy`. The warm run is returned for
+/// comparison with the golden, which therefore holds the cold run too.
+fn cold_then_warm(
+    id: &str,
+    copy: &CaseDir,
+    runner: &mut dyn FnMut() -> Run,
+) -> Result<Run, Vec<String>> {
+    if cache_file(copy).exists() {
+        return Err(vec!["a complexity cache exists before the cold run".into()]);
+    }
+    let cold = runner();
+    if !cache_file(copy).is_file() {
+        return Err(vec!["the cold run wrote no complexity cache".into()]);
+    }
+    let warm = runner();
+    if warm != cold {
+        return Err(vec![format!(
+            "the warm run differs from the cold run\n--- cold\n{}\n--- warm\n{}",
+            encode(id, &cold),
+            encode(id, &warm)
+        )]);
+    }
+    Ok(warm)
 }
 
 fn status_of(status: ExitStatus) -> Status {
@@ -226,7 +264,6 @@ fn status_of(status: ExitStatus) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encode::encode;
 
     const P_JSON: Case = Case {
         id: "probe_p_json",
@@ -498,6 +535,76 @@ mod tests {
             0,
             "the cache followed the Cargo config out of the copy"
         );
+    }
+
+    const WARM: Case = Case {
+        id: WARM_CACHE,
+        ..W_HUMAN
+    };
+
+    #[test]
+    fn a_warm_cache_run_matches_the_cold_runs_golden() {
+        // Given a fresh copy of sample_workspace with no complexity cache under its target directory
+        let copy = prepare(&WARM);
+        assert!(!cache_file(&copy).exists());
+        let mut runs = Vec::new();
+        // When case w_warm_cache runs once, and again on the same copy
+        let warm = cold_then_warm(WARM.id, &copy, &mut || {
+            // Then the complexity cache exists before the second run
+            runs.push(cache_file(&copy).is_file());
+            run_with(&WARM, &copy, &clean_host)
+        })
+        .expect("cold then warm");
+        assert_eq!(
+            runs,
+            [false, true],
+            "one cold run, then one warm run on the same copy"
+        );
+        // And the run compared with the golden is the warm one, equal to the cold one
+        assert_eq!(warm.status, OK, "{}", text(&warm.stderr));
+        assert_eq!(warm, run_with(&WARM, &copy, &clean_host));
+        assert_eq!(
+            cold_then_warm(WARM.id, &copy, &mut || run_with(&WARM, &copy, &clean_host)),
+            Err(vec![
+                "a complexity cache exists before the cold run".to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn a_warm_run_that_differs_from_the_cold_one_fails_with_both() {
+        let copy = prepare(&WARM);
+        let mut calls = 0;
+        let outcome = cold_then_warm(WARM.id, &copy, &mut || {
+            calls += 1;
+            let mut run = run_with(&WARM, &copy, &clean_host);
+            if calls == 2 {
+                run.stdout.extend_from_slice(b"drift\n");
+            }
+            run
+        });
+        let problems = outcome.expect_err("a differing warm run passed");
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].starts_with("the warm run differs from the cold run"));
+        assert!(problems[0].contains("--- cold\ncase: w_warm_cache"));
+        assert!(problems[0].contains("drift"), "{}", problems[0]);
+    }
+
+    #[test]
+    fn only_the_warm_cache_case_runs_twice() {
+        let no_cache = Case {
+            args: &["--workspace", "--no-cache"],
+            ..WARM
+        };
+        assert_eq!(
+            run(&no_cache).err(),
+            Some(vec!["the cold run wrote no complexity cache".to_owned()])
+        );
+        let other = Case {
+            id: "probe_no_cache",
+            ..no_cache
+        };
+        assert!(run(&other).is_ok());
     }
 
     #[test]

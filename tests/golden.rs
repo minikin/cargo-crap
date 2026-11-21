@@ -47,7 +47,7 @@ fn every_case_matches_its_golden() {
             .iter()
             .find(|case| case.id == id)
             .expect("a listed case");
-        let (run, copy) = run::run(case);
+        let (run, copy) = run::run(case)?;
         checks::finish(case, run, copy.root())
     };
     let failures = snap::check(mode, &snap::Snapshots::committed(), &ids, &run);

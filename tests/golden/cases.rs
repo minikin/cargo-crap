@@ -5,13 +5,17 @@
 use crate::run::{Case, Fixture, NO_LCOV};
 
 pub fn all() -> Vec<Case> {
-    [cases_p()].concat()
+    [cases_p(), cases_w()].concat()
 }
 
 /// The rows live in consts: a function holding them all outgrows clippy's
 /// line limit, and a const is not a function.
 fn cases_p() -> &'static [Case] {
     CASES_P
+}
+
+fn cases_w() -> &'static [Case] {
+    CASES_W
 }
 
 const CASES_P: &[Case] = &[
@@ -720,6 +724,237 @@ const CASES_P: &[Case] = &[
         id: "p_duplicates_none",
         fixture: Fixture::P,
         args: &["--duplicates"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+];
+
+const CASES_W: &[Case] = &[
+    Case {
+        id: "w_human",
+        fixture: Fixture::W,
+        args: &["--workspace"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_json",
+        fixture: Fixture::W,
+        args: &["--workspace", "--format", "json"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_markdown",
+        fixture: Fixture::W,
+        args: &["--workspace", "--format", "markdown"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_pr_comment",
+        fixture: Fixture::W,
+        args: &["--workspace", "--format", "pr-comment"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_github",
+        fixture: Fixture::W,
+        args: &["--workspace", "--format", "github", "--threshold", "10"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_sarif",
+        fixture: Fixture::W,
+        args: &["--workspace", "--format", "sarif", "--threshold", "10"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_shields",
+        fixture: Fixture::W,
+        args: &["--workspace", "--format", "shields"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_summary_human",
+        fixture: Fixture::W,
+        args: &["--workspace", "--summary"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_links_markdown",
+        fixture: Fixture::W,
+        args: &[
+            "--workspace",
+            "--format",
+            "markdown",
+            "--repo-url",
+            "https://github.com/example/demo",
+            "--commit-ref",
+            "0123abc",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_no_default_excludes",
+        fixture: Fixture::W,
+        args: &["--workspace", "--no-default-excludes"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_package_alpha",
+        fixture: Fixture::W,
+        args: &["-p", "alpha"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_packages_both",
+        fixture: Fixture::W,
+        args: &["-p", "alpha", "-p", "beta"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_package_unknown",
+        fixture: Fixture::W,
+        args: &["-p", "nope", "-p", "zzz"],
+        config: None,
+        env: &[],
+        exit: 2,
+    },
+    Case {
+        id: "w_delta_human",
+        fixture: Fixture::W,
+        args: &["--workspace", "--baseline", "w_two.json"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_delta_human_show_unchanged",
+        fixture: Fixture::W,
+        args: &[
+            "--workspace",
+            "--baseline",
+            "w_two.json",
+            "--show-unchanged",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_delta_markdown",
+        fixture: Fixture::W,
+        args: &[
+            "--workspace",
+            "--baseline",
+            "w_two.json",
+            "--format",
+            "markdown",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_delta_markdown_show_unchanged",
+        fixture: Fixture::W,
+        args: &[
+            "--workspace",
+            "--baseline",
+            "w_two.json",
+            "--format",
+            "markdown",
+            "--show-unchanged",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_delta_pr_comment",
+        fixture: Fixture::W,
+        args: &[
+            "--workspace",
+            "--baseline",
+            "w_two.json",
+            "--format",
+            "pr-comment",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_delta_json",
+        fixture: Fixture::W,
+        args: &[
+            "--workspace",
+            "--baseline",
+            "w_two.json",
+            "--format",
+            "json",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_package_alpha_delta",
+        fixture: Fixture::W,
+        args: &["-p", "alpha", "--baseline", "w_two.json"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_lcov_shared",
+        fixture: Fixture::W,
+        args: &["--workspace", "--lcov", "w_shared.info"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_lcov_precedence",
+        fixture: Fixture::W,
+        args: &[
+            "--workspace",
+            "--lcov",
+            "w_precedence.info",
+            "--format",
+            "json",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "w_warm_cache",
+        fixture: Fixture::W,
+        args: &["--workspace"],
         config: None,
         env: &[],
         exit: 0,

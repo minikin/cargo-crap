@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+  "version": "0.9.0",
+  "entries": [
+    {
+      "file": "crates/alpha/src/lib.rs",
+      "function": "alpha_branchy",
+      "line": 5,
+      "cyclomatic": 4.0,
+      "coverage": null,
+      "crap": 30.0,
+      "crate": "alpha"
+    },
+    {
+      "file": "crates/alpha/src/lib.rs",
+      "function": "alpha_clean",
+      "line": 1,
+      "cyclomatic": 1.0,
+      "coverage": null,
+      "crap": 2.0,
+      "crate": "alpha"
+    },
+    {
+      "file": "crates/beta/src/lib.rs",
+      "function": "beta_only",
+      "line": 1,
+      "cyclomatic": 1.0,
+      "coverage": null,
+      "crap": 2.0,
+      "crate": "beta"
+    }
+  ]
+}

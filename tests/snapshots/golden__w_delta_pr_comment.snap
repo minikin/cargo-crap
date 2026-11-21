@@ -1,0 +1,22 @@
+---
+source: tests/golden/snap.rs
+---
+case: w_delta_pr_comment
+stdout:
+<!-- cargo-crap-report -->
+
+## ✅ No CRAP regressions
+
+↑ 0 regressed · ★ 0 new · ↔ 0 moved · ↓ 1 improved · 2 unchanged · — 0 removed
+
+<details><summary>↓ 1 improved</summary>
+
+| | CRAP | Δ | CC | Cov % | Function | Location |
+|---|---:|---:|---:|---:|---|---|
+| ▲ | 20.0 | -10.0 | 4 | — | `alpha_branchy` | `crates/alpha/src/lib.rs:5` |
+
+</details>
+<<end>>
+stderr:
+<<end>>
+exit: 0

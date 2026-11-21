@@ -1,0 +1,10 @@
+---
+source: tests/golden/snap.rs
+---
+case: w_github
+stdout:
+::warning file=crates/alpha/src/lib.rs,line=5,title=CRAP (20.0 > 10)::alpha_branchy has CRAP score 20.0 (CC=4, cov=—)
+<<end>>
+stderr:
+<<end>>
+exit: 0
