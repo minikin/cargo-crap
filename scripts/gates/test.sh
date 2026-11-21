@@ -274,10 +274,6 @@ check "just mutants and just mutants-all reach the core: mutants FILE" \
     "[mutants][--workspace][--file][crates/cargo-crap-core/src/lib.rs]" "$first"
 check "just mutants and just mutants-all reach the core: mutants-all" "[mutants][--workspace]" "$calls"
 
-# Scenario: a root consumer test can catch a core mutant. The core has no
-# test of its own, so only this repository's mutants config can send its
-# mutants to the root's test. cargo-mutants' baseline runs only the mutated
-# package, where nextest would refuse an empty run.
 dir="$scratch/consumer"
 {
     mkdir -p "$dir/src" "$dir/tests" "$dir/crates/core/src" "$dir/.cargo" &&
@@ -297,11 +293,15 @@ dir="$scratch/consumer"
         printf 'pub fn double(x: u32) -> u32 {\n    x * 2\n}\n' > "$dir/crates/core/src/lib.rs" &&
         (cd "$dir" && fixture_git diff > "$scratch/consumer.diff")
 } > /dev/null 2>&1 || { echo "FAIL building the consumer fixture"; exit 1; }
-(cd "$dir" && CARGO_TARGET_DIR="$scratch/consumer-target" "$real_cargo" nextest run --workspace) > /dev/null 2>&1
-check "a root consumer test can catch a core mutant: the root test passes on x * 2" "0" "$?"
+out="$(cd "$dir" && CARGO_TARGET_DIR="$scratch/consumer-target" "$real_cargo" nextest run --workspace 2>&1)"
+status=$?
+[ "$status" -eq 0 ] || printf '%s\n' "$out"
+check "a root consumer test can catch a core mutant: the root test passes on x * 2" "0" "$status"
+# cargo-mutants baselines only the core, where nextest finds zero tests.
 out="$(cd "$dir" && CARGO_TARGET_DIR="$scratch/consumer-target" NEXTEST_NO_TESTS=pass \
     "$real_cargo" mutants --workspace --in-diff "$scratch/consumer.diff" 2>&1)"
 status=$?
+[ "$status" -eq 0 ] || printf '%s\n' "$out"
 check "a root consumer test can catch a core mutant: cargo mutants exits 0" "0" "$status"
 check "a root consumer test can catch a core mutant: replace * with + in double is caught" "1" \
     "$(grep -q '^crates/core/src/lib.rs:.*replace \* with + in double$' "$dir/mutants.out/caught.txt" 2> /dev/null && echo 1 || echo 0)"
