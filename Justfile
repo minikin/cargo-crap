@@ -127,6 +127,11 @@ release-test:
     bash scripts/release/test.sh
     if command -v shellcheck > /dev/null; then shellcheck -x scripts/release/*.sh; fi
 
+# The workspace gates' shell tests, and shellcheck when it is installed.
+gates-test:
+    bash scripts/gates/test.sh
+    if command -v shellcheck > /dev/null; then shellcheck -x scripts/gates/*.sh; fi
+
 # Mutation tests for a specific file: just mutants src/delta.rs
 mutants FILE:
     cargo mutants --file {{FILE}}

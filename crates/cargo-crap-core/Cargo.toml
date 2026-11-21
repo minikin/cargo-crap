@@ -9,3 +9,6 @@ description = "Language-neutral CRAP scoring, coverage reading, delta and report
 repository.workspace = true
 homepage.workspace = true
 publish = false
+
+[lints]
+workspace = true
