@@ -737,7 +737,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Count each decision in its owning parameters or body_.
   Tests: Unit tests for the decision table and acceptance through the emitted CC, including the expressions that add zero.
 
-- [ ] **T5 - Return diagnosable errors for invalid bytes and wrong-grammar input.** Needs: T4.
+- [x] **T5 - Return diagnosable errors for invalid bytes and wrong-grammar input.** Needs: T4.
   Scenarios: _Reject syntax that belongs to a different source grammar_, _Reject invalid UTF-8 source bytes_.
   Tests: Acceptance through ordinary and strict decoding and through the strict wrong-grammar fixtures. Assert the path and comparison side where specified.
 
