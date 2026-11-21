@@ -689,7 +689,8 @@ Given Spec 45 has landed beneath this change, including its lockfile, Rust 1.88 
 When CI tests the workspace against the committed lockfile
 Then the new crapts package runs its library tests on Rust 1.98 and the existing Rust 1.88 checks pass
 And extending the parser guard to crapts rejects a dependency line starting with "syn " or "cargo-crap "
-  in the all-features tree that excludes proc-macro dependencies
+  in the tree of normal and build dependencies on every target with all features enabled
+And the guard excludes test-only and proc-macro dependency paths
 And the existing cargo-crap/core guards and byte-for-byte Spec 44 goldens pass with snapshot updates disabled
 ```
 
@@ -818,7 +819,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
 - `discover(roots, options)` returns `Discovery` with sorted `files`, the `scope` predicate and `unused_excludes`. `analyze(path, bytes, mode) -> Result<FileAnalysis, InputError>` accepts `Ordinary` or `Strict(Base | Head)`. `FileAnalysis` carries `status` (`Clean`, `Recovered` or `SkippedFatal`), `rows` and `warnings`. Warnings are returned data for the caller to display. Ordinary input decoding failures and strict parse or decoding failures return `InputError`. Each `Row` carries `file`, `name`, `span`, `body_regions`, `statement_lines` and `cyclomatic`. Regions use the half-open positions specified above.
 - Pin `oxc_allocator`, `oxc_ast`, `oxc_ast_visit`, `oxc_parser`, `oxc_span`, `oxc_str` and `oxc_syntax` to `=0.159.0` in the workspace manifest and group their updates in `.github/dependabot.yml`. Use the parser’s lexer tokens for the text of computed names. Attribute decisions to the row that executes each expression.
 - Resolve the new dependency closure from the landed lockfile. Compare package IDs against that base. Dependency lists in existing records can gain version qualifiers when a second version enters the lockfile.
-- Keep the naming fixtures and generated-source checks under `crates/crapts/tests/`. Add the Rust 1.98 job and extend Spec 45's `cargo tree -p <package> --all-features -e no-proc-macro --prefix none --locked` guard to crapts. Run the workspace gates with `INSTA_UPDATE=no`.
+- Keep the naming fixtures and generated-source checks under `crates/crapts/tests/`. Add the Rust 1.98 job and extend Spec 45's `cargo tree -p <package> --all-features --target all -e normal,build,no-proc-macro --prefix none --locked` guard to crapts. Run the workspace gates with `INSTA_UPDATE=no`.
 
 ### Reference behavior and intentional parser differences
 
