@@ -14,6 +14,8 @@ on:
       - 'scripts/action/**'
       - '.github/workflows/action.yml'
       - 'src/**'
+      # The Action jobs build cargo-crap from source, the core included.
+      - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
   push:

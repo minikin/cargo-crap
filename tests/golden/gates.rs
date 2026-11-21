@@ -322,6 +322,321 @@ fn a_change_to_any_golden_proptest_seed_runs_the_rust_jobs() {
     );
 }
 
+/// One step of a workflow job: its name and the shell lines it runs, from
+/// a one-line `run:` or a `run: |` block.
+struct Step {
+    name: String,
+    condition: String,
+    env: Vec<String>,
+    run: Vec<String>,
+}
+
+fn steps(job: &[&str]) -> Vec<Step> {
+    /// The block a step's line belongs to: its own keys, a `run: |` body or
+    /// an `env:` map, both of which are deeper than the keys.
+    enum Inside {
+        Keys,
+        Run,
+        Env,
+    }
+    let mut steps: Vec<Step> = Vec::new();
+    let mut keys_indent = 0;
+    let mut inside = Inside::Keys;
+    for line in job {
+        let indent = line.len() - line.trim_start().len();
+        let text = line.trim();
+        if text.is_empty() {
+            continue;
+        }
+        // A `- ` line opens a step, and what follows the dash is its first
+        // key, read like any other: `- if: false` must not lose the `if`.
+        let (indent, text) = match text.strip_prefix("- ") {
+            Some(rest) => {
+                keys_indent = indent + 2;
+                inside = Inside::Keys;
+                steps.push(Step {
+                    name: String::new(),
+                    condition: String::new(),
+                    env: Vec::new(),
+                    run: Vec::new(),
+                });
+                (keys_indent, rest)
+            },
+            None => (indent, text),
+        };
+        let Some(step) = steps.last_mut() else {
+            continue;
+        };
+        if indent > keys_indent {
+            match inside {
+                Inside::Run if !text.starts_with('#') => step.run.push(text.to_owned()),
+                Inside::Env => step.env.push(text.to_owned()),
+                _ => {},
+            }
+            continue;
+        }
+        inside = Inside::Keys;
+        if let Some(name) = text.strip_prefix("name: ") {
+            name.clone_into(&mut step.name);
+        } else if let Some(condition) = text.strip_prefix("if: ") {
+            condition.clone_into(&mut step.condition);
+        } else if text == "run: |" {
+            inside = Inside::Run;
+        } else if text == "env:" {
+            inside = Inside::Env;
+        } else if let Some(command) = text.strip_prefix("run: ") {
+            step.run.push(command.to_owned());
+        }
+    }
+    steps
+}
+
+fn step<'a>(
+    steps: &'a [Step],
+    name: &str,
+) -> &'a Step {
+    steps
+        .iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("no step named {name:?}"))
+}
+
+/// The globs listed under `header` in `file`, one `- '<glob>'` per line.
+fn globs(
+    file: &str,
+    header: &str,
+) -> Vec<String> {
+    let text = read(file);
+    block(&lines(&text), header)
+        .iter()
+        .filter_map(|l| l.trim().strip_prefix("- '")?.strip_suffix('\''))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether any glob matches `path`, with `*` kept inside one path
+/// component as dorny/paths-filter's picomatch and GitHub's `on.paths` keep
+/// it. globset's default lets `*` cross `/`, which would make every filter
+/// check here pass too easily.
+fn any_glob_matches(
+    globs: &[String],
+    path: &str,
+) -> bool {
+    globs.iter().any(|g| {
+        globset::GlobBuilder::new(g)
+            .literal_separator(true)
+            .build()
+            .unwrap_or_else(|e| panic!("glob {g:?}: {e}"))
+            .compile_matcher()
+            .is_match(path)
+    })
+}
+
+const CI: &str = ".github/workflows/ci.yml";
+
+#[test]
+fn cis_mutants_job_runs_the_shared_diff_script() {
+    // Given CI's mutants job
+    let ci = read(CI);
+    let job = steps(&block(&lines(&ci), "  mutants:"));
+
+    // When its steps are read
+    let pull_request = step(&job, "Run mutation tests (changed lines only, PRs)");
+    let push = step(&job, "Run mutation tests (full, main)");
+
+    // Then the pull-request step runs the shared script against origin/
+    // and the base branch, and nothing else decides which lines are mutated
+    assert_eq!(pull_request.env, ["BASE_REF: ${{ github.base_ref }}"]);
+    assert_eq!(
+        pull_request.run,
+        [r#"bash scripts/gates/mutants-diff.sh --base "origin/$BASE_REF""#],
+        "{:?}",
+        pull_request.run
+    );
+    // And the push step mutates every member
+    assert_eq!(push.run, ["cargo mutants --workspace"]);
+    // And each runs on its own event, so swapping them is caught
+    assert_eq!(
+        pull_request.condition,
+        "github.event_name == 'pull_request'"
+    );
+    assert_eq!(push.condition, "github.event_name == 'push'");
+}
+
+#[test]
+fn a_change_only_under_crates_runs_the_rust_and_mutants_jobs() {
+    // Given the CI changes job's filters
+    // When crates/cargo-crap-core/src/lib.rs is the only changed path
+    // Then the rust and src filters both match it
+    for filter in ["            rust:", "            src:"] {
+        assert!(
+            any_glob_matches(&globs(CI, filter), "crates/cargo-crap-core/src/lib.rs"),
+            "the {} filter misses crates/cargo-crap-core/src/lib.rs",
+            filter.trim()
+        );
+    }
+}
+
+#[test]
+fn a_change_only_to_a_members_cargo_toml_runs_the_rust_jobs() {
+    // Given the CI changes job's rust filter
+    let rust = globs(CI, "            rust:");
+    // When a manifest is the only changed path
+    // Then both entries are there, the root's literal one included, so it
+    // does not depend on how picomatch reads a leading `**/`
+    for entry in ["Cargo.toml", "**/Cargo.toml"] {
+        assert!(
+            rust.iter().any(|g| g == entry),
+            "the rust filter lacks {entry:?}"
+        );
+    }
+    // And the rust filter matches the core's, the root's, and an example
+    // package's manifest, which tests/workspace.rs reads
+    for manifest in [
+        "crates/cargo-crap-core/Cargo.toml",
+        "Cargo.toml",
+        "examples/hero-shop/Cargo.toml",
+    ] {
+        assert!(
+            any_glob_matches(&rust, manifest),
+            "the rust filter misses {manifest}"
+        );
+    }
+}
+
+#[test]
+fn a_change_only_to_the_cores_manifest_runs_the_release_script_tests() {
+    // Given the CI changes job's release filter
+    // When crates/cargo-crap-core/Cargo.toml is the only changed path
+    // Then the release filter matches it
+    assert!(any_glob_matches(
+        &globs(CI, "            release:"),
+        "crates/cargo-crap-core/Cargo.toml"
+    ));
+}
+
+#[test]
+fn a_change_only_to_the_mutants_gates_own_files_runs_the_mutants_job() {
+    // Given the CI changes job's src filter, which gates the mutants job
+    let src = globs(CI, "            src:");
+    // When the gate's script or its config is the only changed path
+    // Then the src filter matches it
+    for path in ["scripts/gates/mutants-diff.sh", ".cargo/mutants.toml"] {
+        assert!(any_glob_matches(&src, path), "the src filter misses {path}");
+    }
+}
+
+#[test]
+fn a_change_only_under_crates_runs_the_action_workflow() {
+    // Given the pull_request paths of the Action workflow
+    let action = read(".github/workflows/action.yml");
+    let paths: Vec<String> = block(&block(&lines(&action), "  pull_request:"), "    paths:")
+        .iter()
+        .filter_map(|l| l.trim().strip_prefix("- '")?.strip_suffix('\''))
+        .map(str::to_owned)
+        .collect();
+    // When crates/cargo-crap-core/src/lib.rs is the only changed path
+    // Then the paths match it
+    assert!(
+        any_glob_matches(&paths, "crates/cargo-crap-core/src/lib.rs"),
+        "{paths:?}"
+    );
+}
+
+#[test]
+fn a_change_only_to_the_action_workflow_runs_the_check_that_reads_it() {
+    // Given the CI changes job's rust filter
+    // When .github/workflows/action.yml is the only changed path
+    // Then the rust filter matches it, so the Action-paths check above,
+    // which reads that file, runs
+    assert!(
+        any_glob_matches(
+            &globs(CI, "            rust:"),
+            ".github/workflows/action.yml"
+        ),
+        "the rust filter misses .github/workflows/action.yml"
+    );
+}
+
+/// The packages a cargo command selects, in every spelling cargo takes:
+/// `-p x`, `-px`, `--package x`, `--package=x`, and `p` inside a cluster
+/// of short options, `-vp x`.
+fn selected_packages<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut selected = Vec::new();
+    let mut tokens = args.iter();
+    while let Some(token) = tokens.next() {
+        if *token == "--package" {
+            selected.extend(tokens.next().copied());
+        } else if let Some(name) = token.strip_prefix("--package=") {
+            selected.push(name);
+        } else if let Some(cluster) = token.strip_prefix('-').filter(|c| !c.starts_with('-')) {
+            // A short-option cluster such as `-vp x` or `-qpx`: what follows
+            // the `p` is the package, or the next token when nothing does.
+            if let Some((_, name)) = cluster.split_once('p') {
+                if name.is_empty() {
+                    selected.extend(tokens.next().copied());
+                } else {
+                    selected.push(name);
+                }
+            }
+        }
+    }
+    selected
+}
+
+/// The workspace members whose `rust-version` is `msrv`, sorted.
+fn msrv_members(msrv: &str) -> Vec<String> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let output = std::process::Command::new(&cargo)
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("cargo metadata");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    let members = metadata["workspace_members"].as_array().expect("members");
+    let mut names: Vec<String> = metadata["packages"]
+        .as_array()
+        .expect("packages")
+        .iter()
+        .filter(|p| members.contains(&p["id"]) && p["rust_version"] == msrv)
+        .map(|p| p["name"].as_str().expect("name").to_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn the_msrv_job_tests_the_1_88_packages_by_name() {
+    // Given CI's msrv job on Rust 1.88
+    let ci = read(CI);
+    let job = steps(&block(&lines(&ci), "  msrv:"));
+    // When its cargo commands are read
+    let cargo: Vec<Vec<&str>> = job
+        .iter()
+        .flat_map(|s| &s.run)
+        .map(|c| c.split_whitespace().collect::<Vec<_>>())
+        .filter(|c| cargo_args(c).is_some())
+        .collect();
+    assert_eq!(cargo.len(), 3, "{cargo:?}");
+    // The 1.88 packages are the workspace members that declare 1.88, so a
+    // new member at that MSRV cannot be left out of the job unnoticed.
+    let msrv_members = msrv_members("1.88");
+    assert_eq!(msrv_members, ["cargo-crap", "cargo-crap-core"]);
+    for command in &cargo {
+        // Then each passes -p cargo-crap -p cargo-crap-core
+        let args = cargo_args(command).expect("a cargo run");
+        let selected = selected_packages(args);
+        assert_eq!(selected, msrv_members, "{command:?}");
+        // And none passes --workspace
+        assert!(!args.contains(&"--workspace"), "{command:?}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +822,112 @@ mod tests {
             &[TEST[0]],
         );
         assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_star_in_a_filter_stays_inside_one_path_component() {
+        let star = vec!["crates/*/src/*.rs".to_owned()];
+        assert!(any_glob_matches(&star, "crates/x/src/lib.rs"));
+        assert!(!any_glob_matches(&star, "crates/x/tests/fixtures/src/y.rs"));
+        let root = vec!["Cargo.toml".to_owned()];
+        assert!(!any_glob_matches(&root, "crates/x/Cargo.toml"));
+    }
+
+    #[test]
+    fn every_package_selector_spelling_is_read() {
+        let args = [
+            "nextest",
+            "run",
+            "-p",
+            "a",
+            "-pb",
+            "--package",
+            "c",
+            "--package=d",
+            "-vp",
+            "e",
+            "-qpf",
+        ];
+        assert_eq!(selected_packages(&args), ["a", "b", "c", "d", "e", "f"]);
+    }
+
+    #[test]
+    fn a_first_key_is_read_like_any_other() {
+        let job = [
+            "      - if: false",
+            "        run: bash scripts/gates/parser-guard.sh",
+            "      - run: |",
+            "          first",
+            "        name: Block first",
+        ];
+        let found = steps(&job);
+        assert_eq!(found[0].condition, "false");
+        assert_eq!(found[0].run, ["bash scripts/gates/parser-guard.sh"]);
+        assert_eq!(found[1].run, ["first"]);
+        assert_eq!(found[1].name, "Block first");
+    }
+
+    #[test]
+    fn a_steps_condition_is_read() {
+        let job = [
+            "      - name: Only on PRs",
+            "        if: github.event_name == 'pull_request'",
+            "        run: echo",
+        ];
+        assert_eq!(
+            steps(&job)[0].condition,
+            "github.event_name == 'pull_request'"
+        );
+    }
+
+    #[test]
+    fn a_nested_name_does_not_rename_the_step() {
+        let job = [
+            "      - name: Upload",
+            "        uses: actions/upload-artifact@v4",
+            "        with:",
+            "          name: mutants-out",
+        ];
+        assert_eq!(steps(&job)[0].name, "Upload");
+    }
+
+    #[test]
+    fn a_comment_in_a_run_block_is_not_a_command() {
+        let job = [
+            "      - name: Block",
+            "        run: |",
+            "          # why the next line is there",
+            "          first one",
+        ];
+        assert_eq!(steps(&job)[0].run, ["first one"]);
+    }
+
+    #[test]
+    fn a_steps_env_is_read() {
+        let job = [
+            "      - name: With env",
+            "        env:",
+            "          BASE_REF: ${{ github.base_ref }}",
+            "        run: echo",
+        ];
+        assert_eq!(steps(&job)[0].env, ["BASE_REF: ${{ github.base_ref }}"]);
+    }
+
+    #[test]
+    fn a_run_block_is_read_line_by_line() {
+        let job = [
+            "      - name: Block",
+            "        run: |",
+            "          first one",
+            "",
+            "          second two",
+            "      - name: Line",
+            "        run: third",
+        ];
+        let found = steps(&job);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].run, ["first one", "second two"]);
+        assert_eq!(step(&found, "Line").run, ["third"]);
     }
 
     proptest! {

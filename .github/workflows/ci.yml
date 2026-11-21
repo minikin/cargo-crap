@@ -35,7 +35,10 @@ jobs:
           filters: |
             rust:
               - '**/*.rs'
+              # Both: the root manifest does not depend on how picomatch reads
+              # a leading `**/`.
               - 'Cargo.toml'
+              - '**/Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
               - '.config/**'
@@ -55,8 +58,14 @@ jobs:
               - 'schemas/**'
               - 'proptest-regressions/**'
               - '.github/workflows/ci.yml'
+              # tests/golden/gates.rs reads the Action workflow's paths.
+              - '.github/workflows/action.yml'
             src:
               - 'src/**/*.rs'
+              - 'crates/*/src/**/*.rs'
+              # The mutants gate's script and config decide what it measures.
+              - 'scripts/gates/**'
+              - '.cargo/mutants.toml'
               - '.github/workflows/ci.yml'
             docs:
               - 'README.md'
@@ -66,6 +75,8 @@ jobs:
             release:
               - 'scripts/release/**'
               - 'Cargo.toml'
+              # scripts/release/test.sh copies the core's manifest.
+              - 'crates/cargo-crap-core/Cargo.toml'
               - 'CHANGELOG.md'
               - 'action.yml'
               - '.github/ISSUE_TEMPLATE/**'
@@ -166,12 +177,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-nextest
+      # By name, not --workspace: a member with a higher MSRV can join the
+      # workspace without breaking this job.
       - name: Test (MSRV, default features)
-        run: cargo nextest run --all-targets
+        run: cargo nextest run -p cargo-crap -p cargo-crap-core --all-targets
       - name: Test (MSRV, all features)
-        run: cargo nextest run --all-targets --all-features
+        run: cargo nextest run -p cargo-crap -p cargo-crap-core --all-targets --all-features
       - name: Doc tests (MSRV)
-        run: cargo test --doc --all-features
+        run: cargo test --doc -p cargo-crap -p cargo-crap-core --all-features
 
   audit:
     name: Security audit
@@ -204,16 +217,12 @@ jobs:
       # mutants-diff` does locally. The full run on main measures the rest.
       - name: Run mutation tests (changed lines only, PRs)
         if: github.event_name == 'pull_request'
-        run: |
-          git diff origin/${{ github.base_ref }}...HEAD -- 'src/*.rs' > "$RUNNER_TEMP/pr.diff" || true
-          if [ ! -s "$RUNNER_TEMP/pr.diff" ]; then
-            echo "No changed src/*.rs lines, skipping mutants."
-            exit 0
-          fi
-          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bash scripts/gates/mutants-diff.sh --base "origin/$BASE_REF"
       - name: Run mutation tests (full, main)
         if: github.event_name == 'push'
-        run: cargo mutants
+        run: cargo mutants --workspace
       - name: Upload mutants output
         if: always()
         uses: actions/upload-artifact@v4
