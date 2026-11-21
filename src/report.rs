@@ -775,6 +775,87 @@ mod tests {
         );
     }
 
+    fn arb_distinct_tool() -> impl proptest::strategy::Strategy<Value = Tool> {
+        use proptest::strategy::Strategy;
+        arb_tool().prop_filter("seven distinct values", |t| {
+            let values = [
+                t.name,
+                t.version,
+                t.info_uri,
+                t.schemas.report,
+                t.schemas.delta,
+                t.comment_marker,
+                t.baseline_hint,
+            ];
+            values
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == values.len()
+        })
+    }
+
+    fn rendered_text(
+        tool: &Tool,
+        format: Format,
+        delta: bool,
+    ) -> String {
+        let entries = test_support::sample();
+        let opts = RenderOptions {
+            format,
+            ..RenderOptions::new(tool)
+        };
+        let mut out = Vec::new();
+        if delta {
+            let report = crate::delta::compute_delta(&entries, &entries, 0.01);
+            render_delta(&report, &opts, &mut out).expect("renders");
+        } else {
+            render(&entries, &opts, &mut out).expect("renders");
+        }
+        String::from_utf8(out).expect("utf-8")
+    }
+
+    fn json_of(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).expect("JSON")
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn every_branded_field_follows_any_tool(tool in arb_distinct_tool()) {
+            use proptest::prop_assert_eq;
+            let report = json_of(&rendered_text(&tool, Format::Json, false));
+            prop_assert_eq!(&report["version"], tool.version);
+            prop_assert_eq!(&report["$schema"], tool.schemas.report);
+            let delta = json_of(&rendered_text(&tool, Format::Json, true));
+            prop_assert_eq!(&delta["version"], tool.version);
+            prop_assert_eq!(&delta["$schema"], tool.schemas.delta);
+            let sarif = json_of(&rendered_text(&tool, Format::Sarif, false));
+            let driver = &sarif["runs"][0]["tool"]["driver"];
+            prop_assert_eq!(&driver["name"], tool.name);
+            prop_assert_eq!(&driver["version"], tool.version);
+            prop_assert_eq!(&driver["informationUri"], tool.info_uri);
+            prop_assert_eq!(&driver["rules"][0]["helpUri"], tool.info_uri);
+            for format in [Format::Markdown, Format::PrComment] {
+                for delta in [false, true] {
+                    let text = rendered_text(&tool, format, delta);
+                    prop_assert_eq!(text.lines().next(), Some(tool.comment_marker));
+                }
+            }
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("broken.json");
+            std::fs::write(&path, "not json").expect("write");
+            let err = crate::delta::load_baseline(&path, &tool).expect_err("does not parse");
+            prop_assert_eq!(
+                err.to_string(),
+                format!(
+                    "parsing baseline {} — must be JSON from `{}`",
+                    path.display(),
+                    tool.baseline_hint
+                )
+            );
+        }
+    }
+
     fn at(file: &str) -> CrapEntry {
         let mut entry = test_support::sample().remove(0);
         entry.file = PathBuf::from(file);

@@ -26,6 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own gate now runs with signals on. The complexity cache moves to
   format 2, so the first run after upgrading re-analyses every file.
 
+### Changed
+
+- **BREAKING (library API):** reports take their branding from a
+  `report::Tool` value: its name, version, URLs, PR-comment marker and
+  baseline hint (spec 46). cargo-crap's own value is
+  `cargo_crap::tool::CARGO_CRAP`. `RenderOptions` gains `tool` and has no
+  `Default`: build it with `RenderOptions::new(&CARGO_CRAP)`.
+  `delta::load_baseline` and `delta::load_baseline_with_weight` take the
+  `Tool` as a second argument. `report::SCHEMA_VERSION`,
+  `report::REPORT_SCHEMA_URL` and `report::DELTA_SCHEMA_URL` are gone: read
+  `CARGO_CRAP.version` and `CARGO_CRAP.schemas`. The CLI and its output do
+  not change.
+
 ### Fixed
 
 - A delta run with `--duplicates` pairs a function with its baseline

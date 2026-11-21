@@ -9297,3 +9297,97 @@ fn a_baseline_that_does_not_parse_names_the_second_tools_hint() {
 }
 
 // Spec 46 T6
+
+#[test]
+fn no_cargo_crap_branding_reaches_a_second_tools_output() {
+    use cargo_crap::report::Format;
+    // Given entries and a delta report rendered with the second tool
+    let opts = |format| cargo_crap::report::RenderOptions {
+        format,
+        ..cargo_crap::report::RenderOptions::new(&SECOND_TOOL)
+    };
+    let all = [
+        Format::Human,
+        Format::Json,
+        Format::GitHub,
+        Format::Markdown,
+        Format::PrComment,
+        Format::Sarif,
+        Format::Shields,
+    ];
+    // When the entries are rendered in all seven formats and the delta
+    // report in every format but sarif
+    let mut outputs = Vec::new();
+    for format in all {
+        let mut out = Vec::new();
+        let rendered = cargo_crap::report::render(&spec46_entries(), &opts(format), &mut out);
+        // Then each of the thirteen renders succeeds
+        rendered.unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        outputs.push((format!("{format:?}"), out));
+        if !matches!(format, Format::Sarif) {
+            let mut out = Vec::new();
+            let rendered =
+                cargo_crap::report::render_delta(&spec46_delta(), &opts(format), &mut out);
+            rendered.unwrap_or_else(|e| panic!("{format:?} delta: {e}"));
+            outputs.push((format!("{format:?} delta"), out));
+        }
+    }
+    assert_eq!(outputs.len(), 13);
+    // The sections the default options leave out render too: duplicates,
+    // scope diagnostics, source links and uncovered hints.
+    let side = |name: &str, start_line| cargo_crap::duplicates::extract::Location {
+        file: PathBuf::from("src/demo.rs"),
+        start_line,
+        end_line: start_line + 9,
+        name: name.into(),
+    };
+    let pairs = [cargo_crap::duplicates::compare::DuplicatePair {
+        first: side("tangled", 1),
+        second: side("tidy", 20),
+        score: 0.9,
+    }];
+    let stray = || cargo_crap::merge::StrayFiles {
+        count: 0,
+        examples: Vec::new(),
+    };
+    let diagnostics = cargo_crap::merge::ScopeDiagnostics {
+        analyzed_files: 1,
+        lcov_files: 1,
+        matched_files: 1,
+        source_only: stray(),
+        lcov_only: stray(),
+    };
+    let links =
+        cargo_crap::report::SourceLinks::new("https://example.test/repo".into(), "abc123".into());
+    let mut entries = spec46_entries();
+    entries[0].uncovered = vec![cargo_crap::coverage::LineRange { start: 2, end: 3 }];
+    for format in all {
+        let rich = cargo_crap::report::RenderOptions {
+            duplicates: Some(&pairs),
+            diagnostics: Some(&diagnostics),
+            links: Some(&links),
+            uncovered_hints: true,
+            ..opts(format)
+        };
+        let mut out = Vec::new();
+        cargo_crap::report::render(&entries, &rich, &mut out).expect("renders");
+        cargo_crap::report::render_duplicates(&rich, &mut out).expect("renders");
+        outputs.push((format!("{format:?} with every section"), out));
+    }
+    let (_, markdown) = outputs
+        .iter()
+        .find(|(name, _)| name == "Markdown with every section")
+        .expect("rendered");
+    let markdown = String::from_utf8_lossy(markdown);
+    assert!(
+        markdown.contains("example.test/repo") && markdown.contains("0.90"),
+        "{markdown}"
+    );
+    // And no output contains "cargo-crap", "cargo crap" or "cargo_crap"
+    for (name, out) in &outputs {
+        let text = String::from_utf8_lossy(out);
+        for brand in ["cargo-crap", "cargo crap", "cargo_crap"] {
+            assert!(!text.contains(brand), "{name} contains {brand}:\n{text}");
+        }
+    }
+}
