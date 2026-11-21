@@ -25,9 +25,11 @@ command -v jq > /dev/null || { echo "FAIL jq is not installed"; exit 1; }
 lint_workspace() {
     local dir="$scratch/lint"
     {
-        mkdir -p "$dir/src" "$dir/crates" &&
+        mkdir -p "$dir/src" "$dir/crates/crapts/src" &&
             cp "$repo/Cargo.toml" "$repo/Cargo.lock" "$repo/clippy.toml" "$repo/rust-toolchain.toml" "$dir/" &&
             cp -R "$repo/crates/cargo-crap-core" "$dir/crates/" &&
+            cp "$repo/crates/crapts/Cargo.toml" "$dir/crates/crapts/" &&
+            : > "$dir/crates/crapts/src/lib.rs" &&
             echo 'fn main() {}' > "$dir/src/main.rs" &&
             : > "$dir/src/lib.rs"
     } || { echo "FAIL building the lint workspace" >&2; exit 1; }

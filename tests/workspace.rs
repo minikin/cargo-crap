@@ -3,6 +3,7 @@
 //! a cargo call on the filesystem and reads no git metadata, because
 //! cargo-mutants runs the tests in a scratch copy without `.git`.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -86,7 +87,10 @@ fn same_dir(
 fn the_workspace_has_cargo_crap_and_cargo_crap_core() {
     let metadata = metadata(&root(), &["--locked"]);
 
-    assert_eq!(member_names(&metadata), ["cargo-crap", "cargo-crap-core"]);
+    assert_eq!(
+        member_names(&metadata),
+        ["cargo-crap", "cargo-crap-core", "crapts"]
+    );
 
     let core = package(&metadata, "cargo-crap-core");
     assert_eq!(core["version"], "0.1.0");
@@ -126,6 +130,158 @@ fn the_workspace_has_cargo_crap_and_cargo_crap_core() {
         featured.is_empty(),
         "[workspace.dependencies] entries with features: {featured:?}"
     );
+}
+
+#[test]
+fn add_the_analysis_library_and_its_pinned_dependencies() {
+    // Given the manifests and the committed workspace lockfile
+    // When Cargo reports the analysis package
+    let metadata = metadata(&root(), &["--locked"]);
+    let analysis = package(&metadata, "crapts");
+    // Then it is an unpublished library for Rust 1.98.
+    assert_eq!(analysis["publish"], serde_json::json!([]));
+    assert_eq!(analysis["rust_version"], "1.98");
+    let targets = analysis["targets"].as_array().expect("library targets");
+    assert!(
+        targets
+            .iter()
+            .any(|t| t["kind"] == serde_json::json!(["lib"]))
+    );
+    assert!(
+        targets
+            .iter()
+            .all(|t| t["kind"] != serde_json::json!(["bin"]))
+    );
+
+    let shared = manifest(&root());
+    let member = manifest(&root().join("crates/crapts"));
+    // And its direct dependencies are exactly the seven inherited pins.
+    let pins = [
+        "oxc_allocator",
+        "oxc_ast",
+        "oxc_ast_visit",
+        "oxc_parser",
+        "oxc_span",
+        "oxc_str",
+        "oxc_syntax",
+    ];
+    let dependencies = analysis["dependencies"]
+        .as_array()
+        .expect("Cargo dependencies");
+    let declared: BTreeSet<_> = dependencies
+        .iter()
+        .filter(|dep| dep["kind"] != "dev")
+        .map(|dep| {
+            dep["rename"]
+                .as_str()
+                .or_else(|| dep["name"].as_str())
+                .expect("dependency name")
+        })
+        .collect();
+    assert_eq!(
+        declared,
+        BTreeSet::from(pins),
+        "direct dependencies of crapts"
+    );
+    for name in pins {
+        assert_eq!(
+            shared["workspace"]["dependencies"][name].as_str(),
+            Some("=0.159.0"),
+            "{name}"
+        );
+        assert_eq!(
+            member["dependencies"][name]["workspace"].as_bool(),
+            Some(true),
+            "{name}"
+        );
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct LockedPackage {
+    name: String,
+    version: String,
+    source: Option<String>,
+    #[serde(default)]
+    dependencies: Vec<String>,
+}
+
+impl LockedPackage {
+    fn id(&self) -> String {
+        let name_version = format!("{} {}", self.name, self.version);
+        match &self.source {
+            Some(source) => format!("{name_version} ({source})"),
+            None => name_version,
+        }
+    }
+}
+
+fn resolve_locked<'a>(
+    packages: &'a [LockedPackage],
+    reference: &str,
+) -> &'a LockedPackage {
+    // Cargo adds a version, then a parenthesized source, only as needed to identify a dependency.
+    let mut parts = reference.splitn(3, ' ');
+    let name = parts.next().expect("package name");
+    let version = parts.next();
+    let source = parts.next().map(|s| {
+        s.strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .expect("parenthesized package source")
+    });
+    let mut matches = packages.iter().filter(|p| {
+        p.name == name
+            && version.is_none_or(|v| p.version == v)
+            && source.is_none_or(|s| p.source.as_deref() == Some(s))
+    });
+    let package = matches
+        .next()
+        .unwrap_or_else(|| panic!("unresolved lockfile dependency {reference}"));
+    assert!(
+        matches.next().is_none(),
+        "ambiguous lockfile dependency {reference}"
+    );
+    package
+}
+
+#[test]
+fn the_lock_retains_the_spec_45_ids_and_adds_only_the_crapts_closure() {
+    #[derive(serde::Deserialize)]
+    struct Lockfile {
+        package: Vec<LockedPackage>,
+    }
+
+    // Given the package IDs from the final Spec 45 lockfile
+    let base: BTreeSet<_> = include_str!("fixtures/spec45-package-ids.txt")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .collect();
+    let lock: Lockfile = toml::from_str(
+        &std::fs::read_to_string(root().join("Cargo.lock")).expect("read Cargo.lock"),
+    )
+    .expect("parse Cargo.lock");
+    let current: BTreeSet<_> = lock.package.iter().map(LockedPackage::id).collect();
+
+    // When following the locked dependency edges from the new member
+    let mut closure = BTreeSet::new();
+    let mut pending = vec!["crapts"];
+    while let Some(edge) = pending.pop() {
+        let package = resolve_locked(&lock.package, edge);
+        if closure.insert(package.id()) {
+            pending.extend(package.dependencies.iter().map(String::as_str));
+        }
+    }
+
+    // Then every base ID is present and every addition is reachable from crapts.
+    for id in &base {
+        assert!(current.contains(*id), "missing Spec 45 package ID: {id}");
+    }
+    for id in &current {
+        assert!(
+            base.contains(id.as_str()) || closure.contains(id),
+            "added package outside the crapts closure: {id}"
+        );
+    }
 }
 
 #[test]

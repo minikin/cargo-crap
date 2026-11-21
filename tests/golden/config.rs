@@ -31,6 +31,51 @@ fn indent(line: &str) -> usize {
     line.len() - line.trim_start().len()
 }
 
+#[test]
+fn dependabot_groups_the_workspaces_oxc_updates() {
+    // Given the root update policy and the member's direct dependencies
+    let config: serde_json::Value = serde_json::from_str(&read(".github/dependabot.yml"))
+        .expect("parse the JSON-form YAML policy");
+    let member: toml::Table = read("crates/crapts/Cargo.toml")
+        .parse()
+        .expect("parse the member manifest");
+    let updates = config["updates"].as_array().expect("updates list");
+    let cargo: Vec<_> = updates
+        .iter()
+        .filter(|u| u["package-ecosystem"] == "cargo")
+        .collect();
+
+    // When Dependabot selects Cargo dependencies for version updates
+    let [update] = cargo.as_slice() else {
+        panic!("expected one Cargo entry, found {}", cargo.len())
+    };
+    assert_eq!(update["directory"], "/");
+    assert_eq!(
+        update["allow"],
+        serde_json::json!([{"dependency-name":"oxc_*","dependency-type":"direct"}]),
+        "allow only direct Oxc dependencies"
+    );
+    assert!(
+        update.get("ignore").is_none(),
+        "a Cargo ignore can override the allow list"
+    );
+
+    // Then one group includes all seven pins in the same version update.
+    let groups = update["groups"].as_object().expect("Cargo update groups");
+    assert_eq!(groups.len(), 1, "Cargo groups: {groups:?}");
+    let group = groups.values().next().expect("one group");
+    assert_eq!(group, &serde_json::json!({"patterns": ["oxc_*"]}));
+    let pattern = group["patterns"][0].as_str().expect("Oxc package pattern");
+    let matcher = globset::Glob::new(pattern)
+        .expect("valid package pattern")
+        .compile_matcher();
+    let direct = member["dependencies"].as_table().expect("[dependencies]");
+    assert_eq!(direct.len(), 7);
+    for name in direct.keys() {
+        assert!(matcher.is_match(name), "group misses direct pin {name}");
+    }
+}
+
 pub(super) fn lines(text: &str) -> Vec<&str> {
     text.lines().collect()
 }
@@ -203,6 +248,7 @@ fn just_test_and_ci_verify_without_writing() {
         "tests/snapshots/**",
         "Justfile",
         ".gitignore",
+        ".github/dependabot.yml",
         "specs/44-golden-outputs.md",
         ".cargo-crap.toml",
         "tests/golden/encode.proptest-regressions",

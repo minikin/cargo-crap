@@ -52,6 +52,7 @@ jobs:
               - 'Justfile'
               - '.gitignore'
               - '.cargo-crap.toml'
+              - '.github/dependabot.yml'
               - 'tests/golden/encode.proptest-regressions'
               - 'tests/golden/*.proptest-regressions'
               - 'specs/44-golden-outputs.md'
