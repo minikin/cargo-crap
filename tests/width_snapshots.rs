@@ -28,6 +28,7 @@ fn entry(
         crap,
         crate_name: None,
         signals: None,
+        fingerprint: None,
         signal_spans: cargo_crap::signals::Spans::default(),
         uncovered: Vec::new(),
     }

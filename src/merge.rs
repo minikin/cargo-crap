@@ -29,201 +29,18 @@
 //! instead of racing on map order.
 
 use crate::complexity::FunctionComplexity;
-use crate::coverage::{FileCoverage, LineRange};
+use crate::coverage::FileCoverage;
+#[cfg(test)]
+use crate::coverage::LineRange;
+pub use crate::entry::{
+    CrapEntry, MissingCoveragePolicy, SCOPE_EXAMPLE_CAP, ScopeDiagnostics, SortOrder, StrayFiles,
+    sort_entries,
+};
 use crate::score::crap;
-use crate::signals::{Signals, Spans};
-use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-
-/// One row in the final report.
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
-pub struct CrapEntry {
-    pub file: PathBuf,
-    pub function: String,
-    pub line: usize,
-    pub cyclomatic: f64,
-    /// Percentage; may be `None` if we could not find coverage data for
-    /// this file at all. That's different from "0% covered" — it means the
-    /// coverage report didn't mention the file.
-    pub coverage: Option<f64>,
-    pub crap: f64,
-    /// Cargo workspace member name, set by `--workspace` runs after the
-    /// entry's file path has been suffix-matched against a member root.
-    /// Always `None` for non-workspace runs and for older baselines that
-    /// pre-date this field.
-    #[serde(rename = "crate", default, skip_serializing_if = "Option::is_none")]
-    pub crate_name: Option<String>,
-    /// Maximal runs of instrumented-but-never-hit lines inside the
-    /// function's span. Empty when the file had no coverage data
-    /// at all — "unknown" must stay distinguishable from "known-uncovered"
-    /// — and for baselines that pre-date this field. Payload only: never
-    /// part of any delta pairing key.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub uncovered: Vec<LineRange>,
-    /// Structural maintainability signals (spec 43). `None` unless
-    /// `[signals] enabled = true`, and for baselines recorded without them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signals: Option<Signals>,
-    /// Where each signal comes from, for reasons. Never serialized: only the
-    /// current run's spans are ever pointed at.
-    #[serde(skip)]
-    pub signal_spans: Spans,
-}
-
-/// Final ordering applied to the report entries (spec 17).
-///
-/// [`merge`] always sorts by CRAP descending first — that ordering is the
-/// selection invariant `--top` relies on. The user-requested sort is applied
-/// as a separate, final step via [`sort_entries`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum SortOrder {
-    /// CRAP score descending — the right order for humans reading top-down.
-    #[default]
-    Crap,
-    /// `(file, function, line)` ascending — stable across score changes, so a
-    /// committed JSON baseline produces minimal diffs.
-    File,
-}
-
-/// A path with its separators unified, so a baseline written on Windows
-/// matches a run on Unix.
-pub(crate) fn path_key(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
-}
-
-/// Number of trailing path components two files share, after forward-slash
-/// normalization. `0` means not even the filename matches.
-fn common_suffix_len(
-    a: &Path,
-    b: &Path,
-) -> usize {
-    let a = path_key(a);
-    let b = path_key(b);
-    a.split('/')
-        .rev()
-        .zip(b.split('/').rev())
-        .take_while(|(x, y)| x == y)
-        .count()
-}
-
-/// For `from`, find the index in `candidates` whose file shares the longest
-/// common path suffix with it. Returns `None` when no candidate shares at
-/// least the filename, or when the best score is tied (ambiguous).
-pub(crate) fn unique_best_by_suffix<T>(
-    from: &Path,
-    candidates: &[T],
-    file_of: impl Fn(&T) -> &Path,
-) -> Option<usize> {
-    let mut best: Option<(usize, usize)> = None; // (candidate idx, score)
-    let mut tied = false;
-    for (i, c) in candidates.iter().enumerate() {
-        let score = common_suffix_len(from, file_of(c));
-        if score == 0 {
-            continue;
-        }
-        match best {
-            None => best = Some((i, score)),
-            Some((_, s)) => match score.cmp(&s) {
-                std::cmp::Ordering::Equal => tied = true,
-                std::cmp::Ordering::Greater => {
-                    best = Some((i, score));
-                    tied = false;
-                },
-                std::cmp::Ordering::Less => {},
-            },
-        }
-    }
-    match (best, tied) {
-        (Some((i, _)), false) => Some(i),
-        _ => None,
-    }
-}
-
-/// Stable `(file, function, line)` sort key. The file path is normalized to
-/// forward slashes so baselines written on different platforms sort the same.
-pub(crate) fn file_order_key(e: &CrapEntry) -> (String, &str, usize) {
-    (path_key(&e.file), e.function.as_str(), e.line)
-}
-
-/// Apply the user-requested [`SortOrder`] to an entry slice in place.
-///
-/// Call this *after* `--allow` / `--min` / `--top` have run: `--top` selects
-/// the N highest-CRAP functions against [`merge`]'s descending order, and this
-/// only reorders the survivors for display (spec 17).
-pub fn sort_entries(
-    entries: &mut [CrapEntry],
-    order: SortOrder,
-) {
-    match order {
-        SortOrder::Crap => entries.sort_by(|a, b| {
-            b.crap
-                .partial_cmp(&a.crap)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }),
-        SortOrder::File => entries.sort_by(|a, b| file_order_key(a).cmp(&file_order_key(b))),
-    }
-}
-
-/// How to treat functions we have complexity data for but no coverage data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MissingCoveragePolicy {
-    /// Assume 0% coverage. Pessimistic — good for CI gates, where unmapped
-    /// files are a red flag worth surfacing.
-    Pessimistic,
-    /// Assume 100% coverage. Optimistic — suitable for interactive use where
-    /// you've scoped coverage to a subset of the tree intentionally.
-    Optimistic,
-    /// Skip the function entirely; don't emit a row.
-    Skip,
-}
-
-/// Cap on example paths carried per stray side of [`ScopeDiagnostics`].
-/// `count` always holds the true total; only the examples are bounded, so
-/// a 1000-file mismatch stays readable on stderr and in JSON (spec 24).
-pub const SCOPE_EXAMPLE_CAP: usize = 10;
-
-/// One side's stray files: the true count plus at most
-/// [`SCOPE_EXAMPLE_CAP`] example paths, sorted.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StrayFiles {
-    pub count: usize,
-    pub examples: Vec<PathBuf>,
-}
-
-impl StrayFiles {
-    fn new(mut files: Vec<PathBuf>) -> Self {
-        files.sort();
-        let count = files.len();
-        files.truncate(SCOPE_EXAMPLE_CAP);
-        Self {
-            count,
-            examples: files,
-        }
-    }
-}
-
-/// Source/LCOV scope diagnostics (spec 24): how well the analyzed source
-/// tree and the LCOV report overlap. A large stray set on either side means
-/// the two inputs describe different scopes — the classic cause of a delta
-/// full of unrelated 0%-coverage entries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScopeDiagnostics {
-    /// Distinct source files that produced at least one analyzed function.
-    pub analyzed_files: usize,
-    /// Distinct `SF` records in the LCOV report.
-    pub lcov_files: usize,
-    /// Files present on both sides after path matching.
-    pub matched_files: usize,
-    /// Analyzed files with no LCOV match.
-    pub source_only: StrayFiles,
-    /// LCOV `SF` files matched by no analyzed file.
-    pub lcov_only: StrayFiles,
-}
 
 /// Output of [`merge`]: the scored entries plus scope diagnostics.
 pub struct MergeResult {
@@ -293,6 +110,7 @@ pub fn merge(
                 crap: crap_score,
                 crate_name: None,
                 signals: Some(fc.signals),
+                fingerprint: None,
                 signal_spans: fc.spans,
                 uncovered,
             })
@@ -1041,6 +859,7 @@ mod tests {
             crap,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
@@ -1206,6 +1025,7 @@ mod tests {
             crap: 4.5,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: vec![LineRange { start: 3, end: 5 }],
         };

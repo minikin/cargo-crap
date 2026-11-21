@@ -5,9 +5,9 @@ use crate::delta::{Baseline, DeltaCounts, attach_reasons, compute_delta, gating_
 use crate::duplicates::{
     compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, triage::verdict::Assessment,
 };
+use crate::entry::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::filter::{self, AllowSet};
 use crate::gate::{GateOutcome, threshold_count};
-use crate::merge::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::report::{self, Format, RenderOptions, SourceLinks, Tool, TriagedBy};
 use crate::signals::SignalSettings;
 use anyhow::{Context, Result};
@@ -416,7 +416,7 @@ mod tests {
             choices in proptest::collection::vec((proptest::bool::ANY, proptest::bool::ANY), 0..30)
         ) {
             use crate::duplicates::extract::Location;
-            use crate::merge::CrapEntry;
+            use crate::entry::CrapEntry;
             use proptest::prop_assert_eq;
             struct Source;
             impl Scope for Source {

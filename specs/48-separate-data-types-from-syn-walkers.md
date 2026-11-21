@@ -570,7 +570,7 @@ change, verify the spec 44 goldens with `INSTA_UPDATE=no` in both the
 default and `triage` builds and check that no snapshot was created or
 modified. The scenario names below identify their owning tasks.
 
-- [ ] **T1 — Expose fingerprints on library rows and preserve the two cargo-crap JSON schemas.**
+- [x] **T1 — Expose fingerprints on library rows and preserve the two cargo-crap JSON schemas.**
   Move the row, ordering and scope types into `entry`. Move `path_key`,
   `common_suffix_len` and `unique_best_by_suffix` into `paths` so that
   `file_order_key` can use the neutral path helper. Declare the modules,

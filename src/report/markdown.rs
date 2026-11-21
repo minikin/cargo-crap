@@ -11,7 +11,7 @@ use super::types::{
 };
 use super::{RenderOptions, write_pr_comment_marker};
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaReport};
-use crate::merge::CrapEntry;
+use crate::entry::CrapEntry;
 use anyhow::Result;
 use std::io::Write;
 
@@ -316,6 +316,7 @@ mod tests {
             crap: 5.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -355,6 +356,7 @@ mod tests {
                 crap: 1.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -411,6 +413,7 @@ mod tests {
                 crap: 1.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -431,6 +434,7 @@ mod tests {
                 crap: 1.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -480,6 +484,7 @@ mod tests {
                 crap: 50.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -691,6 +696,7 @@ mod tests {
                     crap: 2.0,
                     crate_name: None,
                     signals: None,
+                    fingerprint: None,
                     signal_spans: crate::signals::Spans::default(),
                     uncovered: Vec::new(),
                 },

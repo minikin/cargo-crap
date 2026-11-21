@@ -1955,6 +1955,7 @@ mod tests {
             crap: 2.0,
             crate_name: None,
             signals,
+            fingerprint: None,
             signal_spans: cargo_crap::signals::Spans::default(),
             uncovered: Vec::new(),
         }
@@ -2667,6 +2668,7 @@ mod tests {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: cargo_crap::signals::Spans::default(),
             uncovered: Vec::new(),
         }

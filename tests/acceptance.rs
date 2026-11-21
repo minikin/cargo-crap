@@ -9065,6 +9065,7 @@ fn spec46_entries() -> Vec<cargo_crap::merge::CrapEntry> {
             crap,
             crate_name: crate_name.map(Into::into),
             signals: None,
+            fingerprint: None,
             signal_spans: cargo_crap::signals::Spans::default(),
             uncovered: Vec::new(),
         };
@@ -9409,6 +9410,7 @@ fn scored_row(
         crap,
         crate_name: None,
         signals: None,
+        fingerprint: None,
         signal_spans: cargo_crap::signals::Spans::default(),
         uncovered: Vec::new(),
     }
@@ -10351,4 +10353,62 @@ mod gate_populations {
             }
         }
     }
+}
+
+fn fingerprinted_row() -> cargo_crap::merge::CrapEntry {
+    cargo_crap::merge::CrapEntry {
+        file: "src/a.rs".into(),
+        function: "f".into(),
+        line: 3,
+        cyclomatic: 2.0,
+        coverage: Some(50.0),
+        crap: 2.5,
+        fingerprint: Some("a1b2".into()),
+        ..Default::default()
+    }
+}
+
+fn json_options() -> cargo_crap::report::RenderOptions<'static> {
+    cargo_crap::report::RenderOptions {
+        format: cargo_crap::report::Format::Json,
+        ..cargo_crap::report::RenderOptions::new(&cargo_crap::tool::CARGO_CRAP)
+    }
+}
+
+fn assert_untagged_json(
+    out: &[u8],
+    schema: &str,
+) {
+    let doc: serde_json::Value = serde_json::from_slice(out).unwrap();
+    assert_eq!(doc["entries"][0]["function"], "f");
+    assert!(doc["entries"][0].get("fingerprint").is_none());
+    schemas::compile(schema).validate(&doc).unwrap();
+}
+
+#[test]
+fn cargo_craps_json_report_omits_a_callers_fingerprint() {
+    // Given a library row with a caller-supplied fingerprint.
+    let current = fingerprinted_row();
+    let mut out = Vec::new();
+    // When cargo-crap renders the absolute JSON report.
+    cargo_crap::report::render(&[current], &json_options(), &mut out).unwrap();
+    // Then the row omits the field and the envelope validates.
+    assert_untagged_json(&out, "schemas/report-v1.json");
+}
+
+#[test]
+fn cargo_craps_json_delta_omits_a_callers_fingerprint() {
+    // Given a tagged current row and its lower-scoring baseline.
+    let current = fingerprinted_row();
+    let baseline = cargo_crap::merge::CrapEntry {
+        crap: 2.0,
+        fingerprint: None,
+        ..current.clone()
+    };
+    let delta = cargo_crap::delta::compute_delta(&[current], &[baseline], 0.0);
+    let mut out = Vec::new();
+    // When cargo-crap renders the delta JSON report.
+    cargo_crap::report::render_delta(&delta, &json_options(), &mut out).unwrap();
+    // Then the flattened current row omits the field and the envelope validates.
+    assert_untagged_json(&out, "schemas/delta-v2.json");
 }

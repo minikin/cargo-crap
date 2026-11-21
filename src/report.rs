@@ -23,7 +23,7 @@ use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::group::DuplicateGroup;
 use crate::duplicates::novelty::Comparison;
 use crate::duplicates::triage::verdict::Assessment;
-use crate::merge::{CrapEntry, ScopeDiagnostics};
+use crate::entry::{CrapEntry, ScopeDiagnostics};
 use crate::score::Severity;
 use anyhow::{Result, bail};
 use std::borrow::Cow;
@@ -945,7 +945,7 @@ mod tests {
 
     #[test]
     fn json_diagnostics_write_analyzed_examples_below_the_workspace_root() {
-        let stray = |examples: &[&str]| crate::merge::StrayFiles {
+        let stray = |examples: &[&str]| crate::entry::StrayFiles {
             count: examples.len(),
             examples: examples.iter().map(PathBuf::from).collect(),
         };

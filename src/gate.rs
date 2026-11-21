@@ -1,6 +1,6 @@
 //! Counts and exit status for a completed report.
 
-use crate::{merge::CrapEntry, policy::Population, report::crappy_count};
+use crate::{entry::CrapEntry, policy::Population, report::crappy_count};
 use std::process::ExitCode;
 
 /// Count threshold violations in the caller's selected score population.

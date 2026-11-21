@@ -8,7 +8,7 @@ use super::{Format, RenderOptions, Schemas, Tool};
 use crate::coverage::LineRange;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::duplicates::triage::verdict::Assessment;
-use crate::merge::CrapEntry;
+use crate::entry::CrapEntry;
 use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
 use std::path::PathBuf;
 
@@ -83,6 +83,7 @@ pub(crate) fn sample() -> Vec<CrapEntry> {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         },
@@ -95,6 +96,7 @@ pub(crate) fn sample() -> Vec<CrapEntry> {
             crap: 110.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         },
@@ -129,6 +131,7 @@ pub(crate) fn fractional_cc_sample() -> Vec<CrapEntry> {
             crap: 40.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         },
@@ -141,6 +144,7 @@ pub(crate) fn fractional_cc_sample() -> Vec<CrapEntry> {
             crap: 60.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         },

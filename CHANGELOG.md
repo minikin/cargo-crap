@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `report::REPORT_SCHEMA_URL` and `report::DELTA_SCHEMA_URL` are gone: read
   `CARGO_CRAP.version` and `CARGO_CRAP.schemas`. The CLI and its output do
   not change.
+  `merge::CrapEntry` gains an optional `fingerprint` and implements
+  `Default`. Add `fingerprint: None` to exhaustive literals or end them
+  with `..Default::default()`. Name the field in exhaustive patterns or
+  end them with `..`.
 
 ### Fixed
 

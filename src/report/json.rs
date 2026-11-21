@@ -10,7 +10,7 @@ use crate::duplicates::extract::Location;
 use crate::duplicates::group::DuplicateGroup;
 use crate::duplicates::novelty::Novelty;
 use crate::duplicates::triage::verdict::Assessment;
-use crate::merge::{CrapEntry, ScopeDiagnostics};
+use crate::entry::{CrapEntry, ScopeDiagnostics};
 use crate::report::RenderOptions;
 use anyhow::Result;
 use std::io::Write;
@@ -335,10 +335,14 @@ pub(crate) fn render_json(
     out: &mut dyn Write,
 ) -> Result<()> {
     let duplicate_groups = wire_groups(opts.groups, opts.triage);
+    let mut rows = entries.to_vec();
+    for row in &mut rows {
+        row.fingerprint = None;
+    }
     let envelope = Envelope {
         schema: Some(opts.tool.schemas.report.to_string()),
         version: opts.tool.version.to_string(),
-        entries: entries.to_vec(),
+        entries: rows,
         diagnostics: opts.diagnostics.cloned(),
         duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
         untriaged_groups: recorded_untriaged(duplicate_groups.as_ref(), opts.untriaged),
@@ -375,13 +379,19 @@ pub(crate) fn render_delta_json(
         #[serde(skip_serializing_if = "Option::is_none")]
         try_weight: Option<f64>,
     }
+    let mut rows = std::borrow::Cow::Borrowed(report.entries.as_slice());
+    if rows.iter().any(|row| row.current.fingerprint.is_some()) {
+        for row in rows.to_mut() {
+            row.current.fingerprint = None;
+        }
+    }
     let duplicate_groups = wire_delta_groups(opts);
     serde_json::to_writer_pretty(
         &mut *out,
         &DeltaOutput {
             schema: opts.tool.schemas.delta,
             version: opts.tool.version,
-            entries: &report.entries,
+            entries: &rows,
             removed: &report.removed,
             diagnostics: opts.diagnostics,
             duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
@@ -459,7 +469,7 @@ mod tests {
 
     #[test]
     fn diagnostics_embedded_when_present_and_absent_otherwise() {
-        use crate::merge::StrayFiles;
+        use crate::entry::StrayFiles;
         let diag = ScopeDiagnostics {
             analyzed_files: 4,
             lcov_files: 3,
@@ -518,6 +528,7 @@ mod tests {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];

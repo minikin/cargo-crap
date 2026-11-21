@@ -15,7 +15,8 @@
 
 use crate::coverage::LineRange;
 use crate::duplicates::extract::Location;
-use crate::merge::{CrapEntry, SortOrder, path_key, unique_best_by_suffix};
+use crate::entry::{CrapEntry, SortOrder};
+use crate::paths::{path_key, unique_best_by_suffix};
 use crate::report::Tool;
 use crate::signals::{Signal, SignalSettings, Signals};
 use anyhow::{Context, Result};
@@ -740,6 +741,7 @@ mod tests {
             crap,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
@@ -875,7 +877,7 @@ mod tests {
         // side gets paired by name during the second-pass matcher. Same
         // CC + coverage + crap → status `Moved`, not `New`/`Removed`.
         //
-        // Also kills: `merge::path_key -> String` collapsing to a constant.
+        // Also kills: `paths::path_key -> String` collapsing to a constant.
         // Under that mutation, pass 1 would falsely match these as
         // Unchanged with previous_file = None — distinguishable from the
         // correct (Moved, Some(src/main.rs)) outcome.
@@ -888,6 +890,7 @@ mod tests {
             crap: 5.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -900,6 +903,7 @@ mod tests {
             crap: 5.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -933,6 +937,7 @@ mod tests {
             crap: 10.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -945,6 +950,7 @@ mod tests {
             crap: 5.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -1163,6 +1169,7 @@ mod tests {
             crap,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
@@ -1366,6 +1373,7 @@ mod tests {
                 crap: 30.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -1378,6 +1386,7 @@ mod tests {
                 crap: 1.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -1414,6 +1423,7 @@ mod tests {
             crap,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }

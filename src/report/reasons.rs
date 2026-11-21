@@ -155,7 +155,7 @@ mod tests {
     use super::*;
     use crate::coverage::LineRange;
     use crate::delta::{Action, DeltaStatus, Measure, Subject};
-    use crate::merge::CrapEntry;
+    use crate::entry::CrapEntry;
     use crate::signals::{Signal, Spans};
     use std::path::PathBuf;
 
@@ -193,6 +193,7 @@ mod tests {
                 crap: 1.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: Spans::default(),
                 uncovered: Vec::new(),
             },

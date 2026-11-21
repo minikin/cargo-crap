@@ -1,6 +1,6 @@
 //! Select score rows before display or baseline comparison.
 
-use crate::merge::{CrapEntry, SortOrder, sort_entries};
+use crate::entry::{CrapEntry, SortOrder, sort_entries};
 use anyhow::{Context, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use std::path::{Path, PathBuf};
@@ -151,6 +151,7 @@ mod tests {
                     crap,
                     crate_name: None,
                     signals: None,
+                    fingerprint: None,
                     signal_spans: crate::signals::Spans::default(),
                     uncovered: Vec::new(),
                 })
@@ -187,6 +188,7 @@ mod tests {
                 crap,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             })
