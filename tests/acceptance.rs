@@ -9172,6 +9172,50 @@ fn the_json_delta_carries_the_second_tools_version_and_schema() {
 
 // Spec 46 T3
 
+#[test]
+fn sarif_names_the_second_tool_as_its_driver() {
+    // Given entries above the threshold rendered with the second tool
+    // When they are rendered as --format sarif
+    let opts = cargo_crap::report::RenderOptions {
+        format: cargo_crap::report::Format::Sarif,
+        ..cargo_crap::report::RenderOptions::new(&SECOND_TOOL)
+    };
+    let mut out = Vec::new();
+    cargo_crap::report::render(&spec46_entries(), &opts, &mut out).expect("renders");
+    let absolute = String::from_utf8(out).expect("utf-8");
+    let doc: serde_json::Value = serde_json::from_str(&absolute).expect("JSON");
+    let driver = &doc["runs"][0]["tool"]["driver"];
+    // Then the driver's name and version are the second tool's
+    assert_eq!(driver["name"], "other-tool");
+    assert_eq!(driver["version"], "7.7.7-other");
+    // And its informationUri and the rule's helpUri are the second tool's
+    assert_eq!(driver["informationUri"], "https://example.test/other-tool");
+    assert_eq!(
+        driver["rules"][0]["helpUri"],
+        "https://example.test/other-tool"
+    );
+}
+
+#[test]
+fn sarif_with_a_delta_report_is_refused_under_the_second_tool() {
+    // Given a delta report and render options carrying the second tool
+    let opts = cargo_crap::report::RenderOptions {
+        format: cargo_crap::report::Format::Sarif,
+        ..cargo_crap::report::RenderOptions::new(&SECOND_TOOL)
+    };
+    // When it is rendered as --format sarif
+    let mut out = Vec::new();
+    let err = cargo_crap::report::render_delta(&spec46_delta(), &opts, &mut out)
+        .expect_err("SARIF has no delta form");
+    // Then rendering fails with the refusal
+    assert_eq!(
+        err.to_string(),
+        "--format sarif is incompatible with --baseline; use --format json for delta output"
+    );
+    // And nothing is written
+    assert_eq!(out, [] as [u8; 0]);
+}
+
 // Spec 46 T4
 
 // Spec 46 T5

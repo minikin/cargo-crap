@@ -7,15 +7,13 @@
 
 use super::types::cc_display;
 use crate::merge::CrapEntry;
+use crate::report::Tool;
 use crate::score::Severity;
 use anyhow::Result;
 use serde::Serialize;
 use std::io::Write;
 use std::path::Path;
 
-const DRIVER_NAME: &str = "cargo-crap";
-const DRIVER_VERSION: &str = env!("CARGO_PKG_VERSION");
-const DRIVER_INFO_URI: &str = "https://github.com/minikin/cargo-crap";
 const RULE_ID: &str = "crap/high-score";
 const SARIF_VERSION: &str = "2.1.0";
 const SARIF_SCHEMA_URL: &str = "https://json.schemastore.org/sarif-2.1.0.json";
@@ -112,6 +110,7 @@ struct SarifRegion {
 pub(crate) fn render_sarif(
     entries: &[CrapEntry],
     threshold: f64,
+    tool: &Tool,
     out: &mut dyn Write,
 ) -> Result<()> {
     let results: Vec<SarifResult> = entries
@@ -125,7 +124,7 @@ pub(crate) fn render_sarif(
         version: SARIF_VERSION,
         runs: vec![SarifRun {
             tool: SarifTool {
-                driver: build_driver(),
+                driver: build_driver(tool),
             },
             results,
         }],
@@ -136,11 +135,11 @@ pub(crate) fn render_sarif(
     Ok(())
 }
 
-fn build_driver() -> SarifDriver {
+fn build_driver(tool: &Tool) -> SarifDriver {
     SarifDriver {
-        name: DRIVER_NAME,
-        version: DRIVER_VERSION,
-        information_uri: DRIVER_INFO_URI,
+        name: tool.name,
+        version: tool.version,
+        information_uri: tool.info_uri,
         rules: vec![SarifRule {
             id: RULE_ID,
             short_description: SarifText {
@@ -152,7 +151,7 @@ fn build_driver() -> SarifDriver {
                        configured threshold are flagged for refactoring or test additions.",
             },
             default_configuration: SarifLevel { level: "warning" },
-            help_uri: DRIVER_INFO_URI,
+            help_uri: tool.info_uri,
         }],
     }
 }
@@ -203,11 +202,18 @@ mod tests {
     use super::*;
 
     fn render_to_value(threshold: f64) -> serde_json::Value {
+        render_with(&crate::report::test_support::CARGO_CRAP_FIXTURE, threshold)
+    }
+
+    fn render_with(
+        tool: &crate::report::Tool,
+        threshold: f64,
+    ) -> serde_json::Value {
         let mut buf = Vec::new();
         let opts = RenderOptions {
             threshold,
             format: Format::Sarif,
-            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
+            ..RenderOptions::new(tool)
         };
         render(&sample(), &opts, &mut buf).unwrap();
         serde_json::from_slice(&buf).expect("output must be valid JSON")
@@ -247,9 +253,24 @@ mod tests {
         let runs = v["runs"].as_array().expect("runs array");
         assert_eq!(runs.len(), 1);
         let driver = &runs[0]["tool"]["driver"];
-        assert_eq!(driver["name"].as_str(), Some(DRIVER_NAME));
-        assert_eq!(driver["version"].as_str(), Some(DRIVER_VERSION));
-        assert_eq!(driver["informationUri"].as_str(), Some(DRIVER_INFO_URI));
+        let tool = crate::report::test_support::CARGO_CRAP_FIXTURE;
+        assert_eq!(driver["name"].as_str(), Some(tool.name));
+        assert_eq!(driver["version"].as_str(), Some(tool.version));
+        assert_eq!(driver["informationUri"].as_str(), Some(tool.info_uri));
+        assert_eq!(driver["rules"][0]["helpUri"].as_str(), Some(tool.info_uri));
+    }
+
+    #[test]
+    fn the_driver_is_the_tool_the_options_carry() {
+        let v = render_with(&crate::report::test_support::SECOND_TOOL, 30.0);
+        let driver = &v["runs"][0]["tool"]["driver"];
+        assert_eq!(driver["name"], "other-tool");
+        assert_eq!(driver["version"], "7.7.7-other");
+        assert_eq!(driver["informationUri"], "https://example.test/other-tool");
+        assert_eq!(
+            driver["rules"][0]["helpUri"],
+            "https://example.test/other-tool"
+        );
     }
 
     #[test]

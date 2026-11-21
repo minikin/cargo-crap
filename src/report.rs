@@ -303,7 +303,7 @@ pub fn render(
             opts.cwd,
             out,
         ),
-        Format::Sarif => sarif::render_sarif(&shown, threshold, out),
+        Format::Sarif => sarif::render_sarif(&shown, threshold, opts.tool, out),
         Format::Shields => shields::render_shields(entries, threshold, out),
     }
 }
