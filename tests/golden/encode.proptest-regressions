@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2ff305d36b3a8a8ef7c935743f148903b5d5f5861c67d8f9be9c6cd2dbd30d08 # shrinks to r = Run { stdout: [], stderr: [], status: None }, which = 0, at = 0, byte = 0
+cc 6293dcfeb87c20c53daf66dd2c7b4f97f5f3ee0a3c13870ff52d77101c2d197e # shrinks to r = Run { stdout: [], stderr: [], status: None }
+cc bb4853ccaaa71aa5b22310c6f5447e0f6ac575fca517facf16f9bdcbb453302f # shrinks to a = Run { stdout: [], stderr: [], status: None }, b = Run { stdout: [], stderr: [0], status: None }
+cc 508513f7c1494d6c734e94a960fd67200b2cb1f01a189c791a0dea16301fe044 # shrinks to r = Run { stdout: [194, 160], stderr: [], status: None }

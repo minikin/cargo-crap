@@ -9,3 +9,6 @@
 
 #[path = "golden/config.rs"]
 mod config;
+
+#[path = "golden/encode.rs"]
+mod encode;
