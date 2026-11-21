@@ -148,7 +148,7 @@
 //! | [`score`] | The CRAP formula and the `Clean`/`Crappy` classifier. No I/O. |
 //! | [`complexity`] | `syn`-based AST walker. Produces `(file, function, span, CC)` per function. |
 //! | [`signals::model`], [`signals::config`], [`signals::compute`](mod@signals::compute) | Signal measurements, configuration and Rust syntax walker. |
-//! | [`entry`], `paths` | Report rows, ordering, scope diagnostics and path matching. |
+//! | [`entry`], [`paths`] | Report rows, ordering, scope diagnostics and path matching. |
 //! | [`duplicates::model`], [`duplicates::verdict`] | Duplicate function identities, fingerprints and triage verdicts. |
 //! | [`coverage::lcov`] | LCOV parser. Produces `(file, line) → hit-count` maps. |
 //! | [`merge`] | Joins Rust function spans with coverage. |
@@ -172,7 +172,7 @@ pub mod entry;
 pub mod filter;
 pub mod gate;
 pub mod merge;
-pub(crate) mod paths;
+pub mod paths;
 pub mod policy;
 pub mod report;
 pub mod run;

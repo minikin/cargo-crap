@@ -27,5 +27,5 @@ map order.
 Relative paths are **never** canonicalized against the process's CWD, which
 would otherwise silently bind them to whatever file happened to exist
 under the tool's working directory. The regression test
-`relative_coverage_paths_are_not_resolved_against_cwd` in `src/merge.rs`
+`relative_coverage_paths_are_not_resolved_against_cwd` in `src/paths.rs`
 pins this.

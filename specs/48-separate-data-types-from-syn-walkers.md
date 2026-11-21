@@ -627,7 +627,7 @@ modified. The scenario names below identify their owning tasks.
   construct and read the fingerprint through `cargo_crap::merge::CrapEntry`.
   Run that integration test and all three existing pipeline doctests.
 
-- [ ] **T5 — Assign the longest matching coverage group to each source.**
+- [x] **T5 — Assign the longest matching coverage group to each source.**
   Needs: T1. Implement the per-source batch assignment and diagnostics
   builder in `paths.rs`. Keep raw key indices for all spellings in a group.
   Prefer a canonical absolute match, then the longest nonempty component

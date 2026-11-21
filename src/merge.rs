@@ -321,48 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn suffix_match_works_for_relative_coverage_paths() {
-        // Simulates the realistic case: coverage file was generated with
-        // `cargo llvm-cov` in the workspace root, producing relative paths.
-        let mut cov_map = HashMap::new();
-        cov_map.insert(PathBuf::from("src/foo.rs"), cov_with(&[(10, 1), (11, 1)]));
-        let index = PathIndex::build(&cov_map);
-
-        let complexity_path = PathBuf::from("/home/alice/project/src/foo.rs");
-        let result = index.lookup(&complexity_path);
-        assert!(result.is_some(), "expected suffix match to succeed");
-    }
-
-    #[test]
-    fn suffix_match_rejects_partial_component_matches() {
-        // `oofoo.rs` should NOT match `foo.rs` — that's a byte-level
-        // ends_with bug we're explicitly avoiding.
-        let a = PathBuf::from("/project/src/oofoo.rs");
-        let b = PathBuf::from("foo.rs");
-        assert!(!path_has_suffix(&a, &b));
-    }
-
-    #[test]
-    fn equal_length_paths_match_when_identical() {
-        // Kills: replace > with == and > with >= in the nee.len() > hay.len() guard.
-        // If the guard fired for equal-length paths, identical paths would return false.
-        let a = PathBuf::from("/project/src/foo.rs");
-        let b = PathBuf::from("/project/src/foo.rs");
-        assert!(
-            path_has_suffix(&a, &b),
-            "identical paths must match as a suffix"
-        );
-    }
-
-    #[test]
-    fn longer_needle_does_not_match() {
-        // Needle longer than haystack must always return false.
-        let hay = PathBuf::from("src/foo.rs");
-        let needle = PathBuf::from("/abs/project/src/foo.rs");
-        assert!(!path_has_suffix(&hay, &needle));
-    }
-
-    #[test]
     fn longest_matching_suffix_wins_over_shorter_ambiguous_key() {
         // Spec 26: `src/lib.rs` and `vendor/dep/src/lib.rs` both suffix-match
         // a query under vendor/dep/. The 4-component needle must win — under
@@ -505,22 +463,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn distinct_relative_files_never_merge() {
-        // Spec 26: component-inequal keys stay separate and never compete
-        // for the same query (one would have to be a suffix of the other).
-        let mut cov_map = HashMap::new();
-        cov_map.insert(PathBuf::from("a/util.rs"), cov_with(&[(1, 1)]));
-        cov_map.insert(PathBuf::from("b/util.rs"), cov_with(&[(1, 0)]));
-        let index = PathIndex::build(&cov_map);
-        assert_eq!(index.by_relative.len(), 2);
-
-        let a = index.lookup(Path::new("/repo/a/util.rs")).expect("a match");
-        assert_eq!(a.cov.coverage_in_span(1, 1), 100.0);
-        let b = index.lookup(Path::new("/repo/b/util.rs")).expect("b match");
-        assert_eq!(b.cov.coverage_in_span(1, 1), 0.0);
-    }
-
     #[cfg(unix)]
     #[test]
     fn absolute_aliases_merge_line_data_instead_of_last_write_wins() {
@@ -604,36 +546,6 @@ mod tests {
         }];
         let result = merge(complexity, HashMap::new(), MissingCoveragePolicy::Skip);
         assert!(result.entries.is_empty());
-    }
-
-    #[test]
-    fn relative_coverage_paths_are_not_resolved_against_cwd() {
-        // REGRESSION TEST. A relative path in the coverage file must never
-        // be canonicalized against the process's CWD, because that causes a
-        // silent-binding bug: `src/lib.rs` in LCOV would resolve to
-        // `<cwd>/src/lib.rs` (which likely exists — it's the tool's own
-        // source), and then the lookup for a DIFFERENT file ending in
-        // `src/lib.rs` would miss, returning `None` for every function.
-        //
-        // We construct exactly this scenario: a relative coverage path that
-        // happens to match something real under CWD, and a complexity path
-        // that is the "intended" target elsewhere.
-        let mut cov_map = HashMap::new();
-        cov_map.insert(PathBuf::from("src/lib.rs"), cov_with(&[(10, 1)]));
-        let index = PathIndex::build(&cov_map);
-
-        // The relative path must live in `by_relative`, NOT `by_absolute`,
-        // even if a file by that relative name happens to exist under CWD.
-        assert!(
-            index.by_absolute.is_empty(),
-            "relative coverage paths must not populate by_absolute"
-        );
-        assert_eq!(index.by_relative.len(), 1);
-
-        // Lookup for an unrelated absolute path ending in src/lib.rs must
-        // succeed via suffix match.
-        let found = index.lookup(Path::new("/somewhere/else/src/lib.rs"));
-        assert!(found.is_some());
     }
 
     #[test]
