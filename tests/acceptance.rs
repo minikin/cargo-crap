@@ -10086,3 +10086,269 @@ fn disabled_signals_are_omitted_from_public_reports_and_cannot_trip_a_gate() {
         assert_eq!(outcome.exit_code(), std::process::ExitCode::SUCCESS);
     }
 }
+
+// Spec 47 T7
+
+mod gate_populations {
+    use super::{
+        Roots, SECOND_TOOL, pipeline_report, pipeline_settings, scored_baseline, scored_row,
+    };
+    use cargo_crap::{
+        filter::AllowSet,
+        policy::{Policy, Population},
+        report::Tool,
+        run::BaselineFilter,
+        signals::SignalSettings,
+    };
+    use proptest::{prelude::*, test_runner::FileFailurePersistence};
+    use std::process::ExitCode;
+
+    fn caller(population: Population) -> Tool {
+        Tool {
+            policy: Policy {
+                fail_above_counts: population,
+                ..SECOND_TOOL.policy
+            },
+            ..SECOND_TOOL
+        }
+    }
+
+    fn population_example(
+        min: Option<f64>,
+        top: Option<usize>,
+        names: &[&str],
+        shown_count: usize,
+    ) {
+        // Given the same eligible rows, including one exactly at the threshold.
+        let rows = vec![
+            scored_row("src/a.rs", "skip_me", 80.0),
+            scored_row("src/b.rs", "hot", 50.0),
+            scored_row("src/c.rs", "warm", 40.0),
+            scored_row("src/d.rs", "edge", 30.0),
+        ];
+        let scope = Roots(&["src"]);
+        let allow = AllowSet::compile(&["skip_me".into()]).unwrap();
+        let signals = SignalSettings::default();
+        let mut settings = pipeline_settings(&allow, &signals);
+        settings.min = min;
+        settings.top = top;
+        settings.fail_above = true;
+        let prepared = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(rows.clone()));
+        // When either tool renders the same absolute or delta report.
+        for baseline in [None, Some(&prepared)] {
+            let run = |population| {
+                pipeline_report(
+                    &caller(population),
+                    &settings,
+                    &scope,
+                    rows.clone(),
+                    baseline,
+                )
+            };
+            let (shown, shown_gate) = run(Population::Shown);
+            let (all, all_gate) = run(Population::All);
+            // Then the gate population affects the verdict independently of the rendered bytes.
+            assert_eq!(all, shown);
+            let doc: serde_json::Value = serde_json::from_slice(&shown).unwrap();
+            let actual: Vec<_> = doc["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["function"].as_str().unwrap())
+                .collect();
+            assert_eq!(actual, names);
+            assert_eq!(shown_gate.crappy, shown_count);
+            assert_eq!(all_gate.crappy, 2);
+            assert_eq!(
+                shown_gate.exit_code(),
+                ExitCode::from(u8::from(shown_count > 0))
+            );
+            assert_eq!(all_gate.exit_code(), ExitCode::from(1));
+        }
+    }
+
+    #[test]
+    fn the_caller_selects_the_population_for_the_threshold_gate_with_top_one() {
+        population_example(None, Some(1), &["hot"], 1);
+    }
+    #[test]
+    fn the_caller_selects_the_population_for_the_threshold_gate_with_an_empty_slice() {
+        population_example(Some(51.0), None, &[], 0);
+    }
+    #[test]
+    fn the_caller_selects_the_population_for_the_threshold_gate_without_a_slice() {
+        population_example(None, None, &["hot", "warm", "edge"], 2);
+    }
+
+    fn disabled_gate_example(
+        population: Population,
+        count: usize,
+    ) {
+        let rows = vec![
+            scored_row("src/a.rs", "hot", 50.0),
+            scored_row("src/b.rs", "warm", 40.0),
+        ];
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let scope = Roots(&["src"]);
+        let mut settings = pipeline_settings(&allow, &signals);
+        settings.top = Some(1);
+        let before = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(rows.clone()));
+        for baseline in [None, Some(&before)] {
+            for enabled in [true, false] {
+                settings.fail_above = enabled;
+                let (_, outcome) = pipeline_report(
+                    &caller(population),
+                    &settings,
+                    &scope,
+                    rows.clone(),
+                    baseline,
+                );
+                assert_eq!(outcome.crappy, count);
+                assert_eq!(outcome.exit_code(), ExitCode::from(u8::from(enabled)));
+            }
+        }
+    }
+
+    #[test]
+    fn disabling_fail_above_preserves_the_threshold_count_for_shown() {
+        disabled_gate_example(Population::Shown, 1);
+    }
+    #[test]
+    fn disabling_fail_above_preserves_the_threshold_count_for_all() {
+        disabled_gate_example(Population::All, 2);
+    }
+
+    #[test]
+    fn threshold_counts_cover_empty_input_zero_top_ties_and_oversized_limits() {
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        for (scores, min, top, expected_names, shown, all) in [
+            (&[][..], None, Some(5), &[][..], 0, 0),
+            (&[40.5, 40.5, 30.0][..], None, Some(0), &[], 0, 2),
+            (
+                &[40.5, 40.5, 30.0][..],
+                Some(40.5),
+                Some(1),
+                &["row_0"],
+                1,
+                2,
+            ),
+            (
+                &[40.5, 40.5, 30.0][..],
+                Some(30.0),
+                Some(99),
+                &["row_0", "row_1", "row_2"],
+                2,
+                2,
+            ),
+        ] {
+            let entries: Vec<_> = scores
+                .iter()
+                .enumerate()
+                .map(|(i, &score)| scored_row("src/a.rs", &format!("row_{i}"), score))
+                .collect();
+            let mut settings = pipeline_settings(&allow, &signals);
+            settings.min = min;
+            settings.top = top;
+            let scope = Roots(&["src"]);
+            let prepared =
+                BaselineFilter::new(&scope, &allow).prepare(scored_baseline(entries.clone()));
+            for baseline in [None, Some(&prepared)] {
+                for (population, expected) in [(Population::Shown, shown), (Population::All, all)] {
+                    let (out, verdict) = pipeline_report(
+                        &caller(population),
+                        &settings,
+                        &scope,
+                        entries.clone(),
+                        baseline,
+                    );
+                    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+                    let names: Vec<_> = doc["entries"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|row| row["function"].as_str().unwrap())
+                        .collect();
+                    assert_eq!(names, expected_names, "{scores:?} {min:?} {top:?}");
+                    assert_eq!(
+                        verdict.crappy, expected,
+                        "{population:?} {scores:?} {min:?} {top:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: Some(Box::new(
+                FileFailurePersistence::WithSource("proptest-regressions"),
+            )),
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn the_gate_counts_agree_with_an_independent_count_of_eligible_rows(
+            mut inputs in prop::collection::vec((4u8..=48, any::<bool>(), any::<bool>()), 0..32),
+            threshold in 4u8..=48,
+            min in prop::option::of(4u8..=52),
+            top in prop::option::of(0usize..36),
+            allow_names in any::<bool>(),
+            allow_paths in any::<bool>(),
+        ) {
+            let score_value = |quarters: u8| f64::from(quarters) / 4.0;
+            inputs.sort_by_key(|row| std::cmp::Reverse(row.0));
+            let mut patterns = Vec::new();
+            if allow_names {
+                patterns.push("generated_*".into());
+            }
+            if allow_paths {
+                patterns.push("gen/**".into());
+            }
+            let mut rows = Vec::new();
+            let (mut all, mut shown, mut selected) = (0, 0, 0);
+            for (i, &(score, generated_name, generated_path)) in inputs.iter().enumerate() {
+                let prefix = if generated_name { "generated" } else { "work" };
+                let dir = if generated_path { "gen" } else { "src" };
+                rows.push(scored_row(
+                    &format!("{dir}/{i}.rs"),
+                    &format!("{prefix}_{i}"),
+                    score_value(score),
+                ));
+                // Compute eligibility and rank from the generated inputs.
+                if (allow_names && generated_name) || (allow_paths && generated_path) {
+                    continue;
+                }
+                all += usize::from(score > threshold);
+                if score >= min.unwrap_or(0) && selected < top.unwrap_or(inputs.len()) {
+                    selected += 1;
+                    shown += usize::from(score > threshold);
+                }
+            }
+            let allow = AllowSet::compile(&patterns).unwrap();
+            let signals = SignalSettings::default();
+            let mut settings = pipeline_settings(&allow, &signals);
+            settings.threshold = score_value(threshold);
+            settings.min = min.map(score_value);
+            settings.top = top;
+            settings.fail_above = true;
+            let scope = Roots(&["src", "gen"]);
+            let prepared =
+                BaselineFilter::new(&scope, &allow).prepare(scored_baseline(rows.clone()));
+            for baseline in [None, Some(&prepared)] {
+                for (population, expected) in [(Population::Shown, shown), (Population::All, all)] {
+                    let (_, outcome) = pipeline_report(
+                        &caller(population),
+                        &settings,
+                        &scope,
+                        rows.clone(),
+                        baseline,
+                    );
+                    prop_assert_eq!(outcome.crappy, expected);
+                    prop_assert_eq!(outcome.tripped, expected > 0);
+                }
+            }
+        }
+    }
+}

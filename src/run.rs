@@ -6,7 +6,7 @@ use crate::duplicates::{
     compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, triage::verdict::Assessment,
 };
 use crate::filter::{self, AllowSet};
-use crate::gate::GateOutcome;
+use crate::gate::{GateOutcome, threshold_count};
 use crate::merge::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::report::{self, Format, RenderOptions, SourceLinks, Tool, TriagedBy};
 use crate::signals::SignalSettings;
@@ -255,7 +255,12 @@ pub fn run(
     report::render_duplicates(&options, out).context("writing duplicate report")?;
     out.flush().context("flushing output")?;
     Ok(GateOutcome::from_counts(
-        report::crappy_count(shown, settings.threshold),
+        threshold_count(
+            tool.policy.fail_above_counts,
+            &eligible,
+            shown,
+            settings.threshold,
+        ),
         regressed,
         gating_signals,
         settings.fail_above,

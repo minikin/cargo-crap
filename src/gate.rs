@@ -1,6 +1,21 @@
 //! Counts and exit status for a completed report.
 
+use crate::{merge::CrapEntry, policy::Population, report::crappy_count};
 use std::process::ExitCode;
+
+/// Count threshold violations in the caller's selected score population.
+pub(crate) fn threshold_count(
+    population: Population,
+    eligible: &[CrapEntry],
+    shown: &[CrapEntry],
+    threshold: f64,
+) -> usize {
+    let rows = match population {
+        Population::Shown => shown,
+        Population::All => eligible,
+    };
+    crappy_count(rows, threshold)
+}
 
 /// Counts and verdict for the report the caller successfully wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +61,31 @@ impl GateOutcome {
 mod tests {
     use super::GateOutcome;
     use std::process::ExitCode;
+
+    #[test]
+    fn the_threshold_population_selects_between_eligible_and_shown_rows() {
+        use crate::{policy::Population, report::test_support::sample};
+        let mut eligible = sample();
+        eligible[0].crap = 40.25;
+        eligible[1].crap = 40.0;
+        let shown = &eligible[1..];
+        assert_eq!(
+            super::threshold_count(Population::All, &eligible, shown, 40.0),
+            1
+        );
+        assert_eq!(
+            super::threshold_count(Population::Shown, &eligible, shown, 40.0),
+            0
+        );
+        assert_eq!(
+            super::threshold_count(Population::Shown, &eligible, shown, 39.75),
+            1
+        );
+        assert_eq!(
+            super::threshold_count(Population::All, &eligible, shown, 39.75),
+            2
+        );
+    }
 
     #[test]
     fn score_and_signal_gates_preserve_the_independent_counts() {

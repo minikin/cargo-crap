@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Library callers can use `run::run` to write and flush a report and
   receive its `gate::GateOutcome`. The `filter` module selects report
   rows, and `policy` lets each tool choose its summary formats and
-  which rows count toward the threshold gate.
+  which rows count toward the threshold gate. Use `Population::All` to
+  count every eligible row, including rows hidden by the display limits.
+  Cargo-crap uses `Population::Shown` to count the displayed rows.
 
 - Structural maintainability signals (spec 43), opt-in with
   `[signals] enabled = true`. Each function gets `nesting`, `lines`,

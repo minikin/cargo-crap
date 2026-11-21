@@ -26,11 +26,13 @@ pub enum TieOrder {
     Stable,
 }
 
-/// Rows assessed by the absolute threshold gate.
+/// Score rows assessed by the threshold gate in absolute and delta reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Population {
     /// The rows selected by the minimum score and top limit.
     Shown,
+    /// All in-scope rows that survive allow patterns, before display limits.
+    All,
 }
 
 /// Choices shared by a front end's reports and gates.
