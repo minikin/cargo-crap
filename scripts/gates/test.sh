@@ -303,6 +303,163 @@ check "just mutants and just mutants-all reach the core: mutants FILE" \
     "[mutants][--workspace][--file][crates/cargo-crap-core/src/lib.rs]" "$first"
 check "just mutants and just mutants-all reach the core: mutants-all" "[mutants][--workspace]" "$calls"
 
+# The parser guard on recorded trees: $1 holds one `<package>.tree` per
+# package. A package with no file reads as a `cargo tree` that failed.
+guard() {
+    out="$(cd "$repo" && PARSER_GUARD_TREES="$1" bash scripts/gates/parser-guard.sh 2>&1)"
+    status=$?
+}
+
+trees() {
+    local dir
+    dir="$(mktemp -d "$scratch/trees.XXXXXX")" || exit 1
+    printf 'cargo-crap v0.9.0 (/repo)\nanyhow v1.0.104\nsyn v2.0.119\n' > "$dir/cargo-crap.tree"
+    printf 'cargo-crap-core v0.1.0 (/repo/crates/cargo-crap-core)\n' > "$dir/cargo-crap-core.tree"
+    echo "$dir"
+}
+
+# Scenario: the parser guard passes on this repository.
+out="$(cd "$repo" && bash scripts/gates/parser-guard.sh 2>&1)"
+status=$?
+check "the parser guard passes on this repository: exits 0" "0" "$status"
+check "the parser guard passes on this repository: names what it checked" "1" \
+    "$(grep -q 'cargo-crap, cargo-crap-core' <<< "$out" && echo 1 || echo 0)"
+
+# Scenario: the parser guard sees a feature-gated parser dependency.
+# The syn cargo-crap links directly, which every build downloads. The lock
+# holds more than one, and the full tree reaches another through a proc
+# macro first, so the query stops at cargo-crap's own dependencies.
+syn_version="$(cd "$repo" && "$real_cargo" tree -p cargo-crap -e normal --depth 1 --prefix none --locked 2> /dev/null |
+    awk '$1 == "syn" { sub(/^v/, "", $2); print $2; exit }')"
+gated="$scratch/gated"
+{
+    mkdir -p "$gated/src" "$gated/crates/cargo-crap-core/src" &&
+        printf '[package]\nname = "cargo-crap"\nversion = "0.1.0"\nedition = "2024"\n\n[workspace]\nmembers = ["crates/cargo-crap-core"]\n' > "$gated/Cargo.toml" &&
+        printf '[package]\nname = "cargo-crap-core"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nsyn = { version = "=%s", optional = true }\n\n[features]\nparse = ["dep:syn"]\n' "$syn_version" > "$gated/crates/cargo-crap-core/Cargo.toml" &&
+        : > "$gated/src/lib.rs" && : > "$gated/crates/cargo-crap-core/src/lib.rs" &&
+        (cd "$gated" && "$real_cargo" generate-lockfile --offline -q)
+} > /dev/null 2>&1 || { echo "FAIL building the feature-gated workspace (syn $syn_version cached?)"; exit 1; }
+out="$(cd "$gated" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
+status=$?
+check "the parser guard sees a feature-gated parser dependency: exits 1" "1" "$status"
+check "the parser guard sees a feature-gated parser dependency: names the core and syn" "1" \
+    "$(grep -q "cargo-crap-core links syn v$syn_version" <<< "$out" && echo 1 || echo 0)"
+
+# A temp workspace whose core's manifest ends with $2, resolved offline
+# against the syn cargo-crap links. Prints the workspace path.
+guard_workspace() {
+    local dir="$scratch/$1"
+    {
+        mkdir -p "$dir/src" "$dir/crates/cargo-crap-core/src" &&
+            printf '[package]\nname = "cargo-crap"\nversion = "0.1.0"\nedition = "2024"\n\n[workspace]\nmembers = ["crates/cargo-crap-core"]\n' > "$dir/Cargo.toml" &&
+            printf '[package]\nname = "cargo-crap-core"\nversion = "0.1.0"\nedition = "2024"\n\n%s\n' "$2" > "$dir/crates/cargo-crap-core/Cargo.toml" &&
+            : > "$dir/src/lib.rs" && : > "$dir/crates/cargo-crap-core/src/lib.rs" &&
+            (cd "$dir" && "$real_cargo" generate-lockfile --offline -q)
+    } > /dev/null 2>&1 || { echo "FAIL building the $1 workspace (syn $syn_version cached?)" >&2; exit 1; }
+    echo "$dir"
+}
+
+# Scenario: the parser guard sees a platform-gated parser dependency.
+dir="$(guard_workspace platform "[target.'cfg(windows)'.dependencies]
+syn = \"=$syn_version\"")" || exit 1
+out="$(cd "$dir" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
+status=$?
+check "the parser guard sees a platform-gated parser dependency: exits 1" "1" "$status"
+check "the parser guard sees a platform-gated parser dependency: names the core and syn" "1" \
+    "$(grep -q "cargo-crap-core links syn v$syn_version" <<< "$out" && echo 1 || echo 0)"
+
+# Scenario: a parser only the core's tests use is not a violation.
+dir="$(guard_workspace dev-only "[dev-dependencies]
+syn = \"=$syn_version\"")" || exit 1
+out="$(cd "$dir" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
+status=$?
+check "a parser only the core's tests use is not a violation" "0" "$status"
+
+# Scenario: the parser guard fails when the core links syn.
+dir="$(trees)" || exit 1
+printf 'cargo-crap-core v0.1.0 (/repo/crates/cargo-crap-core)\nsyn v2.0.119\n' > "$dir/cargo-crap-core.tree"
+guard "$dir"
+check "the parser guard fails when the core links syn: exits 1" "1" "$status"
+check "the parser guard fails when the core links syn: names it" "1" \
+    "$(grep -q 'cargo-crap-core links syn v2.0.119' <<< "$out" && echo 1 || echo 0)"
+
+# Scenario: the parser guard fails when cargo-crap links an Oxc crate.
+dir="$(trees)" || exit 1
+printf 'oxc_parser v0.159.0\n' >> "$dir/cargo-crap.tree"
+guard "$dir"
+check "the parser guard fails when cargo-crap links an Oxc crate: exits 1" "1" "$status"
+check "the parser guard fails when cargo-crap links an Oxc crate: names it" "1" \
+    "$(grep -q 'cargo-crap links oxc_parser v0.159.0' <<< "$out" && echo 1 || echo 0)"
+
+# Scenario: syn in cargo-crap's tree is not a violation.
+dir="$(trees)" || exit 1
+guard "$dir"
+check "syn in cargo-crap's tree is not a violation" "0" "$status"
+check "recorded trees are named in the output" "1" \
+    "$(grep -q "recorded trees from $dir" <<< "$out" && echo 1 || echo 0)"
+
+# The core's rules: `syn ` with its space, so a crate whose name only starts
+# with syn is not a parser, and `oxc_` as for cargo-crap.
+dir="$(trees)" || exit 1
+printf 'synstructure v0.13.2\n' >> "$dir/cargo-crap-core.tree"
+guard "$dir"
+check "a crate named syn-something in the core is not syn" "0" "$status"
+printf 'oxc_ast v0.159.0\n' >> "$dir/cargo-crap-core.tree"
+guard "$dir"
+check "the core may not link an Oxc crate" "1" "$status"
+check "the core's Oxc crate is named" "1" \
+    "$(grep -q 'cargo-crap-core links oxc_ast v0.159.0' <<< "$out" && echo 1 || echo 0)"
+
+# Scenario: a guard that saw no tree does not pass.
+dir="$(trees)" || exit 1
+: > "$dir/cargo-crap-core.tree"
+guard "$dir"
+check "a guard that saw an empty tree does not pass: exits 1" "1" "$status"
+check "a guard that saw an empty tree does not pass: says so" "1" \
+    "$(grep -q 'cargo-crap-core: no tree was read' <<< "$out" && echo 1 || echo 0)"
+rm "$dir/cargo-crap-core.tree"
+guard "$dir"
+check "a guard whose cargo tree failed does not pass: exits 1" "1" "$status"
+check "a guard whose cargo tree failed does not pass: says so" "1" \
+    "$(grep -q 'cargo-crap-core: no tree was read' <<< "$out" && echo 1 || echo 0)"
+
+# A cargo tree that prints part of a tree and then fails is a failed read,
+# not a tree to judge.
+partial="$scratch/partial-cargo"
+mkdir -p "$partial"
+cat > "$partial/cargo" <<'PARTIAL'
+#!/usr/bin/env bash
+echo "cargo-crap v0.9.0 (/repo)"
+exit 101
+PARTIAL
+chmod +x "$partial/cargo"
+out="$(cd "$repo" && PATH="$partial:$PATH" bash scripts/gates/parser-guard.sh 2>&1)"
+status=$?
+check "a guard whose cargo tree printed a tree and failed does not pass: exits 1" "1" "$status"
+check "a guard whose cargo tree printed a tree and failed does not pass: says so" "1" \
+    "$(grep -q 'cargo-crap: no tree was read' <<< "$out" && echo 1 || echo 0)"
+
+# The guard runs under macOS's system bash 3.2 as well as a current one.
+if [ -x /bin/bash ]; then
+    dir="$(trees)" || exit 1
+    out="$(cd "$repo" && PARSER_GUARD_TREES="$dir" /bin/bash scripts/gates/parser-guard.sh 2>&1)"
+    status=$?
+    check "the parser guard runs under /bin/bash: exits 0" "0" "$status"
+    printf 'syn v2.0.119\n' >> "$dir/cargo-crap-core.tree"
+    out="$(cd "$repo" && PARSER_GUARD_TREES="$dir" /bin/bash scripts/gates/parser-guard.sh 2>&1)"
+    check "the parser guard runs under /bin/bash: names a violation" "1" \
+        "$(grep -q 'cargo-crap-core links syn v2.0.119' <<< "$out" && echo 1 || echo 0)"
+    # bash 3.2 backs a here-string with a temp file, so a shell that cannot
+    # write one (an unwritable TMPDIR and /tmp, here a zero file-size limit
+    # with SIGXFSZ ignored) breaks any scan that reads the tree through one.
+    # The guard must still name the violation.
+    out="$(cd "$repo" && trap '' XFSZ && ulimit -f 0 && PARSER_GUARD_TREES="$dir" /bin/bash scripts/gates/parser-guard.sh 2>&1)"
+    status=$?
+    check "the parser guard under /bin/bash that cannot write a temp file: exits 1" "1" "$status"
+    check "the parser guard under /bin/bash that cannot write a temp file: names the violation" "1" \
+        "$(grep -q 'cargo-crap-core links syn v2.0.119' <<< "$out" && echo 1 || echo 0)"
+fi
+
 # A base ref that does not resolve is an error, not an empty diff: a
 # shallow clone or a renamed base branch must not pass having measured
 # nothing.
