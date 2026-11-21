@@ -152,7 +152,7 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
 
     let shared = manifest(&root());
     let member = manifest(&root().join("crates/crapts"));
-    let pins = [
+    let parser_pins = [
         "oxc_allocator",
         "oxc_ast",
         "oxc_ast_visit",
@@ -174,17 +174,20 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
                 .expect("dependency name")
         })
         .collect();
-    assert_eq!(
-        declared,
-        BTreeSet::from(pins),
-        "direct dependencies of crapts"
-    );
-    for name in pins {
+    let required_helpers: &[&str] = &[];
+    let expected: BTreeSet<_> = parser_pins
+        .into_iter()
+        .chain(required_helpers.iter().copied())
+        .collect();
+    assert_eq!(declared, expected, "direct dependencies of crapts");
+    for name in parser_pins {
         assert_eq!(
             shared["workspace"]["dependencies"][name].as_str(),
             Some("=0.159.0"),
             "{name}"
         );
+    }
+    for name in expected {
         assert_eq!(
             member["dependencies"][name]["workspace"].as_bool(),
             Some(true),

@@ -712,7 +712,10 @@ And the existing cargo-crap/core guards and byte-for-byte Spec 44 goldens pass w
 Given the landed Spec 45 manifest and lockfile
 When workspace metadata, the lockfile diff and the Dependabot configuration are inspected
 Then crapts is a library package with publishing disabled and inherits the seven exact Oxc pins
-And one Cargo dependency-update group covers those seven Oxc packages together
+And T15 adds sha2 for N12 name suffixes, exactly pinned in workspace dependencies with default features disabled
+And T23 adds the existing workspace globset for path exclusions
+And the member's direct non-development dependencies are exactly the seven pins plus the helpers introduced by those tasks
+And the Cargo dependency-update group covers only the seven Oxc packages
 And every package ID (name, version, source) from the base lockfile also exists in the new lockfile
 And every added package belongs to the new member or its dependency closure
 ```
