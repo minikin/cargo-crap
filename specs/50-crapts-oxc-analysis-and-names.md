@@ -715,7 +715,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Add the analysis library and its pinned dependencies_.
   Tests: Acceptance against Cargo metadata, the final Spec 45 lockfile and the Dependabot group. Extend the existing membership assertion in the same change.
 
-- [ ] **T2 - Run the library on Rust 1.98 and enforce its parser boundary.** Needs: T1.
+- [x] **T2 - Run the library on Rust 1.98 and enforce its parser boundary.** Needs: T1.
   Scenarios: _Keep the package and its parser independently buildable_.
   Tests: Acceptance through the parser-guard script with allowed and forbidden dependency trees, the CI configuration checks, the Rust 1.88 checks and the locked Spec 44 goldens.
 
