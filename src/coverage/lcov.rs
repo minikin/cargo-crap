@@ -39,8 +39,6 @@ pub struct LineRange {
 
 #[cfg(test)]
 impl LineRange {
-    /// Test-only shorthand shared by the coverage and report test modules:
-    /// build a range list from `(start, end)` pairs.
     pub(crate) fn list(pairs: &[(u32, u32)]) -> Vec<Self> {
         pairs
             .iter()
@@ -310,8 +308,6 @@ mod tests {
         }
     }
 
-    // --- parse_lcov tests (kill missed mutants) ---
-
     #[test]
     fn parse_lcov_reads_correct_file_and_hit_counts() {
         // Kills: replace parse_lcov with dummy Ok(...), delete LineData arm, += with *=
@@ -372,7 +368,7 @@ mod tests {
             "SF:src/a.rs\n",
             "DA:1,1\n",
             "end_of_record\n",
-            "DA:99,99\n", // stray line — must be silently dropped
+            "DA:99,99\n",
             "SF:src/b.rs\n",
             "DA:2,4\n",
             "end_of_record\n",
@@ -436,13 +432,11 @@ mod tests {
     #[test]
     fn span_is_inclusive_on_both_ends() {
         let fc = fc_from(&[(5, 1), (10, 1), (15, 1)]);
-        // Only line 10 is inside [10..=10].
         assert_eq!(fc.coverage_in_span(10, 10), 100.0);
     }
 
     #[test]
     fn uncovered_runs_split_only_on_covered_lines() {
-        // Spec 28: line 16 (covered) splits the runs; 12–14 and 18 never merge.
         let fc = fc_from(&[(10, 3), (12, 0), (13, 0), (14, 0), (16, 2), (18, 0)]);
         assert_eq!(
             fc.uncovered_ranges_in_span(10, 20),
@@ -470,14 +464,12 @@ mod tests {
 
     #[test]
     fn span_with_no_instrumented_lines_has_no_ranges() {
-        // Mirrors `coverage_in_span`'s "nothing to cover" stance.
         let fc = fc_from(&[(5, 0), (25, 0)]);
         assert_eq!(fc.uncovered_ranges_in_span(10, 20), []);
     }
 
     #[test]
     fn uncovered_lines_outside_the_span_never_contribute() {
-        // Spec 28: line 25 belongs to the next function.
         let fc = fc_from(&[(12, 0), (25, 0)]);
         assert_eq!(
             fc.uncovered_ranges_in_span(10, 20),

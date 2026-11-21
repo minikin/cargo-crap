@@ -11,7 +11,7 @@ pub(crate) fn path_key(p: &Path) -> String {
 }
 
 /// Number of trailing path components two files share, after forward-slash
-/// normalization. `0` means not even the filename matches.
+/// normalization.
 fn common_suffix_len(
     a: &Path,
     b: &Path,
@@ -288,15 +288,12 @@ mod tests {
 
     #[test]
     fn per_source_policy_binds_a_shared_key_to_every_source_that_picks_it() {
-        // Given two package sources and a single shared relative key.
         let sources = [
             Path::new("/p/packages/a/src/index.ts"),
             Path::new("/p/packages/b/src/index.ts"),
         ];
         let keys = [Path::new("src/index.ts")];
-        // When each source chooses its own best match.
         let result = assign(&sources, &keys, TiePolicy::PerSource);
-        // Then both consume the key and diagnostics report full overlap.
         assert_eq!(result.bindings, [vec![0], vec![0]]);
         assert_eq!(result.ties, []);
         let diag = result.diagnostics(&sources, &keys);
@@ -752,16 +749,13 @@ mod tests {
             source_parts in prop::collection::btree_set(prop::collection::vec(0u8..4, 1..5), 1..8),
             key_parts in prop::collection::vec(prop::collection::vec(0u8..4, 1..4), 0..12)
         ) {
-            // Given distinct source paths, including one guaranteed miss.
             let mut parts: Vec<_> = source_parts.into_iter().collect();
             parts.push(vec![9]);
             let sources: Vec<_> = parts.iter().map(|p| numbered_path(p)).collect();
             let keys: Vec<_> = key_parts.iter().map(|p| numbered_path(p)).collect();
-            // When all sources are assigned in one batch.
             let assignment = assign(&sources.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
                                     &keys.iter().map(PathBuf::as_path).collect::<Vec<_>>(), TiePolicy::PerSource);
             for (source, bound) in parts.iter().zip(assignment.bindings) {
-                // Then the indices agree with a search on the original component arrays.
                 let mut expected = vec![];
                 let mut longest = 0;
                 for (index, key) in key_parts.iter().enumerate() {

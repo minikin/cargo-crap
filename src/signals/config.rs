@@ -1,8 +1,5 @@
-//! Configuration of structural signals and their limits.
-
 use serde::Deserialize;
 
-/// The `[signals]` table.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct SignalsConfig {
@@ -27,7 +24,6 @@ pub struct SignalLimitsConfig {
     pub nesting: Option<i64>,
     pub lines: Option<i64>,
     pub bumps: Option<i64>,
-    /// Accepted as `bool-ops` (house style) or `bool_ops`.
     #[serde(alias = "bool_ops")]
     pub bool_ops: Option<i64>,
 }

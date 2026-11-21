@@ -57,7 +57,6 @@ pub fn compute(
     Measured { signals, spans }
 }
 
-/// Lines in `start..=end`, saturating at `u32::MAX`.
 fn span_lines(
     start: usize,
     end: usize,
@@ -70,7 +69,6 @@ fn line(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// The lines a syntax node covers.
 fn range_of(span: proc_macro2::Span) -> LineRange {
     LineRange {
         start: line(span.start().line),
@@ -78,13 +76,10 @@ fn range_of(span: proc_macro2::Span) -> LineRange {
     }
 }
 
-/// A site count as `u32`, saturating.
 fn count(sites: &[LineRange]) -> u32 {
     u32::try_from(sites.len()).unwrap_or(u32::MAX)
 }
 
-/// One walk over a statement: the deepest nesting it reaches, its worst
-/// condition, and its stub and panic sites.
 #[derive(Default)]
 struct Walker {
     depth: u32,
@@ -96,7 +91,6 @@ struct Walker {
 }
 
 impl Walker {
-    /// Walk `f` one nesting level deeper.
     fn nested(
         &mut self,
         f: impl FnOnce(&mut Self),
@@ -107,7 +101,6 @@ impl Walker {
         self.depth -= 1;
     }
 
-    /// Score `cond` as a condition, then walk it at the current level.
     fn condition(
         &mut self,
         cond: &Expr,
@@ -296,7 +289,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// The signals of `fn f() { <body> }`, written on one line.
     fn signals_of(body: &str) -> Signals {
         let item: syn::ItemFn =
             syn::parse_str(&format!("fn f() {{ {body} }}")).expect("valid function");
@@ -305,10 +297,7 @@ mod tests {
 
     #[test]
     fn nesting_counts_the_bodies_that_enclose_the_deepest_code() {
-        // Given a function whose body is
-        // `for x in xs { if x > 0 { match x { 1 => f(), _ => g() } } }`
         let s = signals_of("for x in xs { if x > 0 { match x { 1 => f(), _ => g() } } }");
-        // Then nesting is 3
         assert_eq!(s.nesting, 3);
     }
 
@@ -404,14 +393,12 @@ mod tests {
         assert_eq!(s.bool_ops, 2);
         let s = signals_of("for x in xs { if a || b { f() } }");
         assert_eq!(s.bool_ops, 1);
-        // Operators outside a condition are not a condition.
         let s = signals_of("let ok = a && b && c;");
         assert_eq!(s.bool_ops, 0);
     }
 
     #[test]
     fn a_conditional_inside_a_condition_is_scored_on_its_own() {
-        // The outer condition has one `||`; the inner one has two `&&`.
         let s = signals_of("if (if a && b && c { x } else { y }) || d { f() }");
         assert_eq!(s.bool_ops, 2);
         // A block inside a condition is not part of it.
@@ -459,12 +446,9 @@ mod tests {
 
     #[test]
     fn stubs_and_panics_are_counted_per_occurrence() {
-        // Given a function whose body is
-        // `let v = x.unwrap(); let w = y.expect("y"); if v { todo!() } dbg!(w); panic!("no")`
         let s = signals_of(
             r#"let v = x.unwrap(); let w = y.expect("y"); if v { todo!() } dbg!(w); panic!("no")"#,
         );
-        // Then stubs is 2 and panics is 3
         assert_eq!(s.stubs, 2);
         assert_eq!(s.panics, 3);
     }
@@ -485,7 +469,6 @@ mod tests {
         assert_eq!(s.stubs, 0);
     }
 
-    /// Measure the first function in a multi-line `source`.
     fn measured_of(source: &str) -> Measured {
         let file = syn::parse_file(source).expect("valid file");
         let syn::Item::Fn(item) = &file.items[0] else {
@@ -533,7 +516,6 @@ mod tests {
 
     #[test]
     fn the_worst_condition_span_is_the_first_of_equals() {
-        // Equal conditions in separate statements, then within one.
         let m = measured_of(
             "fn f() {
     if a && b {
@@ -591,7 +573,6 @@ mod tests {
         assert_eq!(m.spans.bumps, Vec::<LineRange>::new());
     }
 
-    /// A random function body built from a small statement grammar.
     fn body() -> impl Strategy<Value = String> {
         let leaf = prop_oneof![
             Just("f();".to_owned()),
@@ -637,14 +618,11 @@ mod tests {
         prop::collection::vec(body(), 0..4).prop_map(|v| v.concat())
     }
 
-    /// `&&` and `||` operators anywhere in `source`.
     fn bool_op_count(source: &str) -> u32 {
         u32::try_from(source.matches("&&").count() + source.matches("||").count()).expect("small")
     }
 
     proptest! {
-        /// Wrapping a body in a conditional adds exactly one level and moves
-        /// no other count.
         #[test]
         fn wrapping_a_body_in_a_conditional_adds_exactly_one_level(b in statements()) {
             let plain = signals_of(&b);
@@ -674,8 +652,6 @@ mod tests {
             prop_assert!(signals_of(&b).bool_ops <= bool_op_count(&b));
         }
 
-        /// Every recorded span lies inside the function, and each counting
-        /// signal has one span per occurrence.
         #[test]
         fn every_span_lies_inside_its_function(parts in prop::collection::vec(body(), 0..5)) {
             let source = format!("\n\nfn f() {{\n{}\n}}\n", parts.join("\n"));

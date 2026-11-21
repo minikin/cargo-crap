@@ -23,13 +23,11 @@ pub use cargo_crap::{
 fn the_old_library_paths_still_resolve() {
     use cargo_crap::duplicates::{model, verdict};
 
-    // Given the published imports above, a caller builds a row at its original path.
     let row = cargo_crap::merge::CrapEntry {
         function: "f".into(),
         fingerprint: Some("a1b2".into()),
         ..Default::default()
     };
-    // When values constructed in the shared modules cross the old API.
     let print: Fingerprint = model::Fingerprint(17);
     let location: model::Location = Location {
         file: "lib.rs".into(),
@@ -53,7 +51,6 @@ fn the_old_library_paths_still_resolve() {
     let judged: verdict::Verdict = old_verdict;
     let worth: WorthExtracting = judged.worth_extracting;
     let assessment: Assessment = judged.assessment(1.0);
-    // Then the row, fingerprint and verdict retain their values and type identities.
     assert_eq!(row.fingerprint.as_deref(), Some("a1b2"));
     assert!(function.prints.contains(&model::Fingerprint(17)));
     assert_eq!(answers.kind, verdict::Kind::SameLogic);

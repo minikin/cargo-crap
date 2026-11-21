@@ -7,10 +7,8 @@
 
 use crate::policy::Policy;
 
-/// A front end's report identity and behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tool {
-    /// The front end's formatting and gate choices.
     pub policy: Policy,
     /// The SARIF driver name, such as `cargo-crap`.
     pub name: &'static str,
@@ -20,7 +18,6 @@ pub struct Tool {
     pub version: &'static str,
     /// The SARIF driver's `informationUri` and its rule's `helpUri`.
     pub info_uri: &'static str,
-    /// The `$schema` URLs of the JSON envelopes.
     pub schemas: Schemas,
     /// The hidden first line of the markdown and PR-comment reports, which
     /// lets CI find and update its own comment. One HTML comment, such as
@@ -34,8 +31,6 @@ pub struct Tool {
 /// The `$schema` URLs of the two JSON envelopes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Schemas {
-    /// The absolute report's schema.
     pub report: &'static str,
-    /// The delta report's schema.
     pub delta: &'static str,
 }

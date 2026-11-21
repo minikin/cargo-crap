@@ -1,5 +1,3 @@
-//! Structural maintainability signals and their Rust syntax walker.
-
 pub mod compute;
 pub mod config;
 pub mod model;

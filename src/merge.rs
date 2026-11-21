@@ -150,10 +150,6 @@ mod tests {
 
     #[test]
     fn longest_matching_suffix_wins_over_shorter_ambiguous_key() {
-        // Spec 26: `src/lib.rs` and `vendor/dep/src/lib.rs` both suffix-match
-        // a query under vendor/dep/. The 4-component needle must win — under
-        // the old first-match-in-hash-order lookup this failed about half the
-        // time (kills max_by_key → min_by_key and dropping the preference).
         let mut cov_map = HashMap::new();
         cov_map.insert(PathBuf::from("src/lib.rs"), cov_with(&[(1, 7)]));
         cov_map.insert(PathBuf::from("vendor/dep/src/lib.rs"), cov_with(&[(1, 0)]));
@@ -196,9 +192,6 @@ mod tests {
 
     #[test]
     fn component_equal_spellings_merge_into_one_entry() {
-        // Spec 26: `src/lib.rs` and `./src/lib.rs` are spellings of the same
-        // logical file — merged at build time (union of lines, summed hits),
-        // and both raw spellings count as consumed.
         let mut cov_map = HashMap::new();
         cov_map.insert(PathBuf::from("src/lib.rs"), cov_with(&[(1, 2)]));
         cov_map.insert(PathBuf::from("./src/lib.rs"), cov_with(&[(1, 3), (2, 1)]));
@@ -232,11 +225,6 @@ mod tests {
 
     #[test]
     fn degenerate_lcov_keys_never_wildcard_match() {
-        // `SF:.` (and an empty SF) normalize to zero components; an empty
-        // needle would trivially suffix-match EVERY query, silently binding
-        // unmapped files to garbage data. Such keys must stay out of the
-        // index and surface as lcov_only strays instead (kills dropping the
-        // empty-key guard in PathIndex::build).
         let mut cov_map = HashMap::new();
         cov_map.insert(PathBuf::from("."), cov_with(&[(1, 1)]));
         cov_map.insert(PathBuf::from(""), cov_with(&[(1, 1)]));
@@ -422,11 +410,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlink_alias_of_a_consumed_key_is_not_lcov_only() {
-        // Two absolute SF records spelling the same real file (one through a
-        // symlink) merge into one fast-path entry at build time (spec 26);
-        // both raw spellings are recorded as consumed when a lookup binds.
-        // Neither may be reported as a stray (no spurious scope warning on
-        // a perfectly matched scope).
         let dir = tempfile::tempdir().expect("tempdir");
         let real = dir.path().join("a.rs");
         std::fs::write(&real, "pub fn f() {}\n").expect("write");
@@ -459,13 +442,6 @@ mod tests {
 
     #[test]
     fn relative_key_is_never_treated_as_an_alias() {
-        // src/merge.rs exists relative to the crate root (the unit-test CWD).
-        // The absolute spelling is consumed via the fast path; the relative
-        // spelling must still be reported as lcov_only — resolving it against
-        // the CWD to discover the aliasing would violate the invariant that
-        // relative LCOV paths are never canonicalized (kills dropping the
-        // is_absolute guard in fast_path_key, which would merge the two
-        // spellings into one fast-path entry).
         let abs = PathBuf::from("src/merge.rs")
             .canonicalize()
             .expect("crate-root CWD");

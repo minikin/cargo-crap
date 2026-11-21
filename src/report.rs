@@ -16,7 +16,6 @@
 //!
 //! Shared building blocks (severity grade, coverage bar, Δ formatting, source
 //! links, per-crate rollups) live in [`types`], [`links`], and [`per_crate`].
-//! [`RenderOptions`] carries the front end's [`Tool`].
 
 use crate::delta::{DeltaCounts, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
@@ -94,7 +93,6 @@ pub enum Format {
 /// Options shared by [`render`] and [`render_delta`], so their signatures
 /// survive new knobs without breaking every call site again.
 ///
-/// Construct with struct-update syntax over [`RenderOptions::new`]:
 ///
 /// ```
 /// use cargo_crap::report::{Format, RenderOptions, Schemas, Tool};
@@ -125,7 +123,6 @@ pub enum Format {
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct RenderOptions<'a> {
-    /// The front end whose name, version and URLs the reports carry.
     pub tool: &'a Tool,
     /// CRAP score above which a function is flagged.
     pub threshold: f64,
@@ -213,12 +210,6 @@ pub struct TriagedBy<'a> {
 }
 
 impl<'a> RenderOptions<'a> {
-    /// Options for `tool` with the CLI defaults: threshold 30, human
-    /// format, no links, no diagnostics, changed-only delta rows, no
-    /// uncovered hints, no duplicates, the classical `?` weight, a capped
-    /// human table, no working directory, so paths show as given, no
-    /// triage provider, every pair reported on its own, and no group left
-    /// untriaged by a budget.
     #[must_use]
     pub fn new(tool: &'a Tool) -> Self {
         Self {
@@ -724,8 +715,6 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// The human, github and shields formats carry no branding, so
-        /// the tool they are given never changes a byte of them.
         #[test]
         fn formats_without_branding_do_not_depend_on_the_tool(
             tool in arb_tool(),

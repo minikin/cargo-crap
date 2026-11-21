@@ -1,5 +1,3 @@
-//! Signal measurements, spans and resolved settings.
-
 use super::config::SignalsConfig;
 use crate::coverage::LineRange;
 use serde::{Deserialize, Serialize};
@@ -32,24 +30,19 @@ pub struct Spans {
     /// The top-level statement holding the deepest nesting (first of equals);
     /// empty when nesting is 0.
     pub nesting: Vec<LineRange>,
-    /// Each bump statement.
     pub bumps: Vec<LineRange>,
     /// The worst condition (first of equals); empty when `bool_ops` is 0.
     pub bool_ops: Vec<LineRange>,
-    /// Each stub site.
     pub stubs: Vec<LineRange>,
-    /// Each panic site.
     pub panics: Vec<LineRange>,
 }
 
-/// A function's signals and the spans behind them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Measured {
     pub signals: Signals,
     pub spans: Spans,
 }
 
-/// One named signal, as configured and reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Signal {
@@ -96,7 +89,6 @@ impl Signal {
         Self::ALL.into_iter().find(|s| s.name() == name)
     }
 
-    /// This signal's value in `signals`.
     #[must_use]
     pub const fn value(
         self,
@@ -112,7 +104,6 @@ impl Signal {
         }
     }
 
-    /// The line ranges this signal comes from in `spans`.
     #[must_use]
     pub fn spans(
         self,
@@ -223,7 +214,6 @@ impl SignalSettings {
     }
 }
 
-/// A configured limit as `u32`, or an error naming its key.
 fn limit(
     key: &str,
     value: Option<i64>,

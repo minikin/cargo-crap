@@ -1,12 +1,9 @@
-//! Report rows, display ordering and coverage scope diagnostics.
-
 use crate::coverage::LineRange;
 use crate::paths::path_key;
 use crate::signals::{Signals, Spans};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// One row in the final report.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CrapEntry {
     pub file: PathBuf,
@@ -85,7 +82,6 @@ pub fn sort_entries(
     }
 }
 
-/// How to treat functions we have complexity data for but no coverage data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MissingCoveragePolicy {
@@ -95,7 +91,6 @@ pub enum MissingCoveragePolicy {
     /// Assume 100% coverage. Optimistic — suitable for interactive use where
     /// you've scoped coverage to a subset of the tree intentionally.
     Optimistic,
-    /// Skip the function entirely; don't emit a row.
     Skip,
 }
 
@@ -135,11 +130,8 @@ pub struct ScopeDiagnostics {
     pub analyzed_files: usize,
     /// Distinct `SF` records in the LCOV report.
     pub lcov_files: usize,
-    /// Files present on both sides after path matching.
     pub matched_files: usize,
-    /// Analyzed files with no LCOV match.
     pub source_only: StrayFiles,
-    /// LCOV `SF` files matched by no analyzed file.
     pub lcov_only: StrayFiles,
 }
 

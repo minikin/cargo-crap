@@ -68,7 +68,7 @@
 //! //    treated as 0% covered (the pessimistic default, safest for CI gates).
 //! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic).entries;
 //!
-//! // 4. Render the human-readable table to stdout. `RenderOptions::new`
+//! // `RenderOptions::new`
 //! //    takes the CLI defaults: threshold 30, human format.
 //! render(&entries, &RenderOptions::new(&CARGO_CRAP), &mut io::stdout())?;
 //!

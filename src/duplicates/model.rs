@@ -1,5 +1,3 @@
-//! Duplicate function locations and structural fingerprints.
-
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -18,20 +16,16 @@ pub struct Fingerprint(pub u64);
 /// let the order functions happened to be discovered in leak into the report.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Location {
-    /// File the function was found in.
     pub file: PathBuf,
     /// 1-indexed first line, inclusive.
     pub start_line: usize,
     /// 1-indexed last line, inclusive.
     pub end_line: usize,
-    /// Function or method name, as written.
     pub name: String,
 }
 
-/// One function, located and fingerprinted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionPrint {
-    /// Where it is and what it is called.
     pub location: Location,
     /// Number of nodes in the normalized tree.
     pub node_count: usize,

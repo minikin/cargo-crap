@@ -7,7 +7,6 @@
 use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
 use crate::report::{Format, Schemas, Tool};
 
-/// cargo-crap's report, ordering and gate conventions.
 pub const CARGO_CRAP_POLICY: Policy = Policy {
     envelope: EnvelopeKind::CargoCrapV1,
     pairing: PairPolicy::FileFunctionLine,
@@ -33,7 +32,6 @@ macro_rules! schema_url {
     };
 }
 
-/// cargo-crap's name, version, URLs, PR-comment marker and baseline hint.
 pub const CARGO_CRAP: Tool = Tool {
     policy: CARGO_CRAP_POLICY,
     name: "cargo-crap",
@@ -77,9 +75,6 @@ mod tests {
         );
     }
 
-    /// What makes a file bound for the shared core name cargo-crap's own
-    /// identity: the package variables, the doctest path to this module, or
-    /// a path that resolves to it.
     fn violations(
         source: &str,
         module: &[&str],
@@ -220,8 +215,6 @@ mod tests {
     /// The guard is interim and has known limits: it does not follow glob
     /// imports or renamed modules, and it reads a macro's tokens as loose
     /// paths, so a macro that emits `use crate::{tool::CARGO_CRAP};` passes.
-    /// The step that moves these files into the core crate deletes it: there
-    /// `crate::tool` does not exist, and the compiler enforces the boundary.
     struct PathsToTool {
         module: Vec<String>,
         found: Vec<String>,
