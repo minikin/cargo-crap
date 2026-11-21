@@ -462,6 +462,11 @@ fn preserve_the_analyzers_lexer_tokens_in_computed_text() {
             &["o::(x instanceof Thing)"],
         ),
         ("const o = { [x + 0x2A]() {} }", &["o::(x+0x2A)"]),
+        ("const o = { [`a${b}c`]() {} }", &["o::(%60a$%7Bb%7Dc%60)"]),
+        (
+            "const o = { [x // line\r\n instanceof Thing]() {} }",
+            &["o::(x instanceof Thing)"],
+        ),
         ("const o = { [12]() {} }", &["o::12"]),
         (
             "class C { #m; test(){ this.#m.x[k + 1](() => 0) } }",
@@ -497,11 +502,29 @@ fn preserve_the_analyzers_lexer_tokens_in_computed_text() {
         names.sort();
         assert_eq!(names, expected, "{source}");
     }
+    let mut jsx = clean_names("key.tsx", "const o = { [<a b={() => 1}>x y</a>]() {} }");
+    jsx.sort();
+    assert_eq!(
+        jsx,
+        [
+            "o::(<a b=%7B<function>%7D>x y<%2Fa>)",
+            "o::(<a b=%7B<function>%7D>x y<%2Fa>)::<a b>"
+        ]
+    );
 }
 
 #[test]
 fn preserve_member_identity_when_the_spelling_changes() {
     for (source, expected) in [
+        (
+            "abstract class C extends B { constructor(){super()} public static override readonly y = () => 1; private readonly z = function(){} }",
+            &["C::constructor", "C::static y", "C::z"][..],
+        ),
+        (
+            "class C { get 'a b'(){} static get [0x10](){} static set [0x10](v){} }",
+            &["C::get \"a b\"", "C::static get 16", "C::static set 16"],
+        ),
+        ("({0x10: d = () => 1} = o)", &["16::d"]),
         (r#"const o = { "valid"(){} }"#, &["o::valid"][..]),
         (r#"const o = { ["v\u0061lid"](){} }"#, &["o::valid"]),
         ("const o = { [`valid`](){} }", &["o::valid"]),
@@ -533,5 +556,17 @@ fn preserve_member_identity_when_the_spelling_changes() {
         ),
     ] {
         assert_eq!(clean_names("member.ts", source), expected, "{source}");
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn numeric_literals_and_their_canonical_string_keys_name_the_same_member(bits in 0..=f64::MAX.to_bits()) {
+        use oxc_syntax::number::ToJsString;
+        let number = f64::from_bits(bits);
+        let canonical = number.to_js_string();
+        let source = format!("const n = {{ [{number:.17e}](){{}} }}; const s = {{ [\"{canonical}\"](){{}} }}");
+        let names = clean_names("numbers.ts", &source);
+        proptest::prop_assert_eq!(names, [format!("n::{canonical}"), format!("s::{canonical}")]);
     }
 }

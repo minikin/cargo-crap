@@ -102,8 +102,8 @@ fn jsx_unicode_escape(text: &str) -> Option<(char, &str)> {
 
 fn string_key(value: JSStr<'_>) -> String {
     let bare = value.as_str().is_some_and(|s| {
-        // Every canonical finite Number spelling is decimal. Other accepted input
-        // forms, such as hexadecimal, cannot equal Number::toString's output.
+        // Radix-prefixed input loses its prefix in Number::toString, so a
+        // canonical spelling check needs no hexadecimal, octal or binary parser.
         is_identifier_name(s) || s.parse::<f64>().is_ok_and(|v| v.to_js_string() == s)
     });
     if bare {
@@ -790,6 +790,8 @@ mod tests {
                 "key(<function>,<class>)",
             ),
             ("typeof function named() {}", "typeof<function>"),
+            ("function(){} as any", "<function>as any"),
+            ("typeof function(){} as any", "typeof<function>as any"),
             ("{m(){return ()=>0}}", "{m(){return<function>}}"),
             ("{get v(){},set v(x){}}", "{get v(){},set v(x){}}"),
             ("{p:function(){}}", "{p:<function>}"),
@@ -807,6 +809,30 @@ mod tests {
             computed(&format!("{prefix}f(()=>1)")),
             format!("{prefix}f(<function>)")
         );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn inserting_trivia_between_key_tokens_preserves_computed_text(
+            name in "v[a-zA-Z0-9]{0,8}", value in proptest::prelude::any::<u16>(),
+            gaps in proptest::collection::vec(0..5usize, 14),
+        ) {
+            let number = value.to_string();
+            let tokens = ["(", &name, "instanceof", "Ctor", "?", &name, "[", &number, "]", ":", "f", "(", &name, ")", ")"];
+            let trivia = [" ", "\t", "/*note*/", "//note\r\n", "\u{2028}"];
+            let mut edited = String::from(tokens[0]);
+            for (gap, token) in gaps.iter().zip(&tokens[1..]) {
+                edited.push_str(trivia[*gap]);
+                edited.push_str(token);
+            }
+            proptest::prop_assert_eq!(computed(&edited), computed(&tokens.join(" ")));
+        }
+
+        #[test]
+        fn every_canonical_number_spelling_is_a_bare_string_key(bits in proptest::prelude::any::<u64>()) {
+            let canonical = f64::from_bits(bits).to_js_string();
+            proptest::prop_assert_eq!(string_key(JSStr::from(canonical.as_str())), canonical);
+        }
     }
 
     #[test]
