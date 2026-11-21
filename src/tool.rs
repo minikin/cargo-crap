@@ -106,7 +106,7 @@ mod tests {
         source: &str,
         module: &[&str],
     ) -> Vec<String> {
-        let filename = crate::paths::path_key(path);
+        let filename = path_key(path);
         let mut paths = CorePaths {
             module: module.iter().map(|m| (*m).to_string()).collect(),
             found: std::collections::BTreeSet::new(),
@@ -141,6 +141,10 @@ mod tests {
             .into_iter()
             .map(|(line, path)| format!("{filename}:{line}: {path}"))
             .collect()
+    }
+
+    fn path_key(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
     }
 
     /// An identifier as the compiler resolves it, so `r#tool` is `tool`.
@@ -636,7 +640,7 @@ mod tests {
         for file in CORE_BOUND_FILES
             .iter()
             .copied()
-            .filter(|file| *file != "src/entry.rs")
+            .filter(|file| *file != "src/delta.rs")
         {
             let path = dir.path().join(file);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -644,15 +648,14 @@ mod tests {
         }
         std::fs::create_dir_all(dir.path().join("src/report")).unwrap();
         let err = check_core(dir.path()).expect_err("a missing listed file must fail");
-        assert!(format!("{err:#}").contains("src/entry.rs"), "{err:#}");
+        assert!(format!("{err:#}").contains("src/delta.rs"), "{err:#}");
     }
 
     #[test]
     fn every_listed_file_and_nested_report_is_checked_for_branding_and_dependencies() {
         let dir = tempfile::tempdir().unwrap();
         let required = [
-            ("src", "entry paths delta report filter gate run policy"),
-            ("src/duplicates", "model compare group novelty verdict"),
+            ("src", "delta report filter gate run policy"),
             ("src/report/subdirectory", "mod more"),
         ]
         .into_iter()
@@ -681,9 +684,9 @@ mod tests {
                 "crate::merge",
             ),
             (
-                "src/duplicates/compare.rs",
-                "use super::extract::Location;",
-                "crate::duplicates::extract",
+                "src/report/subdirectory/more.rs",
+                "use super::super::super::merge::X;",
+                "crate::merge",
             ),
         ] {
             let path = dir.path().join(file);
@@ -914,15 +917,8 @@ mod tests {
     }
 
     const CORE_BOUND_FILES: &[&str] = &[
-        "src/entry.rs",
-        "src/paths.rs",
         "src/delta.rs",
         "src/report.rs",
-        "src/duplicates/model.rs",
-        "src/duplicates/compare.rs",
-        "src/duplicates/group.rs",
-        "src/duplicates/novelty.rs",
-        "src/duplicates/verdict.rs",
         "src/filter.rs",
         "src/gate.rs",
         "src/run.rs",
@@ -960,7 +956,7 @@ mod tests {
         let mut found = Vec::new();
         for path in files {
             let source = std::fs::read_to_string(root.join(&path))
-                .with_context(|| format!("reading {}", crate::paths::path_key(&path)))?;
+                .with_context(|| format!("reading {}", path_key(&path)))?;
             let module_path = path.strip_prefix("src")?.with_extension("");
             let module: Vec<_> = module_path
                 .iter()

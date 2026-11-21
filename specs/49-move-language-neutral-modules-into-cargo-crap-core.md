@@ -244,7 +244,7 @@ source guard drops each file as it moves.
   plain-text `CARGO_PKG_` scan that rejects a tempdir fixture at
   `src/report/json.rs` and finds no match in `crates/cargo-crap-core/src`.
 
-- [ ] **T3 — Move rows, path assignment and the duplicate models into the core.**
+- [x] **T3 — Move rows, path assignment and the duplicate models into the core.**
   Needs: T2. Move `entry.rs`, `paths.rs` and
   `duplicates/{model,compare,group,novelty,verdict}.rs` with their unit
   tests and their `duplicates/{group,novelty,compare}.txt` seeds. Add the

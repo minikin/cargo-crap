@@ -580,31 +580,6 @@ mod tests {
         assert_eq!(diag.lcov_only.count, 0);
     }
 
-    #[test]
-    fn stray_examples_are_capped_but_count_is_exact() {
-        let files: Vec<PathBuf> = (0..SCOPE_EXAMPLE_CAP + 3)
-            .map(|i| PathBuf::from(format!("src/f{i:02}.rs")))
-            .collect();
-        let strays = StrayFiles::new(files);
-        assert_eq!(strays.count, SCOPE_EXAMPLE_CAP + 3);
-        assert_eq!(strays.examples.len(), SCOPE_EXAMPLE_CAP);
-        assert_eq!(
-            strays.examples[0],
-            PathBuf::from("src/f00.rs"),
-            "examples are the sorted head, not an arbitrary subset"
-        );
-    }
-
-    #[test]
-    fn stray_examples_not_truncated_at_or_below_cap() {
-        let files: Vec<PathBuf> = (0..SCOPE_EXAMPLE_CAP)
-            .map(|i| PathBuf::from(format!("src/f{i:02}.rs")))
-            .collect();
-        let strays = StrayFiles::new(files);
-        assert_eq!(strays.count, SCOPE_EXAMPLE_CAP);
-        assert_eq!(strays.examples.len(), SCOPE_EXAMPLE_CAP);
-    }
-
     // --- SortOrder / sort_entries (spec 17) --------------------------------
 
     fn crap_entry(
