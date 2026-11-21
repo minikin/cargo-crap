@@ -84,13 +84,14 @@ pub struct Assignment {
 }
 
 impl Assignment {
-    /// Compute overlap counts and capped stray examples for the original inputs.
+    /// Pass the same source and key slices, in the same order, that were supplied to [`assign`].
     #[must_use]
     pub fn diagnostics(
         &self,
         sources: &[&Path],
         keys: &[&Path],
     ) -> ScopeDiagnostics {
+        debug_assert_eq!(sources.len(), self.bindings.len());
         let used: HashSet<_> = self.bindings.iter().flatten().copied().collect();
         let source_only = StrayFiles::new(
             sources
@@ -199,7 +200,7 @@ mod tests {
 
     #[test]
     fn suffix_match_rejects_partial_component_matches() {
-        // `oofoo.rs` should NOT match `foo.rs` — that's a byte-level
+        // `oofoo.rs` should NOT match `foo.rs`: that's a byte-level
         // ends_with bug we're explicitly avoiding.
         let a = PathBuf::from("/project/src/oofoo.rs");
         let b = PathBuf::from("foo.rs");
@@ -218,7 +219,6 @@ mod tests {
 
     #[test]
     fn longer_needle_does_not_match() {
-        // Needle longer than haystack must always return false.
         let hay = PathBuf::from("src/foo.rs");
         let needle = PathBuf::from("/abs/project/src/foo.rs");
         assert!(!path_has_suffix(&hay, &needle));
@@ -307,6 +307,21 @@ mod tests {
     }
 
     #[test]
+    fn per_source_diagnostics_preserve_raw_keys_on_empty_and_nonempty_suffixes() {
+        let sources = [Path::new("/p/src/lib.rs")];
+        let empty = [Path::new("."), Path::new("")];
+        let missed = assign(&sources, &empty, TiePolicy::PerSource);
+        assert_eq!(missed.bindings, [Vec::<usize>::new()]);
+        let diagnostics = missed.diagnostics(&sources, &empty);
+        assert_eq!(diagnostics.lcov_only.count, 2);
+        assert_eq!(diagnostics.lcov_only.examples, [empty[1], empty[0]]);
+        let aliases = [Path::new("src/lib.rs"), Path::new("./src/lib.rs")];
+        let matched = assign(&sources, &aliases, TiePolicy::PerSource);
+        assert_eq!(matched.bindings, [vec![0, 1]]);
+        assert_eq!(matched.diagnostics(&sources, &aliases).lcov_only.count, 0);
+    }
+
+    #[test]
     fn diagnostics_preserve_the_total_and_sorted_capped_examples_on_both_sides() {
         use crate::entry::SCOPE_EXAMPLE_CAP;
         let names: Vec<_> = (0..SCOPE_EXAMPLE_CAP + 3)
@@ -384,7 +399,7 @@ mod tests {
         ) {
             // Given distinct source paths, including one guaranteed miss.
             let mut parts: Vec<_> = source_parts.into_iter().collect();
-            parts.push(vec![9]); // guaranteed miss
+            parts.push(vec![9]);
             let sources: Vec<_> = parts.iter().map(|p| numbered_path(p)).collect();
             let keys: Vec<_> = key_parts.iter().map(|p| numbered_path(p)).collect();
             // When all sources are assigned in one batch.

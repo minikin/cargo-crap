@@ -113,7 +113,7 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 **`src/merge.rs`** is the critical join layer. It calls `paths::assign` once per batch of distinct source files. The two lookup tiers are:
 - **Fast path**: canonicalized absolute paths → direct hash lookup.
 - **Slow path**: component-wise suffix matching for relative LCOV paths (e.g., `src/foo.rs` matches `/home/alice/project/src/foo.rs`).
-- **Critical invariant**: relative paths are never canonicalized against CWD (regression test `relative_coverage_paths_are_not_resolved_against_cwd` pins this).
+- **Critical invariant**: relative paths are never canonicalized against CWD (the regression test is `src/paths.rs::tests::relative_coverage_paths_are_not_resolved_against_cwd`).
 
 **`src/delta.rs`** compares a run against a baseline. `load_baseline` deserializes a previous `--format json` run; `compute_delta` runs a two-pass match (spec 13): pass 1 joins by exact `(file, function)` key, pass 2 falls back to function-name-only matching for any unpaired entries on both sides. When the name appears exactly once on each side it's reported as a move (`DeltaStatus::Moved` for pure relocations; `Regressed` / `Improved` keep their score-status, with `previous_file` set so renderers can show "moved from X"). Ambiguous names (multiple of the same name) stay unpaired. The `DeltaStatus` set is `Regressed / Improved / New / Unchanged / Moved`; baseline functions never paired land in `removed`.
 
