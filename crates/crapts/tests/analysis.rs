@@ -301,6 +301,7 @@ fn count_javascript_line_terminators() {
             panic!("{:?}", file.rows)
         };
         assert_eq!((row.span.end.line, row.span.end.column), (3, 1), "{br:?}");
+        assert_eq!(row.statement_lines, [2], "{br:?}");
         let nested = ["function f() {", "  function inner() {}", "}"].join(br);
         let file = analyze(Path::new("break.ts"), nested.as_bytes(), Mode::Ordinary).unwrap();
         let [_, inner] = file.rows.as_slice() else {
@@ -370,4 +371,198 @@ fn identify_arrow_functions_for_coverage_attribution() {
     .unwrap();
     let arrows: Vec<_> = args.rows.iter().map(|row| row.is_arrow).collect();
     assert_eq!(arrows, [false, true]);
+}
+
+#[test]
+fn separate_nested_decisions_and_skip_declarations_without_bodies() {
+    let source = b"declare function f(s: string): void;\nfunction outer(x = a ?? b) {\n  function local(s: string): void;\n  function local(s: string) { if (s && x) return }\n  return (y = x ? 1 : 2) => y\n}\nabstract class P { abstract work(): void }";
+    let file = analyze(Path::new("nested.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    let rows: Vec<_> = file
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.name.as_str(),
+                row.cyclomatic,
+                row.statement_lines.as_slice(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("outer", 2, &[4, 5][..]),
+            ("outer::local", 3, &[4][..]),
+            ("outer::<return>", 2, &[5][..])
+        ]
+    );
+}
+
+#[test]
+fn distinguish_source_regions_from_their_outer_line_range() {
+    use crapts::{Position, SourceSpan};
+    let span = |l1, c1, l2, c2| SourceSpan {
+        start: Position {
+            line: l1,
+            column: c1,
+        },
+        end: Position {
+            line: l2,
+            column: c2,
+        },
+    };
+    let source = b"// header\nfunction outer() {\n  return () => {\n    if (ready) run()\n  }\n}";
+    let file = analyze(Path::new("bounds.js"), source, Mode::Strict(Side::Head)).unwrap();
+    let [outer, inner] = file.rows.as_slice() else {
+        panic!("{:?}", file.rows)
+    };
+    assert_eq!(outer.name, "outer");
+    assert_eq!(outer.span, span(2, 0, 6, 1));
+    assert_eq!(outer.body_regions, [span(2, 17, 6, 1)]);
+    assert_eq!(outer.statement_lines, [3]);
+    assert_eq!(outer.cyclomatic, 1);
+    assert_eq!(inner.name, "outer::<return>");
+    assert_eq!(inner.span, span(3, 9, 5, 3));
+    assert_eq!(inner.body_regions, [span(3, 15, 5, 3)]);
+    assert_eq!(inner.statement_lines, [4]);
+    assert_eq!(inner.cyclomatic, 2);
+    let expr = analyze(
+        Path::new("concise.js"),
+        "/*😀*/() => 1".as_bytes(),
+        Mode::Ordinary,
+    )
+    .unwrap();
+    let [arrow] = expr.rows.as_slice() else {
+        panic!("{:?}", expr.rows)
+    };
+    assert_eq!(arrow.span, span(1, 6, 1, 13));
+    assert_eq!(arrow.body_regions, [span(1, 12, 1, 13)]);
+    assert_eq!(arrow.statement_lines, [1]);
+}
+
+#[test]
+fn preserve_directives_and_skip_erased_or_empty_statements() {
+    let source = b"function f(){\n'use strict';\ninterface I {}\ntype T = string;\ndeclare const y: T;\n;\n{\n  let x = 1; x += 1\n}\n}";
+    let file = analyze(Path::new("lines.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    assert_eq!(file.rows[0].statement_lines, [2, 8]);
+}
+
+#[test]
+fn exported_signatures_inside_namespaces_own_no_statement_lines() {
+    let source = b"function outer(){\n namespace N {\n  export function g():void;\n  export function g() {}\n  export type A = number;\n  export interface I{}\n  export declare const y: number;\n }\n}";
+    let file = analyze(
+        Path::new("export-lines.ts"),
+        source,
+        Mode::Strict(Side::Head),
+    )
+    .unwrap();
+    let [outer, g] = file.rows.as_slice() else {
+        panic!("{:?}", file.rows)
+    };
+    assert_eq!(outer.statement_lines, [2, 4]);
+    assert_eq!(g.statement_lines, [] as [u32; 0]);
+    for (item, expected) in [
+        ("export default interface I {}", &[2][..]),
+        ("export default function g():void;", &[2]),
+        ("export default function g(){}", &[2, 3]),
+        ("export default 1", &[2, 3]),
+    ] {
+        let source = format!("function outer(){{\nnamespace N {{\n{item}\n}}\n}}");
+        let file = analyze(Path::new("default.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+        assert_eq!(file.rows[0].statement_lines, expected, "{item}");
+    }
+}
+
+#[test]
+fn method_spans_include_the_key_and_modifiers_but_method_regions_begin_at_the_block() {
+    let source = b"const o = {\n  async *foo(x) {\n    return x;\n  },\n  get p(){ return 1 },\n  plain: function named() {}\n};\nclass A {\n  method(){}\n}";
+    let file = analyze(Path::new("members.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    let rows: Vec<_> = file
+        .rows
+        .iter()
+        .map(|r| {
+            (
+                r.name.as_str(),
+                r.span.start.column,
+                r.span.end.column,
+                r.body_regions[0].start.column,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("o::foo", 2, 3, 16),
+            ("o::get p", 2, 21, 9),
+            ("o::plain", 9, 28, 26),
+            ("A::method", 2, 12, 10)
+        ]
+    );
+    let computed = analyze(
+        Path::new("key.ts"),
+        b"const o = {\n  [pick(() => 0)]() {}\n}",
+        Mode::Ordinary,
+    )
+    .unwrap();
+    let mut starts: Vec<_> = computed
+        .rows
+        .iter()
+        .map(|row| (row.is_arrow, row.span.start.column))
+        .collect();
+    starts.sort_unstable();
+    assert_eq!(starts, [(false, 2), (true, 8)]);
+    let nested = analyze(
+        Path::new("nested-key.ts"),
+        b"const o = { [pick({ a(){} }, function k(){})](){} }",
+        Mode::Strict(Side::Head),
+    )
+    .unwrap();
+    let mut starts: Vec<_> = nested
+        .rows
+        .iter()
+        .map(|row| row.span.start.column)
+        .collect();
+    starts.sort_unstable();
+    assert_eq!(starts, [12, 20, 29]);
+}
+
+#[test]
+fn explicitly_type_only_module_declarations_have_no_executable_line() {
+    for (typed, value) in [
+        ("import type {T} from 'm';", "import {T} from 'm';"),
+        ("import type X = M.T;", "import X = M.T;"),
+        ("export type {T};", "export {T};"),
+        ("export type {T} from 'm';", "export {T} from 'm';"),
+        ("export type * from 'm';", "export * from 'm';"),
+    ] {
+        for (item, expected) in [(typed, &[2][..]), (value, &[2, 3][..])] {
+            let source = format!("function f(){{\nnamespace N {{\n{item}\n}}\n}}");
+            let file = analyze(Path::new("import.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+            assert_eq!(file.rows[0].statement_lines, expected, "{item}");
+        }
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn statement_lines_are_sorted_and_distinct(kinds in proptest::collection::vec(0..4u8, 0..48)) {
+        let mut source = String::from("function f(){\n");
+        let mut expected = Vec::new();
+        for (n, kind) in kinds.iter().enumerate() {
+            let text = match kind {
+                0 => ";",
+                1 => "{}",
+                2 => "if (x) run(); next()",
+                _ => "{ run(); next() }",
+            };
+            source.push_str(text);
+            source.push('\n');
+            if *kind >= 2 {
+                expected.push(n as u32 + 2);
+            }
+        }
+        source.push('}');
+        let result = analyze(Path::new("list.ts"), source.as_bytes(), Mode::Strict(Side::Head)).unwrap();
+        proptest::prop_assert_eq!(&result.rows[0].statement_lines, &expected);
+    }
 }

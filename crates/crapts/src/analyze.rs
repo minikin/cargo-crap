@@ -6,11 +6,12 @@ use oxc_ast::AstKind;
 use oxc_ast::ast::{
     ArrowFunctionExpression, Class, ClassType, Declaration, ExportDeclaration,
     ExportDefaultDeclaration, ExportDefaultDeclarationKind, Expression, Function, FunctionType,
-    LogicalExpression, PropertyDefinition, TSClassImplements, TSInterfaceDeclaration, TSType,
+    LogicalExpression, MethodDefinition, ObjectProperty, PropertyDefinition, PropertyKind,
+    Statement, TSClassImplements, TSInterfaceDeclaration, TSType,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
-use oxc_span::{SourceType, Span};
+use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::lines::{LineIndex, SourceSpan};
@@ -47,6 +48,8 @@ pub struct Row {
     pub file: PathBuf,
     pub name: String,
     pub span: SourceSpan,
+    pub body_regions: Vec<SourceSpan>,
+    pub statement_lines: Vec<u32>,
     pub cyclomatic: u32,
     pub is_arrow: bool,
 }
@@ -138,6 +141,10 @@ pub fn analyze(
     }
     let mut collector = Collector::new(path, source);
     collector.visit_program(&parsed.program);
+    for row in &mut collector.rows {
+        row.statement_lines.sort_unstable();
+        row.statement_lines.dedup();
+    }
     file.rows = collector.rows;
     Ok(file)
 }
@@ -153,6 +160,7 @@ struct Collector<'s> {
     rows: Vec<Row>,
     owner: Option<usize>,
     names: Names,
+    method: Option<(Span, u32)>,
 }
 
 impl<'s> Collector<'s> {
@@ -177,6 +185,7 @@ impl<'s> Collector<'s> {
             rows: Vec::new(),
             owner: None,
             names: Names::default(),
+            method: None,
         }
     }
 
@@ -184,6 +193,7 @@ impl<'s> Collector<'s> {
         &mut self,
         name: String,
         span: Span,
+        body: Span,
         is_arrow: bool,
         visit: impl FnOnce(&mut Self),
     ) {
@@ -192,11 +202,24 @@ impl<'s> Collector<'s> {
             file: self.path.to_owned(),
             name: name.clone(),
             span: self.lines.span(span),
+            body_regions: vec![self.lines.span(body)],
+            statement_lines: Vec::new(),
             cyclomatic: 1,
             is_arrow,
         });
         self.with_name(name, visit);
         self.owner = previous;
+    }
+
+    fn record_statement(
+        &mut self,
+        span: Span,
+    ) {
+        if let Some(owner) = self.owner {
+            self.rows[owner]
+                .statement_lines
+                .push(self.lines.position(span.start).line);
+        }
     }
 
     fn with_name(
@@ -207,6 +230,17 @@ impl<'s> Collector<'s> {
         let enclosing = std::mem::replace(&mut self.names, Names::enclosing(name));
         visit(self);
         self.names = enclosing;
+    }
+
+    fn with_method(
+        &mut self,
+        function: Span,
+        start: u32,
+        visit: impl FnOnce(&mut Self),
+    ) {
+        let enclosing = self.method.replace((function, start));
+        visit(self);
+        self.method = enclosing;
     }
 }
 
@@ -226,7 +260,69 @@ fn is_decision(kind: AstKind<'_>) -> bool {
     }
 }
 
+fn executable_declaration(decl: &Declaration<'_>) -> bool {
+    if decl.declare() {
+        return false;
+    }
+    match decl {
+        Declaration::FunctionDeclaration(f) => f.body.is_some(),
+        Declaration::TSImportEqualsDeclaration(import) => import.import_kind.is_value(),
+        _ => !decl.is_type(),
+    }
+}
+
+fn executable_statement(statement: &Statement<'_>) -> bool {
+    match statement {
+        Statement::BlockStatement(_) | Statement::EmptyStatement(_) => false,
+        Statement::ExportDeclaration(export) => executable_declaration(&export.declaration),
+        Statement::ImportDeclaration(import) => import.import_kind.is_value(),
+        Statement::ExportNamedDeclaration(export) => export.export_kind.is_value(),
+        Statement::ExportFromDeclaration(export) => export.export_kind.is_value(),
+        Statement::ExportAllDeclaration(export) => export.export_kind.is_value(),
+        Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+            ExportDefaultDeclarationKind::TSInterfaceDeclaration(_) => false,
+            ExportDefaultDeclarationKind::FunctionDeclaration(f) => f.body.is_some(),
+            _ => true,
+        },
+        _ => statement
+            .as_declaration()
+            .is_none_or(executable_declaration),
+    }
+}
+
 impl<'a> Visit<'a> for Collector<'_> {
+    fn visit_method_definition(
+        &mut self,
+        method: &MethodDefinition<'a>,
+    ) {
+        self.with_method(method.value.span, method.span.start, |v| {
+            walk::walk_method_definition(v, method);
+        });
+    }
+
+    fn visit_object_property(
+        &mut self,
+        property: &ObjectProperty<'a>,
+    ) {
+        if property.method || property.kind != PropertyKind::Init {
+            self.with_method(property.value.span(), property.span.start, |v| {
+                walk::walk_object_property(v, property);
+            });
+        } else {
+            walk::walk_object_property(self, property);
+        }
+    }
+
+    fn visit_statement(
+        &mut self,
+        statement: &Statement<'a>,
+    ) {
+        if executable_statement(statement) {
+            self.record_statement(statement.span());
+        }
+        walk::walk_statement(self, statement);
+    }
+
     fn visit_export_declaration(
         &mut self,
         export: &ExportDeclaration<'a>,
@@ -319,6 +415,9 @@ impl<'a> Visit<'a> for Collector<'_> {
         kind: AstKind<'a>,
     ) {
         self.names.enter(kind, self.source);
+        if let AstKind::Directive(directive) = kind {
+            self.record_statement(directive.span);
+        }
         if let Some(owner) = self.owner
             && is_decision(kind)
         {
@@ -338,7 +437,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         function: &Function<'a>,
         flags: ScopeFlags,
     ) {
-        if function.body.is_some() {
+        if let Some(body) = &function.body {
             let unit = if function.r#type == FunctionType::FunctionDeclaration {
                 Unit::FunctionDeclaration
             } else {
@@ -349,7 +448,13 @@ impl<'a> Visit<'a> for Collector<'_> {
                 function.id.as_ref().map(|id| id.name.as_str()),
                 unit,
             );
-            self.in_callable(name, function.span, false, |visitor| {
+            let mut span = function.span;
+            if let Some((method, start)) = self.method
+                && method == span
+            {
+                span.start = start;
+            }
+            self.in_callable(name, span, body.span, false, |visitor| {
                 walk::walk_function(visitor, function, flags);
             });
         }
@@ -362,7 +467,10 @@ impl<'a> Visit<'a> for Collector<'_> {
         let name = self
             .names
             .resolve(arrow.span, None, Unit::FunctionExpression);
-        self.in_callable(name, arrow.span, true, |visitor| {
+        self.in_callable(name, arrow.span, arrow.body.span(), true, |visitor| {
+            if let Some(expr) = arrow.body.as_expression() {
+                visitor.record_statement(expr.span());
+            }
             walk::walk_arrow_function_expression(visitor, arrow);
         });
     }
