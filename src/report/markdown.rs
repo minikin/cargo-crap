@@ -9,7 +9,7 @@ use super::types::{
     Grade, cc_display, delta_display, format_location_with_prev, no_change_message,
     uncovered_cell_suffix, visible_delta_entries, write_abs_gfm_header, write_delta_gfm_header,
 };
-use super::write_pr_comment_marker;
+use super::{RenderOptions, write_pr_comment_marker};
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaReport};
 use crate::merge::CrapEntry;
 use anyhow::Result;
@@ -98,12 +98,16 @@ fn write_markdown_entries_table(
 /// percentages so the table renders correctly in any markdown renderer.
 pub(crate) fn render_markdown(
     entries: &[CrapEntry],
-    threshold: f64,
-    links: Option<&SourceLinks>,
-    uncovered_hints: bool,
+    opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    write_pr_comment_marker(out)?;
+    let RenderOptions {
+        threshold,
+        links,
+        uncovered_hints,
+        ..
+    } = *opts;
+    write_pr_comment_marker(opts.tool, out)?;
     if entries.is_empty() {
         writeln!(out, "_No functions found._")?;
         return Ok(());
@@ -208,14 +212,18 @@ fn write_markdown_delta_stats(
 
 pub(crate) fn render_delta_markdown(
     report: &DeltaReport,
-    threshold: f64,
-    links: Option<&SourceLinks>,
-    show_unchanged: bool,
-    uncovered_hints: bool,
+    opts: &RenderOptions,
     counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
-    write_pr_comment_marker(out)?;
+    let RenderOptions {
+        threshold,
+        links,
+        show_unchanged,
+        uncovered_hints,
+        ..
+    } = *opts;
+    write_pr_comment_marker(opts.tool, out)?;
     if counts.is_empty() {
         writeln!(out, "_No functions found._")?;
         return Ok(());
@@ -281,6 +289,21 @@ mod tests {
     use crate::delta::DeltaStatus;
     use crate::report::test_support::Refuses;
     use std::path::PathBuf;
+
+    fn md_opts(
+        links: Option<&SourceLinks>,
+        show_unchanged: bool,
+        uncovered_hints: bool,
+    ) -> RenderOptions<'_> {
+        RenderOptions {
+            threshold: 30.0,
+            format: Format::Markdown,
+            links,
+            show_unchanged,
+            uncovered_hints,
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
+        }
+    }
 
     #[test]
     fn markdown_format_also_emits_links() {
@@ -354,10 +377,7 @@ mod tests {
         let mut buf = Vec::new();
         render_delta_markdown(
             &report,
-            30.0,
-            None,
-            false,
-            false,
+            &md_opts(None, false, false),
             &report.counts(),
             &mut buf,
         )
@@ -426,8 +446,13 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, true, false, &report.counts(), &mut buf)
-            .unwrap();
+        render_delta_markdown(
+            &report,
+            &md_opts(None, true, false),
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("`src/a.rs:7`"),
@@ -482,10 +507,7 @@ mod tests {
         let mut buf = Vec::new();
         render_delta_markdown(
             &report,
-            30.0,
-            None,
-            false,
-            false,
+            &md_opts(None, false, false),
             &report.counts(),
             &mut buf,
         )
@@ -510,8 +532,13 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, true, false, &report.counts(), &mut buf)
-            .unwrap();
+        render_delta_markdown(
+            &report,
+            &md_opts(None, true, false),
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("reg") && s.contains("u1"),
@@ -529,10 +556,7 @@ mod tests {
         let mut buf = Vec::new();
         render_delta_markdown(
             &report,
-            30.0,
-            None,
-            false,
-            false,
+            &md_opts(None, false, false),
             &report.counts(),
             &mut buf,
         )
@@ -555,7 +579,7 @@ mod tests {
         // Kills: dropping the header suffix, dropping the cell suffix.
         let entries = super::super::test_support::sample_with_uncovered();
         let mut buf = Vec::new();
-        render_markdown(&entries, 30.0, None, true, &mut buf).unwrap();
+        render_markdown(&entries, &md_opts(None, false, true), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("| | CRAP | CC | Cov % | Function | Location | Uncovered |"),
@@ -577,7 +601,7 @@ mod tests {
         // suffix cells or separator arity in the off state.
         let entries = super::super::test_support::sample_with_uncovered();
         let mut buf = Vec::new();
-        render_markdown(&entries, 30.0, None, false, &mut buf).unwrap();
+        render_markdown(&entries, &md_opts(None, false, false), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert_eq!(
             s,
@@ -603,8 +627,13 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_markdown(&report, 30.0, None, false, true, &report.counts(), &mut buf)
-            .unwrap();
+        render_delta_markdown(
+            &report,
+            &md_opts(None, false, true),
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("| | CRAP | Δ | CC | Cov % | Function | Location | Uncovered |"),
@@ -677,10 +706,7 @@ mod tests {
         let mut sink = Refuses::new("refused_row");
         let result = render_delta_markdown(
             &report,
-            30.0,
-            None,
-            false,
-            false,
+            &md_opts(None, false, false),
             &report.counts(),
             &mut sink,
         );

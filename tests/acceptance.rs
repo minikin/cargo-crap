@@ -9218,6 +9218,61 @@ fn sarif_with_a_delta_report_is_refused_under_the_second_tool() {
 
 // Spec 46 T4
 
+// The marker and version scenarios share one helper so both cover the
+// outline's four rows.
+fn spec46_marker_reports(
+    tool: &cargo_crap::report::Tool
+) -> Vec<(&'static str, &'static str, String)> {
+    use cargo_crap::report::Format;
+    let mut reports = Vec::new();
+    for (format, name) in [
+        (Format::Markdown, "markdown"),
+        (Format::PrComment, "pr-comment"),
+    ] {
+        let (absolute, delta) = spec46_render(tool, format);
+        reports.push(("entries", name, absolute));
+        reports.push(("a delta report", name, delta));
+    }
+    reports
+}
+
+#[test]
+fn the_markdown_and_pr_comment_reports_start_with_the_second_tools_marker() {
+    // Given each input of the outline rendered with the second tool
+    // When it is rendered in each format of the outline
+    for (input, format, output) in spec46_marker_reports(&SECOND_TOOL) {
+        let mut lines = output.lines();
+        // Then the first line is the second tool's marker
+        assert_eq!(
+            lines.next(),
+            Some("<!-- other-tool-marker -->"),
+            "{input} as {format}"
+        );
+        // And the second line is empty
+        assert_eq!(lines.next(), Some(""), "{input} as {format}");
+    }
+}
+
+#[test]
+fn the_markdown_and_pr_comment_reports_do_not_depend_on_the_tools_version() {
+    // Given the second tool and a copy of it whose version is "8.8.8-copy"
+    let copy = cargo_crap::report::Tool {
+        version: "8.8.8-copy",
+        ..SECOND_TOOL
+    };
+    // And each input of the outline rendered with each
+    // When both are rendered in each format of the outline
+    let (second, copied) = (
+        spec46_marker_reports(&SECOND_TOOL),
+        spec46_marker_reports(&copy),
+    );
+    // Then the two outputs are byte-identical
+    assert_eq!(second.len(), 4);
+    for (a, b) in second.iter().zip(&copied) {
+        assert_eq!(a, b, "{} as {}", a.0, a.1);
+    }
+}
+
 // Spec 46 T5
 
 // Spec 46 T6

@@ -292,17 +292,8 @@ pub fn render(
             out,
         ),
         Format::GitHub => github::render_github(entries, threshold, opts.cwd, out),
-        Format::Markdown => {
-            markdown::render_markdown(&shown, threshold, opts.links, opts.uncovered_hints, out)
-        },
-        Format::PrComment => pr_comment::render_pr_comment(
-            &shown,
-            threshold,
-            opts.links,
-            opts.uncovered_hints,
-            opts.cwd,
-            out,
-        ),
+        Format::Markdown => markdown::render_markdown(&shown, opts, out),
+        Format::PrComment => pr_comment::render_pr_comment(&shown, opts, out),
         Format::Sarif => sarif::render_sarif(&shown, threshold, opts.tool, out),
         Format::Shields => shields::render_shields(entries, threshold, out),
     }
@@ -334,24 +325,8 @@ pub fn render_delta(
         },
         Format::Human => human::render_delta_human(shown, opts, &counts, out),
         Format::GitHub => github::render_delta_github(report, threshold, opts.cwd, out),
-        Format::Markdown => markdown::render_delta_markdown(
-            shown,
-            threshold,
-            opts.links,
-            opts.show_unchanged,
-            opts.uncovered_hints,
-            &counts,
-            out,
-        ),
-        Format::PrComment => pr_comment::render_delta_pr_comment(
-            shown,
-            threshold,
-            opts.links,
-            opts.uncovered_hints,
-            &counts,
-            opts.cwd,
-            out,
-        ),
+        Format::Markdown => markdown::render_delta_markdown(shown, opts, &counts, out),
+        Format::PrComment => pr_comment::render_delta_pr_comment(shown, opts, &counts, out),
         // SARIF describes the *current* set of findings, not deltas. The
         // upstream consumers (GitHub Code Scanning, VS Code) don't model
         // baseline diffs, so combining `--baseline` with `--format sarif`
@@ -542,8 +517,11 @@ fn duplicate_table(
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR
 /// comment. Used by both [`markdown`] and [`pr_comment`] renderers.
-pub(crate) fn write_pr_comment_marker(out: &mut dyn Write) -> Result<()> {
-    writeln!(out, "<!-- cargo-crap-report -->")?;
+pub(crate) fn write_pr_comment_marker(
+    tool: &Tool,
+    out: &mut dyn Write,
+) -> Result<()> {
+    writeln!(out, "{}", tool.comment_marker)?;
     writeln!(out)?;
     Ok(())
 }
@@ -755,6 +733,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    // The marker and version checks share one helper so both cover the
+    // same four report paths.
+    fn marker_reports(tool: &Tool) -> Vec<String> {
+        let entries = test_support::sample();
+        let report = crate::delta::compute_delta(&entries, &entries, 0.01);
+        let mut reports = Vec::new();
+        for format in [Format::Markdown, Format::PrComment] {
+            let opts = RenderOptions {
+                format,
+                ..RenderOptions::new(tool)
+            };
+            let (mut absolute, mut delta) = (Vec::new(), Vec::new());
+            render(&entries, &opts, &mut absolute).expect("renders");
+            render_delta(&report, &opts, &mut delta).expect("renders");
+            reports.extend([absolute, delta].map(|b| String::from_utf8(b).expect("utf-8")));
+        }
+        reports
+    }
+
+    #[test]
+    fn the_marker_writing_reports_start_with_the_tools_marker() {
+        for report in marker_reports(&test_support::SECOND_TOOL) {
+            let mut lines = report.lines();
+            assert_eq!(lines.next(), Some("<!-- other-tool-marker -->"), "{report}");
+            assert_eq!(lines.next(), Some(""), "{report}");
+        }
+    }
+
+    #[test]
+    fn the_marker_writing_reports_do_not_depend_on_the_tools_version() {
+        let copy = Tool {
+            version: "8.8.8-copy",
+            ..test_support::SECOND_TOOL
+        };
+        assert_eq!(
+            marker_reports(&test_support::SECOND_TOOL),
+            marker_reports(&copy)
+        );
     }
 
     fn at(file: &str) -> CrapEntry {
