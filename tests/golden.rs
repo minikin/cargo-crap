@@ -31,16 +31,42 @@ mod snap;
 #[path = "support/schemas.rs"]
 mod schemas;
 
+#[path = "golden/table.rs"]
+mod table;
+
 #[test]
-fn every_case_matches_its_golden() {
+fn every_case_matches_the_golden_recorded_from_main_at_4b57930() {
     let mode = snap::mode(&|key| std::env::var(key).ok()).unwrap_or_else(|e| panic!("{e}"));
     if mode == snap::Mode::Relaunch {
-        let child = snap::relaunch(&["every_case_matches_its_golden", "--exact"]);
+        let child = snap::relaunch(&[
+            "every_case_matches_the_golden_recorded_from_main_at_4b57930",
+            "--exact",
+        ]);
         let output = String::from_utf8_lossy(&child.stdout);
         assert!(child.status.success(), "{output}");
         return;
     }
-    let cases = cases::all();
+    let failures = verify_all(mode, &snap::Snapshots::committed(), &cases::all());
+    assert!(
+        failures.is_empty(),
+        "{} golden failure(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+fn snapshots_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")
+}
+
+/// Every failure of `cases` against `snapshots`, including a verifying run
+/// that changed their directory.
+fn verify_all(
+    mode: snap::Mode,
+    snapshots: &snap::Snapshots,
+    cases: &[run::Case],
+) -> Vec<String> {
+    let dir = snapshots.dir();
     let ids: Vec<&str> = cases.iter().map(|case| case.id).collect();
     let run = |id: &str| {
         let case = cases
@@ -50,13 +76,151 @@ fn every_case_matches_its_golden() {
         let (run, copy) = run::run(case)?;
         checks::finish(case, run, copy.root())
     };
-    let failures = snap::check(mode, &snap::Snapshots::committed(), &ids, &run);
-    assert!(
-        failures.is_empty(),
-        "{} golden failure(s):\n{}",
-        failures.len(),
-        failures.join("\n")
+    let before = dir_state(dir);
+    let mut failures = snap::check(mode, snapshots, &ids, &run);
+    // And the run writes no file under tests/snapshots/
+    if mode == snap::Mode::Verify {
+        match (before, dir_state(dir)) {
+            (Ok(before), Ok(after)) if before == after => {},
+            (Ok(_), Ok(_)) => failures.push(format!("a verifying run changed {}", dir.display())),
+            (Err(problem), _) | (_, Err(problem)) => failures.push(problem),
+        }
+    }
+    failures
+}
+
+#[test]
+fn an_unreadable_snapshot_dir_fails_the_unchanged_check() {
+    let not_a_dir = tempfile::NamedTempFile::new().expect("a file where the directory goes");
+    assert!(dir_state(not_a_dir.path()).is_err());
+    let missing = not_a_dir.path().with_extension("absent");
+    assert_eq!(dir_state(&missing), Ok(Vec::new()));
+}
+
+/// A golden file's name and its bytes, or the error reading it.
+type GoldenFile = (String, Result<Vec<u8>, String>);
+
+/// Every golden file in `dir`, pending ones included, with its bytes or the
+/// error reading it. Other snapshot tests' pending files are theirs to report.
+/// A directory that cannot be read is an error, so the check before and after
+/// a run cannot pass without having read anything.
+fn dir_state(dir: &std::path::Path) -> Result<Vec<GoldenFile>, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("cannot read {}: {e}", dir.display())),
+    };
+    let mut files: Vec<GoldenFile> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("golden__"))
+        .map(|entry| {
+            let bytes = std::fs::read(entry.path()).map_err(|e| e.to_string());
+            (entry.file_name().to_string_lossy().into_owned(), bytes)
+        })
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
+#[test]
+fn an_unreadable_golden_is_named_by_the_verifier_not_a_panic() {
+    let dir = tempfile::tempdir().expect("dir");
+    std::fs::create_dir(dir.path().join("golden__p_human.snap"))
+        .expect("a directory where the file goes");
+    let case = cases::all()
+        .into_iter()
+        .find(|case| case.id == "p_human")
+        .expect("p_human");
+    let failures = verify_all(
+        snap::Mode::Verify,
+        &snap::Snapshots::at(dir.path().into()),
+        &[case],
     );
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].starts_with("p_human: cannot read"),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn the_harnesss_case_list_equals_this_specs_cases_table() {
+    // Given the Cases table in specs/44-golden-outputs.md
+    let spec =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(table::SPEC))
+            .expect("the spec");
+    // When the golden test reads it
+    let rows = table::spec_rows(&spec);
+    let cases = cases::all();
+    let harness: Vec<(&str, i32)> = cases.iter().map(|case| (case.id, case.exit)).collect();
+    // Then the harness's case IDs equal the table's IDs, with none missing and none extra
+    // And every case's recorded exit status equals the table's Exit column
+    assert_eq!(rows.len(), 131, "the Cases table");
+    assert_eq!(table::compare(&rows, &harness), Vec::<String>::new());
+    // And deleting a case from the harness, together with its snapshot, fails the test
+    let without_one = &harness[1..];
+    assert_eq!(
+        table::compare(&rows, without_one),
+        [format!(
+            "{}: in the spec, missing from the harness",
+            harness[0].0
+        )]
+    );
+}
+
+#[test]
+fn no_case_enables_duplicate_triage() {
+    // Given `just test` runs the tests with default features and with --all-features
+    // (config::just_test_and_ci_verify_without_writing pins both runs), and the
+    // golden test runs under each against the same committed snapshots
+    // Then no case enables duplicate triage, the one output the triage build adds
+    let configs = run::fixtures().join("golden/configs");
+    for case in cases::all() {
+        if let Some(name) = case.config {
+            let config = std::fs::read_to_string(configs.join(name)).expect("a config");
+            assert!(
+                !config.contains("triage"),
+                "{}: {name} configures triage",
+                case.id
+            );
+        }
+        assert!(
+            case.env.iter().all(|(key, _)| !key.contains("TYPESAFE")),
+            "{} sets a triage key",
+            case.id
+        );
+    }
+}
+
+#[test]
+fn no_insta_update_value_writes_under_tests_snapshots() {
+    // A recording run changes goldens on purpose, and its own test reports them.
+    if std::env::var_os("GOLDEN_RECORD").is_some() {
+        return;
+    }
+    let before = dir_state(&snapshots_dir()).expect("tests/snapshots");
+    for value in ["always", "force", "unseen", "new", "auto", "no"] {
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "every_case_matches_the_golden_recorded_from_main_at_4b57930",
+                "--exact",
+            ])
+            .env_remove("GOLDEN_RECORD")
+            .env("INSTA_UPDATE", value)
+            .output()
+            .expect("re-running the test binary");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("running 1 test"),
+            "INSTA_UPDATE={value}: {stdout}"
+        );
+        assert!(output.status.success(), "INSTA_UPDATE={value}: {stdout}");
+        assert_eq!(
+            dir_state(&snapshots_dir()).expect("tests/snapshots"),
+            before,
+            "INSTA_UPDATE={value} changed tests/snapshots/"
+        );
+    }
 }
 
 #[test]

@@ -41,11 +41,12 @@ jobs:
               - '.config/**'
               - 'tests/fixtures/**'
               - 'tests/snapshots/**'
-              # The golden tests pin these two: a change to either runs them.
+              # The golden tests read these: a change to any of them runs them.
               - 'Justfile'
               - '.gitignore'
               - '.cargo-crap.toml'
               - 'tests/golden/encode.proptest-regressions'
+              - 'specs/44-golden-outputs.md'
               - 'rust-toolchain.toml'
               - 'clippy.toml'
               - 'rustfmt.toml'

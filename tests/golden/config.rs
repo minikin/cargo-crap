@@ -212,6 +212,7 @@ fn just_test_and_ci_verify_without_writing() {
         "tests/snapshots/**",
         "Justfile",
         ".gitignore",
+        "specs/44-golden-outputs.md",
         ".cargo-crap.toml",
         "tests/golden/encode.proptest-regressions",
     ] {

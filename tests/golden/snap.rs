@@ -61,7 +61,15 @@ pub fn relaunch(args: &[&str]) -> std::process::Output {
     for key in FORCE_UPDATE.iter().chain(&[PENDING_DIR]) {
         command.env_remove(key);
     }
-    command.output().expect("re-running the test binary")
+    let output = command.output().expect("re-running the test binary");
+    // With --exact, a test name that matches nothing runs zero tests and
+    // passes, which would make a recording run silently record nothing.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("running 1 test"),
+        "the relaunch ran no test: {args:?}\n{stdout}"
+    );
+    output
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -153,6 +161,10 @@ impl Snapshots {
 
     pub fn at(dir: PathBuf) -> Self {
         Self { dir }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     fn path(
@@ -577,6 +589,12 @@ mod tests {
             },
             Mode::Verify => panic!("GOLDEN_RECORD=1 did not record"),
         }
+    }
+
+    #[test]
+    fn a_relaunch_that_runs_no_test_fails() {
+        let outcome = std::panic::catch_unwind(|| relaunch(&["no_such_test", "--exact"]));
+        assert!(outcome.is_err(), "a relaunch matching no test passed");
     }
 
     #[test]
