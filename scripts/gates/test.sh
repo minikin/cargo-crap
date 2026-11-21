@@ -292,6 +292,17 @@ check "a source file under a member's tests directory is not in the diff: lib.rs
 check "a source file under a member's tests directory is not in the diff: tests/ is not" \
     "0" "$(grep -c '^diff --git .*crates/cargo-crap-core/tests/' "$copied" 2> /dev/null || true)"
 
+# Scenario: just mutants and just mutants-all reach the core.
+dir="$(mutants_repo)" || exit 1
+with_shim "$dir" just --justfile "$repo/Justfile" --working-directory "$dir" mutants crates/cargo-crap-core/src/lib.rs
+first="$calls"
+first_status=$status
+with_shim "$dir" just --justfile "$repo/Justfile" --working-directory "$dir" mutants-all
+check "just mutants and just mutants-all reach the core: both exit 0" "0 0" "$first_status $status"
+check "just mutants and just mutants-all reach the core: mutants FILE" \
+    "[mutants][--workspace][--file][crates/cargo-crap-core/src/lib.rs]" "$first"
+check "just mutants and just mutants-all reach the core: mutants-all" "[mutants][--workspace]" "$calls"
+
 # A base ref that does not resolve is an error, not an empty diff: a
 # shallow clone or a renamed base branch must not pass having measured
 # nothing.
