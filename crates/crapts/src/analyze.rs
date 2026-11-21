@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    ArrowFunctionExpression, BindingPattern, Expression, Function, VariableDeclarator,
+    ArrowFunctionExpression, BindingPattern, Declaration, Expression, Function, LogicalExpression,
+    PropertyDefinition, TSClassImplements, TSInterfaceDeclaration, TSType, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
-use oxc_span::SourceType;
+use oxc_span::{SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::lines::{LineIndex, SourceSpan};
@@ -51,8 +52,20 @@ pub struct Row {
 #[derive(Debug)]
 pub struct InputError {
     path: PathBuf,
-    mode: Mode,
+    side: Option<Side>,
     message: String,
+}
+
+impl InputError {
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn side(&self) -> Option<Side> {
+        self.side
+    }
 }
 
 impl fmt::Display for InputError {
@@ -60,7 +73,7 @@ impl fmt::Display for InputError {
         &self,
         f: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
-        if let Mode::Strict(side) = self.mode {
+        if let Some(side) = self.side {
             let label = match side {
                 Side::Base => "base",
                 Side::Head => "head",
@@ -78,9 +91,13 @@ pub fn analyze(
     bytes: &[u8],
     mode: Mode,
 ) -> Result<FileAnalysis, InputError> {
+    let side = match mode {
+        Mode::Ordinary => None,
+        Mode::Strict(side) => Some(side),
+    };
     let error = |message| InputError {
         path: path.to_owned(),
-        mode,
+        side,
         message,
     };
     let source = std::str::from_utf8(bytes)
@@ -95,7 +112,7 @@ pub fn analyze(
     };
     if let Some(diagnostic) = parsed.diagnostics.first() {
         let problem = error(format!("parse error: {diagnostic}"));
-        if matches!(mode, Mode::Strict(_)) {
+        if side.is_some() {
             return Err(problem);
         }
         file.warnings.push(problem.to_string());
@@ -120,6 +137,7 @@ struct Collector<'s> {
     lines: LineIndex,
     rows: Vec<Row>,
     owner: Option<usize>,
+    arrow_binding: Option<String>,
 }
 
 impl<'s> Collector<'s> {
@@ -132,13 +150,14 @@ impl<'s> Collector<'s> {
             lines: LineIndex::new(source),
             rows: Vec::new(),
             owner: None,
+            arrow_binding: None,
         }
     }
 
     fn in_callable(
         &mut self,
         name: &str,
-        span: oxc_span::Span,
+        span: Span,
         is_arrow: bool,
         visit: impl FnOnce(&mut Self),
     ) {
@@ -164,8 +183,7 @@ fn is_decision(kind: AstKind<'_>) -> bool {
         | AstKind::ForOfStatement(_)
         | AstKind::WhileStatement(_)
         | AstKind::DoWhileStatement(_)
-        | AstKind::CatchClause(_)
-        | AstKind::LogicalExpression(_) => true,
+        | AstKind::CatchClause(_) => true,
         AstKind::SwitchCase(case) => case.test.is_some(),
         AstKind::AssignmentExpression(expr) => expr.operator.is_logical(),
         _ => false,
@@ -173,6 +191,68 @@ fn is_decision(kind: AstKind<'_>) -> bool {
 }
 
 impl<'a> Visit<'a> for Collector<'_> {
+    fn visit_declaration(
+        &mut self,
+        decl: &Declaration<'a>,
+    ) {
+        if !decl.declare() {
+            walk::walk_declaration(self, decl);
+        }
+    }
+
+    fn visit_ts_type(
+        &mut self,
+        _: &TSType<'a>,
+    ) {
+    }
+
+    fn visit_ts_interface_declaration(
+        &mut self,
+        _: &TSInterfaceDeclaration<'a>,
+    ) {
+    }
+
+    fn visit_ts_type_alias_declaration(
+        &mut self,
+        _: &oxc_ast::ast::TSTypeAliasDeclaration<'a>,
+    ) {
+    }
+
+    fn visit_ts_class_implements(
+        &mut self,
+        _: &TSClassImplements<'a>,
+    ) {
+    }
+
+    fn visit_property_definition(
+        &mut self,
+        property: &PropertyDefinition<'a>,
+    ) {
+        if !property.declare {
+            walk::walk_property_definition(self, property);
+        }
+    }
+
+    fn visit_logical_expression(
+        &mut self,
+        root: &LogicalExpression<'a>,
+    ) {
+        let mut pending = vec![&root.right, &root.left];
+        let mut decisions = 1;
+        while let Some(expr) = pending.pop() {
+            if let Expression::LogicalExpression(child) = expr {
+                decisions += 1;
+                pending.push(&child.right);
+                pending.push(&child.left);
+            } else {
+                self.visit_expression(expr);
+            }
+        }
+        if let Some(owner) = self.owner {
+            self.rows[owner].cyclomatic += decisions;
+        }
+    }
+
     fn enter_node(
         &mut self,
         kind: AstKind<'a>,
@@ -204,7 +284,9 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         arrow: &ArrowFunctionExpression<'a>,
     ) {
-        self.in_callable("<anonymous>", arrow.span, true, |visitor| {
+        let binding = self.arrow_binding.take();
+        let name = binding.as_deref().unwrap_or("<anonymous>");
+        self.in_callable(name, arrow.span, true, |visitor| {
             walk::walk_arrow_function_expression(visitor, arrow);
         });
     }
@@ -213,16 +295,14 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         decl: &VariableDeclarator<'a>,
     ) {
-        if let BindingPattern::BindingIdentifier(id) = &decl.id
-            && let Some(Expression::ArrowFunctionExpression(arrow)) = &decl.init
+        if let (
+            BindingPattern::BindingIdentifier(id),
+            Some(Expression::ArrowFunctionExpression(_)),
+        ) = (&decl.id, &decl.init)
         {
-            self.visit_binding_pattern(&decl.id);
-            self.in_callable(id.name.as_str(), arrow.span, true, |visitor| {
-                walk::walk_arrow_function_expression(visitor, arrow);
-            });
-        } else {
-            walk::walk_variable_declarator(self, decl);
+            self.arrow_binding = Some(id.name.to_string());
         }
+        walk::walk_variable_declarator(self, decl);
     }
 }
 
@@ -267,6 +347,7 @@ mod tests {
             ("x ??= y", 2),
             ("x = y; return x?.a?.b", 1),
             ("type R<T> = T extends string ? 0 : 1; return x", 1),
+            ("type T = { [x && 'a']: number }; return x", 1),
         ] {
             let source = format!("function f(x, y, xs) {{ {body} }}");
             let allocator = Allocator::default();
@@ -279,6 +360,13 @@ mod tests {
             let mut collector = Collector::new(Path::new("table.ts"), &source);
             collector.visit_program(&parsed.program);
             assert_eq!(collector.rows[0].cyclomatic, expected, "{body}");
+            let file = analyze(
+                Path::new("table.ts"),
+                source.as_bytes(),
+                Mode::Strict(Side::Base),
+            )
+            .unwrap();
+            assert_eq!(file.rows[0].cyclomatic, expected, "{body}");
         }
     }
 }

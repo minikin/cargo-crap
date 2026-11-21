@@ -39,6 +39,62 @@ fn returning_from_a_nested_callable_restores_the_scoring_owner() {
 }
 
 #[test]
+fn type_and_ambient_expressions_do_not_run_in_the_enclosing_function() {
+    // Given these files parse even when type checking would reject them, the
+    // runtime score must be independent of a TypeScript checker.
+    let bodies = [
+        r#"interface I { [x ? "a" : "b"]: number }"#,
+        r#"type T = { [x && "a"]: number }"#,
+        "declare enum E { A = x ? 1 : 2 }",
+        "declare const y = x && 1",
+        r#"class C implements I<{ [x && "a"]: 1 }> {}"#,
+        r#"let value: { [x && "a"]: number }"#,
+        r#"class C { declare [x && "a"]: number }"#,
+        r#"class C { [x && "a"]: number }"#,
+        "class C extends (x || Base) {}",
+    ];
+    let scores = bodies.map(|body| {
+        let source = format!("function f(x) {{ {body} }}");
+        let file = analyze(
+            Path::new("types.ts"),
+            source.as_bytes(),
+            Mode::Strict(Side::Head),
+        )
+        .unwrap();
+        assert_eq!(file.status, FileStatus::Clean, "{body}");
+        let [row] = file.rows.as_slice() else {
+            panic!("{body}: {:?}", file.rows)
+        };
+        assert_eq!(row.name, "f");
+        row.cyclomatic
+    });
+    assert_eq!(scores, [1, 1, 1, 1, 1, 1, 1, 2, 2]);
+}
+
+#[test]
+fn a_long_logical_chain_fits_on_a_test_thread_stack() {
+    let count = 200_000;
+    let mut source = String::from("function f(x) { return x");
+    for _ in 1..count {
+        source.push_str(" && x");
+    }
+    source.push_str(" }");
+    assert_eq!(complexity(&source, "f"), count);
+}
+
+#[test]
+fn logical_operands_keep_their_source_order_and_owner() {
+    let source = b"function f() { return (function left(){ return a || b }) && c && (function right(){ return d ?? e }) }";
+    let file = analyze(Path::new("operands.ts"), source, Mode::Ordinary).unwrap();
+    let scores: Vec<_> = file
+        .rows
+        .iter()
+        .map(|row| (row.span.start.column, row.cyclomatic))
+        .collect();
+    assert_eq!(scores, [(0, 3), (23, 2), (66, 2)]);
+}
+
+#[test]
 fn a_bodyless_overload_does_not_add_a_second_row() {
     let result = analyze(
         Path::new("overload.ts"),
@@ -68,6 +124,9 @@ fn reject_syntax_that_belongs_to_a_different_source_grammar() {
         ("wrong.ts", "const B = () => <b/>"),
         ("wrong.js", "function f(x: number) {}"),
     ] {
+        let ordinary = analyze(Path::new(path), source.as_bytes(), Mode::Ordinary).unwrap();
+        assert_ne!(ordinary.status, FileStatus::Clean);
+        assert_eq!(ordinary.warnings.len(), 1);
         let message = analyze(Path::new(path), source.as_bytes(), Mode::Strict(Side::Head))
             .unwrap_err()
             .to_string();
@@ -88,20 +147,30 @@ fn reject_syntax_that_belongs_to_a_different_source_grammar() {
 
 #[test]
 fn reject_invalid_utf8_source_bytes() {
-    for (mode, side) in [
-        (Mode::Ordinary, None),
-        (Mode::Strict(Side::Base), Some("base")),
-        (Mode::Strict(Side::Head), Some("head")),
+    for (mode, side, prefix) in [
+        (Mode::Ordinary, None, "invalid.ts"),
+        (
+            Mode::Strict(Side::Base),
+            Some(Side::Base),
+            "base invalid.ts",
+        ),
+        (
+            Mode::Strict(Side::Head),
+            Some(Side::Head),
+            "head invalid.ts",
+        ),
     ] {
-        let message = analyze(Path::new("invalid.ts"), &[0x66, 0x80, 0x0a], mode)
-            .unwrap_err()
-            .to_string();
-        assert!(message.contains("invalid.ts"), "{message}");
-        assert!(message.contains("invalid UTF-8"), "{message}");
-        if let Some(side) = side {
-            assert!(message.contains(side), "{message}");
-        }
+        let path = Path::new("invalid.ts");
+        let error = analyze(path, &[0x66, 0x80, 0x0a], mode).unwrap_err();
+        assert_eq!(error.path(), path);
+        assert_eq!(error.side(), side);
+        assert_eq!(
+            error.to_string(),
+            format!("{prefix}: invalid UTF-8 at byte 1")
+        );
     }
+    let error = analyze(Path::new("noext"), &[0x80], Mode::Strict(Side::Head)).unwrap_err();
+    assert_eq!(error.to_string(), "head noext: invalid UTF-8 at byte 0");
 }
 
 const RECOVERABLE: &[u8] = b"const x; let [a]; function kept() { if (x) go() }";
