@@ -162,7 +162,7 @@ Then  it fails with clippy::must_use_candidate in crates/cargo-crap-core/src/lib
 ```
 Given the expected commands below, per Justfile recipe and CI job
 When  the workspace check reads the recipe or job
-Then  each expected command is present, with --workspace right after its cargo subcommand
+Then  each expected command is present, with its tokens in the order the table lists them
 And   none of them passes --exclude, -p or --package
 ```
 
@@ -329,6 +329,14 @@ When  crates/cargo-crap-core/Cargo.toml is the only changed path
 Then  the rust filter matches it
 ```
 
+### Scenario: a change only to the core's manifest runs the release-script tests
+
+```
+Given the CI changes job's filters
+When  crates/cargo-crap-core/Cargo.toml is the only changed path
+Then  the release filter matches it
+```
+
 ### Scenario: a change only to a gate script runs the gate script tests
 
 ```
@@ -442,7 +450,7 @@ go under their own comment heading, next to `release-test`.
 - [ ] **T5 — The shared mutants diff script reaches the core.** Needs: T2, T4. Scenarios: _just mutants-diff mutates a changed line in the core; CI's base-ref diff mutates a committed change in the core; CI's base-ref diff with no source change measures nothing_. Tests: acceptance (`scripts/gates/test.sh` with the cargo shim).
 - [ ] **T6 — Moves and path scope in the mutants diff.** Needs: T5. Scenarios: _a pure move costs no mutants; a move with one edited line mutates that line only; an untracked moved file still pairs as a rename; a source file under a member's tests directory is not in the diff_. Tests: acceptance (`scripts/gates/test.sh`). Property: none, see Implementation Notes "Invariant".
 - [ ] **T7 — just mutants and just mutants-all reach the core.** Needs: T5. Scenarios: _just mutants and just mutants-all reach the core_. Tests: acceptance (`scripts/gates/test.sh` with the cargo shim).
-- [ ] **T8 — CI mutants job, path filters, Action paths and the MSRV scope.** Needs: T4, T5. Scenarios: _CI's mutants job runs the shared diff script; a change only under crates/ runs the Rust and mutants jobs; a change only to a member's Cargo.toml runs the Rust jobs; a change only under crates/ runs the Action workflow; the MSRV job tests the 1.88 packages by name_. Tests: acceptance (workflow shape checks in Rust beside `tests/golden/config.rs`).
+- [ ] **T8 — CI mutants job, path filters, Action paths and the MSRV scope.** Needs: T4, T5. Scenarios: _CI's mutants job runs the shared diff script; a change only under crates/ runs the Rust and mutants jobs; a change only to a member's Cargo.toml runs the Rust jobs; a change only to the core's manifest runs the release-script tests; a change only under crates/ runs the Action workflow; the MSRV job tests the 1.88 packages by name_. Tests: acceptance (workflow shape checks in Rust beside `tests/golden/config.rs`).
 - [ ] **T9 — The parser guard.** Needs: T2. Scenarios: _the parser guard passes on this repository; the parser guard sees a feature-gated parser dependency; the parser guard fails when the core links syn; the parser guard fails when cargo-crap links an Oxc crate; syn in cargo-crap's tree is not a violation; a guard that saw no tree does not pass_. Tests: acceptance (`scripts/gates/test.sh`).
 - [ ] **T10 — just dev and a CI gates job run the gate scripts and the guard.** Needs: T8, T9. Scenarios: _just dev and CI both run the parser guard; a change only to a gate script runs the gate script tests_. Tests: acceptance (workflow and Justfile shape checks).
 
@@ -530,6 +538,8 @@ through `clap_derive` and `serde_derive`.
 
 - `changes`: `rust` replaces `'Cargo.toml'` with `'**/Cargo.toml'` and
   adds `'scripts/gates/**'`. `src` adds `'crates/*/src/**/*.rs'`.
+  `release` adds `'crates/cargo-crap-core/Cargo.toml'`, which
+  `scripts/release/test.sh` copies.
 - `test`: both nextest runs and the doc test add `--workspace`.
 - `lints`: both clippy runs add `--workspace` before their `--`.
   `cargo fmt --all -- --check` is unchanged.
@@ -587,16 +597,11 @@ worth its cost.
 ### Non-goals
 
 - No code moves into the core. That is specs 46 to 49.
-- `.cargo-mutants.toml` at the root is not read by cargo-mutants 26.1.2,
-  which reads `.cargo/mutants.toml`: an `exclude_globs = ["src/**"]` in
-  the root file changed nothing in a probe, the same line in `.cargo/`
-  excluded every mutant. Its `test_tool`, `profile`, `cap_lints` and
-  `timeout` settings are not applied by the installed version. Reviving
-  or deleting it is a separate bugfix, since its `timeout = 60` would
-  undercut the 120 s floor in `.cargo/mutants.toml`.
-- `.cargo/mutants.toml` stays as it is. Which packages' tests run for a
-  core mutant (`test_workspace`, `test_package`) is decided in spec 49,
-  when the core first holds code.
+- The root `.cargo-mutants.toml`, which cargo-mutants 26.1.2 never read,
+  was folded into `.cargo/mutants.toml` and deleted by the fix below this
+  spec. This spec does not change `.cargo/mutants.toml`. Which packages'
+  tests run for a core mutant (`test_workspace`, `test_package`) is
+  decided in spec 49, when the core first holds code.
 - No crapts package, no Oxc pins and no 1.98 CI job. That is spec 50.
 - The release workflow, binstall metadata and the Action's own
   `action.yml` are untouched. `release.yml`, the Action workflow and
