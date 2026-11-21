@@ -298,7 +298,7 @@ points. Keep the spec 44 snapshots in verification mode throughout.
   single-list unsliced path) and library acceptance (JSON row identities
   and order).
 
-- [ ] **T4 — Prepare the baseline once for scoring and duplicate comparison.**
+- [x] **T4 — Prepare the baseline once for scoring and duplicate comparison.**
   Needs: T3. Add `Scope`, `BaselineFilter` and `PreparedBaseline` in
   `src/run.rs` and add that file to the shared guard list. Implement the
   scope predicate in the CLI. Resolve workspace paths and emit baseline
