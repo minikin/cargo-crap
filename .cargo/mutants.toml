@@ -12,3 +12,19 @@ minimum_test_timeout = 120
 # Mutate with every feature on: the `triage` feature's code (the TypeSafe
 # client) is only compiled, and only tested, when it is enabled.
 all_features = true
+
+# cargo-mutants discovers this file by default, and a root
+# `.cargo-mutants.toml` is not read. Set parallelism with `--jobs` or
+# CARGO_MUTANTS_JOBS: `jobs` is not a config key.
+test_tool = "nextest"
+profile = "mutants"
+
+# Prevent RUSTFLAGS="-D warnings" (set in CI) from failing mutants on warnings
+# rather than on actual test failures, which would make results unreliable.
+cap_lints = true
+
+# Enable built-in skip patterns (e.g. with_capacity).
+skip_calls_defaults = true
+
+# Don't mutate integration test files: only source logic matters.
+exclude_globs = ["tests/**/*.rs"]
