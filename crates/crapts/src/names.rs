@@ -1,11 +1,14 @@
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
     Argument, AssignmentTarget, BindingPattern, Expression, JSXAttributeItem, JSXAttributeValue,
-    JSXChild, JSXElement, MethodDefinitionKind, PropertyKey, PropertyKind, SimpleAssignmentTarget,
-    StaticMemberExpression,
+    JSXChild, JSXElement, LogicalExpression, MemberExpression, MethodDefinitionKind, PropertyKey,
+    PropertyKind, SimpleAssignmentTarget,
 };
+use oxc_ast_visit::{Visit, walk};
+use oxc_parser::{Kind, Token};
 use oxc_span::{GetSpan, Span};
 use oxc_str::JSStr;
 use oxc_syntax::operator::AssignmentOperator;
@@ -60,41 +63,152 @@ fn quoted(value: JSStr<'_>) -> String {
     format!("\"{}\"", encode(value, true))
 }
 
-fn static_member(
-    member: &StaticMemberExpression<'_>,
-    source: &str,
+#[derive(Clone, Copy)]
+pub(super) struct Source<'s> {
+    pub(super) text: &'s str,
+    pub(super) tokens: &'s [Token],
+}
+
+impl Source<'_> {
+    fn computed_text(
+        self,
+        expr: &Expression<'_>,
+    ) -> String {
+        let span = expr.span();
+        let first = self
+            .tokens
+            .partition_point(|token| token.start() < span.start);
+        let last = self
+            .tokens
+            .partition_point(|token| token.start() < span.end);
+        let mut embedded = EmbeddedExpressions::default();
+        embedded.visit_expression(expr);
+        let mut text = String::new();
+        let mut previous_word = false;
+        let mut skip_until = span.start;
+        for token in &self.tokens[first..last] {
+            if token.start() < skip_until {
+                continue;
+            }
+            if let Some(&(end, label)) = embedded.by_start.get(&token.start()) {
+                text.push_str(label);
+                skip_until = end;
+                previous_word = false;
+            } else {
+                let kind = token.kind();
+                let word = kind.is_identifier_name()
+                    || kind.is_number()
+                    || kind == Kind::PrivateIdentifier;
+                if word && previous_word {
+                    text.push(' ');
+                }
+                text.push_str(token.span().source_text(self.text));
+                previous_word = word;
+            }
+        }
+        text
+    }
+
+    fn subscript(
+        self,
+        expr: &Expression<'_>,
+    ) -> String {
+        match expr {
+            Expression::StringLiteral(s) => quoted(s.value),
+            Expression::NumericLiteral(_) | Expression::BigIntLiteral(_) => {
+                unquoted(expr.span().source_text(self.text))
+            },
+            _ => format!("({})", unquoted(&self.computed_text(expr))),
+        }
+    }
+}
+
+#[derive(Default)]
+struct EmbeddedExpressions {
+    by_start: HashMap<u32, (u32, &'static str)>,
+}
+
+impl<'a> Visit<'a> for EmbeddedExpressions {
+    fn visit_object_property(
+        &mut self,
+        property: &oxc_ast::ast::ObjectProperty<'a>,
+    ) {
+        self.visit_property_key(&property.key);
+        if property.method || property.kind != PropertyKind::Init {
+            // Oxc models a method's parameter list and body as a function expression.
+            walk::walk_expression(self, &property.value);
+        } else {
+            self.visit_expression(&property.value);
+        }
+    }
+
+    fn visit_expression(
+        &mut self,
+        expr: &Expression<'a>,
+    ) {
+        let label = match expr {
+            Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_) => {
+                "<function>"
+            },
+            Expression::ClassExpression(_) => "<class>",
+            _ => return walk::walk_expression(self, expr),
+        };
+        let span = expr.span();
+        self.by_start.insert(span.start, (span.end, label));
+    }
+
+    fn visit_logical_expression(
+        &mut self,
+        expr: &LogicalExpression<'a>,
+    ) {
+        crate::analyze::visit_logical_operands(expr, |child| self.visit_expression(child));
+    }
+}
+
+fn member_chain(
+    mut member: &MemberExpression<'_>,
+    source: Source<'_>,
 ) -> String {
-    let mut parts = vec![member.property.name];
-    let mut root = direct_value(&member.object);
-    while let Expression::StaticMemberExpression(parent) = root {
-        parts.push(parent.property.name);
-        root = direct_value(&parent.object);
+    let mut parts = Vec::new();
+    loop {
+        let key = match member {
+            MemberExpression::StaticMemberExpression(n) => unquoted(n.property.name.as_str()),
+            MemberExpression::ComputedMemberExpression(n) => source.subscript(&n.expression),
+            MemberExpression::PrivateFieldExpression(n) => {
+                format!("#{}", unquoted(n.field.name.as_str()))
+            },
+        };
+        parts.push(key);
+        let object = direct_value(member.object());
+        if let Some(parent) = object.as_member_expression() {
+            member = parent;
+        } else {
+            parts.push(written_root(object, source));
+            break;
+        }
     }
-    let mut result = written_root(root, source);
-    for part in parts.into_iter().rev() {
-        result.push('.');
-        result.push_str(&unquoted(part.as_str()));
-    }
-    result
+    parts.reverse();
+    parts.join(".")
 }
 
 fn written(
     expr: &Expression<'_>,
-    source: &str,
+    source: Source<'_>,
 ) -> String {
-    match direct_value(expr) {
-        Expression::StaticMemberExpression(member) => static_member(member, source),
-        root => written_root(root, source),
+    let expr = direct_value(expr);
+    match expr.as_member_expression() {
+        Some(member) => member_chain(member, source),
+        None => written_root(expr, source),
     }
 }
 
 fn written_root(
     expr: &Expression<'_>,
-    source: &str,
+    source: Source<'_>,
 ) -> String {
     match expr {
         Expression::Identifier(id) => unquoted(id.name.as_str()),
-        inner => unquoted(inner.span().source_text(source)),
+        inner => unquoted(inner.span().source_text(source.text)),
     }
 }
 
@@ -260,7 +374,7 @@ impl Names {
     pub(super) fn enter(
         &mut self,
         node: AstKind<'_>,
-        source: &str,
+        source: Source<'_>,
     ) {
         self.lengths.push(self.sites.len());
         if let Some(site) = binding(node, source) {
@@ -307,7 +421,7 @@ impl Names {
         callee: &Expression<'_>,
         arguments: &[Argument<'_>],
         prefix: &str,
-        source: &str,
+        source: Source<'_>,
     ) {
         self.sites.push(Site::expression(
             SiteKind::Placeholder,
@@ -342,15 +456,15 @@ impl Names {
     fn jsx(
         &mut self,
         element: &JSXElement<'_>,
-        source: &str,
+        source: Source<'_>,
     ) {
         let opening = &element.opening_element;
-        let tag = unquoted(opening.name.span().source_text(source));
+        let tag = unquoted(opening.name.span().source_text(source.text));
         for item in &opening.attributes {
             if let JSXAttributeItem::Attribute(attr) = item
                 && let Some(value) = attr.value.as_ref().and_then(attribute_target)
             {
-                let attr = unquoted(attr.name.span().source_text(source));
+                let attr = unquoted(attr.name.span().source_text(source.text));
                 self.sites.push(Site {
                     kind: SiteKind::Role,
                     label: format!("<{tag} {attr}>"),
@@ -405,7 +519,7 @@ fn local(
 
 fn binding(
     node: AstKind<'_>,
-    source: &str,
+    source: Source<'_>,
 ) -> Option<Site> {
     match node {
         AstKind::VariableDeclarator(n) => local(&n.id, n.init.as_ref()),
@@ -446,7 +560,7 @@ fn binding(
 fn assignment(
     target: &AssignmentTarget<'_>,
     value: &Expression<'_>,
-    source: &str,
+    source: Source<'_>,
 ) -> Option<Site> {
     let label = written_target(target.as_simple_assignment_target()?, source);
     Some(Site::expression(SiteKind::Binding, label, value))
@@ -454,18 +568,18 @@ fn assignment(
 
 fn written_target(
     target: &SimpleAssignmentTarget<'_>,
-    source: &str,
+    source: Source<'_>,
 ) -> String {
     match target {
         SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => unquoted(id.name.as_str()),
-        SimpleAssignmentTarget::StaticMemberExpression(member) => static_member(member, source),
-        _ => unquoted(target.span().source_text(source)),
+        _ if let Some(member) = target.as_member_expression() => member_chain(member, source),
+        _ => unquoted(target.span().source_text(source.text)),
     }
 }
 
 fn member_binding(
     node: AstKind<'_>,
-    source: &str,
+    source: Source<'_>,
 ) -> Option<Site> {
     let (key, direct, scope, is_static, marker) = match node {
         AstKind::ObjectProperty(n) => {
@@ -512,13 +626,12 @@ fn member_binding(
 
 fn member_key(
     key: &PropertyKey<'_>,
-    source: &str,
+    source: Source<'_>,
 ) -> String {
     match key {
         PropertyKey::StaticIdentifier(id) => unquoted(id.name.as_str()),
         PropertyKey::PrivateIdentifier(id) => format!("#{}", unquoted(id.name.as_str())),
-        PropertyKey::StringLiteral(s) => quoted(s.value),
-        _ => unquoted(key.span().source_text(source)),
+        _ => source.subscript(key.to_expression()),
     }
 }
 
@@ -528,6 +641,56 @@ mod tests {
     use oxc_allocator::Allocator;
     use oxc_parser::Parser;
     use oxc_span::SourceType;
+
+    fn computed(input: &str) -> String {
+        let text = format!("const key = {input};");
+        let arena = Allocator::default();
+        let parsed = Parser::new(&arena, &text, SourceType::ts())
+            .with_config(oxc_parser::config::TokensParserConfig)
+            .parse();
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let oxc_ast::ast::Statement::VariableDeclaration(decl) = &parsed.program.body[0] else {
+            panic!("expected a variable declaration");
+        };
+        let value = decl.declarations[0].init.as_ref().unwrap();
+        Source {
+            text: &text,
+            tokens: &parsed.tokens,
+        }
+        .computed_text(value)
+    }
+
+    #[test]
+    fn computed_words_and_substitutions_respect_lexer_boundaries() {
+        for (input, expected) in [
+            ("typeof /* trivia */ 0x2A", "typeof 0x2A"),
+            ("typeof 'x'", "typeof'x'"),
+            ("'x' in dict", "'x'in dict"),
+            ("3n in table", "3n in table"),
+            ("this.#key in table", "this.#key in table"),
+            (
+                "key(() => function () {}, class Local { m(){} })",
+                "key(<function>,<class>)",
+            ),
+            ("typeof function named() {}", "typeof<function>"),
+            ("{m(){return ()=>0}}", "{m(){return<function>}}"),
+            ("{get v(){},set v(x){}}", "{get v(){},set v(x){}}"),
+            ("{p:function(){}}", "{p:<function>}"),
+            ("class X {}", "<class>"),
+            ("(v) => v", "<function>"),
+        ] {
+            assert_eq!(computed(input), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn computed_text_visits_long_logical_chains_without_recursing() {
+        let prefix = "x&&".repeat(30_000);
+        assert_eq!(
+            computed(&format!("{prefix}f(()=>1)")),
+            format!("{prefix}f(<function>)")
+        );
+    }
 
     #[test]
     fn encode_reserved_code_points_before_joining_segments() {
@@ -624,14 +787,23 @@ mod tests {
         let callee = "x".repeat(2048);
         let source = format!("{callee}({})", vec!["0"; 512].join(","));
         let arena = Allocator::default();
-        let expr = Parser::new(&arena, &source, SourceType::ts())
-            .parse_expression()
-            .unwrap();
-        let Expression::CallExpression(call) = expr else {
+        let parsed = Parser::new(&arena, &source, SourceType::ts())
+            .with_config(oxc_parser::config::TokensParserConfig)
+            .parse();
+        let oxc_ast::ast::Statement::ExpressionStatement(stmt) = &parsed.program.body[0] else {
+            panic!("expected expression statement");
+        };
+        let Expression::CallExpression(call) = &stmt.expression else {
             panic!("expected call")
         };
         let mut names = Names::default();
-        names.enter(AstKind::CallExpression(&call), &source);
+        names.enter(
+            AstKind::CallExpression(call),
+            Source {
+                text: &source,
+                tokens: &parsed.tokens,
+            },
+        );
         let label_bytes: usize = names.sites.iter().map(|site| site.label.len()).sum();
         assert!(label_bytes < callee.len() * 2, "{label_bytes} bytes");
     }

@@ -10,12 +10,12 @@ use oxc_ast::ast::{
     Statement, TSClassImplements, TSInterfaceDeclaration, TSType,
 };
 use oxc_ast_visit::{Visit, walk};
-use oxc_parser::Parser;
+use oxc_parser::{Parser, Token, config::TokensParserConfig};
 use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::lines::{LineIndex, SourceSpan};
-use crate::names::{Names, Unit};
+use crate::names::{Names, Source, Unit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -109,7 +109,9 @@ pub fn analyze(
         .map_err(|e| error(format!("invalid UTF-8 at byte {}", e.valid_up_to())))?;
     let grammar = grammar_for(path).map_err(|e| error(e.to_string()))?;
     let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, source, grammar).parse();
+    let parsed = Parser::new(&allocator, source, grammar)
+        .with_config(TokensParserConfig)
+        .parse();
     let mut file = FileAnalysis {
         status: FileStatus::Clean,
         rows: Vec::new(),
@@ -139,7 +141,7 @@ pub fn analyze(
         }
         file.status = FileStatus::Recovered;
     }
-    let mut collector = Collector::new(path, source);
+    let mut collector = Collector::new(path, source, &parsed.tokens);
     collector.visit_program(&parsed.program);
     for row in &mut collector.rows {
         row.statement_lines.sort_unstable();
@@ -155,7 +157,7 @@ fn grammar_for(path: &Path) -> Result<SourceType, oxc_span::UnknownExtension> {
 
 struct Collector<'s> {
     path: &'s Path,
-    source: &'s str,
+    source: Source<'s>,
     lines: LineIndex,
     rows: Vec<Row>,
     owner: Option<usize>,
@@ -177,10 +179,14 @@ impl<'s> Collector<'s> {
     fn new(
         path: &'s Path,
         source: &'s str,
+        tokens: &'s [Token],
     ) -> Self {
         Self {
             path,
-            source,
+            source: Source {
+                text: source,
+                tokens,
+            },
             lines: LineIndex::new(source),
             rows: Vec::new(),
             owner: None,
@@ -290,6 +296,24 @@ fn executable_statement(statement: &Statement<'_>) -> bool {
     }
 }
 
+pub(super) fn visit_logical_operands<'a>(
+    root: &LogicalExpression<'a>,
+    mut visit: impl FnMut(&Expression<'a>),
+) -> u32 {
+    let mut pending = vec![&root.right, &root.left];
+    let mut decisions = 1;
+    while let Some(expr) = pending.pop() {
+        if let Expression::LogicalExpression(child) = expr {
+            decisions += 1;
+            pending.push(&child.right);
+            pending.push(&child.left);
+        } else {
+            visit(expr);
+        }
+    }
+    decisions
+}
+
 impl<'a> Visit<'a> for Collector<'_> {
     fn visit_method_definition(
         &mut self,
@@ -394,17 +418,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         root: &LogicalExpression<'a>,
     ) {
-        let mut pending = vec![&root.right, &root.left];
-        let mut decisions = 1;
-        while let Some(expr) = pending.pop() {
-            if let Expression::LogicalExpression(child) = expr {
-                decisions += 1;
-                pending.push(&child.right);
-                pending.push(&child.left);
-            } else {
-                self.visit_expression(expr);
-            }
-        }
+        let decisions = visit_logical_operands(root, |expr| self.visit_expression(expr));
         if let Some(owner) = self.owner {
             self.rows[owner].cyclomatic += decisions;
         }
@@ -503,8 +517,10 @@ mod tests {
         // completed sibling would make the next lookup scan the entire file.
         let source = "const a = factory(() => 1); const b = factory(() => 2);";
         let arena = Allocator::default();
-        let parsed = Parser::new(&arena, source, SourceType::ts()).parse();
-        let mut collector = Collector::new(Path::new("scopes.ts"), source);
+        let parsed = Parser::new(&arena, source, SourceType::ts())
+            .with_config(TokensParserConfig)
+            .parse();
+        let mut collector = Collector::new(Path::new("scopes.ts"), source, &parsed.tokens);
         for statement in &parsed.program.body {
             collector.visit_statement(statement);
             assert_eq!(collector.names.retained_frames(), (0, 0));
@@ -552,13 +568,15 @@ mod tests {
         ] {
             let source = format!("function f(x, y, xs) {{ {body} }}");
             let allocator = Allocator::default();
-            let parsed = Parser::new(&allocator, &source, SourceType::ts()).parse();
+            let parsed = Parser::new(&allocator, &source, SourceType::ts())
+                .with_config(TokensParserConfig)
+                .parse();
             assert!(
                 parsed.diagnostics.is_empty(),
                 "{body}: {:?}",
                 parsed.diagnostics
             );
-            let mut collector = Collector::new(Path::new("table.ts"), &source);
+            let mut collector = Collector::new(Path::new("table.ts"), &source, &parsed.tokens);
             collector.visit_program(&parsed.program);
             assert_eq!(collector.rows[0].cyclomatic, expected, "{body}");
             let file = analyze(

@@ -253,22 +253,19 @@ fn defaults_in_destructuring_assignments_use_the_written_target() {
         assert_eq!(clean_names("target.ts", source), [expected], "{source}");
     }
     let names = clean_names("target.ts", "({[pick(()=>0)]: d = () => 1} = o)");
-    assert_eq!(names.len(), 2);
-    assert_eq!(names[0], "pick()");
-    assert!(names[1].ends_with("::d"), "{names:?}");
+    assert_eq!(names, ["pick()", "(pick(<function>))::d"]);
 }
 
 #[test]
 fn callbacks_in_method_keys_keep_the_marked_method_site() {
-    for member in ["[pick(() => 0)]() {}", "get [pick(() => 0)]() {}"] {
+    for (member, expected) in [
+        ("[pick(() => 0)]() {}", "o::(pick(<function>))"),
+        ("get [pick(() => 0)]() {}", "o::get (pick(<function>))"),
+    ] {
         let source = format!("const o = {{ {member} }}");
-        let names = clean_names("key.ts", &source);
-        assert_eq!(names.len(), 2);
-        let method = names
-            .iter()
-            .find(|name| !name.ends_with("::pick()"))
-            .unwrap();
-        assert!(names.contains(&format!("{method}::pick()")), "{names:?}");
+        let mut names = clean_names("key.ts", &source);
+        names.sort();
+        assert_eq!(names, [expected.to_owned(), format!("{expected}::pick()")]);
     }
 }
 
@@ -401,5 +398,54 @@ fn ambient_signatures_are_clean_in_both_analysis_modes() {
         assert_eq!(result.status, FileStatus::Clean);
         assert!(result.rows.is_empty(), "{:?}", result.rows);
         assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    }
+}
+
+#[test]
+fn preserve_the_analyzers_lexer_tokens_in_computed_text() {
+    for (source, expected) in [
+        (
+            "const o = { [KEYS /* ignored */ . save]() {} }",
+            &["o::(KEYS.save)"][..],
+        ),
+        (
+            "const o = { [x instanceof Thing]() {} }",
+            &["o::(x instanceof Thing)"],
+        ),
+        ("const o = { [x + 0x2A]() {} }", &["o::(x+0x2A)"]),
+        ("const o = { [12]() {} }", &["o::12"]),
+        (
+            "class C { #m; test(){ this.#m.x[k + 1](() => 0) } }",
+            &["C::test", "C::test::this.#m.x.(k+1)()"],
+        ),
+        (
+            "class C { [key(class Local {})]() {} }",
+            &["C::(key(<class>))"],
+        ),
+        (
+            "const o = { [key(() => 1)]() {} }",
+            &["o::(key(<function>))", "o::(key(<function>))::key()"],
+        ),
+        (
+            "const o = { [key(function named(){ return 7 })]() {} }",
+            &["o::(key(<function>))", "o::(key(<function>))::key()::named"],
+        ),
+        (
+            "obj[KEYS /* drop */ . save] = () => 0",
+            &["obj.(KEYS.save)"],
+        ),
+        (
+            "obj[KEYS /* drop */ . save](() => 0)",
+            &["obj.(KEYS.save)()"],
+        ),
+        ("const o = { [(x as T)]() {} }", &["o::((x as T))"]),
+        (
+            "const o = { [x / /a b/g.test(s)]() {} }",
+            &["o::(x%2F%2Fa b%2Fg.test(s))"],
+        ),
+    ] {
+        let mut names = clean_names("computed.ts", source);
+        names.sort();
+        assert_eq!(names, expected, "{source}");
     }
 }
