@@ -765,7 +765,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Skip explicitly declared modules and name rows in other string modules_.
   Tests: Acceptance for ambient signatures and recovered implementations in ordinary and strict modes, plus the names of retained functions in quoted modules.
 
-- [ ] **T12 - Build computed name text from lexer tokens.** Needs: T11.
+- [x] **T12 - Build computed name text from lexer tokens.** Needs: T11.
   Scenarios: _Preserve the analyzer's lexer tokens in computed text (N9)_.
   Tests: Unit tests for token adjacency and embedded expression replacement. Acceptance for computed names with comments, significant token spelling and nested callbacks.
 
