@@ -745,7 +745,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Return recovered rows with one warning_, _Skip a fatal parse and continue the ordinary scan_, _A changed-file comparison requires a clean parse on both sides_.
   Tests: Acceptance through the file analysis result. Check status, retained rows, first diagnostic and continued ordinary scanning, then strict errors on each comparison side.
 
-- [ ] **T7 - Map source bytes to JavaScript line and column positions.** Needs: T6.
+- [x] **T7 - Map source bytes to JavaScript line and column positions.** Needs: T6.
   Scenarios: _A UTF-8 BOM counts toward source columns_, _Count JavaScript line terminators_, _Identify arrow functions for coverage attribution_.
   Tests: Unit tests for the line index and acceptance for the BOM, CRLF as one break, lone CR, LF and both Unicode separators. Check arrow identity for concise and block arrows, an ordinary function expression and a declaration.
 
