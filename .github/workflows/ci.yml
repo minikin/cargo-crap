@@ -42,7 +42,6 @@ jobs:
               # a leading `**/`.
               - 'Cargo.toml'
               - '**/Cargo.toml'
-              # The gates job tests these scripts.
               - 'scripts/gates/**'
               - 'Cargo.lock'
               - '.cargo/**'
@@ -102,9 +101,6 @@ jobs:
       - name: Shellcheck
         run: shellcheck -x scripts/release/*.sh
 
-  # The workspace gates' own scripts: their shell tests run the real just
-  # and cargo-mutants against throwaway repositories, and the parser guard
-  # reads each package's dependency tree.
   gates:
     name: Gate scripts
     needs: [changes]
@@ -138,7 +134,6 @@ jobs:
       # Report every failing test, not the first (.config/nextest.toml). Not
       # set for mutation testing, which wants each mutant to stop early.
       NEXTEST_PROFILE: ci
-      # Verify snapshots, never write them: a changed golden must fail.
       INSTA_UPDATE: "no"
     strategy:
       fail-fast: false

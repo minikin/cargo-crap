@@ -62,8 +62,6 @@ fn snapshots_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")
 }
 
-/// Every failure of `cases` against `snapshots`, including a verifying run
-/// that changed their directory.
 fn verify_all(
     mode: snap::Mode,
     snapshots: &snap::Snapshots,
@@ -81,7 +79,6 @@ fn verify_all(
     };
     let before = dir_state(dir);
     let mut failures = snap::check(mode, snapshots, &ids, &run);
-    // And the run writes no file under tests/snapshots/
     if mode == snap::Mode::Verify {
         match (before, dir_state(dir)) {
             (Ok(before), Ok(after)) if before == after => {},
@@ -100,7 +97,6 @@ fn an_unreadable_snapshot_dir_fails_the_unchanged_check() {
     assert_eq!(dir_state(&missing), Ok(Vec::new()));
 }
 
-/// A golden file's name and its bytes, or the error reading it.
 type GoldenFile = (String, Result<Vec<u8>, String>);
 
 /// Every golden file in `dir`, pending ones included, with its bytes or the
@@ -148,19 +144,14 @@ fn an_unreadable_golden_is_named_by_the_verifier_not_a_panic() {
 
 #[test]
 fn the_harnesss_case_list_equals_this_specs_cases_table() {
-    // Given the Cases table in specs/44-golden-outputs.md
     let spec =
         std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(table::SPEC))
             .expect("the spec");
-    // When the golden test reads it
     let rows = table::spec_rows(&spec);
     let cases = cases::all();
     let harness: Vec<(&str, i32)> = cases.iter().map(|case| (case.id, case.exit)).collect();
-    // Then the harness's case IDs equal the table's IDs, with none missing and none extra
-    // And every case's recorded exit status equals the table's Exit column
     assert_eq!(rows.len(), 131, "the Cases table");
     assert_eq!(table::compare(&rows, &harness), Vec::<String>::new());
-    // And deleting a case from the harness, together with its snapshot, fails the test
     let without_one = &harness[1..];
     assert_eq!(
         table::compare(&rows, without_one),
@@ -228,7 +219,6 @@ fn no_insta_update_value_writes_under_tests_snapshots() {
 
 #[test]
 fn equal_scores_in_one_file_keep_source_order_under_the_default_sort() {
-    // Given the group fixture, whose three functions share one file and one score
     let source = std::fs::read_to_string(run::fixtures().join("golden/dup_group/src/lib.rs"))
         .expect("the group fixture");
     let declared: Vec<&str> = source
@@ -244,7 +234,6 @@ fn equal_scores_in_one_file_keep_source_order_under_the_default_sort() {
         "the fixture must not declare in name order"
     );
 
-    // When case g_group_human runs with the default --sort crap
     let case = cases::all()
         .into_iter()
         .find(|case| case.id == "g_group_human")
@@ -254,7 +243,6 @@ fn equal_scores_in_one_file_keep_source_order_under_the_default_sort() {
     let run = checks::finish(&case, run, copy.root()).expect("the output checks");
     let stdout = String::from_utf8(run.stdout).expect("utf-8");
 
-    // Then the rows appear in source order, all at one score
     let rows: Vec<(&str, &str)> = stdout
         .lines()
         .filter(|l| l.starts_with('│') && l.contains("./src/lib.rs"))
@@ -276,7 +264,6 @@ fn equal_scores_in_one_file_keep_source_order_under_the_default_sort() {
 
 #[test]
 fn a_cases_bytes_do_not_depend_on_file_creation_order() {
-    // Given a fixture with more than one source file
     let cases: Vec<run::Case> = cases::all()
         .into_iter()
         .filter(|case| matches!(case.fixture, run::Fixture::W | run::Fixture::D))
@@ -294,9 +281,7 @@ fn a_cases_bytes_do_not_depend_on_file_creation_order() {
     };
     let mut reordered = false;
     for case in &cases {
-        // When a case runs on one copy created in directory-listing order
         let (forward, forward_files) = run::prepare_ordered(case, &parent, run::Order::Forward);
-        // And on a second copy whose files were created in reverse order
         let (reverse, reverse_files) = run::prepare_ordered(case, &parent, run::Order::Reverse);
         let mut reversed = forward_files.clone();
         reversed.reverse();
@@ -306,7 +291,6 @@ fn a_cases_bytes_do_not_depend_on_file_creation_order() {
             case.id
         );
         reordered |= listings(forward.root()) != listings(reverse.root());
-        // Then both runs give the same bytes
         let document = |copy: &run::CaseDir| {
             let run =
                 run::run_on(case, copy).and_then(|run| checks::finish(case, run, copy.root()));
@@ -338,7 +322,6 @@ fn a_cases_bytes_do_not_depend_on_file_creation_order() {
     }
 }
 
-/// Every directory under `root`, with its entries in the order `read_dir` lists them.
 fn listings(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<std::ffi::OsString>)> {
     let mut all = Vec::new();
     let mut pending = vec![root.to_path_buf()];
@@ -361,8 +344,6 @@ fn listings(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<std::ffi::Os
     all
 }
 
-/// The filesystem type holding `path`, as `stat` (Linux) or `mount`
-/// (macOS) names it.
 fn filesystem_of(path: &std::path::Path) -> String {
     let output = |program: &str, args: &[&str]| {
         std::process::Command::new(program)

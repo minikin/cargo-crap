@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Mutation tests on the changed lines of every workspace member.
-#
 #   mutants-diff.sh               uncommitted changes, else the branch base,
 #                                 else the last commit (`just mutants-diff`)
 #   mutants-diff.sh --base <ref>  the changes since the merge base of <ref>

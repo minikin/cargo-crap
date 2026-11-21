@@ -23,8 +23,6 @@ profile = "mutants"
 # rather than on actual test failures, which would make results unreliable.
 cap_lints = true
 
-# Enable built-in skip patterns (e.g. with_capacity).
 skip_calls_defaults = true
 
-# Don't mutate integration test files: only source logic matters.
 exclude_globs = ["tests/**/*.rs"]

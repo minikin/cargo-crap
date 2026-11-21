@@ -3,10 +3,8 @@
 
 use std::collections::BTreeMap;
 
-/// The spec's path, relative to the crate root.
 pub const SPEC: &str = "specs/44-golden-outputs.md";
 
-/// Each row's ID and Exit column, from the table under `### Defaults`.
 pub fn spec_rows(spec: &str) -> Vec<(String, i32)> {
     spec.lines()
         .skip_while(|line| !line.starts_with("### Defaults"))
@@ -27,7 +25,6 @@ fn row(line: &str) -> Option<(String, i32)> {
     is_id.then(|| (id.to_owned(), exit))
 }
 
-/// Every way the harness's cases differ from the spec's rows.
 pub fn compare(
     spec: &[(String, i32)],
     harness: &[(&str, i32)],

@@ -1,4 +1,3 @@
-//! The cargo gates in the table below run over the whole workspace.
 //! Without `--workspace`, cargo at the root of a workspace with a root
 //! package selects that package alone and skips every member. The table
 //! lists, per recipe and job, the cargo commands that must be there, read
@@ -11,12 +10,9 @@ use super::config::{
     VERIFY_PREFIX, block, ci_commands, is_cargo, lines, nextest_pair, read, recipe_commands,
 };
 
-/// Where a runner's commands come from.
 #[derive(Clone, Copy)]
 enum Source {
-    /// A Justfile recipe, by its header line.
     Recipe(&'static str),
-    /// A job in `.github/workflows/ci.yml`, by its header line.
     Job(&'static str),
 }
 
@@ -142,11 +138,8 @@ const RUNNERS: &[Runner] = &[
     },
 ];
 
-/// A package selection that would narrow `--workspace` back down.
 const NARROWING: [&str; 3] = ["--exclude", "-p", "--package"];
 
-/// What `runner`'s cargo commands lack or narrow: one line per problem,
-/// empty when every expected command is there over the whole workspace.
 fn workspace_problems(
     runner: &str,
     commands: &[Vec<&str>],
@@ -187,8 +180,6 @@ fn segments<'a, 'b>(line: &'b [&'a str]) -> Vec<&'b [&'a str]> {
         .collect()
 }
 
-/// The arguments of a command that runs cargo: `cargo` in command position,
-/// after at most an `env` with `-u NAME` options and `NAME=value` settings.
 fn cargo_args<'a, 'b>(command: &'b [&'a str]) -> Option<&'b [&'a str]> {
     let mut i = 0;
     if command.first() == Some(&"env") {
@@ -206,8 +197,6 @@ fn cargo_args<'a, 'b>(command: &'b [&'a str]) -> Option<&'b [&'a str]> {
     (command.get(i) == Some(&"cargo")).then(|| &command[i + 1..])
 }
 
-/// A package selection that would narrow `--workspace` back down, in its
-/// separate or joined spelling: `--exclude x`, `--exclude=x`, `-px`.
 fn narrows(token: &str) -> bool {
     NARROWING.contains(&token)
         || token.starts_with("--exclude=")
@@ -262,10 +251,8 @@ fn borrowed(commands: &[Vec<String>]) -> Vec<Vec<&str>> {
 
 #[test]
 fn every_gate_recipe_and_job_runs_its_expected_cargo_commands_over_the_workspace() {
-    // Given the expected commands, per Justfile recipe and CI job
     let mut problems = Vec::new();
     for runner in RUNNERS {
-        // When the workspace check reads the recipe or job
         let commands = commands_of(runner.source);
         problems.extend(workspace_problems(
             runner.name,
@@ -273,32 +260,24 @@ fn every_gate_recipe_and_job_runs_its_expected_cargo_commands_over_the_workspace
             runner.expected,
         ));
     }
-    // Then each expected command is present, its tokens in the table's order,
-    // and none of them narrows the package selection
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
 #[test]
 fn the_spec_44_pins_still_hold_on_the_changed_commands() {
-    // Given the Justfile test recipe and the CI test job after this change
     let justfile = read("Justfile");
     let recipe = recipe_commands(&block(&lines(&justfile), "test:"));
     let ci = read(".github/workflows/ci.yml");
     let job = ci_commands(&block(&lines(&ci), "  test:"));
 
-    // When the shared nextest-pair check reads them
-    // Then each runner has one default and one --all-features nextest run,
-    // and both runs of each pair select the whole workspace
     for (runner, commands) in [("Justfile test recipe", &recipe), ("CI test job", &job)] {
         for run in nextest_pair(commands, runner) {
             assert!(run.contains(&"--workspace"), "{runner}: {run:?}");
         }
     }
-    // And the Justfile runs keep the verify-only prefix
     for run in nextest_pair(&recipe, "Justfile test recipe") {
         assert!(run.starts_with(&VERIFY_PREFIX), "{run:?}");
     }
-    // And every CI test job cargo run passes --locked
     for command in job
         .iter()
         .filter(|c| is_cargo(c, &["nextest", "run"]) || is_cargo(c, &["test", "--doc"]))
@@ -309,11 +288,8 @@ fn the_spec_44_pins_still_hold_on_the_changed_commands() {
 
 #[test]
 fn a_change_to_any_golden_proptest_seed_runs_the_rust_jobs() {
-    // Given the CI changes job's rust filter
     let ci = read(".github/workflows/ci.yml");
     let filter = block(&lines(&ci), "            rust:");
-    // When a golden test module's proptest seed file is the only change
-    // Then a glob over every such seed file matches it
     assert!(
         filter
             .iter()
@@ -322,8 +298,6 @@ fn a_change_to_any_golden_proptest_seed_runs_the_rust_jobs() {
     );
 }
 
-/// One step of a workflow job: its name and the shell lines it runs, from
-/// a one-line `run:` or a `run: |` block.
 struct Step {
     name: String,
     condition: String,
@@ -401,7 +375,6 @@ fn step<'a>(
         .unwrap_or_else(|| panic!("no step named {name:?}"))
 }
 
-/// The globs listed under `header` in `file`, one `- '<glob>'` per line.
 fn globs(
     file: &str,
     header: &str,
@@ -436,16 +409,12 @@ const CI: &str = ".github/workflows/ci.yml";
 
 #[test]
 fn cis_mutants_job_runs_the_shared_diff_script() {
-    // Given CI's mutants job
     let ci = read(CI);
     let job = steps(&block(&lines(&ci), "  mutants:"));
 
-    // When its steps are read
     let pull_request = step(&job, "Run mutation tests (changed lines only, PRs)");
     let push = step(&job, "Run mutation tests (full, main)");
 
-    // Then the pull-request step runs the shared script against origin/
-    // and the base branch, and nothing else decides which lines are mutated
     assert_eq!(pull_request.env, ["BASE_REF: ${{ github.base_ref }}"]);
     assert_eq!(
         pull_request.run,
@@ -453,9 +422,7 @@ fn cis_mutants_job_runs_the_shared_diff_script() {
         "{:?}",
         pull_request.run
     );
-    // And the push step mutates every member
     assert_eq!(push.run, ["cargo mutants --workspace"]);
-    // And each runs on its own event, so swapping them is caught
     assert_eq!(
         pull_request.condition,
         "github.event_name == 'pull_request'"
@@ -465,9 +432,6 @@ fn cis_mutants_job_runs_the_shared_diff_script() {
 
 #[test]
 fn a_change_only_under_crates_runs_the_rust_and_mutants_jobs() {
-    // Given the CI changes job's filters
-    // When crates/cargo-crap-core/src/lib.rs is the only changed path
-    // Then the rust and src filters both match it
     for filter in ["            rust:", "            src:"] {
         assert!(
             any_glob_matches(&globs(CI, filter), "crates/cargo-crap-core/src/lib.rs"),
@@ -479,9 +443,7 @@ fn a_change_only_under_crates_runs_the_rust_and_mutants_jobs() {
 
 #[test]
 fn a_change_only_to_a_members_cargo_toml_runs_the_rust_jobs() {
-    // Given the CI changes job's rust filter
     let rust = globs(CI, "            rust:");
-    // When a manifest is the only changed path
     // Then both entries are there, the root's literal one included, so it
     // does not depend on how picomatch reads a leading `**/`
     for entry in ["Cargo.toml", "**/Cargo.toml"] {
@@ -506,9 +468,6 @@ fn a_change_only_to_a_members_cargo_toml_runs_the_rust_jobs() {
 
 #[test]
 fn a_change_only_to_the_cores_manifest_runs_the_release_script_tests() {
-    // Given the CI changes job's release filter
-    // When crates/cargo-crap-core/Cargo.toml is the only changed path
-    // Then the release filter matches it
     assert!(any_glob_matches(
         &globs(CI, "            release:"),
         "crates/cargo-crap-core/Cargo.toml"
@@ -517,10 +476,7 @@ fn a_change_only_to_the_cores_manifest_runs_the_release_script_tests() {
 
 #[test]
 fn a_change_only_to_the_mutants_gates_own_files_runs_the_mutants_job() {
-    // Given the CI changes job's src filter, which gates the mutants job
     let src = globs(CI, "            src:");
-    // When the gate's script or its config is the only changed path
-    // Then the src filter matches it
     for path in ["scripts/gates/mutants-diff.sh", ".cargo/mutants.toml"] {
         assert!(any_glob_matches(&src, path), "the src filter misses {path}");
     }
@@ -528,15 +484,12 @@ fn a_change_only_to_the_mutants_gates_own_files_runs_the_mutants_job() {
 
 #[test]
 fn a_change_only_under_crates_runs_the_action_workflow() {
-    // Given the pull_request paths of the Action workflow
     let action = read(".github/workflows/action.yml");
     let paths: Vec<String> = block(&block(&lines(&action), "  pull_request:"), "    paths:")
         .iter()
         .filter_map(|l| l.trim().strip_prefix("- '")?.strip_suffix('\''))
         .map(str::to_owned)
         .collect();
-    // When crates/cargo-crap-core/src/lib.rs is the only changed path
-    // Then the paths match it
     assert!(
         any_glob_matches(&paths, "crates/cargo-crap-core/src/lib.rs"),
         "{paths:?}"
@@ -545,10 +498,6 @@ fn a_change_only_under_crates_runs_the_action_workflow() {
 
 #[test]
 fn a_change_only_to_the_action_workflow_runs_the_check_that_reads_it() {
-    // Given the CI changes job's rust filter
-    // When .github/workflows/action.yml is the only changed path
-    // Then the rust filter matches it, so the Action-paths check above,
-    // which reads that file, runs
     assert!(
         any_glob_matches(
             &globs(CI, "            rust:"),
@@ -560,7 +509,6 @@ fn a_change_only_to_the_action_workflow_runs_the_check_that_reads_it() {
 
 #[test]
 fn just_dev_and_ci_both_run_the_parser_guard() {
-    // Given the Justfile dev recipe and the CI workflow
     let justfile = read("Justfile");
     let justfile = lines(&justfile);
     let dev = justfile
@@ -568,8 +516,6 @@ fn just_dev_and_ci_both_run_the_parser_guard() {
         .find_map(|l| l.strip_prefix("dev:"))
         .expect("a dev recipe");
     let dev: Vec<&str> = dev.split_whitespace().collect();
-    // When their commands are read
-    // Then dev runs the gate script tests and the parser guard
     for recipe in ["gates-test", "parser-guard"] {
         assert!(dev.contains(&recipe), "dev does not run {recipe}: {dev:?}");
     }
@@ -582,7 +528,6 @@ fn just_dev_and_ci_both_run_the_parser_guard() {
         recipe("parser-guard:"),
         [vec!["bash", "scripts/gates/parser-guard.sh"]]
     );
-    // And CI's gates job runs both and shellchecks the scripts
     let ci = read(CI);
     let job = steps(&block(&lines(&ci), "  gates:"));
     for command in [
@@ -605,9 +550,6 @@ fn just_dev_and_ci_both_run_the_parser_guard() {
 
 #[test]
 fn a_change_only_to_a_gate_script_runs_the_gate_script_tests() {
-    // Given the CI changes job's filters
-    // When scripts/gates/parser-guard.sh is the only changed path
-    // Then the filter that gates the gates job matches it
     let ci = read(CI);
     let job = block(&lines(&ci), "  gates:");
     let condition = job
@@ -650,7 +592,6 @@ fn selected_packages<'a>(args: &[&'a str]) -> Vec<&'a str> {
     selected
 }
 
-/// The workspace members whose `rust-version` is `msrv`, sorted.
 fn msrv_members(msrv: &str) -> Vec<String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let output = std::process::Command::new(&cargo)
@@ -678,10 +619,8 @@ fn msrv_members(msrv: &str) -> Vec<String> {
 
 #[test]
 fn the_msrv_job_tests_the_1_88_packages_by_name() {
-    // Given CI's msrv job on Rust 1.88
     let ci = read(CI);
     let job = steps(&block(&lines(&ci), "  msrv:"));
-    // When its cargo commands are read
     let cargo: Vec<Vec<&str>> = job
         .iter()
         .flat_map(|s| &s.run)
@@ -694,11 +633,9 @@ fn the_msrv_job_tests_the_1_88_packages_by_name() {
     let msrv_members = msrv_members("1.88");
     assert_eq!(msrv_members, ["cargo-crap", "cargo-crap-core"]);
     for command in &cargo {
-        // Then each passes -p cargo-crap -p cargo-crap-core
         let args = cargo_args(command).expect("a cargo run");
         let selected = selected_packages(args);
         assert_eq!(selected, msrv_members, "{command:?}");
-        // And none passes --workspace
         assert!(!args.contains(&"--workspace"), "{command:?}");
     }
 }
@@ -997,8 +934,6 @@ mod tests {
     }
 
     proptest! {
-        /// Removing any set of expected commands from a runner that has them
-        /// all makes the check name exactly those commands, in table order.
         #[test]
         fn the_check_names_exactly_the_missing_commands(keep in proptest::collection::vec(any::<bool>(), LINT.len())) {
             let lines: Vec<String> = LINT

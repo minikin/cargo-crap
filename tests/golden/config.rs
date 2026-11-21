@@ -78,7 +78,6 @@ fn selects_every_target(command: &[&str]) -> bool {
     command.contains(&"--all-targets") && !command.iter().any(|t| FILTERS.contains(t))
 }
 
-/// What every Justfile test run starts with.
 pub(super) const VERIFY_PREFIX: [&str; 10] = [
     "env",
     "-u",
@@ -124,7 +123,6 @@ pub(super) fn nextest_pair<'a, 'b>(
 
 #[test]
 fn the_goldens_build_against_the_committed_lock() {
-    // Given Cargo.lock is committed and no longer listed in .gitignore
     let mut rules = GitignoreBuilder::new(root());
     assert!(
         rules.add(root().join(".gitignore")).is_none(),
@@ -139,11 +137,9 @@ fn the_goldens_build_against_the_committed_lock() {
     );
     assert!(root().join("Cargo.lock").is_file());
 
-    // When the CI test job builds the tests
     let ci = read(".github/workflows/ci.yml");
     let commands = ci_commands(&block(&lines(&ci), "  test:"));
 
-    // Then it refuses an untracked lock before any cargo command
     let tracked = commands
         .iter()
         .position(|c| c[..] == ["git", "ls-files", "--error-unmatch", "--", "Cargo.lock"]);
@@ -152,7 +148,6 @@ fn the_goldens_build_against_the_committed_lock() {
         tracked.is_some() && tracked < first_cargo,
         "the CI test job does not check that Cargo.lock is tracked before cargo runs"
     );
-    // And it builds with --locked
     let doc_tests: Vec<&[&str]> = commands
         .iter()
         .map(Vec::as_slice)
@@ -172,15 +167,12 @@ fn the_goldens_build_against_the_committed_lock() {
 
 #[test]
 fn just_test_and_ci_verify_without_writing() {
-    // Given the Justfile's test recipe and the CI test job
     let justfile = read("Justfile");
     let recipe = recipe_commands(&block(&lines(&justfile), "test:"));
     let ci = read(".github/workflows/ci.yml");
     let ci = lines(&ci);
     let job = block(&ci, "  test:");
 
-    // When either runs the tests
-    // Then both nextest runs, default and --all-features, run with INSTA_UPDATE=no
     for command in nextest_pair(&recipe, "Justfile test recipe") {
         assert!(
             command.starts_with(&VERIFY_PREFIX),
@@ -195,7 +187,6 @@ fn just_test_and_ci_verify_without_writing() {
         "the CI test job does not set INSTA_UPDATE: \"no\""
     );
 
-    // And a change that touches only tests/snapshots/ triggers the CI test job
     assert!(
         job.iter()
             .any(|l| l.trim() == "if: needs.changes.outputs.rust == 'true'"),

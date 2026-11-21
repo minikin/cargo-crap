@@ -1,5 +1,3 @@
-//! Verify and record modes over the committed snapshots.
-//!
 //! Verify mode reads each `.snap` file and compares its body with the run's
 //! document itself, never through an insta assertion, so no `INSTA_UPDATE`
 //! value can make a verifying run write or accept a golden. Record mode
@@ -20,8 +18,6 @@ use crate::encode::{Run, encode, matches};
 pub enum Mode {
     Verify,
     Record,
-    /// Recording asked for, but insta would not see `INSTA_UPDATE=new`:
-    /// re-run with it set, through [`relaunch`].
     Relaunch,
 }
 
@@ -51,7 +47,6 @@ pub fn mode(env: &dyn Fn(&str) -> Option<String>) -> Result<Mode, String> {
 /// ones, where `cargo insta review` and this harness look for them.
 const PENDING_DIR: &str = "INSTA_PENDING_DIR";
 
-/// Re-runs this test binary with `args`, recording under `INSTA_UPDATE=new`.
 pub fn relaunch(args: &[&str]) -> std::process::Output {
     let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
     command
@@ -239,9 +234,6 @@ impl Snapshots {
             })
     }
 
-    /// Problems with the set of snapshot files against the case IDs:
-    /// duplicate IDs, files no case owns and, when `missing_counts`, cases
-    /// without a file.
     pub fn check_set(
         &self,
         cases: &[&str],
@@ -269,7 +261,6 @@ impl Snapshots {
         problems
     }
 
-    /// The case IDs of the accepted golden snapshots in the directory.
     fn recorded(&self) -> Result<BTreeSet<String>, String> {
         let entries = match std::fs::read_dir(&self.dir) {
             Ok(entries) => entries,
@@ -289,7 +280,6 @@ impl Snapshots {
     }
 }
 
-/// The document an insta snapshot file holds after its metadata header.
 fn body(snapshot: &str) -> Option<&str> {
     let after = snapshot.strip_prefix("---\n")?;
     let (_, document) = after.split_once("\n---\n")?;
@@ -348,8 +338,6 @@ mod tests {
         all
     }
 
-    /// A snapshot dir holding a golden for `changed` that the run no longer
-    /// matches, and none for `missing`.
     fn stale_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("dir");
         for (case, stdout) in [("changed", "old table\n"), ("same", "same table\n")] {
@@ -365,7 +353,6 @@ mod tests {
 
     const CASES: [&str; 3] = ["changed", "missing", "same"];
 
-    /// Today's run of each probe case: `same` still matches its golden.
     fn fresh(case: &str) -> Run {
         sample(if case == "same" {
             "same table\n"
@@ -446,14 +433,12 @@ mod tests {
 
     #[test]
     fn verification_never_writes_a_golden() {
-        // Given INSTA_UPDATE set to always, force, unseen, new or auto
         for value in UPDATE_VALUES {
             let dir = stale_dir();
             let before = files(dir.path());
             let result = tempfile::NamedTempFile::new().expect("result");
             let dir_text = dir.path().to_str().expect("utf-8 dir");
             let result_text = result.path().to_str().expect("utf-8 path");
-            // When the golden test runs in verify mode
             let child = rerun(
                 "snap::tests::verify_under_the_hosts_insta_update",
                 &[
@@ -468,14 +453,11 @@ mod tests {
                 String::from_utf8_lossy(&child.stdout)
             );
             let report = std::fs::read_to_string(result.path()).expect("report");
-            // Then a changed output fails its case
             assert!(
                 report.contains("changed: output differs"),
                 "{value}: {report}"
             );
-            // And a missing snapshot fails its case
             assert!(report.contains("missing: no snapshot"), "{value}: {report}");
-            // And no file under tests/snapshots/ is created or modified
             assert_eq!(
                 files(dir.path()),
                 before,
@@ -516,11 +498,9 @@ mod tests {
         update: Option<&str>,
         pending: Option<&str>,
     ) {
-        // Given GOLDEN_RECORD=1
         let dir = stale_dir();
         let accepted = std::fs::read(dir.path().join("golden__changed.snap")).expect("accepted");
         let dir_text = dir.path().to_str().expect("utf-8 dir");
-        // When the golden test runs
         let mut env = vec![("GOLDEN_RECORD", "1"), (SNAP_DIR, dir_text)];
         env.extend(update.map(|u| ("INSTA_UPDATE", u)));
         env.extend(pending.map(|p| (PENDING_DIR, p)));
@@ -530,7 +510,6 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&child.stdout)
         );
-        // Then every case whose output differs from its snapshot writes a pending .snap.new
         for case in ["changed", "missing"] {
             let pending =
                 std::fs::read_to_string(dir.path().join(format!("golden__{case}.snap.new")))
@@ -540,7 +519,6 @@ mod tests {
                 Some(encode(case, &sample("new table\n")).as_str())
             );
         }
-        // And no accepted .snap file is modified until `cargo insta review` accepts it
         assert_eq!(
             std::fs::read(dir.path().join("golden__changed.snap")).expect("accepted"),
             accepted
@@ -550,7 +528,6 @@ mod tests {
             !dir.path().join("golden__same.snap.new").exists(),
             "a matching run left a pending snapshot"
         );
-        // Once accepted, insta's own file verifies
         std::fs::rename(
             dir.path().join("golden__missing.snap.new"),
             dir.path().join("golden__missing.snap"),
@@ -680,7 +657,6 @@ mod tests {
 
     #[test]
     fn the_snapshot_files_equal_the_case_list() {
-        // Given the files tests/snapshots/golden__*.snap
         let dir = tempfile::tempdir().expect("dir");
         for name in [
             "golden__a.snap",
@@ -691,21 +667,17 @@ mod tests {
             std::fs::write(dir.path().join(name), "").expect("write");
         }
         let snapshots = Snapshots::at(dir.path().into());
-        // When the golden test runs
         let problems = snapshots.check_set(&["a", "b", "a"], true);
-        // Then every snapshot file belongs to a case ID
         assert!(
             problems.iter().any(|p| p.contains("golden__orphan.snap")),
             "{problems:?}"
         );
-        // And every case ID has exactly one snapshot file
         assert!(
             problems
                 .iter()
                 .any(|p| p.contains("case a is listed twice")),
             "{problems:?}"
         );
-        // And a case whose snapshot file is missing fails and names the case
         assert!(
             problems.iter().any(|p| p.contains("b: no snapshot")),
             "{problems:?}"

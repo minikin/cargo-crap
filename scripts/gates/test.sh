@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Tests for the workspace gates.
-#
 # Each case builds what it needs in a temp dir from a named list of the
 # repository's files, never from `git ls-files`: under jj, what git tracks
 # depends on the moment, and cargo-mutants' scratch copies have no `.git`.
@@ -22,12 +20,8 @@ check() {
 scratch="$(mktemp -d)" || exit 1
 trap 'rm -rf "$scratch"' EXIT
 
-# The lint case reads clippy's JSON with jq: name it when it is missing
-# rather than fail that case for a reason it does not show.
 command -v jq > /dev/null || { echo "FAIL jq is not installed"; exit 1; }
 
-# The root manifest, the lock and the core, with stub crate roots for
-# cargo-crap: `-p cargo-crap-core` then compiles the core and nothing else.
 lint_workspace() {
     local dir="$scratch/lint"
     {
@@ -40,7 +34,6 @@ lint_workspace() {
     echo "$dir"
 }
 
-# Scenario: the core inherits the root's pedantic lints.
 dir="$(lint_workspace)" || exit 1
 probe="$dir/crates/cargo-crap-core/src/lib.rs"
 double_line=$(($(wc -l < "$probe") + 2))
@@ -59,8 +52,6 @@ check "the core inherits the root's pedantic lints: one error, must_use_candidat
     "clippy::must_use_candidate crates/cargo-crap-core/src/lib.rs $double_line pub fn double(x: u32) -> u32 {" \
     "$errors"
 
-# The mutants cases need both tools on PATH. A missing one fails the
-# suite: a case that skipped would report a gate it never ran.
 for tool in just cargo-mutants; do
     command -v "$tool" > /dev/null || { echo "FAIL $tool is not installed"; exit 1; }
 done
@@ -98,9 +89,6 @@ mutants_repo() {
     echo "$dir"
 }
 
-# A `cargo` first on PATH that records its arguments, one call per line and
-# each argument in brackets so their boundaries show, keeps a copy of the
-# file given to --in-diff, then exits 0 without running anything.
 shim="$scratch/shim"
 mkdir -p "$shim"
 cat > "$shim/cargo" <<'SHIM'
@@ -115,8 +103,6 @@ done
 SHIM
 chmod +x "$shim/cargo"
 
-# Run "$@" in fixture $1 with the shim first on PATH. Afterwards $calls
-# holds every cargo call the shim saw and $copied the diff it kept.
 with_shim() {
     local dir="$1"
     shift
@@ -142,8 +128,6 @@ listed() {
     fi
 }
 
-# How many of fixture $1's listed mutants (in diff $3, if given) are in
-# file $2, or "listing failed".
 mutants_in() {
     local list
     list="$(listed "$1" "${3:-}")"
@@ -160,7 +144,6 @@ shim_ran_mutants() {
 
 double='pub fn double(x: u32) -> u32 { x * 2 }'
 
-# Scenario: just mutants-diff mutates a changed line in the core.
 dir="$(mutants_repo)" || exit 1
 echo "$double" >> "$dir/crates/cargo-crap-core/src/lib.rs"
 with_shim "$dir" just --justfile "$repo/Justfile" --working-directory "$dir" mutants-diff
@@ -172,7 +155,6 @@ check "just mutants-diff mutates a changed line in the core: the diff holds the 
 check "just mutants-diff mutates a changed line in the core: replace * with + in double" \
     "1" "$(listed "$dir" "$copied" | grep -q 'crates/cargo-crap-core/src/lib.rs:.*replace \* with + in double' && echo 1 || echo 0)"
 
-# Scenario: CI's base-ref diff mutates a committed change in the core.
 dir="$(mutants_repo)" || exit 1
 (cd "$dir" && fixture_git checkout -q -b feature && echo "$double" >> crates/cargo-crap-core/src/lib.rs &&
     fixture_git commit -q -am double && echo docs > README.md && fixture_git add README.md &&
@@ -199,7 +181,6 @@ check "CI's base-ref diff with no source change measures nothing: says so" \
     "1" "$(grep -q 'nothing was measured' <<< "$out" && echo 1 || echo 0)"
 check "CI's base-ref diff with no source change measures nothing: exits 0" "0" "$status"
 
-# The six-function module the move cases move from src/ into the core.
 x_module='pub fn a(x: u32) -> u32 { x + 1 }
 pub fn c(x: u32) -> bool { x > 3 }
 pub fn d(x: u32) -> u32 { x * 3 }
@@ -207,8 +188,6 @@ pub fn e(x: u32) -> bool { x == 7 }
 pub fn f(x: u32) -> u32 { x - 1 }
 pub fn g(x: u32) -> bool { x < 9 }'
 
-# A fixture whose root package declares src/x.rs, committed, with
-# diff.renames = false in its own config.
 move_repo() {
     local dir
     dir="$(mutants_repo)" || exit 1
@@ -218,8 +197,6 @@ move_repo() {
     echo "$dir"
 }
 
-# Moves src/x.rs into the core of fixture $1 with `mv` (git learns of the new
-# path only if a case adds it) and moves its `pub mod x;` along.
 move_x() {
     mkdir -p "$1/crates/cargo-crap-core/src" &&
         mv "$1/src/x.rs" "$1/crates/cargo-crap-core/src/x.rs" &&
@@ -227,14 +204,12 @@ move_x() {
         echo 'pub mod x;' >> "$1/crates/cargo-crap-core/src/lib.rs"
 }
 
-# The part of diff $1 about the file that ends up at $2.
 section() {
     awk -v path="$2" '/^diff --git / { inside = ($0 ~ (" b/" path "$")) } inside' "$1" 2> /dev/null
 }
 
 core_x="crates/cargo-crap-core/src/x.rs"
 
-# Scenario: a pure move costs no mutants.
 dir="$(move_repo)" || exit 1
 (move_x "$dir" && cd "$dir" && fixture_git add -A && fixture_git commit -q -m move) > /dev/null 2>&1 ||
     { echo "FAIL setting up the pure move"; exit 1; }
@@ -248,7 +223,6 @@ check "a pure move costs no mutants: rename to the core" \
 check "a pure move costs no mutants: no hunk for x.rs" "0" "$(section "$copied" "$core_x" | grep -c '^@@')"
 check "a pure move costs no mutants: none listed in x.rs" "0" "$(mutants_in "$dir" "$core_x" "$copied")"
 
-# Scenario: a move with one edited line mutates that line only.
 dir="$(move_repo)" || exit 1
 (move_x "$dir" && sed -i.bak '1s/x + 1/x + 2/' "$dir/$core_x" && rm "$dir/$core_x.bak" &&
     cd "$dir" && fixture_git add -A && fixture_git commit -q -m move) > /dev/null 2>&1 ||
@@ -267,7 +241,6 @@ check "a move with one edited line mutates that line only: every listed mutant i
 check "a move with one edited line mutates that line only: none in c" \
     "0" "$(if grep -q '^LISTING FAILED' <<< "$filtered"; then echo "listing failed"; else grep -c "^$core_x:.* in c$" <<< "$filtered" || true; fi)"
 
-# Scenario: an untracked moved file still pairs as a rename.
 dir="$(move_repo)" || exit 1
 move_x "$dir" || { echo "FAIL setting up the untracked move"; exit 1; }
 check "an untracked moved file still pairs as a rename: the moved file has mutants unfiltered" \
@@ -281,7 +254,6 @@ check "an untracked moved file still pairs as a rename: none listed in x.rs" "0"
 check "an untracked moved file still pairs as a rename: git status unchanged" \
     "$before" "$(cd "$dir" && fixture_git status --porcelain)"
 
-# Scenario: a source file under a member's tests directory is not in the diff.
 dir="$(mutants_repo)" || exit 1
 mkdir -p "$dir/crates/cargo-crap-core/tests/fixtures/src"
 echo 'pub fn y() -> u32 { 4 }' > "$dir/crates/cargo-crap-core/tests/fixtures/src/y.rs"
@@ -292,7 +264,6 @@ check "a source file under a member's tests directory is not in the diff: lib.rs
 check "a source file under a member's tests directory is not in the diff: tests/ is not" \
     "0" "$(grep -c '^diff --git .*crates/cargo-crap-core/tests/' "$copied" 2> /dev/null || true)"
 
-# Scenario: just mutants and just mutants-all reach the core.
 dir="$(mutants_repo)" || exit 1
 with_shim "$dir" just --justfile "$repo/Justfile" --working-directory "$dir" mutants crates/cargo-crap-core/src/lib.rs
 first="$calls"
@@ -318,14 +289,12 @@ trees() {
     echo "$dir"
 }
 
-# Scenario: the parser guard passes on this repository.
 out="$(cd "$repo" && bash scripts/gates/parser-guard.sh 2>&1)"
 status=$?
 check "the parser guard passes on this repository: exits 0" "0" "$status"
 check "the parser guard passes on this repository: names what it checked" "1" \
     "$(grep -q 'cargo-crap, cargo-crap-core' <<< "$out" && echo 1 || echo 0)"
 
-# Scenario: the parser guard sees a feature-gated parser dependency.
 # The syn cargo-crap links directly, which every build downloads. The lock
 # holds more than one, and the full tree reaches another through a proc
 # macro first, so the query stops at cargo-crap's own dependencies.
@@ -345,8 +314,6 @@ check "the parser guard sees a feature-gated parser dependency: exits 1" "1" "$s
 check "the parser guard sees a feature-gated parser dependency: names the core and syn" "1" \
     "$(grep -q "cargo-crap-core links syn v$syn_version" <<< "$out" && echo 1 || echo 0)"
 
-# A temp workspace whose core's manifest ends with $2, resolved offline
-# against the syn cargo-crap links. Prints the workspace path.
 guard_workspace() {
     local dir="$scratch/$1"
     {
@@ -359,7 +326,6 @@ guard_workspace() {
     echo "$dir"
 }
 
-# Scenario: the parser guard sees a platform-gated parser dependency.
 dir="$(guard_workspace platform "[target.'cfg(windows)'.dependencies]
 syn = \"=$syn_version\"")" || exit 1
 out="$(cd "$dir" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
@@ -368,14 +334,12 @@ check "the parser guard sees a platform-gated parser dependency: exits 1" "1" "$
 check "the parser guard sees a platform-gated parser dependency: names the core and syn" "1" \
     "$(grep -q "cargo-crap-core links syn v$syn_version" <<< "$out" && echo 1 || echo 0)"
 
-# Scenario: a parser only the core's tests use is not a violation.
 dir="$(guard_workspace dev-only "[dev-dependencies]
 syn = \"=$syn_version\"")" || exit 1
 out="$(cd "$dir" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
 status=$?
 check "a parser only the core's tests use is not a violation" "0" "$status"
 
-# Scenario: the parser guard fails when the core links syn.
 dir="$(trees)" || exit 1
 printf 'cargo-crap-core v0.1.0 (/repo/crates/cargo-crap-core)\nsyn v2.0.119\n' > "$dir/cargo-crap-core.tree"
 guard "$dir"
@@ -383,7 +347,6 @@ check "the parser guard fails when the core links syn: exits 1" "1" "$status"
 check "the parser guard fails when the core links syn: names it" "1" \
     "$(grep -q 'cargo-crap-core links syn v2.0.119' <<< "$out" && echo 1 || echo 0)"
 
-# Scenario: the parser guard fails when cargo-crap links an Oxc crate.
 dir="$(trees)" || exit 1
 printf 'oxc_parser v0.159.0\n' >> "$dir/cargo-crap.tree"
 guard "$dir"
@@ -391,7 +354,6 @@ check "the parser guard fails when cargo-crap links an Oxc crate: exits 1" "1" "
 check "the parser guard fails when cargo-crap links an Oxc crate: names it" "1" \
     "$(grep -q 'cargo-crap links oxc_parser v0.159.0' <<< "$out" && echo 1 || echo 0)"
 
-# Scenario: syn in cargo-crap's tree is not a violation.
 dir="$(trees)" || exit 1
 guard "$dir"
 check "syn in cargo-crap's tree is not a violation" "0" "$status"
@@ -410,7 +372,6 @@ check "the core may not link an Oxc crate" "1" "$status"
 check "the core's Oxc crate is named" "1" \
     "$(grep -q 'cargo-crap-core links oxc_ast v0.159.0' <<< "$out" && echo 1 || echo 0)"
 
-# Scenario: a guard that saw no tree does not pass.
 dir="$(trees)" || exit 1
 : > "$dir/cargo-crap-core.tree"
 guard "$dir"
@@ -469,7 +430,6 @@ check "an unknown base ref fails" "1" "$([ "$status" -ne 0 ] && echo 1 || echo 0
 check "an unknown base ref is named" "1" "$(grep -q 'no-such-ref' <<< "$out" && echo 1 || echo 0)"
 check "an unknown base ref runs no cargo" "" "$calls"
 
-# An argument the script does not take is refused, not dropped.
 with_shim "$dir" bash scripts/gates/mutants-diff.sh --base main --jobs 4
 check "an extra argument is refused" "2" "$status"
 with_shim "$dir" bash scripts/gates/mutants-diff.sh --base ""
@@ -506,8 +466,6 @@ check "measuring keeps a staged deletion: exits 0" "0" "$status"
 check "measuring keeps a staged deletion" "$staged_before" "$(cd "$dir" && fixture_git diff --cached --name-status)"
 check "the staged deletion is in the index before" "D	src/lib.rs" "$staged_before"
 
-# The same for the listing of untracked files: a new source file that a
-# failed `git ls-files` drops from the diff is a change never measured.
 dir="$(mutants_repo)" || exit 1
 echo "$double" > "$dir/src/new.rs"
 echo "$double" >> "$dir/crates/cargo-crap-core/src/lib.rs"
