@@ -30,10 +30,32 @@ fn choose_the_source_grammar_from_the_path() {
         assert_eq!(
             clean_names(
                 &format!("typed.{ext}"),
-                "const v = <number>x; function f(x: number) { return x }"
+                "function f(x: number) { return x }"
             ),
             ["f"]
         );
+        let path = format!("cast.{ext}");
+        let cast = analyze(
+            Path::new(&path),
+            b"const v = <number>x; function f() {}",
+            Mode::Ordinary,
+        )
+        .unwrap();
+        assert_eq!(cast.rows.len(), 1, "{path}");
+        assert_eq!(cast.rows[0].name, "f");
+        if ext == "ts" {
+            assert_eq!(cast.status, FileStatus::Clean);
+            assert!(cast.warnings.is_empty(), "{path}: {:?}", cast.warnings);
+        } else {
+            assert_eq!(cast.status, FileStatus::Recovered);
+            let [warning] = cast.warnings.as_slice() else {
+                panic!("{path}: {:?}", cast.warnings)
+            };
+            assert!(
+                warning.contains("Use an `as` expression instead"),
+                "{warning}"
+            );
+        }
     }
     for ext in ["cjs", "cts"] {
         assert_eq!(

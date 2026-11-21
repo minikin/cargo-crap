@@ -26,6 +26,8 @@ pub enum Side {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileStatus {
     Clean,
+    Recovered,
+    SkippedFatal,
 }
 
 #[derive(Debug)]
@@ -81,18 +83,27 @@ pub fn analyze(
     let grammar = grammar_for(path).map_err(|e| error(e.to_string()))?;
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source, grammar).parse();
-    if matches!(mode, Mode::Strict(_))
-        && let Some(diagnostic) = parsed.diagnostics.first()
-    {
-        return Err(error(format!("parse error: {diagnostic}")));
+    let mut file = FileAnalysis {
+        status: FileStatus::Clean,
+        rows: Vec::new(),
+        warnings: Vec::new(),
+    };
+    if let Some(diagnostic) = parsed.diagnostics.first() {
+        let problem = error(format!("parse error: {diagnostic}"));
+        if matches!(mode, Mode::Strict(_)) {
+            return Err(problem);
+        }
+        file.warnings.push(problem.to_string());
+        if parsed.fatal_error {
+            file.status = FileStatus::SkippedFatal;
+            return Ok(file);
+        }
+        file.status = FileStatus::Recovered;
     }
     let mut collector = Collector::default();
     collector.visit_program(&parsed.program);
-    Ok(FileAnalysis {
-        status: FileStatus::Clean,
-        rows: collector.rows,
-        warnings: Vec::new(),
-    })
+    file.rows = collector.rows;
+    Ok(file)
 }
 
 fn grammar_for(path: &Path) -> Result<SourceType, oxc_span::UnknownExtension> {

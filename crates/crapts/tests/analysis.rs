@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crapts::{Mode, Side, analyze};
+use crapts::{FileStatus, Mode, Side, analyze};
 
 fn complexity(
     source: &str,
@@ -100,6 +100,72 @@ fn reject_invalid_utf8_source_bytes() {
         assert!(message.contains("invalid UTF-8"), "{message}");
         if let Some(side) = side {
             assert!(message.contains(side), "{message}");
+        }
+    }
+}
+
+const RECOVERABLE: &[u8] = b"const x; let [a]; function kept() { if (x) go() }";
+const FATAL: &[u8] = b"function partial() { if (x) {";
+
+#[test]
+fn return_recovered_rows_with_one_warning() {
+    // Given two malformed declarations, choosing the last diagnostic would blame a different construct.
+    let file = analyze(Path::new("recover.js"), RECOVERABLE, Mode::Ordinary).unwrap();
+    assert_eq!(file.status, FileStatus::Recovered);
+    let rows: Vec<_> = file
+        .rows
+        .iter()
+        .map(|row| (row.name.as_str(), row.cyclomatic))
+        .collect();
+    assert_eq!(rows, [("kept", 2)]);
+    assert_eq!(
+        file.warnings,
+        ["recover.js: parse error: Missing initializer in const declaration"]
+    );
+}
+
+#[test]
+fn skip_a_fatal_parse_and_continue_the_ordinary_scan() {
+    // When a caller collects Result values, an Err for the first file would discard the second.
+    let files = [
+        ("broken.ts", FATAL),
+        ("good.ts", b"const ok = () => 1".as_slice()),
+    ];
+    let analyses: Vec<_> = files
+        .iter()
+        .map(|(path, bytes)| analyze(Path::new(path), bytes, Mode::Ordinary))
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let [broken, good] = analyses.as_slice() else {
+        panic!("expected both files")
+    };
+    assert_eq!(broken.status, FileStatus::SkippedFatal);
+    assert!(broken.rows.is_empty(), "{:?}", broken.rows);
+    let [warning] = broken.warnings.as_slice() else {
+        panic!("{:?}", broken.warnings)
+    };
+    assert_eq!(
+        warning,
+        "broken.ts: parse error: Expected `}` but found `EOF`"
+    );
+    assert_eq!(good.status, FileStatus::Clean);
+    assert!(good.warnings.is_empty(), "{:?}", good.warnings);
+    let names: Vec<_> = good.rows.iter().map(|row| row.name.as_str()).collect();
+    assert_eq!(names, ["ok"]);
+}
+
+#[test]
+fn a_changed_file_comparison_requires_a_clean_parse_on_both_sides() {
+    // Then an incomplete syntax tree could make a surviving function look deleted.
+    for (side, label) in [(Side::Base, "base"), (Side::Head, "head")] {
+        for bytes in [RECOVERABLE, FATAL] {
+            let error = analyze(Path::new("src/input.ts"), bytes, Mode::Strict(side)).unwrap_err();
+            let message = error.to_string();
+            assert!(
+                message.contains(label) && message.contains("src/input.ts"),
+                "{message}"
+            );
+            assert!(message.contains("parse error"), "{message}");
         }
     }
 }
