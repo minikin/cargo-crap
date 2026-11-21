@@ -1,13 +1,13 @@
 [package]
 name = "cargo-crap"
 version = "0.9.0"
-edition = "2024"
+edition.workspace = true
 rust-version = "1.88"
-authors = ["Oleksandr Prokhorenko <warbles.lieu_04@icloud.com>"]
-license = "MIT"
+authors.workspace = true
+license.workspace = true
 description = "Change Risk Anti-Patterns (CRAP) metric for Rust projects"
-repository = "https://github.com/minikin/cargo-crap"
-homepage = "https://github.com/minikin/cargo-crap"
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://docs.rs/cargo-crap"
 readme = "README.md"
 exclude = [
@@ -21,6 +21,7 @@ exclude = [
     ".idea/",
     "docs/",
     "reviews/",
+    "scripts/gates/",
     "specs/",
     "tests/",
     "clippy.toml",
@@ -31,6 +32,57 @@ exclude = [
 keywords = ["cargo", "code-quality", "coverage", "complexity", "metrics"]
 categories = ["development-tools::cargo-plugins", "development-tools::testing"]
 
+# `examples/` and `tests/fixtures/` hold packages of their own. Cargo refuses
+# a package under a workspace that neither lists nor excludes it.
+[workspace]
+members = ["crates/cargo-crap-core"]
+exclude = ["examples", "tests/fixtures"]
+resolver = "3"
+
+# No `version` here: each package carries its own. The goldens record the
+# report version as a placeholder only when it equals cargo-crap's, so they
+# catch a report stamped by the core only while the two differ.
+# `scripts/release/prep.sh` edits the first `version =` line of this file,
+# and badges.yml reads the first `license =` line.
+[workspace.package]
+edition = "2024"
+authors = ["Oleksandr Prokhorenko <warbles.lieu_04@icloud.com>"]
+license = "MIT"
+repository = "https://github.com/minikin/cargo-crap"
+homepage = "https://github.com/minikin/cargo-crap"
+
+# Versions and default-features only: each package picks its own features,
+# so a member that inherits syn does not get cargo-crap's `full`.
+[workspace.dependencies]
+anyhow = "1"
+clap = "4.4"
+comfy-table = "7"
+globset = "0.4"
+ignore = "0.4"
+rayon = "1"
+indicatif = "0.18.4"
+lcov = "0.8"
+owo-colors = "4"
+percent-encoding = "2"
+proc-macro2 = "1"
+serde = "1"
+serde_json = "1"
+quote = "1"
+syn = "2"
+toml = { version = "0.8", default-features = false }
+# Display width of table text, the same measure comfy-table lays out by.
+unicode-width = "0.2"
+# TypeSafe triage (spec 30): a small blocking client, no gzip.
+ureq = { version = "3.4", default-features = false }
+
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+jsonschema = { version = "0.46", default-features = false }
+proptest = "1.11.0"
+# Snapshots of the human tables at fixed widths (spec 20).
+insta = "1"
+
 [[bin]]
 name = "cargo-crap"
 path = "src/main.rs"
@@ -40,27 +92,25 @@ name = "cargo_crap"
 path = "src/lib.rs"
 
 [dependencies]
-anyhow = "1"
-clap = { version = "4.4", features = ["derive"] }
-comfy-table = "7"
-globset = "0.4"
-ignore = "0.4"
-rayon = "1"
-indicatif = "0.18.4"
-lcov = "0.8"
-owo-colors = "4"
-percent-encoding = "2"
-proc-macro2 = { version = "1", features = ["span-locations"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["float_roundtrip"] }
-quote = "1"
-syn = { version = "2", features = ["full", "visit", "printing"] }
-toml = { version = "0.8", default-features = false, features = ["parse"] }
-# Display width of table text, the same measure comfy-table lays out by.
-unicode-width = "0.2"
-# TypeSafe triage (spec 30): a small blocking client; rustls, no gzip.
-# Optional: only the `triage` feature compiles a network client in.
-ureq = { version = "3.4", default-features = false, features = ["rustls"], optional = true }
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+comfy-table.workspace = true
+globset.workspace = true
+ignore.workspace = true
+rayon.workspace = true
+indicatif.workspace = true
+lcov.workspace = true
+owo-colors.workspace = true
+percent-encoding.workspace = true
+proc-macro2 = { workspace = true, features = ["span-locations"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+quote.workspace = true
+syn = { workspace = true, features = ["full", "visit", "printing"] }
+toml = { workspace = true, features = ["parse"] }
+unicode-width.workspace = true
+# Optional: only the `triage` feature compiles a network client in, over rustls.
+ureq = { workspace = true, optional = true, features = ["rustls"] }
 
 [features]
 # Duplicate-pair triage by a TypeSafe model (spec 30). Off by default: a plain
@@ -69,13 +119,12 @@ ureq = { version = "3.4", default-features = false, features = ["rustls"], optio
 triage = ["dep:ureq"]
 
 [dev-dependencies]
-tempfile = "3"
-assert_cmd = "2"
-predicates = "3"
-jsonschema = { version = "0.46", default-features = false }
-proptest = "1.11.0"
-# Snapshots of the human tables at fixed widths (spec 20).
-insta = "1"
+tempfile.workspace = true
+assert_cmd.workspace = true
+predicates.workspace = true
+jsonschema.workspace = true
+proptest.workspace = true
+insta.workspace = true
 
 # docs.rs documents every feature, so the triage client appears in the docs.
 [package.metadata.docs.rs]
@@ -100,7 +149,10 @@ codegen-units = 1
 inherits = "dev"
 debug = 0
 
-[lints.clippy]
+[lints]
+workspace = true
+
+[workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 # Require `#[expect(clippy::rule)]` instead of `#[allow(clippy::rule)]`.
 # `expect` errors if the lint stops firing, forcing maintainers to remove
