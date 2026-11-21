@@ -109,7 +109,7 @@ crap-delta-main:
 # Full local gate: format, lint, tests, CRAP. Note `cov` is NOT part of it —
 # the `crap` recipe runs llvm-cov to produce lcov.info but never applies the
 # 90% line bar; run `just cov` for that.
-dev: fmt lint test action-test release-test crap
+dev: fmt lint test action-test release-test gates-test parser-guard crap
 
 # The GitHub Action's shell pieces: their tests, and shellcheck when it is
 # installed.
@@ -128,9 +128,14 @@ release-test:
     if command -v shellcheck > /dev/null; then shellcheck -x scripts/release/*.sh; fi
 
 # The workspace gates' shell tests, and shellcheck when it is installed.
+# They need just, cargo-mutants and jq on PATH.
 gates-test:
     bash scripts/gates/test.sh
     if command -v shellcheck > /dev/null; then shellcheck -x scripts/gates/*.sh; fi
+
+# No package links another front end's parser, and the core links none
+parser-guard:
+    bash scripts/gates/parser-guard.sh
 
 # Mutation tests for a specific file: just mutants src/delta.rs
 mutants FILE:

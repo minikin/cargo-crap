@@ -558,6 +558,72 @@ fn a_change_only_to_the_action_workflow_runs_the_check_that_reads_it() {
     );
 }
 
+#[test]
+fn just_dev_and_ci_both_run_the_parser_guard() {
+    // Given the Justfile dev recipe and the CI workflow
+    let justfile = read("Justfile");
+    let justfile = lines(&justfile);
+    let dev = justfile
+        .iter()
+        .find_map(|l| l.strip_prefix("dev:"))
+        .expect("a dev recipe");
+    let dev: Vec<&str> = dev.split_whitespace().collect();
+    // When their commands are read
+    // Then dev runs the gate script tests and the parser guard
+    for recipe in ["gates-test", "parser-guard"] {
+        assert!(dev.contains(&recipe), "dev does not run {recipe}: {dev:?}");
+    }
+    let recipe = |header: &str| recipe_commands(&block(&justfile, header));
+    assert!(
+        recipe("gates-test:").contains(&vec!["bash", "scripts/gates/test.sh"]),
+        "gates-test does not run scripts/gates/test.sh"
+    );
+    assert_eq!(
+        recipe("parser-guard:"),
+        [vec!["bash", "scripts/gates/parser-guard.sh"]]
+    );
+    // And CI's gates job runs both and shellchecks the scripts
+    let ci = read(CI);
+    let job = steps(&block(&lines(&ci), "  gates:"));
+    for command in [
+        "bash scripts/gates/test.sh",
+        "shellcheck -x scripts/gates/*.sh",
+        "bash scripts/gates/parser-guard.sh",
+    ] {
+        let step = job
+            .iter()
+            .find(|s| s.run.iter().any(|c| c == command))
+            .unwrap_or_else(|| panic!("the gates job does not run {command:?}"));
+        // And the step runs whenever the job does: an `if:` on it could
+        // switch the command off while the check above still found it
+        assert_eq!(
+            step.condition, "",
+            "the step running {command:?} has a condition"
+        );
+    }
+}
+
+#[test]
+fn a_change_only_to_a_gate_script_runs_the_gate_script_tests() {
+    // Given the CI changes job's filters
+    // When scripts/gates/parser-guard.sh is the only changed path
+    // Then the filter that gates the gates job matches it
+    let ci = read(CI);
+    let job = block(&lines(&ci), "  gates:");
+    let condition = job
+        .iter()
+        .find_map(|l| l.strip_prefix("    if: "))
+        .expect("the gates job has a condition");
+    assert_eq!(condition, "needs.changes.outputs.rust == 'true'");
+    assert!(
+        any_glob_matches(
+            &globs(CI, "            rust:"),
+            "scripts/gates/parser-guard.sh"
+        ),
+        "the rust filter misses scripts/gates/parser-guard.sh"
+    );
+}
+
 /// The packages a cargo command selects, in every spelling cargo takes:
 /// `-p x`, `-px`, `--package x`, `--package=x`, and `p` inside a cluster
 /// of short options, `-vp x`.
