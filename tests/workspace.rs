@@ -134,11 +134,8 @@ fn the_workspace_has_cargo_crap_and_cargo_crap_core() {
 
 #[test]
 fn add_the_analysis_library_and_its_pinned_dependencies() {
-    // Given the manifests and the committed workspace lockfile
-    // When Cargo reports the analysis package
     let metadata = metadata(&root(), &["--locked"]);
     let analysis = package(&metadata, "crapts");
-    // Then it is an unpublished library for Rust 1.98.
     assert_eq!(analysis["publish"], serde_json::json!([]));
     assert_eq!(analysis["rust_version"], "1.98");
     let targets = analysis["targets"].as_array().expect("library targets");
@@ -155,7 +152,6 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
 
     let shared = manifest(&root());
     let member = manifest(&root().join("crates/crapts"));
-    // And its direct dependencies are exactly the seven inherited pins.
     let pins = [
         "oxc_allocator",
         "oxc_ast",
@@ -251,7 +247,6 @@ fn the_lock_retains_the_spec_45_ids_and_adds_only_the_crapts_closure() {
         package: Vec<LockedPackage>,
     }
 
-    // Given the package IDs from the final Spec 45 lockfile
     let base: BTreeSet<_> = include_str!("fixtures/spec45-package-ids.txt")
         .lines()
         .filter(|line| !line.starts_with('#'))
@@ -262,7 +257,6 @@ fn the_lock_retains_the_spec_45_ids_and_adds_only_the_crapts_closure() {
     .expect("parse Cargo.lock");
     let current: BTreeSet<_> = lock.package.iter().map(LockedPackage::id).collect();
 
-    // When following the locked dependency edges from the new member
     let mut closure = BTreeSet::new();
     let mut pending = vec!["crapts"];
     while let Some(edge) = pending.pop() {
@@ -272,7 +266,6 @@ fn the_lock_retains_the_spec_45_ids_and_adds_only_the_crapts_closure() {
         }
     }
 
-    // Then every base ID is present and every addition is reachable from crapts.
     for id in &base {
         assert!(current.contains(*id), "missing Spec 45 package ID: {id}");
     }

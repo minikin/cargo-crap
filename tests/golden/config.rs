@@ -33,7 +33,6 @@ fn indent(line: &str) -> usize {
 
 #[test]
 fn dependabot_groups_the_workspaces_oxc_updates() {
-    // Given the root update policy and the member's direct dependencies
     let config: serde_json::Value = serde_json::from_str(&read(".github/dependabot.yml"))
         .expect("parse the JSON-form YAML policy");
     let member: toml::Table = read("crates/crapts/Cargo.toml")
@@ -45,7 +44,6 @@ fn dependabot_groups_the_workspaces_oxc_updates() {
         .filter(|u| u["package-ecosystem"] == "cargo")
         .collect();
 
-    // When Dependabot selects Cargo dependencies for version updates
     let [update] = cargo.as_slice() else {
         panic!("expected one Cargo entry, found {}", cargo.len())
     };
@@ -60,7 +58,6 @@ fn dependabot_groups_the_workspaces_oxc_updates() {
         "a Cargo ignore can override the allow list"
     );
 
-    // Then one group includes all seven pins in the same version update.
     let groups = update["groups"].as_object().expect("Cargo update groups");
     assert_eq!(groups.len(), 1, "Cargo groups: {groups:?}");
     let group = groups.values().next().expect("one group");
