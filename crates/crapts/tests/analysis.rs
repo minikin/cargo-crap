@@ -398,10 +398,14 @@ fn separate_nested_decisions_and_skip_declarations_without_bodies() {
     );
 }
 
-#[test]
-fn distinguish_source_regions_from_their_outer_line_range() {
+fn span(
+    l1: u32,
+    c1: u32,
+    l2: u32,
+    c2: u32,
+) -> crapts::SourceSpan {
     use crapts::{Position, SourceSpan};
-    let span = |l1, c1, l2, c2| SourceSpan {
+    SourceSpan {
         start: Position {
             line: l1,
             column: c1,
@@ -410,7 +414,11 @@ fn distinguish_source_regions_from_their_outer_line_range() {
             line: l2,
             column: c2,
         },
-    };
+    }
+}
+
+#[test]
+fn distinguish_source_regions_from_their_outer_line_range() {
     let source = b"// header\nfunction outer() {\n  return () => {\n    if (ready) run()\n  }\n}";
     let file = analyze(Path::new("bounds.js"), source, Mode::Strict(Side::Head)).unwrap();
     let [outer, inner] = file.rows.as_slice() else {
@@ -575,6 +583,118 @@ fn statement_lines_remain_sorted_across_parameters_and_a_concise_body() {
         union.extend(row.statement_lines);
     }
     assert_eq!(union, [3, 6].into());
+}
+
+#[test]
+fn assign_each_class_initializer_to_its_scoring_owner() {
+    let source = b"class C {\n  a = p ? q : r\n  static s = build(() => flag && ready)\n  constructor() { if (flag) go() }\n  b = xs.map(x => x ?? 0)\n  static { while (p) break }\n}";
+    let file = analyze(Path::new("class.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    let rows: Vec<_> = file
+        .rows
+        .iter()
+        .map(|row| (row.name.as_str(), row.cyclomatic, row.is_arrow))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("C::static s", 1, false),
+            ("C::static s::build()", 2, true),
+            ("C::constructor", 3, false),
+            ("C::b::xs.map()", 2, true),
+            ("C::<static-block>", 2, false),
+        ]
+    );
+    let ctor = &file.rows[2];
+    assert_eq!(ctor.span, span(4, 2, 4, 34));
+    assert_eq!(
+        ctor.body_regions,
+        [span(2, 6, 2, 15), span(4, 16, 4, 34), span(5, 6, 5, 25)]
+    );
+    assert_eq!(ctor.statement_lines, [2, 4, 5]);
+    for (index, expected) in [(0, span(3, 13, 3, 39)), (4, span(6, 9, 6, 28))] {
+        let row = &file.rows[index];
+        assert_eq!(row.span, expected);
+        assert_eq!(row.body_regions, [expected]);
+        assert_eq!(row.statement_lines, [expected.start.line]);
+    }
+}
+
+#[test]
+fn nested_classes_and_overloads_keep_their_constructor_owners() {
+    for (source, expected) in [
+        (
+            "class Outer { a = one && two; b = (class Inner { x = flag ? 1 : 0 }); c = a || b }",
+            &[("Outer::constructor", 3), ("Outer::b::constructor", 2)][..],
+        ),
+        (
+            "class C { constructor(x: number); handler = () => 1; constructor(x = q ?? r) { if (x) return } }",
+            &[("C::handler", 1), ("C::constructor", 3)],
+        ),
+        (
+            "class C { x = 1; static constructor() { if (p) go() } }",
+            &[("C::constructor", 1), ("C::static constructor", 2)],
+        ),
+        (
+            "class C { declare erased = p && q; static live = a ?? b }",
+            &[("C::static live", 2)],
+        ),
+        (
+            "class C { static f = (function z(){ if(a) b() }) as F; static g = (v => v) as F; static h = x && f(() => 1) }",
+            &[
+                ("C::static f", 2),
+                ("C::static g", 1),
+                ("C::static h", 2),
+                ("C::static h::f()", 1),
+            ],
+        ),
+    ] {
+        let file = analyze(Path::new("nested.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+        let rows: Vec<_> = file
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.cyclomatic))
+            .collect();
+        assert_eq!(rows, expected, "{source}");
+    }
+}
+
+#[test]
+fn locate_an_implied_constructor_across_discontiguous_initializers() {
+    let source = b"class C {\n  a = p && q\n  static f = () => 9\n  handler = () => p ? 1 : 2\n  b = r ?? s\n}";
+    let file = analyze(Path::new("implied.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    let rows: Vec<_> = file
+        .rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.cyclomatic, r.is_arrow))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("C::constructor", 3, false),
+            ("C::static f", 1, true),
+            ("C::handler", 2, true)
+        ]
+    );
+    let ctor = &file.rows[0];
+    assert_eq!(ctor.span, span(2, 6, 5, 12));
+    assert_eq!(
+        ctor.body_regions,
+        [span(2, 6, 2, 12), span(4, 12, 4, 27), span(5, 6, 5, 12)]
+    );
+    assert_eq!(ctor.statement_lines, [2, 4, 5]);
+
+    let source = b"class C { v: number; static x = p ?? q; static /* { */ {} }";
+    let file = analyze(Path::new("static.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    let rows: Vec<_> = file
+        .rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.cyclomatic))
+        .collect();
+    assert_eq!(rows, [("C::static x", 2), ("C::<static-block>", 1)]);
+    let block = &file.rows[1];
+    let start = source.windows(2).rposition(|p| p == b"{}").unwrap() as u32;
+    assert_eq!(block.span, span(1, start, 1, start + 2));
+    assert_eq!(block.statement_lines, [] as [u32; 0]);
 }
 
 proptest::proptest! {

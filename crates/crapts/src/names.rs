@@ -399,7 +399,7 @@ impl Site {
 
 // Oxc also unwraps instantiation expressions in get_inner_expression.
 // Scheme 1 treats type arguments on a value as an intervening expression.
-fn direct_value<'b, 'a>(mut value: &'b Expression<'a>) -> &'b Expression<'a> {
+pub(super) fn direct_value<'b, 'a>(mut value: &'b Expression<'a>) -> &'b Expression<'a> {
     loop {
         value = match value {
             Expression::ParenthesizedExpression(n) => &n.expression,

@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    ArrowFunctionExpression, Class, ClassType, Declaration, ExportDeclaration,
-    ExportDefaultDeclaration, ExportDefaultDeclarationKind, Expression, Function, FunctionType,
-    LogicalExpression, MethodDefinition, ObjectProperty, PropertyDefinition, PropertyKind,
-    Statement, TSClassImplements, TSInterfaceDeclaration, TSType,
+    ArrowFunctionExpression, Class, ClassBody, ClassElement, ClassType, Declaration,
+    ExportDeclaration, ExportDefaultDeclaration, ExportDefaultDeclarationKind, Expression,
+    Function, FunctionType, LogicalExpression, MethodDefinition, MethodDefinitionKind,
+    ObjectProperty, PropertyDefinition, PropertyKind, Statement, StaticBlock, TSClassImplements,
+    TSInterfaceDeclaration, TSType,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{Parser, Token, config::TokensParserConfig};
@@ -15,7 +16,7 @@ use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::lines::{LineIndex, SourceSpan};
-use crate::names::{Names, Source, Unit};
+use crate::names::{Names, Source, Unit, direct_value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -143,6 +144,7 @@ pub fn analyze(
     }
     let mut collector = Collector::new(path, source, &parsed.tokens);
     collector.visit_program(&parsed.program);
+    collector.rows.sort_by_key(|row| row.span.start);
     for row in &mut collector.rows {
         row.statement_lines.sort_unstable();
         row.statement_lines.dedup();
@@ -163,6 +165,13 @@ struct Collector<'s> {
     owner: Option<usize>,
     names: Names,
     method: Option<(Span, u32)>,
+    constructor: Option<Constructor>,
+}
+
+#[derive(Clone, Copy)]
+struct Constructor {
+    row: usize,
+    written: Option<Span>,
 }
 
 impl<'s> Collector<'s> {
@@ -192,7 +201,37 @@ impl<'s> Collector<'s> {
             owner: None,
             names: Names::default(),
             method: None,
+            constructor: None,
         }
+    }
+
+    fn new_row(
+        &mut self,
+        name: String,
+        span: Span,
+        is_arrow: bool,
+    ) -> usize {
+        let index = self.rows.len();
+        self.rows.push(Row {
+            file: self.path.to_owned(),
+            name,
+            span: self.lines.span(span),
+            body_regions: Vec::new(),
+            statement_lines: Vec::new(),
+            cyclomatic: 1,
+            is_arrow,
+        });
+        index
+    }
+
+    fn with_owner(
+        &mut self,
+        row: usize,
+        visit: impl FnOnce(&mut Self),
+    ) {
+        let previous = self.owner.replace(row);
+        visit(self);
+        self.owner = previous;
     }
 
     fn in_callable(
@@ -203,18 +242,74 @@ impl<'s> Collector<'s> {
         is_arrow: bool,
         visit: impl FnOnce(&mut Self),
     ) {
-        let previous = self.owner.replace(self.rows.len());
-        self.rows.push(Row {
-            file: self.path.to_owned(),
-            name: name.clone(),
-            span: self.lines.span(span),
-            body_regions: vec![self.lines.span(body)],
-            statement_lines: Vec::new(),
-            cyclomatic: 1,
-            is_arrow,
+        let row = match self.constructor {
+            Some(ctor) if ctor.written == Some(span) => ctor.row,
+            _ => self.new_row(name.clone(), span, is_arrow),
+        };
+        self.rows[row].body_regions.push(self.lines.span(body));
+        self.with_owner(row, |v| v.with_name(name, visit));
+    }
+
+    fn constructor_for_fields(
+        &mut self,
+        body: &ClassBody<'_>,
+    ) -> Option<Constructor> {
+        let mut regions = body.body.iter().filter_map(|element| match element {
+            ClassElement::PropertyDefinition(p) if !p.r#static && !p.declare => {
+                p.value.as_ref().map(GetSpan::span)
+            },
+            _ => None,
         });
-        self.with_name(name, visit);
-        self.owner = previous;
+        let first = regions.next()?;
+        let written = body.body.iter().find_map(|element| match element {
+            ClassElement::MethodDefinition(m)
+                if m.kind == MethodDefinitionKind::Constructor && m.value.body.is_some() =>
+            {
+                Some(m.span)
+            },
+            _ => None,
+        });
+        let span = written.unwrap_or_else(|| first.merge(regions.next_back().unwrap_or(first)));
+        let name = self
+            .names
+            .resolve(span, Some("constructor"), Unit::FunctionDeclaration);
+        Some(Constructor {
+            row: self.new_row(name, span, false),
+            written,
+        })
+    }
+
+    fn visit_initializer(
+        &mut self,
+        value: &Expression<'_>,
+        is_static: bool,
+    ) {
+        let inner = direct_value(value);
+        let span = value.span();
+        let row = if is_static {
+            if matches!(
+                inner,
+                Expression::FunctionExpression(_)
+                    | Expression::ArrowFunctionExpression(_)
+                    | Expression::ClassExpression(_)
+            ) {
+                self.visit_expression(value);
+                return;
+            }
+            let name = self
+                .names
+                .resolve(inner.span(), None, Unit::FunctionExpression);
+            self.new_row(name, span, false)
+        } else {
+            self.constructor
+                .expect("initialized instance field has a constructor")
+                .row
+        };
+        self.rows[row].body_regions.push(self.lines.span(span));
+        self.with_owner(row, |v| {
+            v.record_statement(span);
+            v.visit_expression(value);
+        });
     }
 
     fn record_statement(
@@ -315,6 +410,40 @@ pub(super) fn visit_logical_operands<'a>(
 }
 
 impl<'a> Visit<'a> for Collector<'_> {
+    fn visit_class_body(
+        &mut self,
+        body: &ClassBody<'a>,
+    ) {
+        let previous = self.constructor;
+        self.constructor = self.constructor_for_fields(body);
+        walk::walk_class_body(self, body);
+        self.constructor = previous;
+    }
+
+    fn visit_static_block(
+        &mut self,
+        block: &StaticBlock<'a>,
+    ) {
+        // Oxc includes the modifiers in the block span. The token before
+        // its first statement (or closing brace) is the opening brace.
+        let inside = block
+            .body
+            .first()
+            .map_or_else(|| block.span.end - 1, |s| s.span().start);
+        let open = self
+            .source
+            .tokens
+            .partition_point(|token| token.start() < inside)
+            - 1;
+        let span = Span::new(self.source.tokens[open].start(), block.span.end);
+        let name = self
+            .names
+            .resolve(span, Some("<static-block>"), Unit::FunctionDeclaration);
+        self.in_callable(name, span, span, false, |v| {
+            walk::walk_static_block(v, block);
+        });
+    }
+
     fn visit_method_definition(
         &mut self,
         method: &MethodDefinition<'a>,
@@ -409,9 +538,17 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         property: &PropertyDefinition<'a>,
     ) {
-        if !property.declare {
-            walk::walk_property_definition(self, property);
+        if property.declare {
+            return;
         }
+        let node = AstKind::PropertyDefinition(self.alloc(property));
+        self.enter_node(node);
+        self.visit_decorators(&property.decorators);
+        self.visit_property_key(&property.key);
+        if let Some(value) = &property.value {
+            self.visit_initializer(value, property.r#static);
+        }
+        self.leave_node(node);
     }
 
     fn visit_logical_expression(
