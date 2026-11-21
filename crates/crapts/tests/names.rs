@@ -264,3 +264,67 @@ fn a_nameless_class_outside_a_default_export_uses_the_class_placeholder() {
         assert_eq!(clean_names("unnamed.ts", source), [expected]);
     }
 }
+
+#[test]
+fn encoded_segments_preserve_distinct_utf16_content() {
+    for (source, expected) in [
+        (r"const a\u200Db = () => 1", &["a%E2%80%8Db"][..]),
+        (r"function a\u200Cb(){}", &["a%E2%80%8Cb"]),
+        (
+            r#"const o = { "a/\uD800%": () => 1 }"#,
+            &["o::\"a%2F%uD800%25\""],
+        ),
+        (
+            r#"const o = { "\uD800"(){}, "%uD800"(){}, "\uDFFF"(){} }"#,
+            &["o::\"%uD800\"", "o::\"%25uD800\"", "o::\"%uDFFF\""],
+        ),
+        (
+            r#"const o = { "a::b"(){}, "a\u0085\u00A0\u200Db"(){} }"#,
+            &["o::\"a%3A%3Ab\"", "o::\"a%C2%85%C2%A0%E2%80%8Db\""],
+        ),
+    ] {
+        assert_eq!(clean_names("encoded.ts", source), expected, "{source}");
+    }
+}
+
+#[test]
+fn emit_encoded_segments_at_bindings_roles_and_namespace_boundaries() {
+    for (source, expected) in [
+        (r"const obj = { a\u200Db() {} }", &["obj::a%E2%80%8Db"][..]),
+        (r"a\u200Db = () => 0", &["a%E2%80%8Db"][..]),
+        (r"a\u200Db.c\u200Dd = () => 0", &["a%E2%80%8Db.c%E2%80%8Dd"]),
+        (
+            r"a\u200Db.c\u200Dd(() => 0)",
+            &["a%E2%80%8Db.c%E2%80%8Dd()"],
+        ),
+        (
+            r"namespace a\u200Db { class c\u200Dd { #x\u200Dy(){} } }",
+            &["a%E2%80%8Db::c%E2%80%8Dd::#x%E2%80%8Dy"],
+        ),
+        (
+            r#"const obj = { "\uD83D\uDE00/"(){} }"#,
+            &["obj::\"😀%2F\""],
+        ),
+    ] {
+        assert_eq!(clean_names("paths.ts", source), expected, "{source}");
+    }
+    assert_eq!(
+        clean_names("tag.tsx", "const e = <ns:Box ns:cb={() => 0} />"),
+        ["e::<ns%3ABox ns%3Acb>"]
+    );
+    let module = analyze(
+        Path::new("module.ts"),
+        br#"module "a/%2F\"b" { function f(){} }"#,
+        Mode::Ordinary,
+    )
+    .unwrap();
+    assert_eq!(module.rows[0].name, "\"a%2F%252F%22b\"::f");
+    assert_eq!(
+        clean_names("chain.ts", r"a\u200Db.mid.last(() => 0)"),
+        ["a%E2%80%8Db.mid.last()"]
+    );
+    assert_eq!(
+        clean_names("normalization.ts", r"const é=()=>0; const e\u0301=()=>1"),
+        ["é", "e\u{301}"]
+    );
+}

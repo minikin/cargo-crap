@@ -1,10 +1,102 @@
+use std::fmt::Write as _;
+
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
     Argument, BindingPattern, Expression, JSXAttributeItem, JSXAttributeValue, JSXChild,
-    JSXElement, MethodDefinitionKind, PropertyKind,
+    JSXElement, MethodDefinitionKind, PropertyKey, PropertyKind, SimpleAssignmentTarget,
+    StaticMemberExpression,
 };
 use oxc_span::{GetSpan, Span};
+use oxc_str::JSStr;
 use oxc_syntax::operator::AssignmentOperator;
+
+// Scheme 1 pins General_Category=Cf to Unicode 16.0.0 across Rust toolchains.
+fn is_format_control(ch: char) -> bool {
+    matches!(u32::from(ch),
+        0xad | 0x600..=0x605 | 0x61c | 0x6dd | 0x70f | 0x890..=0x891 | 0x8e2 |
+        0x180e | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x2064 | 0x2066..=0x206f |
+        0xfeff | 0xfff9..=0xfffb | 0x110bd | 0x110cd | 0x13430..=0x1343f |
+        0x1bca0..=0x1bca3 | 0x1d173..=0x1d17a | 0xe0001 | 0xe0020..=0xe007f)
+}
+
+fn reserved(
+    ch: char,
+    quoted: bool,
+) -> bool {
+    matches!(
+        ch,
+        '%' | ':' | '/' | '\\' | '*' | '?' | '[' | ']' | '{' | '}' | '|' | '`'
+    ) || (quoted && ch == '"')
+        || ch.is_control()
+        || (ch.is_whitespace() && ch != ' ')
+        || is_format_control(ch)
+}
+
+fn encode(
+    value: JSStr<'_>,
+    quoted: bool,
+) -> String {
+    let mut result = String::new();
+    for point in value.chars() {
+        match point.to_char() {
+            Some(ch) if reserved(ch, quoted) => {
+                let mut buf = [0; 4];
+                for byte in ch.encode_utf8(&mut buf).bytes() {
+                    write!(result, "%{byte:02X}").unwrap();
+                }
+            },
+            Some(ch) => result.push(ch),
+            None => write!(result, "%u{:04X}", point.to_u32()).unwrap(),
+        }
+    }
+    result
+}
+
+fn unquoted(value: &str) -> String {
+    encode(JSStr::from(value), false)
+}
+
+fn quoted(value: JSStr<'_>) -> String {
+    format!("\"{}\"", encode(value, true))
+}
+
+fn static_member(
+    member: &StaticMemberExpression<'_>,
+    source: &str,
+) -> String {
+    let mut parts = vec![member.property.name];
+    let mut root = direct_value(&member.object);
+    while let Expression::StaticMemberExpression(parent) = root {
+        parts.push(parent.property.name);
+        root = direct_value(&parent.object);
+    }
+    let mut result = written_root(root, source);
+    for part in parts.into_iter().rev() {
+        result.push('.');
+        result.push_str(&unquoted(part.as_str()));
+    }
+    result
+}
+
+fn written(
+    expr: &Expression<'_>,
+    source: &str,
+) -> String {
+    match direct_value(expr) {
+        Expression::StaticMemberExpression(member) => static_member(member, source),
+        root => written_root(root, source),
+    }
+}
+
+fn written_root(
+    expr: &Expression<'_>,
+    source: &str,
+) -> String {
+    match expr {
+        Expression::Identifier(id) => unquoted(id.name.as_str()),
+        inner => unquoted(inner.span().source_text(source)),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Unit {
@@ -133,7 +225,8 @@ impl Names {
         if !self.enclosing.is_empty() {
             parts.push(self.enclosing.as_str());
         }
-        let mut own = declared;
+        let encoded_name = declared.map(unquoted);
+        let mut own = encoded_name.as_deref();
         for site in &self.sites {
             let Some(target) = site.targets.enclosing(span) else {
                 continue;
@@ -177,7 +270,7 @@ impl Names {
             AstKind::CallExpression(n) => self.call(&n.callee, &n.arguments, "", source),
             AstKind::NewExpression(n) => self.call(&n.callee, &n.arguments, "new ", source),
             AstKind::TaggedTemplateExpression(n) => {
-                let tag = direct_value(&n.tag).span().source_text(source);
+                let tag = written(&n.tag, source);
                 self.role(
                     format!("{tag}()"),
                     n.quasi.expressions.iter().map(Target::expression),
@@ -221,7 +314,7 @@ impl Names {
             "<iife>".into(),
             callee,
         ));
-        let name = direct_value(callee).span().source_text(source);
+        let name = written(callee, source);
         self.role(
             format!("{prefix}{name}()"),
             arguments.iter().map(|arg| {
@@ -252,12 +345,12 @@ impl Names {
         source: &str,
     ) {
         let opening = &element.opening_element;
-        let tag = opening.name.span().source_text(source);
+        let tag = unquoted(opening.name.span().source_text(source));
         for item in &opening.attributes {
             if let JSXAttributeItem::Attribute(attr) = item
                 && let Some(value) = attr.value.as_ref().and_then(attribute_target)
             {
-                let attr = attr.name.span().source_text(source);
+                let attr = unquoted(attr.name.span().source_text(source));
                 self.sites.push(Site {
                     kind: SiteKind::Role,
                     label: format!("<{tag} {attr}>"),
@@ -265,7 +358,7 @@ impl Names {
                 });
             }
         }
-        self.children(tag, &element.children);
+        self.children(&tag, &element.children);
     }
 
     fn children(
@@ -305,7 +398,7 @@ fn local(
 ) -> Option<Site> {
     Some(Site::expression(
         SiteKind::Binding,
-        pattern.get_identifier_name()?.to_string(),
+        unquoted(pattern.get_identifier_name()?.as_str()),
         value?,
     ))
 }
@@ -322,11 +415,8 @@ fn binding(
             if n.operator == AssignmentOperator::Assign || n.operator.is_logical() =>
         {
             let target = n.left.as_simple_assignment_target()?;
-            Some(Site::expression(
-                SiteKind::Binding,
-                target.span().source_text(source).into(),
-                &n.right,
-            ))
+            let label = written_target(target, source);
+            Some(Site::expression(SiteKind::Binding, label, &n.right))
         },
         AstKind::ExportDefaultDeclaration(n) => {
             let direct = n
@@ -341,14 +431,23 @@ fn binding(
             &n.expression,
         )),
         AstKind::TSNamespaceDeclaration(n) => {
-            Some(Site::binding(n.id.name.to_string(), n.span, n.span))
+            Some(Site::binding(unquoted(n.id.name.as_str()), n.span, n.span))
         },
-        AstKind::TSExternalModuleDeclaration(n) => Some(Site::binding(
-            format!("\"{}\"", n.id.value.display()),
-            n.span,
-            n.span,
-        )),
+        AstKind::TSExternalModuleDeclaration(n) => {
+            Some(Site::binding(quoted(n.id.value), n.span, n.span))
+        },
         _ => member_binding(node, source),
+    }
+}
+
+fn written_target(
+    target: &SimpleAssignmentTarget<'_>,
+    source: &str,
+) -> String {
+    match target {
+        SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => unquoted(id.name.as_str()),
+        SimpleAssignmentTarget::StaticMemberExpression(member) => static_member(member, source),
+        _ => unquoted(target.span().source_text(source)),
     }
 }
 
@@ -391,12 +490,24 @@ fn member_binding(
         _ => return None,
     };
     let prefix = if is_static { "static " } else { "" };
-    let key = key.span().source_text(source);
+    let key = member_key(key, source);
     Some(Site::binding(
         format!("{prefix}{marker}{key}"),
         direct,
         scope,
     ))
+}
+
+fn member_key(
+    key: &PropertyKey<'_>,
+    source: &str,
+) -> String {
+    match key {
+        PropertyKey::StaticIdentifier(id) => unquoted(id.name.as_str()),
+        PropertyKey::PrivateIdentifier(id) => format!("#{}", unquoted(id.name.as_str())),
+        PropertyKey::StringLiteral(s) => quoted(s.value),
+        _ => unquoted(key.span().source_text(source)),
+    }
 }
 
 #[cfg(test)]
@@ -406,6 +517,57 @@ mod tests {
     use oxc_parser::Parser;
     use oxc_span::SourceType;
 
+    #[test]
+    fn encode_reserved_code_points_before_joining_segments() {
+        for (input, quoted, expected) in [
+            (
+                "%:/\\*?[]{}|\x60",
+                false,
+                "%25%3A%2F%5C%2A%3F%5B%5D%7B%7D%7C%60",
+            ),
+            ("\0\u{1f}\u{7f}\u{80}\u{9f}", false, "%00%1F%7F%C2%80%C2%9F"),
+            (
+                "\t \u{a0}\u{2028}\u{200d}",
+                false,
+                "%09 %C2%A0%E2%80%A8%E2%80%8D",
+            ),
+            ("\"", true, "%22"),
+            ("\"", false, "\""),
+            ("é e\u{301} 😀", true, "é e\u{301} 😀"),
+            ("\u{1343f}\u{e0061}", false, "%F0%93%90%BF%F3%A0%81%A1"),
+            ("\u{13440}\u{e0080}", false, "\u{13440}\u{e0080}"),
+        ] {
+            assert_eq!(
+                encode(oxc_str::JSStr::from(input), quoted),
+                expected,
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lone_surrogates_are_distinct_from_scalar_pairs_and_literal_percent_signs() {
+        let arena = Allocator::default();
+        let source = r#""\uD800/\uDFFF/\uD83D\uDE00/%uD800""#;
+        let expr = Parser::new(&arena, source, SourceType::ts())
+            .parse_expression()
+            .unwrap();
+        let Expression::StringLiteral(lit) = expr else {
+            panic!("expected a string")
+        };
+        assert_eq!(encode(lit.value, true), "%uD800%2F%uDFFF%2F😀%2F%25uD800");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn all_unicode_format_controls_are_percent_encoded(text in "\\p{Cf}") {
+            let mut expected = String::new();
+            for b in text.bytes() {
+                write!(expected, "%{b:02X}").unwrap();
+            }
+            proptest::prop_assert_eq!(encode(oxc_str::JSStr::from(text.as_str()), false), expected);
+        }
+    }
     #[test]
     fn transparent_wrappers_end_at_the_direct_value() {
         for (source, direct) in [
