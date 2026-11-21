@@ -35,7 +35,7 @@ use crate::paths::{self, TiePolicy};
 use crate::score::crap;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Output of [`merge`]: the scored entries plus scope diagnostics.
 pub struct MergeResult {
@@ -71,18 +71,7 @@ pub fn merge(
     let assignment = paths::assign(&sources, &keys, TiePolicy::PerSource);
     let diagnostics = (!keys.is_empty()).then(|| assignment.diagnostics(&sources, &keys));
 
-    // Several source files may claim one suffix. Cache its hit map to avoid
-    // summing the same aliases repeatedly.
-    let mut groups = HashMap::new();
-    let mut source_groups = HashMap::new();
-    for (source, bound) in sources.into_iter().zip(assignment.bindings) {
-        if let Some((&first, rest)) = bound.split_first() {
-            groups
-                .entry(first)
-                .or_insert_with(|| merge_coverage(values[first], rest, &values));
-            source_groups.insert(source.to_owned(), first);
-        }
-    }
+    let (groups, source_groups) = group_coverage(sources, assignment.bindings, &values);
 
     let mut entries: Vec<CrapEntry> = complexity
         .into_iter()
@@ -123,6 +112,29 @@ pub fn merge(
         entries,
         diagnostics,
     }
+}
+
+/// Several source files may claim one suffix. Each group's hit map is summed
+/// once, under its first key, to avoid summing the same aliases repeatedly.
+fn group_coverage<'a>(
+    sources: Vec<&Path>,
+    bindings: Vec<Vec<usize>>,
+    values: &[&'a FileCoverage],
+) -> (
+    HashMap<usize, Cow<'a, FileCoverage>>,
+    HashMap<PathBuf, usize>,
+) {
+    let mut groups = HashMap::new();
+    let mut source_groups = HashMap::new();
+    for (source, bound) in sources.into_iter().zip(bindings) {
+        if let Some((&first, rest)) = bound.split_first() {
+            groups
+                .entry(first)
+                .or_insert_with(|| merge_coverage(values[first], rest, values));
+            source_groups.insert(source.to_owned(), first);
+        }
+    }
+    (groups, source_groups)
 }
 
 fn merge_coverage<'a>(

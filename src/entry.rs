@@ -109,8 +109,7 @@ pub struct StrayFiles {
 
 impl StrayFiles {
     pub(crate) fn new(mut files: Vec<PathBuf>) -> Self {
-        // Component ordering equates distinct raw spellings such as a/./b and a/b.
-        files.sort_by(|a, b| a.cmp(b).then_with(|| a.as_os_str().cmp(b.as_os_str())));
+        files.sort_by(components_then_spelling);
         let count = files.len();
         files.truncate(SCOPE_EXAMPLE_CAP);
         Self {
@@ -118,6 +117,19 @@ impl StrayFiles {
             examples: files,
         }
     }
+}
+
+/// Component ordering equates distinct raw spellings such as a/./b and a/b,
+/// so the raw spelling breaks the tie.
+#[expect(
+    clippy::ptr_arg,
+    reason = "Vec<PathBuf>::sort_by takes the comparator by its element type"
+)]
+fn components_then_spelling(
+    a: &PathBuf,
+    b: &PathBuf,
+) -> std::cmp::Ordering {
+    (a.as_path(), a.as_os_str()).cmp(&(b.as_path(), b.as_os_str()))
 }
 
 /// Source/LCOV scope diagnostics (spec 24): how well the analyzed source

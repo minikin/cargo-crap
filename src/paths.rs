@@ -131,18 +131,10 @@ impl PathIndex {
     fn build(keys: &[&Path]) -> Self {
         let mut index = Self::default();
         for (i, path) in keys.iter().enumerate() {
-            if path.is_absolute()
-                && let Ok(real) = path.canonicalize()
-            {
+            if let Some(real) = canonical_absolute(path) {
                 index.real.entry(real).or_default().push(i);
-            } else {
-                let suffix: PathBuf = path
-                    .components()
-                    .filter(|c| *c != Component::CurDir)
-                    .collect();
-                if !suffix.as_os_str().is_empty() {
-                    index.suffix.entry(suffix).or_default().push(i);
-                }
+            } else if let Some(suffix) = suffix_key(path) {
+                index.suffix.entry(suffix).or_default().push(i);
             }
         }
         index
@@ -211,6 +203,20 @@ impl PathIndex {
             .max_by_key(|(key, _)| key.components().count())
             .map(|(_, group)| group)
     }
+}
+
+fn canonical_absolute(path: &Path) -> Option<PathBuf> {
+    path.is_absolute()
+        .then(|| path.canonicalize().ok())
+        .flatten()
+}
+
+fn suffix_key(path: &Path) -> Option<PathBuf> {
+    let suffix: PathBuf = path
+        .components()
+        .filter(|c| *c != Component::CurDir)
+        .collect();
+    (!suffix.as_os_str().is_empty()).then_some(suffix)
 }
 
 fn suffix_owners(
