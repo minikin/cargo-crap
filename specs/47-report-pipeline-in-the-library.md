@@ -310,7 +310,7 @@ points. Keep the spec 44 snapshots in verification mode throughout.
   Tests: unit (cargo-crap scope adapter and duplicate records) and public
   API acceptance (prepared rows, retained members, new and removed rows).
 
-- [ ] **T5 — Count hidden regressions before slicing the delta.**
+- [x] **T5 — Count hidden regressions before slicing the delta.**
   Needs: T4. Introduce `GateOutcome` and the exit mapping in `src/gate.rs`
   and register the file in the shared guard list. Have the current pipeline
   use full-delta score and gating-reason counts before display restriction.
