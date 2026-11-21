@@ -120,7 +120,7 @@ chmod +x "$shim/cargo"
 with_shim() {
     local dir="$1"
     shift
-    export SHIM_LOG="$dir/.shim.log" SHIM_DIFF="$dir/.shim.diff"
+    export SHIM_LOG="$dir.shim.log" SHIM_DIFF="$dir.shim.diff"
     : > "$SHIM_LOG"
     rm -f "$SHIM_DIFF"
     out="$(cd "$dir" && PATH="$shim:$PATH" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@" 2>&1)"
@@ -129,9 +129,29 @@ with_shim() {
     copied="$SHIM_DIFF"
 }
 
-# The mutants cargo-mutants lists for the copied diff, one per line.
+# The mutants cargo-mutants lists in fixture $1, one per line: all of them,
+# or with a second argument only those in that diff. A failed listing
+# prints a line no mutant check matches, so it cannot read as "no mutants".
 listed() {
-    (cd "$1" && "$real_cargo" mutants --list --workspace --in-diff "$copied" 2> /dev/null)
+    local list args=(mutants --list --workspace)
+    if [ -n "${2:-}" ]; then args+=(--in-diff "$2"); fi
+    if list="$(cd "$1" && "$real_cargo" "${args[@]}" 2>&1)"; then
+        printf '%s\n' "$list"
+    else
+        echo "LISTING FAILED: $list"
+    fi
+}
+
+# How many of fixture $1's listed mutants (in diff $3, if given) are in
+# file $2, or "listing failed".
+mutants_in() {
+    local list
+    list="$(listed "$1" "${3:-}")"
+    if grep -q '^LISTING FAILED' <<< "$list"; then
+        echo "listing failed"
+    else
+        grep -c "^$2:" <<< "$list" || true
+    fi
 }
 
 shim_ran_mutants() {
@@ -150,7 +170,7 @@ check "just mutants-diff mutates a changed line in the core: exits 0" "0" "$stat
 check "just mutants-diff mutates a changed line in the core: the diff holds the line" \
     "1" "$(grep -qxF "+$double" "$copied" 2> /dev/null && echo 1 || echo 0)"
 check "just mutants-diff mutates a changed line in the core: replace * with + in double" \
-    "1" "$(listed "$dir" | grep -q 'crates/cargo-crap-core/src/lib.rs:.*replace \* with + in double' && echo 1 || echo 0)"
+    "1" "$(listed "$dir" "$copied" | grep -q 'crates/cargo-crap-core/src/lib.rs:.*replace \* with + in double' && echo 1 || echo 0)"
 
 # Scenario: CI's base-ref diff mutates a committed change in the core.
 dir="$(mutants_repo)" || exit 1
@@ -164,7 +184,7 @@ check "CI's base-ref diff mutates a committed change in the core: exits 0" "0" "
 check "CI's base-ref diff mutates a committed change in the core: the diff holds the line" \
     "1" "$(grep -qxF "+$double" "$copied" 2> /dev/null && echo 1 || echo 0)"
 check "CI's base-ref diff mutates a committed change in the core: replace * with + in double" \
-    "1" "$(listed "$dir" | grep -q 'crates/cargo-crap-core/src/lib.rs:.*replace \* with + in double' && echo 1 || echo 0)"
+    "1" "$(listed "$dir" "$copied" | grep -q 'crates/cargo-crap-core/src/lib.rs:.*replace \* with + in double' && echo 1 || echo 0)"
 
 # Scenario: CI's base-ref diff with no source change measures nothing. The
 # commit below the branch changes src/, so a fallback to the last commits
@@ -178,6 +198,99 @@ check "CI's base-ref diff with no source change measures nothing: no cargo call"
 check "CI's base-ref diff with no source change measures nothing: says so" \
     "1" "$(grep -q 'nothing was measured' <<< "$out" && echo 1 || echo 0)"
 check "CI's base-ref diff with no source change measures nothing: exits 0" "0" "$status"
+
+# The six-function module the move cases move from src/ into the core.
+x_module='pub fn a(x: u32) -> u32 { x + 1 }
+pub fn c(x: u32) -> bool { x > 3 }
+pub fn d(x: u32) -> u32 { x * 3 }
+pub fn e(x: u32) -> bool { x == 7 }
+pub fn f(x: u32) -> u32 { x - 1 }
+pub fn g(x: u32) -> bool { x < 9 }'
+
+# A fixture whose root package declares src/x.rs, committed, with
+# diff.renames = false in its own config.
+move_repo() {
+    local dir
+    dir="$(mutants_repo)" || exit 1
+    (cd "$dir" && fixture_git config diff.renames false && echo "$x_module" > src/x.rs &&
+        echo 'pub mod x;' >> src/lib.rs && fixture_git add -A && fixture_git commit -q -m x) > /dev/null 2>&1 ||
+        { echo "FAIL building the move fixture" >&2; exit 1; }
+    echo "$dir"
+}
+
+# Moves src/x.rs into the core of fixture $1 with `mv` (git learns of the new
+# path only if a case adds it) and moves its `pub mod x;` along.
+move_x() {
+    mkdir -p "$1/crates/cargo-crap-core/src" &&
+        mv "$1/src/x.rs" "$1/crates/cargo-crap-core/src/x.rs" &&
+        printf 'pub fn one() -> u32 {\n    1\n}\n' > "$1/src/lib.rs" &&
+        echo 'pub mod x;' >> "$1/crates/cargo-crap-core/src/lib.rs"
+}
+
+# The part of diff $1 about the file that ends up at $2.
+section() {
+    awk -v path="$2" '/^diff --git / { inside = ($0 ~ (" b/" path "$")) } inside' "$1" 2> /dev/null
+}
+
+core_x="crates/cargo-crap-core/src/x.rs"
+
+# Scenario: a pure move costs no mutants.
+dir="$(move_repo)" || exit 1
+(move_x "$dir" && cd "$dir" && fixture_git add -A && fixture_git commit -q -m move) > /dev/null 2>&1 ||
+    { echo "FAIL setting up the pure move"; exit 1; }
+check "a pure move costs no mutants: the moved file has mutants unfiltered" \
+    "1" "$(n="$(mutants_in "$dir" "$core_x")"; [ "$n" != "listing failed" ] && [ "$n" -gt 0 ] && echo 1 || echo 0)"
+with_shim "$dir" bash scripts/gates/mutants-diff.sh --base HEAD~1
+check "a pure move costs no mutants: rename from src/x.rs" \
+    "1" "$(grep -qx 'rename from src/x.rs' "$copied" 2> /dev/null && echo 1 || echo 0)"
+check "a pure move costs no mutants: rename to the core" \
+    "1" "$(grep -qx "rename to $core_x" "$copied" 2> /dev/null && echo 1 || echo 0)"
+check "a pure move costs no mutants: no hunk for x.rs" "0" "$(section "$copied" "$core_x" | grep -c '^@@')"
+check "a pure move costs no mutants: none listed in x.rs" "0" "$(mutants_in "$dir" "$core_x" "$copied")"
+
+# Scenario: a move with one edited line mutates that line only.
+dir="$(move_repo)" || exit 1
+(move_x "$dir" && sed -i.bak '1s/x + 1/x + 2/' "$dir/$core_x" && rm "$dir/$core_x.bak" &&
+    cd "$dir" && fixture_git add -A && fixture_git commit -q -m move) > /dev/null 2>&1 ||
+    { echo "FAIL setting up the edited move"; exit 1; }
+unfiltered="$(listed "$dir")"
+check "a move with one edited line mutates that line only: a and c have mutants unfiltered" "1" \
+    "$(grep -q "^$core_x:.* in a$" <<< "$unfiltered" && grep -q "^$core_x:.* in c$" <<< "$unfiltered" && echo 1 || echo 0)"
+with_shim "$dir" bash scripts/gates/mutants-diff.sh --base HEAD~1
+filtered="$(listed "$dir" "$copied")"
+check "a move with one edited line mutates that line only: a rename" \
+    "1" "$(grep -qx "rename to $core_x" "$copied" 2> /dev/null && echo 1 || echo 0)"
+check "a move with one edited line mutates that line only: replace + with - in a" \
+    "1" "$(grep -q "^$core_x:.*replace + with - in a$" <<< "$filtered" && echo 1 || echo 0)"
+check "a move with one edited line mutates that line only: every listed mutant in x.rs is on line 1" \
+    "0" "$(if grep -q '^LISTING FAILED' <<< "$filtered"; then echo "listing failed"; else grep "^$core_x:" <<< "$filtered" | grep -vc "^$core_x:1:" || true; fi)"
+check "a move with one edited line mutates that line only: none in c" \
+    "0" "$(if grep -q '^LISTING FAILED' <<< "$filtered"; then echo "listing failed"; else grep -c "^$core_x:.* in c$" <<< "$filtered" || true; fi)"
+
+# Scenario: an untracked moved file still pairs as a rename.
+dir="$(move_repo)" || exit 1
+move_x "$dir" || { echo "FAIL setting up the untracked move"; exit 1; }
+check "an untracked moved file still pairs as a rename: the moved file has mutants unfiltered" \
+    "1" "$(n="$(mutants_in "$dir" "$core_x")"; [ "$n" != "listing failed" ] && [ "$n" -gt 0 ] && echo 1 || echo 0)"
+before="$(cd "$dir" && fixture_git status --porcelain)"
+with_shim "$dir" bash scripts/gates/mutants-diff.sh
+check "an untracked moved file still pairs as a rename: rename to the core" \
+    "1" "$(grep -qx "rename to $core_x" "$copied" 2> /dev/null && echo 1 || echo 0)"
+check "an untracked moved file still pairs as a rename: no hunk for x.rs" "0" "$(section "$copied" "$core_x" | grep -c '^@@')"
+check "an untracked moved file still pairs as a rename: none listed in x.rs" "0" "$(mutants_in "$dir" "$core_x" "$copied")"
+check "an untracked moved file still pairs as a rename: git status unchanged" \
+    "$before" "$(cd "$dir" && fixture_git status --porcelain)"
+
+# Scenario: a source file under a member's tests directory is not in the diff.
+dir="$(mutants_repo)" || exit 1
+mkdir -p "$dir/crates/cargo-crap-core/tests/fixtures/src"
+echo 'pub fn y() -> u32 { 4 }' > "$dir/crates/cargo-crap-core/tests/fixtures/src/y.rs"
+echo "$double" >> "$dir/crates/cargo-crap-core/src/lib.rs"
+with_shim "$dir" bash scripts/gates/mutants-diff.sh
+check "a source file under a member's tests directory is not in the diff: lib.rs is" \
+    "1" "$(grep -q '^diff --git a/crates/cargo-crap-core/src/lib.rs ' "$copied" 2> /dev/null && echo 1 || echo 0)"
+check "a source file under a member's tests directory is not in the diff: tests/ is not" \
+    "0" "$(grep -c '^diff --git .*crates/cargo-crap-core/tests/' "$copied" 2> /dev/null || true)"
 
 # A base ref that does not resolve is an error, not an empty diff: a
 # shallow clone or a renamed base branch must not pass having measured
