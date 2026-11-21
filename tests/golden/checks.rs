@@ -45,7 +45,6 @@ pub fn kind(case: &Case) -> Kind {
     }
 }
 
-/// The run as it is recorded, or every check it fails.
 pub fn finish(
     case: &Case,
     mut run: Run,
@@ -72,7 +71,6 @@ pub fn finish(
     }
 }
 
-/// Paths that would make a golden depend on where it ran.
 fn leaked_paths(
     run: &Run,
     root: &Path,
@@ -134,8 +132,6 @@ fn is_path_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '~')
 }
 
-/// Parses, validates and checks a JSON or SARIF stdout, and returns it
-/// with cargo-crap's version replaced by the placeholder.
 fn json_checks(
     kind: Kind,
     stdout: &[u8],
@@ -164,7 +160,6 @@ fn json_checks(
     }
 }
 
-/// `file`, `previous_file` and SARIF `uri` values that are absolute.
 fn absolute_paths(
     value: &Value,
     problems: &mut Vec<String>,
@@ -300,7 +295,6 @@ mod tests {
         .flatten()
     }
 
-    /// A real run of `case`, and the copy it ran in.
     fn real(case: &Case) -> (Run, crate::run::CaseDir) {
         let copy = prepare(case);
         let run = run_with(case, &copy, &clean_host);
@@ -373,21 +367,17 @@ mod tests {
 
     #[test]
     fn cargo_craps_version_is_recorded_as_version_and_only_there() {
-        // Given a case whose stdout is a JSON report or a SARIF log
         let (run, copy) = real(&P_JSON);
         let renamed = text(&run).replace(
             "\"function\": \"crappy\"",
             &format!("\"function\": \"{VERSION}\""),
         );
-        // When the harness records it
         let done = finish(&P_JSON, with_stdout(&run, renamed), copy.root()).expect("checks pass");
-        // Then only the envelope's version becomes [VERSION]
         assert!(
             text(&done).contains("\"version\": \"[VERSION]\""),
             "{}",
             text(&done)
         );
-        // And every other occurrence of the version string stays as printed
         assert!(text(&done).contains(&format!("\"function\": \"{VERSION}\"")));
 
         let (run, copy) = real(&P_SARIF);
@@ -397,7 +387,6 @@ mod tests {
             sarif.pointer("/runs/0/tool/driver/version"),
             Some(&Value::from(PLACEHOLDER))
         );
-        // And SARIF's own "version": "2.1.0" stays
         assert_eq!(sarif.pointer("/version"), Some(&Value::from("2.1.0")));
     }
 
@@ -435,10 +424,8 @@ mod tests {
 
     #[test]
     fn an_absolute_path_in_output_fails_on_first_recording() {
-        // Given every case's raw output, before any substitution
         let (run, copy) = real(&P_JSON);
         let root = copy.root();
-        // Then an absolute JSON "file" field fails the case
         let absolute = text(&run).replace(
             "\"file\": \"./src/lib.rs\"",
             "\"file\": \"/abs/src/lib.rs\"",
@@ -447,14 +434,12 @@ mod tests {
             finish(&P_JSON, with_stdout(&run, absolute), root),
             "absolute",
         );
-        // And an absolute SARIF artifact URI fails the case
         let (sarif, sarif_copy) = real(&P_SARIF);
         let uri = text(&sarif).replace("\"uri\": \"./src/lib.rs\"", "\"uri\": \"/abs/src/lib.rs\"");
         fails_with(
             finish(&P_SARIF, with_stdout(&sarif, uri), sarif_copy.root()),
             "absolute",
         );
-        // And no output may contain the temp root, the checkout or the temp prefix
         let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let canonical_root = root.canonicalize().expect("canonical root");
         let temp = std::env::temp_dir();
@@ -572,9 +557,7 @@ mod tests {
 
     #[test]
     fn json_outputs_validate_against_the_unchanged_schemas() {
-        // Given every case whose stdout is a cargo-crap JSON report
         let (run, copy) = real(&P_JSON);
-        // Then an absolute report validates against schemas/report-v1.json
         assert!(finish(&P_JSON, run.clone(), copy.root()).is_ok());
         let entries_gone = {
             let mut report: Value = serde_json::from_slice(&run.stdout).expect("json");
@@ -585,7 +568,6 @@ mod tests {
             finish(&P_JSON, with_stdout(&run, entries_gone), copy.root()),
             "report-v1.json",
         );
-        // And a delta report validates against schemas/delta-v2.json
         std::fs::write(copy.root().join("base.json"), &run.stdout).expect("baseline");
         let delta = Case {
             id: "probe_p_delta",

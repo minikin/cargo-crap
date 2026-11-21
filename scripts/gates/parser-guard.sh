@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # Neither front end links the other's parser, and the core links none.
 #
-# Reads `cargo tree -p <package>` for each package in the table below and
-# fails on a line that starts with one of that package's forbidden prefixes.
 # What the tree holds is what the package links:
 #   --all-features  a parser behind an optional feature does not hide
 #   --target all    nor does one behind a cfg(windows) table on a Linux host
@@ -10,7 +8,6 @@
 #                   links nothing
 #   no-proc-macro   syn compiles on the host for clap_derive and
 #                   serde_derive whatever the package links
-# Runs in the caller's directory.
 #
 # PARSER_GUARD_TREES=<dir> reads <dir>/<package>.tree instead of running
 # cargo, which is how the tests feed it trees no real package has.
@@ -46,8 +43,6 @@ tree_of() {
 
 violations=0
 for package in "${packages[@]}"; do
-    # A guard that looked at nothing must not pass: a failed or empty tree
-    # is an error, not a clean one.
     if ! tree="$(tree_of "$package")" || [ -z "$tree" ]; then
         echo "parser guard: $package: no tree was read" >&2
         exit 1

@@ -22,14 +22,12 @@ const PASSED_THROUGH: [&str; 5] = [
     "RUSTUP_TOOLCHAIN",
 ];
 
-/// Every case's environment unless its row overrides an entry.
 const DEFAULTS: [(&str, &str); 3] = [("NO_COLOR", "1"), ("COLUMNS", "100"), ("LC_ALL", "C")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fixture {
     /// `sample_project`, scored with its `lcov.info` by default.
     P,
-    /// `sample_workspace`.
     W,
     /// `triage/same_logic`: one duplicate pair across two files.
     D,
@@ -55,7 +53,6 @@ impl Fixture {
     }
 }
 
-/// One row of the spec's Cases table.
 #[derive(Debug, Clone, Copy)]
 pub struct Case {
     pub id: &'static str,
@@ -87,7 +84,6 @@ pub fn fixtures() -> PathBuf {
 /// the default `--lcov lcov.info`.
 pub const NO_LCOV: &str = "no lcov";
 
-/// A fresh copy of the case's fixture with its config and inputs in place.
 pub fn prepare(case: &Case) -> CaseDir {
     prepare_in(case, &std::env::temp_dir())
 }
@@ -146,7 +142,6 @@ fn build(
     (CaseDir { dir }, created)
 }
 
-/// An argument that names a file under `golden/lcov/` or `golden/baselines/`.
 fn input(arg: &str) -> Option<PathBuf> {
     ["golden/lcov", "golden/baselines"]
         .iter()
@@ -199,7 +194,6 @@ fn write(
     std::fs::write(path, bytes).unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
 }
 
-/// The environment a case's process sees, given the host's variables.
 pub fn environment(
     case: &Case,
     copy: &Path,
@@ -225,8 +219,6 @@ pub fn environment(
     env
 }
 
-/// The case's arguments, with P's default coverage file unless the case
-/// names its own or none.
 fn arguments(case: &Case) -> Vec<&'static str> {
     if case.args.contains(&NO_LCOV) {
         return case
@@ -265,11 +257,8 @@ pub fn run_with(
     }
 }
 
-/// The case that runs twice on one copy: once with a cold complexity cache
-/// and once reading the cache the first run wrote.
 pub const WARM_CACHE: &str = "w_warm_cache";
 
-/// Runs the case on a fresh copy, with this process's environment as host.
 /// The copy comes back too: the output checks need its path.
 pub fn run(case: &Case) -> Result<(Run, CaseDir), Vec<String>> {
     let copy = prepare(case);
@@ -277,8 +266,6 @@ pub fn run(case: &Case) -> Result<(Run, CaseDir), Vec<String>> {
     Ok((run, copy))
 }
 
-/// Runs the case on a copy already prepared for it, with this process's
-/// environment as host.
 pub fn run_on(
     case: &Case,
     copy: &CaseDir,
@@ -295,8 +282,6 @@ fn cache_file(copy: &CaseDir) -> PathBuf {
     copy.root().join("target/cargo-crap/complexity.json")
 }
 
-/// `runner` runs the case once on `copy`. The warm run is returned for
-/// comparison with the golden, which therefore holds the cold run too.
 fn cold_then_warm(
     id: &str,
     copy: &CaseDir,
@@ -395,20 +380,16 @@ mod tests {
 
     #[test]
     fn the_repositorys_own_config_does_not_reach_a_case() {
-        // Given the repository root holds a .cargo-crap.toml with [signals] enabled = true
         let own =
             std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(".cargo-crap.toml"))
                 .expect("the repository's config");
         assert!(own.contains("[signals]\nenabled = true"));
-        // And a case whose Config column is "-", copied below a directory holding that config
         let parent = tempfile::tempdir().expect("parent");
         write(&parent.path().join(".cargo-crap.toml"), own.as_bytes());
         let copy = prepare_in(&P_JSON, parent.path());
-        // When the case runs
         let run = run_with(&P_JSON, &copy, &clean_host);
         // Then the case's copy holds an empty .cargo-crap.toml, where the upward walk stops
         assert_eq!(read(&copy.root().join(".cargo-crap.toml")), b"");
-        // And its JSON output carries no "signals" field
         assert_eq!(run.status, OK, "{}", text(&run.stderr));
         assert!(text(&run.stdout).contains("\"entries\""));
         assert!(!text(&run.stdout).contains("\"signals\""));
@@ -440,15 +421,12 @@ mod tests {
         );
     }
 
-    /// Where the re-run test binary writes each probe's document.
     const HOSTILE_OUT: &str = "GOLDEN_HOSTILE_OUT";
 
     const PROBES: [Case; 4] = [P_JSON, P_MARKDOWN, P_COLOR, W_HUMAN];
 
     #[test]
     fn the_hosts_environment_does_not_reach_a_case() {
-        // Given GITHUB_*, colour, COLUMNS, LANG, target-dir and API-key variables
-        // set to unusual values in the environment of the process that runs the cases
         let out = tempfile::tempdir().expect("out");
         let shared_target = tempfile::tempdir().expect("shared target");
         let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
@@ -471,11 +449,9 @@ mod tests {
             0,
             "a case wrote into the host's target directory"
         );
-        // When the cases run
         for case in PROBES {
             let clean = run_with(&case, &prepare(&case), &clean_host);
             assert_eq!(clean.status, OK, "{}: {}", case.id, text(&clean.stderr));
-            // Then every case's output equals the output under a clean host
             let hostile = std::fs::read_to_string(out.path().join(case.id)).expect("probe output");
             assert_eq!(
                 hostile,
@@ -486,8 +462,6 @@ mod tests {
         }
     }
 
-    /// Runs only inside `the_hosts_environment_does_not_reach_a_case`, which
-    /// sets the hostile variables in this process's real environment.
     #[test]
     #[ignore = "run by the_hosts_environment_does_not_reach_a_case"]
     fn probes_under_a_hostile_host() {
@@ -512,8 +486,6 @@ mod tests {
 
     #[test]
     fn a_case_sees_only_the_allowlist_and_its_own_env() {
-        // Then a case's process sees only the passed-through variables, LC_ALL=C,
-        // CARGO_TARGET_DIR inside its own copy, and the case's Env column
         let host = |key: &str| {
             let value = match key {
                 "PATH" => "/host/bin",
@@ -541,7 +513,6 @@ mod tests {
         .iter()
         .map(|(k, v)| (OsString::from(k), OsString::from(v)))
         .collect();
-        // RUSTUP_TOOLCHAIN is unset on this host, so the case has none
         assert_eq!(env, expected);
         let with_toolchain = |key: &str| {
             (key == "RUSTUP_TOOLCHAIN")
@@ -611,13 +582,10 @@ mod tests {
 
     #[test]
     fn a_warm_cache_run_matches_the_cold_runs_golden() {
-        // Given a fresh copy of sample_workspace with no complexity cache under its target directory
         let copy = prepare(&WARM);
         assert!(!cache_file(&copy).exists());
         let mut runs = Vec::new();
-        // When case w_warm_cache runs once, and again on the same copy
         let warm = cold_then_warm(WARM.id, &copy, &mut || {
-            // Then the complexity cache exists before the second run
             runs.push(cache_file(&copy).is_file());
             run_with(&WARM, &copy, &clean_host)
         })
@@ -627,7 +595,6 @@ mod tests {
             [false, true],
             "one cold run, then one warm run on the same copy"
         );
-        // And the run compared with the golden is the warm one, equal to the cold one
         assert_eq!(warm.status, OK, "{}", text(&warm.stderr));
         assert_eq!(warm, run_with(&WARM, &copy, &clean_host));
         assert_eq!(

@@ -1,5 +1,3 @@
-//! The Cases table of `specs/44-golden-outputs.md`, one function per
-//! fixture so each fixture's rows land in their own region of the file.
 //! Globs the table quotes for a shell are passed bare: no shell runs here.
 
 use crate::run::{Case, Fixture, NO_LCOV};

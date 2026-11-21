@@ -51,8 +51,6 @@ license = "MIT"
 repository = "https://github.com/minikin/cargo-crap"
 homepage = "https://github.com/minikin/cargo-crap"
 
-# Versions and default-features only: each package picks its own features,
-# so a member that inherits syn does not get cargo-crap's `full`.
 [workspace.dependencies]
 anyhow = "1"
 clap = "4.4"
@@ -109,7 +107,6 @@ quote.workspace = true
 syn = { workspace = true, features = ["full", "visit", "printing"] }
 toml = { workspace = true, features = ["parse"] }
 unicode-width.workspace = true
-# Optional: only the `triage` feature compiles a network client in, over rustls.
 ureq = { workspace = true, optional = true, features = ["rustls"] }
 
 [features]

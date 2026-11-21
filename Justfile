@@ -11,9 +11,6 @@ set export
 
 # Run all tests — the default build, then with every feature (the `triage`
 # feature compiles the TypeSafe client, so its tests only exist there).
-# A test run verifies snapshots and never writes one: INSTA_UPDATE=no, and
-# the variables that would record (GOLDEN_RECORD) or force-write (insta's
-# force and pending-dir settings) are cleared.
 test:
     env -u GOLDEN_RECORD -u INSTA_FORCE_UPDATE -u INSTA_FORCE_UPDATE_SNAPSHOTS -u INSTA_PENDING_DIR INSTA_UPDATE=no cargo nextest run --workspace --all-targets
     env -u GOLDEN_RECORD -u INSTA_FORCE_UPDATE -u INSTA_FORCE_UPDATE_SNAPSHOTS -u INSTA_PENDING_DIR INSTA_UPDATE=no cargo nextest run --workspace --all-targets --all-features

@@ -1,5 +1,3 @@
-//! One case's run as one text document that insta stores without loss.
-//!
 //! insta trims trailing whitespace and turns CRLF into LF before it
 //! compares, so raw output would lose a final newline or a `\r` unnoticed.
 //! The document escapes every byte that could be lost or hidden, closes each
@@ -8,7 +6,6 @@
 //! two cases can print the same bytes (`w_human` and `w_warm_cache` do), and
 //! only the ID tells a run compared with the wrong snapshot from the right one.
 
-/// What a case's process left behind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Run {
     pub stdout: Vec<u8>,
@@ -162,7 +159,6 @@ mod tests {
         }
     }
 
-    /// What insta does to a file snapshot before comparing it.
     fn insta_normalised(text: &str) -> String {
         text.trim_end().replace("\r\n", "\n")
     }
@@ -278,8 +274,6 @@ mod tests {
         })
     }
 
-    /// A one-byte edit of a run: one stream's byte changed, added or
-    /// removed, or the status moved.
     fn edited(
         original: &Run,
         which: u8,
