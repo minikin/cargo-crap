@@ -815,8 +815,10 @@ Spec 46's guard in `src/tool.rs` keeps its checker and gains:
   `merge.rs` beside a separately tested `assign`.
 
 The checker's own fixtures are the failing and passing sources in the
-guard scenarios. Glob imports and renamed modules stay out of reach, as
-in spec 46. Spec 49 moves the listed files into
+guard scenarios. The interim checker does not follow glob imports, renamed modules
+or paths through an imported parent module. For example, after
+`use crate::signals;`, it accepts `signals::compute::compute()` even
+though it rejects the fully qualified path. Spec 49 moves the listed files into
 `crates/cargo-crap-core`, where `crate::merge` and the parser crates do
 not exist, so the compiler enforces the boundary and spec 49 deletes the
 guard.
