@@ -75,8 +75,22 @@ mod tests {
         );
     }
 
-    fn path_words(line: &str) -> impl Iterator<Item = &str> {
-        line.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+    fn path_words(mut line: &str) -> impl Iterator<Item = &str> {
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        std::iter::from_fn(move || {
+            let start = line.find(ident)?;
+            line = &line[start..];
+            let mut rest = line.trim_start_matches(ident);
+            while let Some(next) = rest.strip_prefix("::") {
+                if !next.starts_with(ident) {
+                    break;
+                }
+                rest = next.trim_start_matches(ident);
+            }
+            let path = &line[..line.len() - rest.len()];
+            line = rest;
+            Some(path)
+        })
     }
 
     fn violations(
@@ -93,10 +107,13 @@ mod tests {
         module: &[&str],
     ) -> Vec<String> {
         let filename = crate::paths::path_key(path);
-        let mut found: Vec<String> = doctest_tool_lines(source)
-            .into_iter()
-            .map(|line| format!("{filename}:{line}: crate::tool"))
-            .collect();
+        let mut paths = CorePaths {
+            module: module.iter().map(|m| (*m).to_string()).collect(),
+            found: std::collections::BTreeSet::new(),
+        };
+        for line in doctest_tool_lines(source) {
+            paths.report(line, "crate::tool");
+        }
         for (idx, line) in source.lines().enumerate() {
             for (marker, root) in [
                 ("syn::", "syn"),
@@ -104,32 +121,26 @@ mod tests {
                 ("proc_macro2::", "proc_macro2"),
             ] {
                 if line.contains(marker) {
-                    found.push(format!("{filename}:{}: {root}", idx + 1));
+                    paths.report(idx + 1, root);
                 }
             }
             if line.contains("CARGO_PKG_") {
-                found.push(format!("{filename}:{}: CARGO_PKG_", idx + 1));
+                paths.report(idx + 1, "CARGO_PKG_");
             }
             if path_words(line).any(|word| {
-                let mut parts = word.trim_start_matches("::").split("::");
+                let mut parts = word.split("::");
                 parts.next() == Some("cargo_crap") && parts.next() == Some("tool")
             }) {
-                found.push(format!("{filename}:{}: crate::tool", idx + 1));
+                paths.report(idx + 1, "crate::tool");
             }
         }
         let file = syn::parse_file(source).expect("parses");
-        let mut paths = CorePaths {
-            file: &filename,
-            module: module.iter().map(|m| (*m).to_string()).collect(),
-            found: Vec::new(),
-        };
         syn::visit::Visit::visit_file(&mut paths, &file);
-        found.extend(paths.found);
-        found.sort();
-        found.dedup();
-        found.sort();
-        found.dedup();
-        found
+        paths
+            .found
+            .into_iter()
+            .map(|(line, path)| format!("{filename}:{line}: {path}"))
+            .collect()
     }
 
     /// An identifier as the compiler resolves it, so `r#tool` is `tool`.
@@ -287,19 +298,18 @@ mod tests {
         "clap",
     ];
 
-    struct CorePaths<'a> {
-        file: &'a str,
+    struct CorePaths {
         module: Vec<String>,
-        found: Vec<String>,
+        found: std::collections::BTreeSet<(usize, String)>,
     }
 
-    impl CorePaths<'_> {
+    impl CorePaths {
         fn report(
             &mut self,
             line: usize,
             path: &str,
         ) {
-            self.found.push(format!("{}:{line}: {path}", self.file));
+            self.found.insert((line, path.to_owned()));
         }
 
         fn check_external(
@@ -320,7 +330,7 @@ mod tests {
         ) {
             for (offset, line) in doc.value().lines().enumerate() {
                 for word in path_words(line) {
-                    let mut parts = word.trim_start_matches("::").split("::");
+                    let mut parts = word.split("::");
                     if !matches!(parts.next(), Some("crate" | "cargo_crap")) {
                         continue;
                     }
@@ -384,7 +394,7 @@ mod tests {
         }
     }
 
-    impl<'ast> syn::visit::Visit<'ast> for CorePaths<'_> {
+    impl<'ast> syn::visit::Visit<'ast> for CorePaths {
         fn visit_attribute(
             &mut self,
             attr: &'ast syn::Attribute,
@@ -469,6 +479,10 @@ mod tests {
 
     #[test]
     fn a_grouped_front_end_import_fails_the_source_guard() {
+        assert_eq!(
+            violations("use crate::{complexity::FunctionComplexity};", &["delta"]),
+            ["src/delta.rs:1: crate::complexity"]
+        );
         assert_eq!(
             violations(
                 "use crate::{\n complexity::FunctionComplexity};",
@@ -669,6 +683,83 @@ mod tests {
         let mut found = check_core(dir.path()).unwrap();
         found.sort();
         assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn imported_parent_paths_are_a_known_guard_limit_until_spec_49() {
+        for source in [
+            "use crate::duplicates; fn f() { duplicates::extract::x(); }",
+            "use crate::signals; fn f() { signals::compute::compute(); }",
+        ] {
+            assert_eq!(violations(source, &["entry"]), Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn the_guard_rejects_every_front_end_module() {
+        for module in [
+            "tool",
+            "merge",
+            "complexity",
+            "cache",
+            "config",
+            "signals::compute",
+            "duplicates::extract",
+            "duplicates::normalize",
+            "duplicates::fingerprint",
+            "duplicates::scan",
+            "duplicates::triage",
+        ] {
+            assert_eq!(
+                violations(&format!("use crate::{module}::X;"), &["entry"]),
+                [format!("src/entry.rs:1: crate::{module}")]
+            );
+        }
+    }
+
+    #[test]
+    fn neighbouring_core_modules_pass_the_guard() {
+        for path in [
+            "crate::signals::Spans",
+            "crate::coverage::LineRange",
+            "crate::duplicates::model::X",
+            "super::config",
+        ] {
+            assert_eq!(
+                violations(&format!("use {path};"), &["signals", "model"]),
+                Vec::<String>::new(),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_type_annotation_can_immediately_precede_the_tool_path() {
+        for source in [
+            "fn f(x:cargo_crap::tool::T) {}",
+            "//! let t:cargo_crap::tool::Tool = x;",
+        ] {
+            assert_eq!(
+                violations(source, &["entry"]),
+                ["src/entry.rs:1: crate::tool"]
+            );
+        }
+        assert_eq!(
+            violations("//! let t:cargo_crap::toolbox::T = x;", &["entry"]),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn guard_messages_follow_source_line_order() {
+        let source = format!("\n\nuse crate::merge;{}use crate::cache;", "\n".repeat(7));
+        assert_eq!(
+            violations(&source, &["entry"]),
+            [
+                "src/entry.rs:3: crate::merge",
+                "src/entry.rs:10: crate::cache"
+            ]
+        );
     }
 
     #[test]
@@ -1021,7 +1112,7 @@ mod tests {
     }
 
     #[test]
-    fn core_bound_files_read_no_package_version() {
+    fn core_bound_files_reference_only_the_core() {
         let found =
             check_core(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("read the core-bound files");
         assert!(found.is_empty(), "{found:#?}");
