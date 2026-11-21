@@ -477,6 +477,9 @@ mod tests {
             assigned: bool,
             legacy: bool,
         }
+        fn legacy_name(name: &str) -> bool {
+            matches!(name, "PathIndex" | "path_has_suffix" | "canonicalize")
+        }
         impl<'ast> Visit<'ast> for MergeCalls {
             fn visit_item(
                 &mut self,
@@ -513,17 +516,10 @@ mod tests {
                 &mut self,
                 call: &'ast syn::ExprCall,
             ) {
-                fn segments(expr: &syn::Expr) -> Vec<String> {
-                    let syn::Expr::Path(path) = expr else {
-                        return Vec::new();
-                    };
-                    path.path.segments.iter().map(|s| name(&s.ident)).collect()
-                }
                 if is_cfg_test(&call.attrs) {
                     return;
                 }
-                let function = segments(&call.func);
-                self.legacy |= function.last().is_some_and(|name| name == "canonicalize");
+                let function = expr_path_segments(&call.func);
                 let function = function.iter().map(String::as_str).collect::<Vec<_>>();
                 if matches!(self.scope, Scope::Merge)
                     && matches!(
@@ -532,7 +528,7 @@ mod tests {
                     )
                     && let Some(arg) = call.args.last()
                 {
-                    let policy = segments(arg);
+                    let policy = expr_path_segments(arg);
                     let policy = policy.iter().map(String::as_str).collect::<Vec<_>>();
                     self.assigned |= matches!(
                         policy.as_slice(),
@@ -543,23 +539,32 @@ mod tests {
                 }
                 visit::visit_expr_call(self, call);
             }
-            fn visit_expr_method_call(
+            fn visit_macro(
                 &mut self,
-                call: &'ast syn::ExprMethodCall,
+                mac: &'ast syn::Macro,
             ) {
-                self.legacy |= call.method == "canonicalize";
-                visit::visit_expr_method_call(self, call);
+                let mut paths = Vec::new();
+                token_paths(mac.tokens.clone(), &mut paths);
+                self.legacy |= paths.iter().flatten().any(|segment| legacy_name(segment));
+                visit::visit_macro(self, mac);
             }
             fn visit_ident(
                 &mut self,
                 ident: &'ast syn::Ident,
             ) {
-                self.legacy |= matches!(name(ident).as_str(), "PathIndex" | "path_has_suffix");
+                self.legacy |= legacy_name(&name(ident));
             }
         }
         let mut calls = MergeCalls::default();
         calls.visit_file(&syn::parse_file(source).expect("valid merge source"));
         calls.assigned && !calls.legacy
+    }
+
+    fn expr_path_segments(expr: &syn::Expr) -> Vec<String> {
+        let syn::Expr::Path(path) = expr else {
+            return Vec::new();
+        };
+        path.path.segments.iter().map(|s| name(&s.ident)).collect()
     }
 
     #[test]
@@ -581,12 +586,17 @@ mod tests {
             "fn merge() { paths::assign(&s,&k,TiePolicy::Unmatched); }",
             "fn merge() { other::assign(&s,&k,TiePolicy::PerSource); }",
             "fn merge() { wrong::paths::assign(&s,&k,TiePolicy::PerSource); }",
+            "fn merge() { #[cfg(test)] paths::assign(&s,&k,TiePolicy::PerSource); }",
             "#[cfg(test)] fn merge() { paths::assign(&s,&k,TiePolicy::PerSource); }",
             "fn elsewhere() { paths::assign(&s,&k,TiePolicy::PerSource); }",
         ] {
             assert!(!merge_delegates(wrong), "{wrong}");
         }
         for legacy in [
+            "fn f(){std::fs::canonicalize(p);}",
+            "fn f(){files.map(Path::canonicalize);}",
+            "fn f(){file.and_then(std::fs::canonicalize);}",
+            "fn f(){observe!(file.canonicalize());}",
             "fn f(){file.canonicalize();}",
             "struct PathIndex;",
             "fn path_has_suffix(){}",

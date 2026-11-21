@@ -71,7 +71,8 @@ pub fn merge(
     let assignment = paths::assign(&sources, &keys, TiePolicy::PerSource);
     let diagnostics = (!keys.is_empty()).then(|| assignment.diagnostics(&sources, &keys));
 
-    // Several source files may claim one suffix. Cache its hit map to avoid summing the same aliases repeatedly.
+    // Several source files may claim one suffix. Cache its hit map to avoid
+    // summing the same aliases repeatedly.
     let mut groups = HashMap::new();
     let mut source_groups = HashMap::new();
     for (source, bound) in sources.into_iter().zip(assignment.bindings) {
@@ -221,6 +222,31 @@ mod tests {
             diag.lcov_only.count, 0,
             "both spellings of a consumed entry are consumed"
         );
+    }
+
+    #[test]
+    fn disjoint_relative_aliases_contribute_both_hit_and_uncovered_lines() {
+        let coverage = HashMap::from([
+            (PathBuf::from("src/lib.rs"), cov_with(&[(1, 7)])),
+            (PathBuf::from("./src/lib.rs"), cov_with(&[(2, 0)])),
+        ]);
+        let function = FunctionComplexity {
+            file: PathBuf::from("/repo/src/lib.rs"),
+            name: "alias".into(),
+            start_line: 1,
+            end_line: 2,
+            cyclomatic: 1.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
+        };
+        let result = merge(vec![function], coverage, MissingCoveragePolicy::Skip);
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].coverage, Some(50.0));
+        assert_eq!(
+            result.entries[0].uncovered,
+            [LineRange { start: 2, end: 2 }]
+        );
+        assert_eq!(result.diagnostics.unwrap().lcov_only.count, 0);
     }
 
     #[test]

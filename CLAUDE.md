@@ -106,11 +106,11 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`src/signals/`** keeps signal values and settings in `model.rs`, their configuration in `config.rs`, and the Rust syntax walker in `compute.rs`.
 
-**`src/entry.rs`** defines report rows, sorting and scope diagnostics. **`src/paths.rs`** contains shared path normalization and suffix helpers.
+**`src/entry.rs`** defines report rows, sorting and scope diagnostics. **`src/paths.rs`** assigns coverage paths to source files and supplies shared path normalization.
 
 **`src/coverage/lcov.rs`** parses LCOV files using the `lcov` crate. It consumes only `SF` (source file), `DA` (line data), and `end_of_record` records. Path normalization is deliberately absent here. The join delegates matching to `paths::assign`.
 
-**`src/merge.rs`** is the critical join layer. It calls `paths::assign` once per batch of distinct source files. The two lookup tiers are:
+**`src/merge.rs`** is the critical join layer. It calls `paths::assign` once per batch of distinct source files. Coverage matching follows these rules:
 - **Fast path**: canonicalized absolute paths → direct hash lookup.
 - **Slow path**: component-wise suffix matching for relative LCOV paths (e.g., `src/foo.rs` matches `/home/alice/project/src/foo.rs`).
 - **Critical invariant**: relative paths are never canonicalized against CWD (the regression test is `src/paths.rs::tests::relative_coverage_paths_are_not_resolved_against_cwd`).
