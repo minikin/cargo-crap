@@ -278,7 +278,7 @@ source guard drops each file as it moves.
   the seed inventory, spec 45's parser guard, and the spec 44 golden suite
   in both builds.
 
-- [ ] **T5 — A core-only caller reports and gates a scored row.**
+- [x] **T5 — A core-only caller reports and gates a scored row.**
   Needs: T4. Add `crates/cargo-crap-core/tests/acceptance.rs` with no edge
   to the root package, including `second_tool.inc.rs`.
   Scenario: _a core-only caller can report a scored function_.
