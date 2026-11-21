@@ -63,7 +63,7 @@ pub(crate) fn unique_best_by_suffix<T>(
 pub enum TiePolicy {
     /// Each source keeps its most specific match.
     PerSource,
-    /// A suffix that fits multiple sources remains unused even if one has more specific coverage.
+    /// An exact relative owner takes precedence. A key with several equally good owners remains unused.
     Unmatched,
 }
 
@@ -148,39 +148,61 @@ impl PathIndex {
         index
     }
 
-    fn withdraw_ambiguous_suffixes(
-        &mut self,
+    fn real_match(
+        &self,
+        source: &Path,
+    ) -> Option<&Vec<usize>> {
+        if self.real.is_empty() {
+            return None;
+        }
+        self.real.get(&source.canonicalize().ok()?)
+    }
+
+    fn assign_by_owner(
+        &self,
         sources: &[&Path],
         keys: &[&Path],
-    ) -> Vec<Tie> {
+    ) -> Assignment {
+        let mut best = vec![None; sources.len()];
         let mut ties = Vec::new();
-        self.suffix.retain(|needle, group| {
-            let mut fitting = (0..sources.len()).filter(|&i| path_has_suffix(sources[i], needle));
-            let (Some(first), Some(second)) = (fitting.next(), fitting.next()) else {
-                return true;
-            };
-            let mut owners = vec![first, second];
-            owners.extend(fitting);
-            owners.sort_by_key(|&i| sources[i].as_os_str());
-            group.sort_by_key(|&i| keys[i].as_os_str());
-            ties.push(Tie {
-                keys: std::mem::take(group),
-                sources: owners,
-            });
-            false
-        });
+        for (needle, group) in &self.suffix {
+            let mut owners = suffix_owners(needle, sources);
+            match owners.as_slice() {
+                [] => {},
+                &[owner] => {
+                    let length = needle.components().count();
+                    best[owner] = best[owner].max(Some((length, group)));
+                },
+                _ => {
+                    let mut spellings = group.clone();
+                    spellings.sort_by_key(|&i| keys[i].as_os_str());
+                    owners.sort_by_key(|&i| sources[i].as_os_str());
+                    ties.push(Tie {
+                        keys: spellings,
+                        sources: owners,
+                    });
+                },
+            }
+        }
         ties.sort_by_key(|tie| keys[tie.keys[0]].as_os_str());
-        ties
+        let bindings = sources
+            .iter()
+            .zip(best)
+            .map(|(path, suffix)| {
+                self.real_match(path)
+                    .or_else(|| suffix.map(|(_, group)| group))
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+        Assignment { bindings, ties }
     }
 
     fn lookup(
         &self,
         source: &Path,
     ) -> Option<&Vec<usize>> {
-        if !self.real.is_empty()
-            && let Ok(real) = source.canonicalize()
-            && let Some(group) = self.real.get(&real)
-        {
+        if let Some(group) = self.real_match(source) {
             return Some(group);
         }
         self.suffix
@@ -189,6 +211,21 @@ impl PathIndex {
             .max_by_key(|(key, _)| key.components().count())
             .map(|(_, group)| group)
     }
+}
+
+fn suffix_owners(
+    needle: &Path,
+    sources: &[&Path],
+) -> Vec<usize> {
+    let (exact, suffix): (Vec<_>, Vec<_>) = (0..sources.len())
+        .filter(|&i| path_has_suffix(sources[i], needle))
+        .partition(|&i| {
+            sources[i]
+                .components()
+                .filter(|c| *c != Component::CurDir)
+                .eq(needle.components())
+        });
+    if exact.is_empty() { suffix } else { exact }
 }
 
 /// Bind each source to canonical aliases or the longest matching component suffix.
@@ -201,16 +238,18 @@ pub fn assign(
     keys: &[&Path],
     policy: TiePolicy,
 ) -> Assignment {
-    let mut index = PathIndex::build(keys);
-    let ties = match policy {
-        TiePolicy::PerSource => Vec::new(),
-        TiePolicy::Unmatched => index.withdraw_ambiguous_suffixes(sources, keys),
-    };
+    let index = PathIndex::build(keys);
+    if policy == TiePolicy::Unmatched {
+        return index.assign_by_owner(sources, keys);
+    }
     let bindings = sources
         .iter()
         .map(|path| index.lookup(path).cloned().unwrap_or_default())
         .collect();
-    Assignment { bindings, ties }
+    Assignment {
+        bindings,
+        ties: Vec::new(),
+    }
 }
 
 fn path_has_suffix(
@@ -459,6 +498,52 @@ mod tests {
         let diagnostics = result.diagnostics(&sources, &keys);
         assert_eq!(diagnostics.lcov_only.count, 3);
         assert_eq!(diagnostics.source_only.count, 2);
+    }
+
+    #[test]
+    fn an_exact_relative_path_owns_the_key_over_a_looser_suffix_match() {
+        let keys = paths(["src/index.ts"]);
+        for exact in ["src/index.ts", "./src/index.ts"] {
+            let sources = paths([exact, "packages/a/src/index.ts"]);
+            let matched = assign(&sources, &keys, TiePolicy::Unmatched);
+            assert_eq!(matched.bindings, [vec![0], vec![]]);
+            assert_eq!(matched.ties, []);
+            let diagnostics = matched.diagnostics(&sources, &keys);
+            assert_eq!(diagnostics.matched_files, 1);
+            assert_eq!(diagnostics.source_only.examples, [sources[1]]);
+            assert_eq!(diagnostics.lcov_only.count, 0);
+            let per_source = assign(&sources, &keys, TiePolicy::PerSource);
+            assert_eq!(per_source.bindings, [vec![0], vec![0]]);
+        }
+    }
+
+    #[test]
+    fn equally_exact_spellings_tie_without_the_looser_source() {
+        let sources = paths(["src/index.ts", "pkg/src/index.ts", "./src/index.ts"]);
+        let keys = paths(["src/index.ts"]);
+        let matched = assign(&sources, &keys, TiePolicy::Unmatched);
+        assert_eq!(
+            matched.ties,
+            [Tie {
+                keys: vec![0],
+                sources: vec![2, 0]
+            }]
+        );
+        assert!(matched.bindings.iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn real_coverage_of_the_exact_owner_does_not_transfer_its_relative_key() {
+        let sources = paths(["src/lib.rs", "other/src/lib.rs"]);
+        let absolute = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+        let keys = [absolute.as_path(), Path::new("src/lib.rs")];
+        let matched = assign(&sources, &keys, TiePolicy::Unmatched);
+        assert_eq!(matched.bindings, [vec![0], vec![]]);
+        assert_eq!(matched.ties, []);
+        assert_eq!(
+            matched.diagnostics(&sources, &keys).lcov_only.examples,
+            [keys[1]]
+        );
     }
 
     #[test]
