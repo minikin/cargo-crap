@@ -757,7 +757,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Separate nested decisions and skip declarations without bodies_, _Distinguish source regions from their outer line range_.
   Tests: Acceptance on the complete nested row sets, parameter decisions, declaration-only skips, concise-body bounds and UTF-16 columns. Assert exact sorted statement lines for each row.
 
-- [ ] **T10 - Encode reserved segment content.** Needs: T9.
+- [x] **T10 - Encode reserved segment content.** Needs: T9.
   Scenarios: _Encode segment content before joining segments (N11)_.
   Tests: Unit tests for reserved characters, Unicode format controls, UTF-8 percent encoding and lone UTF-16 surrogates. Acceptance checks encoded segments in emitted names.
 
