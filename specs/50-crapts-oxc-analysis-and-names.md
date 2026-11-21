@@ -710,7 +710,7 @@ And every added package belongs to the new member or its dependency closure
 
 Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario below belongs to one task. The Spec 55 appendix is reference material.
 
-- [ ] **T1 - Add the unpublished crapts library to the workspace.**
+- [x] **T1 - Add the unpublished crapts library to the workspace.**
   Scenarios: _Add the analysis library and its pinned dependencies_.
   Tests: Acceptance against Cargo metadata, the final Spec 45 lockfile and the Dependabot group. Extend the existing membership assertion in the same change.
 
