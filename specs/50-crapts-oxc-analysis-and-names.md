@@ -786,7 +786,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Shorten delimited content in code points (N12)_.
   Tests: Unit tests at the 48/49-code-point boundary and for the first 40 code points. Acceptance through the analyzer for every N12 fixture, including lone surrogates, computed keys and the exact suffix from the full encoded content.
 
-- [ ] **T16 - Assign class initializers to constructors and static rows.** Needs: T15.
+- [x] **T16 - Assign class initializers to constructors and static rows.** Needs: T15.
   Scenarios: _Assign each class initializer to its scoring owner_, _Locate an implied constructor across discontiguous initializers_.
   Tests: Acceptance for written and implied constructors. Assert the complete named row sets and CC, ordered regions, display spans and static-block bounds.
 
