@@ -21,6 +21,7 @@ check() {
 
 files=(
     Cargo.toml
+    crates/cargo-crap-core/Cargo.toml
     CHANGELOG.md
     action.yml
     .github/ISSUE_TEMPLATE/bug_report.yml
@@ -66,6 +67,8 @@ check "the new version's link compares the two tags" "1" \
     "$(grep -c "^\[$next\]: .*/compare/v$current\.\.\.v$next$" "$dir/CHANGELOG.md")"
 check "the old version's link is kept" "1" \
     "$(grep -c "^\[$current\]: " "$dir/CHANGELOG.md")"
+check "release prep bumps cargo-crap and leaves the core alone" '0.1.0' \
+    "$(awk -F'"' '/^version = /{print $2; exit}' "$dir/crates/cargo-crap-core/Cargo.toml")"
 rm -rf "$dir"
 
 # Nothing to release: an empty [Unreleased] is refused, and no file changes.
