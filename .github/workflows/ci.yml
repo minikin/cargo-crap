@@ -40,6 +40,13 @@ jobs:
               - '.cargo/**'
               - '.config/**'
               - 'tests/fixtures/**'
+              - 'tests/snapshots/**'
+              # The golden tests read these: a change to any of them runs them.
+              - 'Justfile'
+              - '.gitignore'
+              - '.cargo-crap.toml'
+              - 'tests/golden/encode.proptest-regressions'
+              - 'specs/44-golden-outputs.md'
               - 'rust-toolchain.toml'
               - 'clippy.toml'
               - 'rustfmt.toml'
@@ -87,6 +94,8 @@ jobs:
       # Report every failing test, not the first (.config/nextest.toml). Not
       # set for mutation testing, which wants each mutant to stop early.
       NEXTEST_PROFILE: ci
+      # Verify snapshots, never write them: a changed golden must fail.
+      INSTA_UPDATE: "no"
     strategy:
       fail-fast: false
       matrix:
@@ -96,14 +105,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-nextest
+      # The goldens hold the bytes of the committed Cargo.lock: refuse a lock
+      # that is not tracked, then build against it with --locked.
+      - name: Cargo.lock is tracked
+        run: git ls-files --error-unmatch -- Cargo.lock
       - name: Test (default features)
-        run: cargo nextest run --all-targets
+        run: cargo nextest run --all-targets --locked
       # The `triage` feature compiles the TypeSafe client (spec 30); its tests
       # only exist with it on.
       - name: Test (all features)
-        run: cargo nextest run --all-targets --all-features
+        run: cargo nextest run --all-targets --all-features --locked
       - name: Doc tests
-        run: cargo test --doc --all-features
+        run: cargo test --doc --all-features --locked
 
   # A docs-only change runs the docs test alone. When Rust changed too, the
   # test job above already runs it, unless the change is to this file.

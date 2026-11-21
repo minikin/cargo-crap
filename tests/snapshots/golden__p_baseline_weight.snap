@@ -1,0 +1,12 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_baseline_weight
+stdout:
+No changes since baseline.
+↑ 0 regressed  ↓ 0 improved  ★ 0 new  ↔ 0 moved  · 3 unchanged  — 0 removed
+<<end>>
+stderr:
+warning: the baseline was recorded with try-weight 0.5 and this run uses 1 — deltas reflect the weight change, not code changes
+<<end>>
+exit: 0

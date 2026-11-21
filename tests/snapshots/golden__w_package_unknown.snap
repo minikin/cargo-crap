@@ -1,0 +1,10 @@
+---
+source: tests/golden/snap.rs
+---
+case: w_package_unknown
+stdout:
+<<end>>
+stderr:
+Error: unknown package(s): nope, zzz; available workspace members: alpha, beta
+<<end>>
+exit: 2

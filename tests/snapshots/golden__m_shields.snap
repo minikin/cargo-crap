@@ -1,0 +1,15 @@
+---
+source: tests/golden/snap.rs
+---
+case: m_shields
+stdout:
+{
+  "schemaVersion": 1,
+  "label": "CRAP > 30",
+  "message": "6 crappy",
+  "color": "red"
+}
+<<end>>
+stderr:
+<<end>>
+exit: 0

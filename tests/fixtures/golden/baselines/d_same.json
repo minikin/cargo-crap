@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+  "version": "0.9.0",
+  "entries": [
+    {
+      "file": "./markdown.rs",
+      "function": "write_markdown_absolute_heading",
+      "line": 4,
+      "cyclomatic": 5.0,
+      "coverage": null,
+      "crap": 30.0
+    },
+    {
+      "file": "./pr_comment.rs",
+      "function": "write_pr_comment_abs_headline",
+      "line": 4,
+      "cyclomatic": 5.0,
+      "coverage": null,
+      "crap": 30.0
+    }
+  ],
+  "duplicates": [
+    {
+      "first_file": "./markdown.rs",
+      "first_function": "write_markdown_absolute_heading",
+      "first_start_line": 4,
+      "first_end_line": 19,
+      "second_file": "./pr_comment.rs",
+      "second_function": "write_pr_comment_abs_headline",
+      "second_start_line": 4,
+      "second_end_line": 19,
+      "score": 0.9166666666666666
+    }
+  ],
+  "duplicate_groups": [
+    {
+      "members": [
+        {
+          "file": "./markdown.rs",
+          "function": "write_markdown_absolute_heading",
+          "start_line": 4,
+          "end_line": 19
+        },
+        {
+          "file": "./pr_comment.rs",
+          "function": "write_pr_comment_abs_headline",
+          "start_line": 4,
+          "end_line": 19
+        }
+      ],
+      "score": 0.9166666666666666
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_delta_pr_comment
+stdout:
+<!-- cargo-crap-report -->
+
+## ⚠️ 1 CRAP regression(s) detected
+
+↑ 1 regressed · ★ 1 new · ↔ 1 moved · ↓ 0 improved · 0 unchanged · — 1 removed
+
+| | CRAP | Δ | CC | Cov % | Function | Location |
+|---|---:|---:|---:|---:|---|---|
+| ✗ | 156.0 | +56.0 | 12 | 0.0 | `crappy` | `lib.rs:24` |
+| ✓ | 6.7 | NEW | 4 | 44.4 | `moderate` | `lib.rs:12` |
+
+<details><summary>↔ 1 moved</summary>
+
+| | CRAP | Δ | CC | Cov % | Function | Location |
+|---|---:|---:|---:|---:|---|---|
+| ✓ | 1.0 |  | 1 | 100.0 | `trivial` | `lib.rs:8` ← `old.rs` |
+
+</details>
+
+<details><summary>— 1 removed</summary>
+
+- `gone` (was 2.5) — `lib.rs`
+
+</details>
+<<end>>
+stderr:
+<<end>>
+exit: 0

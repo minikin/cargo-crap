@@ -1,0 +1,74 @@
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+  "version": "0.9.0",
+  "entries": [
+    {
+      "file": "./src/lib.rs",
+      "function": "crappy",
+      "line": 24,
+      "cyclomatic": 12.0,
+      "coverage": 0.0,
+      "crap": 156.0,
+      "uncovered": [
+        {
+          "start": 26,
+          "end": 56
+        }
+      ],
+      "signals": {
+        "nesting": 3,
+        "lines": 30,
+        "bumps": 1,
+        "bool_ops": 0,
+        "stubs": 0,
+        "panics": 0
+      }
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "moderate",
+      "line": 12,
+      "cyclomatic": 4.0,
+      "coverage": 44.44444444444444,
+      "crap": 6.743484224965707,
+      "uncovered": [
+        {
+          "start": 15,
+          "end": 16
+        },
+        {
+          "start": 18,
+          "end": 18
+        },
+        {
+          "start": 20,
+          "end": 21
+        }
+      ],
+      "signals": {
+        "nesting": 1,
+        "lines": 11,
+        "bumps": 0,
+        "bool_ops": 0,
+        "stubs": 0,
+        "panics": 0
+      }
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "trivial",
+      "line": 8,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0,
+      "signals": {
+        "nesting": 0,
+        "lines": 3,
+        "bumps": 0,
+        "bool_ops": 0,
+        "stubs": 0,
+        "panics": 0
+      }
+    }
+  ]
+}

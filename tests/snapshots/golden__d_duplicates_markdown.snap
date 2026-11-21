@@ -1,0 +1,25 @@
+---
+source: tests/golden/snap.rs
+---
+case: d_duplicates_markdown
+stdout:
+<!-- cargo-crap-report -->
+
+## ✅ No CRAP threshold violations
+
+| | CRAP | CC | Cov % | Function | Location |
+|---|---:|---:|---:|---|---|
+| ▲ | 30.0 | 5 | — | `write_markdown_absolute_heading` | `./markdown.rs:4` |
+| ▲ | 30.0 | 5 | — | `write_pr_comment_abs_headline` | `./pr_comment.rs:4` |
+
+✓ 2 function(s) analyzed; none exceed CRAP threshold 30.
+
+## 1 duplicate candidate
+
+| Pair | Similarity |
+|---|---:|
+| `write_markdown_absolute_heading` ↔ `write_pr_comment_abs_headline`<br><sub>`./markdown.rs:4-19` · `./pr_comment.rs:4-19`</sub> | 0.92 |
+<<end>>
+stderr:
+<<end>>
+exit: 0

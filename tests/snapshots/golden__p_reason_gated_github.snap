@@ -1,0 +1,10 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_reason_gated_github
+stdout:
+::warning file=./src/lib.rs,line=26,endLine=56,title=nesting 2 → 3::crappy got harder to maintain: flatten-nesting
+<<end>>
+stderr:
+<<end>>
+exit: 1

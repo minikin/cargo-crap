@@ -1,0 +1,11 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_reason_gated_summary
+stdout:
+↑ 0 regressed  ↓ 0 improved  ★ 0 new  ↔ 0 moved  · 3 unchanged  — 0 removed
+✗ 1 signal regression(s); run without --summary for the reasons
+<<end>>
+stderr:
+<<end>>
+exit: 1

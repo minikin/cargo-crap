@@ -1,0 +1,10 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_min_157
+stdout:
+No functions found.
+<<end>>
+stderr:
+<<end>>
+exit: 0

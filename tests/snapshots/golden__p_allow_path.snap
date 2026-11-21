@@ -1,0 +1,10 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_allow_path
+stdout:
+No functions found.
+<<end>>
+stderr:
+<<end>>
+exit: 0

@@ -1,0 +1,27 @@
+---
+source: tests/golden/snap.rs
+---
+case: w_links_markdown
+stdout:
+<!-- cargo-crap-report -->
+
+## ✅ No CRAP threshold violations
+
+## Per-crate summary
+
+| Crate | Functions | Crappy |
+|---|---:|---:|
+| alpha | 2 | 0 |
+| beta | 1 | 0 |
+
+| | CRAP | CC | Cov % | Function | Location |
+|---|---:|---:|---:|---|---|
+| ▲ | 20.0 | 4 | — | [`alpha_branchy`](https://github.com/example/demo/blob/0123abc/crates/alpha/src/lib.rs#L5) | [`crates/alpha/src/lib.rs:5`](https://github.com/example/demo/blob/0123abc/crates/alpha/src/lib.rs#L5) |
+| ✓ | 2.0 | 1 | — | [`alpha_clean`](https://github.com/example/demo/blob/0123abc/crates/alpha/src/lib.rs#L1) | [`crates/alpha/src/lib.rs:1`](https://github.com/example/demo/blob/0123abc/crates/alpha/src/lib.rs#L1) |
+| ✓ | 2.0 | 1 | — | [`beta_only`](https://github.com/example/demo/blob/0123abc/crates/beta/src/lib.rs#L1) | [`crates/beta/src/lib.rs:1`](https://github.com/example/demo/blob/0123abc/crates/beta/src/lib.rs#L1) |
+
+✓ 3 function(s) analyzed; none exceed CRAP threshold 30.
+<<end>>
+stderr:
+<<end>>
+exit: 0

@@ -1,0 +1,14 @@
+---
+source: tests/golden/snap.rs
+---
+case: w_pr_comment
+stdout:
+<!-- cargo-crap-report -->
+
+## ✅ No CRAP threshold violations
+
+3 function(s) analyzed · threshold 30
+<<end>>
+stderr:
+<<end>>
+exit: 0

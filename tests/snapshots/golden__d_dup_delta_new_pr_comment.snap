@@ -1,0 +1,20 @@
+---
+source: tests/golden/snap.rs
+---
+case: d_dup_delta_new_pr_comment
+stdout:
+<!-- cargo-crap-report -->
+
+## ✅ No CRAP regressions
+
+↑ 0 regressed · ★ 0 new · ↔ 0 moved · ↓ 0 improved · 2 unchanged · — 0 removed
+
+## 1 new duplicate candidate
+
+| Pair | Similarity |
+|---|---:|
+| `write_markdown_absolute_heading` ↔ `write_pr_comment_abs_headline`<br><sub>`./markdown.rs:4-19` · `./pr_comment.rs:4-19`</sub> | 0.92 |
+<<end>>
+stderr:
+<<end>>
+exit: 0

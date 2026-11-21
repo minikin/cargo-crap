@@ -1,0 +1,26 @@
+[
+  {
+    "file": "./src/lib.rs",
+    "function": "crappy",
+    "line": 24,
+    "cyclomatic": 12.0,
+    "coverage": 0.0,
+    "crap": 156.0
+  },
+  {
+    "file": "./src/lib.rs",
+    "function": "moderate",
+    "line": 12,
+    "cyclomatic": 4.0,
+    "coverage": 44.44444444444444,
+    "crap": 6.743484224965707
+  },
+  {
+    "file": "./src/lib.rs",
+    "function": "trivial",
+    "line": 8,
+    "cyclomatic": 1.0,
+    "coverage": 100.0,
+    "crap": 1.0
+  }
+]

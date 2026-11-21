@@ -1,0 +1,18 @@
+---
+source: tests/golden/snap.rs
+---
+case: g_dup_delta_grown_human
+stdout:
+No changes since baseline.
+↑ 0 regressed  ↓ 0 improved  ★ 0 new  ↔ 0 moved  · 3 unchanged  — 0 removed
+
+1 duplicate candidate:
+
+DUPLICATE GROUP of 3, score=1.00
+  ./src/lib.rs:4-19  zeta_total
+  ./src/lib.rs:21-36  alpha_total
+  ./src/lib.rs:38-53  mid_total
+<<end>>
+stderr:
+<<end>>
+exit: 0

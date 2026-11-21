@@ -1,0 +1,42 @@
+---
+source: tests/golden/snap.rs
+---
+case: w_json
+stdout:
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+  "version": "[VERSION]",
+  "entries": [
+    {
+      "file": "crates/alpha/src/lib.rs",
+      "function": "alpha_branchy",
+      "line": 5,
+      "cyclomatic": 4.0,
+      "coverage": null,
+      "crap": 20.0,
+      "crate": "alpha"
+    },
+    {
+      "file": "crates/alpha/src/lib.rs",
+      "function": "alpha_clean",
+      "line": 1,
+      "cyclomatic": 1.0,
+      "coverage": null,
+      "crap": 2.0,
+      "crate": "alpha"
+    },
+    {
+      "file": "crates/beta/src/lib.rs",
+      "function": "beta_only",
+      "line": 1,
+      "cyclomatic": 1.0,
+      "coverage": null,
+      "crap": 2.0,
+      "crate": "beta"
+    }
+  ]
+}
+<<end>>
+stderr:
+<<end>>
+exit: 0

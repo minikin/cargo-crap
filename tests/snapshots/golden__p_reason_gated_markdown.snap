@@ -1,0 +1,22 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_reason_gated_markdown
+stdout:
+<!-- cargo-crap-report -->
+
+## ⚠️ No CRAP regressions, but 1 signal regression(s) detected
+
+_No changes since baseline._
+
+### Harder to maintain
+
+| | Function | Signal | Change | Lines | Action |
+|---|---|---|---|---|---|
+| ✗ | `crappy` `./src/lib.rs:24` | nesting | 2 → 3 | 26–56 | flatten-nesting |
+
+↑ 0 regressed · ↓ 0 improved · ★ 0 new · ↔ 0 moved · · 3 unchanged · — 0 removed
+<<end>>
+stderr:
+<<end>>
+exit: 1

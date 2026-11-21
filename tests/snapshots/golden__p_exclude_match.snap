@@ -1,0 +1,13 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_exclude_match
+stdout:
+No functions found.
+<<end>>
+stderr:
+warning: no overlap between the analyzed sources and the LCOV report (0 analyzed, 1 in LCOV, 0 matched) — the analyzed tree and the coverage run describe different scopes
+  1 LCOV file(s) matched no analyzed source file:
+    src/lib.rs
+<<end>>
+exit: 0

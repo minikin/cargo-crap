@@ -1,0 +1,26 @@
+---
+source: tests/golden/snap.rs
+---
+case: g_group_human
+stdout:
+┌───┬──────┬────┬─────────────────┬─────────────┬─────────────────┐
+│   ┆ CRAP ┆ CC ┆ Coverage        ┆ Function    ┆ Location        │
+╞═══╪══════╪════╪═════════════════╪═════════════╪═════════════════╡
+│ ▲ ┆ 30.0 ┆  5 ┆ ░░░░░░░░░░    — ┆ zeta_total  ┆ ./src/lib.rs:4  │
+├╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ ▲ ┆ 30.0 ┆  5 ┆ ░░░░░░░░░░    — ┆ alpha_total ┆ ./src/lib.rs:21 │
+├╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ ▲ ┆ 30.0 ┆  5 ┆ ░░░░░░░░░░    — ┆ mid_total   ┆ ./src/lib.rs:38 │
+└───┴──────┴────┴─────────────────┴─────────────┴─────────────────┘
+✓ 3 function(s) analyzed; none exceed CRAP threshold 30.
+
+1 duplicate candidate:
+
+DUPLICATE GROUP of 3, score=1.00
+  ./src/lib.rs:4-19  zeta_total
+  ./src/lib.rs:21-36  alpha_total
+  ./src/lib.rs:38-53  mid_total
+<<end>>
+stderr:
+<<end>>
+exit: 0

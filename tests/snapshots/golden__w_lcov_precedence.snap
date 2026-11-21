@@ -1,0 +1,61 @@
+---
+source: tests/golden/snap.rs
+---
+case: w_lcov_precedence
+stdout:
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+  "version": "[VERSION]",
+  "entries": [
+    {
+      "file": "crates/alpha/src/lib.rs",
+      "function": "alpha_branchy",
+      "line": 5,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0,
+      "crate": "alpha"
+    },
+    {
+      "file": "crates/beta/src/lib.rs",
+      "function": "beta_only",
+      "line": 1,
+      "cyclomatic": 1.0,
+      "coverage": 0.0,
+      "crap": 2.0,
+      "crate": "beta",
+      "uncovered": [
+        {
+          "start": 1,
+          "end": 3
+        }
+      ]
+    },
+    {
+      "file": "crates/alpha/src/lib.rs",
+      "function": "alpha_clean",
+      "line": 1,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0,
+      "crate": "alpha"
+    }
+  ],
+  "diagnostics": {
+    "analyzed_files": 2,
+    "lcov_files": 2,
+    "matched_files": 2,
+    "source_only": {
+      "count": 0,
+      "examples": []
+    },
+    "lcov_only": {
+      "count": 0,
+      "examples": []
+    }
+  }
+}
+<<end>>
+stderr:
+<<end>>
+exit: 0

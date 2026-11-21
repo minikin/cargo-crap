@@ -1,0 +1,16 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_delta_unchanged_markdown
+stdout:
+<!-- cargo-crap-report -->
+
+## ✅ No CRAP regressions
+
+_No changes since baseline._
+
+↑ 0 regressed · ↓ 0 improved · ★ 0 new · ↔ 0 moved · · 3 unchanged · — 0 removed
+<<end>>
+stderr:
+<<end>>
+exit: 0

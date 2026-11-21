@@ -1,0 +1,32 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_lcov_partial
+stdout:
+┌───┬───────┬────┬───────────────────┬──────────┬─────────────────┐
+│   ┆  CRAP ┆ CC ┆ Coverage          ┆ Function ┆ Location        │
+╞═══╪═══════╪════╪═══════════════════╪══════════╪═════════════════╡
+│ ✗ ┆ 156.0 ┆ 12 ┆ ░░░░░░░░░░   0.0% ┆ crappy   ┆ ./src/lib.rs:24 │
+├╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ ✓ ┆   6.7 ┆  4 ┆ ████░░░░░░  44.4% ┆ moderate ┆ ./src/lib.rs:12 │
+├╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ ✓ ┆   1.0 ┆  1 ┆ ██████████ 100.0% ┆ trivial  ┆ ./src/lib.rs:8  │
+└───┴───────┴────┴───────────────────┴──────────┴─────────────────┘
+✗ 1/3 function(s) exceed CRAP threshold 30.
+<<end>>
+stderr:
+warning: source/LCOV scope mismatch (1 analyzed, 13 in LCOV, 1 matched) — verify your --lcov path or coverage tool configuration
+  12 LCOV file(s) matched no analyzed source file:
+    src/stray_01.rs
+    src/stray_02.rs
+    src/stray_03.rs
+    src/stray_04.rs
+    src/stray_05.rs
+    src/stray_06.rs
+    src/stray_07.rs
+    src/stray_08.rs
+    src/stray_09.rs
+    src/stray_10.rs
+    ... and 2 more
+<<end>>
+exit: 0

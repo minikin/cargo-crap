@@ -1,0 +1,11 @@
+---
+source: tests/golden/snap.rs
+---
+case: p_delta_unchanged_human
+stdout:
+No changes since baseline.
+↑ 0 regressed  ↓ 0 improved  ★ 0 new  ↔ 0 moved  · 3 unchanged  — 0 removed
+<<end>>
+stderr:
+<<end>>
+exit: 0

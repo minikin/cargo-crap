@@ -1,0 +1,44 @@
+---
+source: tests/golden/snap.rs
+---
+case: m_delta_pr_comment
+stdout:
+<!-- cargo-crap-report -->
+
+## ✅ No CRAP regressions
+
+↑ 0 regressed · ★ 32 new · ↔ 0 moved · ↓ 0 improved · 0 unchanged · — 0 removed
+
+| | CRAP | Δ | CC | Cov % | Function | Location |
+|---|---:|---:|---:|---:|---|---|
+| ✗ | 132.0 | NEW | 11 | — | `faw` | `lib.rs:278` |
+| ✗ | 110.0 | NEW | 10 | — | `faq` | `lib.rs:197` |
+| ✗ | 90.0 | NEW | 9 | — | `fae` | `lib.rs:47` |
+| ✗ | 72.0 | NEW | 8 | — | `fai` | `lib.rs:99` |
+| ✗ | 56.0 | NEW | 7 | — | `fab` | `lib.rs:8` |
+| ✗ | 42.0 | NEW | 6 | — | `fam` | `lib.rs:154` |
+| ▲ | 30.0 | NEW | 5 | — | `faj` | `lib.rs:124` |
+| ▲ | 30.0 | NEW | 5 | — | `fat` | `lib.rs:245` |
+| ▲ | 30.0 | NEW | 5 | — | `fba` | `lib.rs:333` |
+| ▲ | 20.0 | NEW | 4 | — | `fag` | `lib.rs:79` |
+| ▲ | 20.0 | NEW | 4 | — | `fao` | `lib.rs:180` |
+| ▲ | 20.0 | NEW | 4 | — | `fav` | `lib.rs:265` |
+| ▲ | 20.0 | NEW | 4 | — | `fbc` | `lib.rs:356` |
+| ▲ | 12.0 | NEW | 3 | — | `fad` | `lib.rs:37` |
+| ▲ | 12.0 | NEW | 3 | — | `fal` | `lib.rs:144` |
+| ▲ | 12.0 | NEW | 3 | — | `far` | `lib.rs:228` |
+| ▲ | 12.0 | NEW | 3 | — | `fay` | `lib.rs:319` |
+| ▲ | 12.0 | NEW | 3 | — | `fbe` | `lib.rs:373` |
+| ✓ | 6.0 | NEW | 2 | — | `fac` | `lib.rs:30` |
+| ✓ | 6.0 | NEW | 2 | — | `fah` | `lib.rs:92` |
+| ✓ | 6.0 | NEW | 2 | — | `fan` | `lib.rs:173` |
+| ✓ | 6.0 | NEW | 2 | — | `fas` | `lib.rs:238` |
+| ✓ | 6.0 | NEW | 2 | — | `fax` | `lib.rs:312` |
+| ✓ | 6.0 | NEW | 2 | — | `fbb` | `lib.rs:349` |
+| ✓ | 6.0 | NEW | 2 | — | `fbf` | `lib.rs:383` |
+
+_…and 7 more, see CI artifact for the full report._
+<<end>>
+stderr:
+<<end>>
+exit: 0

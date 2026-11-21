@@ -1,0 +1,23 @@
+---
+source: tests/golden/snap.rs
+---
+case: m_pr_comment
+stdout:
+<!-- cargo-crap-report -->
+
+## ⚠️ 6 function(s) exceed CRAP threshold 30
+
+32 function(s) analyzed · threshold 30
+
+| | CRAP | CC | Cov % | Function | Location |
+|---|---:|---:|---:|---|---|
+| ✗ | 132.0 | 11 | — | `faw` | `lib.rs:278` |
+| ✗ | 110.0 | 10 | — | `faq` | `lib.rs:197` |
+| ✗ | 90.0 | 9 | — | `fae` | `lib.rs:47` |
+| ✗ | 72.0 | 8 | — | `fai` | `lib.rs:99` |
+| ✗ | 56.0 | 7 | — | `fab` | `lib.rs:8` |
+| ✗ | 42.0 | 6 | — | `fam` | `lib.rs:154` |
+<<end>>
+stderr:
+<<end>>
+exit: 0
