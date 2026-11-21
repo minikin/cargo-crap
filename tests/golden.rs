@@ -58,3 +58,51 @@ fn every_case_matches_its_golden() {
         failures.join("\n")
     );
 }
+
+#[test]
+fn equal_scores_in_one_file_keep_source_order_under_the_default_sort() {
+    // Given the group fixture, whose three functions share one file and one score
+    let source = std::fs::read_to_string(run::fixtures().join("golden/dup_group/src/lib.rs"))
+        .expect("the group fixture");
+    let declared: Vec<&str> = source
+        .lines()
+        .filter_map(|l| l.strip_prefix("pub fn "))
+        .filter_map(|l| l.split('(').next())
+        .collect();
+    assert_eq!(declared.len(), 3);
+    let mut alphabetical = declared.clone();
+    alphabetical.sort_unstable();
+    assert_ne!(
+        declared, alphabetical,
+        "the fixture must not declare in name order"
+    );
+
+    // When case g_group_human runs with the default --sort crap
+    let case = cases::all()
+        .into_iter()
+        .find(|case| case.id == "g_group_human")
+        .expect("the g_group_human case");
+    assert!(!case.args.contains(&"--sort"));
+    let (run, copy) = run::run(&case).expect("a run");
+    let run = checks::finish(&case, run, copy.root()).expect("the output checks");
+    let stdout = String::from_utf8(run.stdout).expect("utf-8");
+
+    // Then the rows appear in source order, all at one score
+    let rows: Vec<(&str, &str)> = stdout
+        .lines()
+        .filter(|l| l.starts_with('│') && l.contains("./src/lib.rs"))
+        .map(|l| {
+            let cells: Vec<&str> = l.split('┆').map(str::trim).collect();
+            (cells[1], cells[4])
+        })
+        .collect();
+    assert_eq!(
+        rows.iter().map(|(_, f)| *f).collect::<Vec<_>>(),
+        declared,
+        "{stdout}"
+    );
+    assert!(
+        rows.iter().all(|(score, _)| *score == rows[0].0),
+        "{stdout}"
+    );
+}

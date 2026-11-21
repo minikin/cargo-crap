@@ -1,0 +1,111 @@
+---
+source: tests/golden/snap.rs
+---
+case: g_dup_delta_grown_json
+stdout:
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json",
+  "version": "[VERSION]",
+  "entries": [
+    {
+      "file": "./src/lib.rs",
+      "function": "zeta_total",
+      "line": 4,
+      "cyclomatic": 5.0,
+      "coverage": null,
+      "crap": 30.0,
+      "baseline_crap": 30.0,
+      "delta": 0.0,
+      "status": "unchanged"
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "alpha_total",
+      "line": 21,
+      "cyclomatic": 5.0,
+      "coverage": null,
+      "crap": 30.0,
+      "baseline_crap": 30.0,
+      "delta": 0.0,
+      "status": "unchanged"
+    },
+    {
+      "file": "./src/lib.rs",
+      "function": "mid_total",
+      "line": 38,
+      "cyclomatic": 5.0,
+      "coverage": null,
+      "crap": 30.0,
+      "baseline_crap": 30.0,
+      "delta": 0.0,
+      "status": "unchanged"
+    }
+  ],
+  "removed": [],
+  "duplicates": [
+    {
+      "first_file": "./src/lib.rs",
+      "first_function": "zeta_total",
+      "first_start_line": 4,
+      "first_end_line": 19,
+      "second_file": "./src/lib.rs",
+      "second_function": "alpha_total",
+      "second_start_line": 21,
+      "second_end_line": 36,
+      "score": 1.0
+    },
+    {
+      "first_file": "./src/lib.rs",
+      "first_function": "zeta_total",
+      "first_start_line": 4,
+      "first_end_line": 19,
+      "second_file": "./src/lib.rs",
+      "second_function": "mid_total",
+      "second_start_line": 38,
+      "second_end_line": 53,
+      "score": 1.0
+    },
+    {
+      "first_file": "./src/lib.rs",
+      "first_function": "alpha_total",
+      "first_start_line": 21,
+      "first_end_line": 36,
+      "second_file": "./src/lib.rs",
+      "second_function": "mid_total",
+      "second_start_line": 38,
+      "second_end_line": 53,
+      "score": 1.0
+    }
+  ],
+  "duplicate_groups": [
+    {
+      "members": [
+        {
+          "file": "./src/lib.rs",
+          "function": "zeta_total",
+          "start_line": 4,
+          "end_line": 19
+        },
+        {
+          "file": "./src/lib.rs",
+          "function": "alpha_total",
+          "start_line": 21,
+          "end_line": 36
+        },
+        {
+          "file": "./src/lib.rs",
+          "function": "mid_total",
+          "start_line": 38,
+          "end_line": 53
+        }
+      ],
+      "score": 1.0,
+      "status": "grown",
+      "grown_from": 2
+    }
+  ]
+}
+<<end>>
+stderr:
+<<end>>
+exit: 0

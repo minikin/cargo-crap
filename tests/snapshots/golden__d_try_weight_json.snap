@@ -1,0 +1,32 @@
+---
+source: tests/golden/snap.rs
+---
+case: d_try_weight_json
+stdout:
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+  "version": "[VERSION]",
+  "entries": [
+    {
+      "file": "./markdown.rs",
+      "function": "write_markdown_absolute_heading",
+      "line": 4,
+      "cyclomatic": 3.5,
+      "coverage": null,
+      "crap": 15.75
+    },
+    {
+      "file": "./pr_comment.rs",
+      "function": "write_pr_comment_abs_headline",
+      "line": 4,
+      "cyclomatic": 3.5,
+      "coverage": null,
+      "crap": 15.75
+    }
+  ],
+  "try_weight": 0.5
+}
+<<end>>
+stderr:
+<<end>>
+exit: 0

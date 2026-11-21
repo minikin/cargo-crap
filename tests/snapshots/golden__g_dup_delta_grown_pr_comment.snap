@@ -1,0 +1,20 @@
+---
+source: tests/golden/snap.rs
+---
+case: g_dup_delta_grown_pr_comment
+stdout:
+<!-- cargo-crap-report -->
+
+## ✅ No CRAP regressions
+
+↑ 0 regressed · ★ 0 new · ↔ 0 moved · ↓ 0 improved · 3 unchanged · — 0 removed
+
+## 1 new duplicate candidate
+
+| Functions | Similarity |
+|---|---:|
+| `zeta_total` · `alpha_total` · `mid_total`<br><sub>`./src/lib.rs:4-19` · `./src/lib.rs:21-36` · `./src/lib.rs:38-53`</sub><br><sub>grew from 2</sub> | 1.00 |
+<<end>>
+stderr:
+<<end>>
+exit: 0

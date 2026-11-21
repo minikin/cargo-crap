@@ -1,0 +1,24 @@
+---
+source: tests/golden/snap.rs
+---
+case: b_parse_warning
+stdout:
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+  "version": "[VERSION]",
+  "entries": [
+    {
+      "file": "./src/good.rs",
+      "function": "fine",
+      "line": 1,
+      "cyclomatic": 2.0,
+      "coverage": null,
+      "crap": 6.0
+    }
+  ]
+}
+<<end>>
+stderr:
+warning: could not analyze ./src/bad.rs: parsing ./src/bad.rs
+<<end>>
+exit: 0

@@ -1,0 +1,23 @@
+---
+source: tests/golden/snap.rs
+---
+case: d_duplicates_human
+stdout:
+┌───┬──────┬────┬─────────────────┬─────────────────────────────────┬───────────────────┐
+│   ┆ CRAP ┆ CC ┆ Coverage        ┆ Function                        ┆ Location          │
+╞═══╪══════╪════╪═════════════════╪═════════════════════════════════╪═══════════════════╡
+│ ▲ ┆ 30.0 ┆  5 ┆ ░░░░░░░░░░    — ┆ write_markdown_absolute_heading ┆ ./markdown.rs:4   │
+├╌╌╌┼╌╌╌╌╌╌┼╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ ▲ ┆ 30.0 ┆  5 ┆ ░░░░░░░░░░    — ┆ write_pr_comment_abs_headline   ┆ ./pr_comment.rs:4 │
+└───┴──────┴────┴─────────────────┴─────────────────────────────────┴───────────────────┘
+✓ 2 function(s) analyzed; none exceed CRAP threshold 30.
+
+1 duplicate candidate:
+
+DUPLICATE score=0.92
+  ./markdown.rs:4-19  write_markdown_absolute_heading
+  ./pr_comment.rs:4-19  write_pr_comment_abs_headline
+<<end>>
+stderr:
+<<end>>
+exit: 0

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+  "version": "0.9.0",
+  "entries": [
+    {
+      "file": "./markdown.rs",
+      "function": "write_markdown_absolute_heading",
+      "line": 4,
+      "cyclomatic": 5.0,
+      "coverage": null,
+      "crap": 30.0
+    },
+    {
+      "file": "./pr_comment.rs",
+      "function": "write_pr_comment_abs_headline",
+      "line": 4,
+      "cyclomatic": 5.0,
+      "coverage": null,
+      "crap": 30.0
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+---
+source: tests/golden/snap.rs
+---
+case: d_dup_delta_unchanged_pr_comment
+stdout:
+<!-- cargo-crap-report -->
+
+## ✅ No CRAP regressions
+
+↑ 0 regressed · ★ 0 new · ↔ 0 moved · ↓ 0 improved · 2 unchanged · — 0 removed
+<<end>>
+stderr:
+<<end>>
+exit: 0

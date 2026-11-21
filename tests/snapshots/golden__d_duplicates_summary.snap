@@ -1,0 +1,16 @@
+---
+source: tests/golden/snap.rs
+---
+case: d_duplicates_summary
+stdout:
+✓ Analyzed: 2 · Crappy: 0 (threshold 30)
+
+1 duplicate candidate:
+
+DUPLICATE score=0.92
+  ./markdown.rs:4-19  write_markdown_absolute_heading
+  ./pr_comment.rs:4-19  write_pr_comment_abs_headline
+<<end>>
+stderr:
+<<end>>
+exit: 0

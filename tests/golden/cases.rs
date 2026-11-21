@@ -5,7 +5,15 @@
 use crate::run::{Case, Fixture, NO_LCOV};
 
 pub fn all() -> Vec<Case> {
-    [cases_p(), cases_w()].concat()
+    [
+        cases_p(),
+        cases_w(),
+        cases_d(),
+        cases_g(),
+        cases_m(),
+        cases_b(),
+    ]
+    .concat()
 }
 
 /// The rows live in consts: a function holding them all outgrows clippy's
@@ -16,6 +24,22 @@ fn cases_p() -> &'static [Case] {
 
 fn cases_w() -> &'static [Case] {
     CASES_W
+}
+
+fn cases_d() -> &'static [Case] {
+    CASES_D
+}
+
+fn cases_g() -> &'static [Case] {
+    CASES_G
+}
+
+fn cases_m() -> &'static [Case] {
+    CASES_M
+}
+
+fn cases_b() -> &'static [Case] {
+    CASES_B
 }
 
 const CASES_P: &[Case] = &[
@@ -960,3 +984,323 @@ const CASES_W: &[Case] = &[
         exit: 0,
     },
 ];
+
+const CASES_D: &[Case] = &[
+    Case {
+        id: "d_duplicates_human",
+        fixture: Fixture::D,
+        args: &["--duplicates", "--sort", "file"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_duplicates_json",
+        fixture: Fixture::D,
+        args: &["--duplicates", "--sort", "file", "--format", "json"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_duplicates_markdown",
+        fixture: Fixture::D,
+        args: &["--duplicates", "--sort", "file", "--format", "markdown"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_duplicates_pr_comment",
+        fixture: Fixture::D,
+        args: &["--duplicates", "--sort", "file", "--format", "pr-comment"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_duplicates_github",
+        fixture: Fixture::D,
+        args: &["--duplicates", "--sort", "file", "--format", "github"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_duplicates_sarif",
+        fixture: Fixture::D,
+        args: &["--duplicates", "--sort", "file", "--format", "sarif"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_duplicates_shields",
+        fixture: Fixture::D,
+        args: &["--duplicates", "--sort", "file", "--format", "shields"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_duplicates_summary",
+        fixture: Fixture::D,
+        args: &["--duplicates", "--sort", "file", "--summary"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_try_weight_json",
+        fixture: Fixture::D,
+        args: &["--sort", "file", "--format", "json"],
+        config: Some("weight.toml"),
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_dup_delta_absent",
+        fixture: Fixture::D,
+        args: &[
+            "--duplicates",
+            "--sort",
+            "file",
+            "--baseline",
+            "d_absent.json",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_dup_delta_new_human",
+        fixture: Fixture::D,
+        args: &[
+            "--duplicates",
+            "--sort",
+            "file",
+            "--baseline",
+            "d_empty.json",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_dup_delta_new_json",
+        fixture: Fixture::D,
+        args: &[
+            "--duplicates",
+            "--sort",
+            "file",
+            "--baseline",
+            "d_empty.json",
+            "--format",
+            "json",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_dup_delta_new_pr_comment",
+        fixture: Fixture::D,
+        args: &[
+            "--duplicates",
+            "--sort",
+            "file",
+            "--baseline",
+            "d_empty.json",
+            "--format",
+            "pr-comment",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_dup_delta_unchanged_pr_comment",
+        fixture: Fixture::D,
+        args: &[
+            "--duplicates",
+            "--sort",
+            "file",
+            "--baseline",
+            "d_same.json",
+            "--format",
+            "pr-comment",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_dup_delta_resolved_human",
+        fixture: Fixture::D,
+        args: &[
+            "--duplicates",
+            "--sort",
+            "file",
+            "--baseline",
+            "d_resolved.json",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_dup_delta_resolved_json",
+        fixture: Fixture::D,
+        args: &[
+            "--duplicates",
+            "--sort",
+            "file",
+            "--baseline",
+            "d_resolved.json",
+            "--format",
+            "json",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "d_dup_delta_resolved_pr_comment",
+        fixture: Fixture::D,
+        args: &[
+            "--duplicates",
+            "--sort",
+            "file",
+            "--baseline",
+            "d_resolved.json",
+            "--format",
+            "pr-comment",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+];
+
+const CASES_G: &[Case] = &[
+    Case {
+        id: "g_group_human",
+        fixture: Fixture::G,
+        args: &["--duplicates"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "g_group_json",
+        fixture: Fixture::G,
+        args: &["--duplicates", "--format", "json"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "g_group_markdown",
+        fixture: Fixture::G,
+        args: &["--duplicates", "--format", "markdown"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "g_group_pr_comment",
+        fixture: Fixture::G,
+        args: &["--duplicates", "--format", "pr-comment"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "g_dup_delta_grown_human",
+        fixture: Fixture::G,
+        args: &["--duplicates", "--baseline", "g_pair.json"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "g_dup_delta_grown_json",
+        fixture: Fixture::G,
+        args: &[
+            "--duplicates",
+            "--baseline",
+            "g_pair.json",
+            "--format",
+            "json",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "g_dup_delta_grown_pr_comment",
+        fixture: Fixture::G,
+        args: &[
+            "--duplicates",
+            "--baseline",
+            "g_pair.json",
+            "--format",
+            "pr-comment",
+        ],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+];
+
+const CASES_M: &[Case] = &[
+    Case {
+        id: "m_human",
+        fixture: Fixture::M,
+        args: &[],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "m_pr_comment",
+        fixture: Fixture::M,
+        args: &["--format", "pr-comment"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "m_shields",
+        fixture: Fixture::M,
+        args: &["--format", "shields"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "m_top_sort_file",
+        fixture: Fixture::M,
+        args: &["--top", "3", "--sort", "file"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+    Case {
+        id: "m_delta_pr_comment",
+        fixture: Fixture::M,
+        args: &["--baseline", "m_empty.json", "--format", "pr-comment"],
+        config: None,
+        env: &[],
+        exit: 0,
+    },
+];
+
+const CASES_B: &[Case] = &[Case {
+    id: "b_parse_warning",
+    fixture: Fixture::B,
+    args: &["--format", "json"],
+    config: None,
+    env: &[],
+    exit: 0,
+}];

@@ -1,0 +1,16 @@
+---
+source: tests/golden/snap.rs
+---
+case: d_duplicates_shields
+stdout:
+{
+  "schemaVersion": 1,
+  "label": "CRAP > 30",
+  "message": "passing",
+  "color": "brightgreen"
+}
+<<end>>
+stderr:
+warning: --duplicates has no effect with this format; use --format human, json, markdown or pr-comment
+<<end>>
+exit: 0

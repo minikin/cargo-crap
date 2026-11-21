@@ -31,6 +31,14 @@ pub enum Fixture {
     P,
     /// `sample_workspace`.
     W,
+    /// `triage/same_logic`: one duplicate pair across two files.
+    D,
+    /// `golden/dup_group`: a group of three in one file.
+    G,
+    /// `golden/many`: enough rows to reach every display cap.
+    M,
+    /// `golden/broken`: one file that does not parse.
+    B,
 }
 
 impl Fixture {
@@ -38,6 +46,10 @@ impl Fixture {
         let relative = match self {
             Self::P => "sample_project",
             Self::W => "sample_workspace",
+            Self::D => "triage/same_logic",
+            Self::G => "golden/dup_group",
+            Self::M => "golden/many",
+            Self::B => "golden/broken",
         };
         fixtures().join(relative)
     }

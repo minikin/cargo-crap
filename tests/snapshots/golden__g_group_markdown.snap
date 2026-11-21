@@ -1,0 +1,26 @@
+---
+source: tests/golden/snap.rs
+---
+case: g_group_markdown
+stdout:
+<!-- cargo-crap-report -->
+
+## ✅ No CRAP threshold violations
+
+| | CRAP | CC | Cov % | Function | Location |
+|---|---:|---:|---:|---|---|
+| ▲ | 30.0 | 5 | — | `zeta_total` | `./src/lib.rs:4` |
+| ▲ | 30.0 | 5 | — | `alpha_total` | `./src/lib.rs:21` |
+| ▲ | 30.0 | 5 | — | `mid_total` | `./src/lib.rs:38` |
+
+✓ 3 function(s) analyzed; none exceed CRAP threshold 30.
+
+## 1 duplicate candidate
+
+| Functions | Similarity |
+|---|---:|
+| `zeta_total` · `alpha_total` · `mid_total`<br><sub>`./src/lib.rs:4-19` · `./src/lib.rs:21-36` · `./src/lib.rs:38-53`</sub> | 1.00 |
+<<end>>
+stderr:
+<<end>>
+exit: 0
