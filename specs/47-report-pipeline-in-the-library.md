@@ -265,7 +265,7 @@ green before any production code moves. Each later task builds on the
 preceding one because successive tasks edit the same CLI or library entry
 points. Keep the spec 44 snapshots in verification mode throughout.
 
-- [ ] **T1 — Pin the existing output-file and error-order behavior.**
+- [x] **T1 — Pin the existing output-file and error-order behavior.**
   Add the two named CLI outlines in `tests/cli.rs`, with one isolated
   fixture run per example. Pre-fill the destination with the eight bytes
   `original`, assert the exit code and contents, and check stderr order
