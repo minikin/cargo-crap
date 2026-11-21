@@ -388,10 +388,27 @@ Then  it exits 1
 And   its error names cargo-crap-core and the syn line
 ```
 
+### Scenario: the parser guard sees a platform-gated parser dependency
+
+```
+Given a temporary workspace whose cargo-crap-core has syn under `[target.'cfg(windows)'.dependencies]`
+When  the parser guard runs its real cargo tree there
+Then  it exits 1
+And   its error names cargo-crap-core and the syn line
+```
+
+### Scenario: a parser only the core's tests use is not a violation
+
+```
+Given a temporary workspace whose cargo-crap-core has syn under `[dev-dependencies]`
+When  the parser guard runs its real cargo tree there
+Then  it exits 0
+```
+
 ### Scenario: the parser guard fails when the core links syn
 
 ```
-Given a recorded `cargo tree -p cargo-crap-core --all-features -e no-proc-macro --prefix none` output holding the line "syn v2.0.119"
+Given a recorded `cargo tree -p cargo-crap-core --all-features --target all -e normal,build,no-proc-macro --prefix none` output holding the line "syn v2.0.119"
 When  the parser guard reads it
 Then  it exits 1
 And   its error names cargo-crap-core and "syn v2.0.119"
@@ -400,7 +417,7 @@ And   its error names cargo-crap-core and "syn v2.0.119"
 ### Scenario: the parser guard fails when cargo-crap links an Oxc crate
 
 ```
-Given a recorded `cargo tree -p cargo-crap --all-features -e no-proc-macro --prefix none` output holding the line "oxc_parser v0.159.0"
+Given a recorded `cargo tree -p cargo-crap --all-features --target all -e normal,build,no-proc-macro --prefix none` output holding the line "oxc_parser v0.159.0"
 When  the parser guard reads it
 Then  it exits 1
 And   its error names cargo-crap and "oxc_parser v0.159.0"
@@ -459,7 +476,7 @@ go under their own comment heading, next to `release-test`.
 - [x] **T6 — Moves and path scope in the mutants diff.** Needs: T5. Scenarios: _a pure move costs no mutants; a move with one edited line mutates that line only; an untracked moved file still pairs as a rename; a source file under a member's tests directory is not in the diff_. Tests: acceptance (`scripts/gates/test.sh`). Property: none, see Implementation Notes "Invariant".
 - [x] **T7 — just mutants and just mutants-all reach the core.** Needs: T5. Scenarios: _just mutants and just mutants-all reach the core_. Tests: acceptance (`scripts/gates/test.sh` with the cargo shim).
 - [x] **T8 — CI mutants job, path filters, Action paths and the MSRV scope.** Needs: T4, T5. Scenarios: _CI's mutants job runs the shared diff script; a change only under crates/ runs the Rust and mutants jobs; a change only to a member's Cargo.toml runs the Rust jobs; a change only to the core's manifest runs the release-script tests; a change only to the mutants gate's own files runs the mutants job; a change only under crates/ runs the Action workflow; the MSRV job tests the 1.88 packages by name_. Tests: acceptance (workflow shape checks in Rust beside `tests/golden/config.rs`).
-- [x] **T9 — The parser guard.** Needs: T2. Scenarios: _the parser guard passes on this repository; the parser guard sees a feature-gated parser dependency; the parser guard fails when the core links syn; the parser guard fails when cargo-crap links an Oxc crate; syn in cargo-crap's tree is not a violation; a guard that saw no tree does not pass_. Tests: acceptance (`scripts/gates/test.sh`).
+- [x] **T9 — The parser guard.** Needs: T2. Scenarios: _the parser guard passes on this repository; the parser guard sees a feature-gated parser dependency; the parser guard sees a platform-gated parser dependency; a parser only the core's tests use is not a violation; the parser guard fails when the core links syn; the parser guard fails when cargo-crap links an Oxc crate; syn in cargo-crap's tree is not a violation; a guard that saw no tree does not pass_. Tests: acceptance (`scripts/gates/test.sh`).
 - [ ] **T10 — just dev and a CI gates job run the gate scripts and the guard.** Needs: T8, T9. Scenarios: _just dev and CI both run the parser guard; a change only to a gate script runs the gate script tests_. Tests: acceptance (workflow and Justfile shape checks).
 
 ---
@@ -528,8 +545,11 @@ the lock and the core with stub root `src/main.rs` and `src/lib.rs`, so `cargo c
 cargo-crap-core` compiles only the core.
 
 **Parser guard.** `scripts/gates/parser-guard.sh` runs `cargo tree -p
-<pkg> --all-features -e no-proc-macro --prefix none --locked` for each
-checked package
+<pkg> --all-features --target all -e normal,build,no-proc-macro --prefix
+none --locked` for each checked package. `--target all` keeps a parser
+behind a `cfg(windows)` table visible on Ubuntu CI. `normal,build` leaves
+out dev-dependencies: the rule is what a package links, and a parser its
+tests use links nothing
 and fails on a line starting with a forbidden prefix: `oxc_` for
 cargo-crap, `oxc_` and `syn ` for cargo-crap-core. An environment
 variable can point it at recorded tree outputs instead, which is how its
@@ -539,7 +559,7 @@ real `cargo tree` on a temporary workspace, so a dropped
 the syn version from `Cargo.lock`. The `gates` job runs `cargo fetch
 --locked` first, so the crate is in the cache even though that job
 never builds cargo-crap. Spec 50 adds crapts' row (no `syn
-`, no `cargo-crap `). `cargo tree -e normal` is not used: it shows syn
+`, no `cargo-crap `). `no-proc-macro` stays: without it the tree shows syn
 through `clap_derive` and `serde_derive`.
 
 **CI.**
