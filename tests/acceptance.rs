@@ -9472,7 +9472,7 @@ fn scored_baseline(entries: Vec<cargo_crap::merge::CrapEntry>) -> cargo_crap::de
 
 #[test]
 fn the_callers_file_scope_applies_before_baseline_pairing() {
-    use cargo_crap::{delta, filter::AllowSet, report, run::BaselineFilter};
+    use cargo_crap::{filter::AllowSet, run::BaselineFilter, signals::SignalSettings};
     // Given an unselected function whose name would otherwise pair with the new row.
     let raw = scored_baseline(vec![
         scored_row("old/work.rs", "work", 5.0),
@@ -9484,17 +9484,14 @@ fn the_callers_file_scope_applies_before_baseline_pairing() {
     let allow = AllowSet::compile(&[]).unwrap();
     // When the caller prepares the baseline and writes the delta.
     let prepared = BaselineFilter::new(&scope, &allow).prepare(raw);
-    let delta = delta::compute_delta(
-        &current,
-        &prepared.as_baseline().entries,
-        delta::DEFAULT_EPSILON,
+    let signals = SignalSettings::default();
+    let (out, _) = pipeline_report(
+        &SECOND_TOOL,
+        &pipeline_settings(&allow, &signals),
+        &scope,
+        current,
+        Some(&prepared),
     );
-    let opts = report::RenderOptions {
-        format: report::Format::Json,
-        ..report::RenderOptions::new(&SECOND_TOOL)
-    };
-    let mut out = Vec::new();
-    report::render_delta(&delta, &opts, &mut out).unwrap();
     let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
     // Then work is genuinely new and gone is the only removal.
     let entries = doc["entries"].as_array().unwrap();
@@ -9633,4 +9630,459 @@ fn signal_reasons_affect_the_verdict_independently_of_score_counts_for_nesting()
 #[test]
 fn signal_reasons_affect_the_verdict_independently_of_score_counts_for_lines() {
     assert!(!sliced_signal_summary("lines", 0).contains("signal regression"));
+}
+
+// Spec 47 T6
+
+fn pipeline_settings<'a>(
+    allow: &'a cargo_crap::filter::AllowSet,
+    signals: &'a cargo_crap::signals::SignalSettings,
+) -> cargo_crap::run::Settings<'a> {
+    use cargo_crap::{delta::DEFAULT_EPSILON, merge::SortOrder, report::Format};
+    cargo_crap::run::Settings {
+        allow,
+        min: None,
+        top: None,
+        sort: SortOrder::Crap,
+        threshold: 30.0,
+        epsilon: DEFAULT_EPSILON,
+        signals,
+        fail_above: false,
+        fail_regression: false,
+        format: Format::Json,
+        summary: false,
+        show_unchanged: false,
+        uncovered_hints: false,
+        width: None,
+        links: None,
+        cwd: Path::new(""),
+        workspace_root: None,
+    }
+}
+
+fn pipeline_report(
+    tool: &cargo_crap::report::Tool,
+    settings: &cargo_crap::run::Settings<'_>,
+    scope: &dyn cargo_crap::run::Scope,
+    entries: Vec<cargo_crap::merge::CrapEntry>,
+    baseline: Option<&cargo_crap::run::PreparedBaseline>,
+) -> (Vec<u8>, cargo_crap::gate::GateOutcome) {
+    use cargo_crap::run::{self, Analysis, RenderExtras};
+    let analysis = Analysis {
+        entries,
+        diagnostics: None,
+        scope,
+    };
+    let mut out = Vec::new();
+    let verdict = run::run(
+        tool,
+        settings,
+        analysis,
+        baseline,
+        &RenderExtras::default(),
+        &mut out,
+    )
+    .expect("report");
+    (out, verdict)
+}
+
+#[test]
+fn the_clis_delta_render_keeps_the_callers_tool() {
+    use cargo_crap::{filter::AllowSet, run::BaselineFilter, signals::SignalSettings};
+    // Given the second tool and an identical baseline in the caller's scope.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let scope = Roots(&["src"]);
+    let entries = spec46_entries();
+    let baseline = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(entries.clone()));
+    // When the public entry point writes the JSON delta.
+    let signals = SignalSettings::default();
+    let (out, _) = pipeline_report(
+        &SECOND_TOOL,
+        &pipeline_settings(&allow, &signals),
+        &scope,
+        entries,
+        Some(&baseline),
+    );
+    // Then it carries the caller's version and delta schema.
+    let doc: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+    assert_eq!(doc["version"], "7.7.7-other");
+    assert_eq!(
+        doc["$schema"],
+        "https://example.test/schemas/other-delta.json"
+    );
+}
+
+#[test]
+fn the_caller_chooses_which_formats_honor_a_summary_request() {
+    use cargo_crap::{
+        filter::AllowSet,
+        policy::Policy,
+        report::{Format, Tool},
+        signals::SignalSettings,
+    };
+    // Given two tools that differ only in whether Shields honors a summary request.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.format = Format::Shields;
+    settings.summary = true;
+    let write = |tool: &Tool| {
+        pipeline_report(
+            tool,
+            &settings,
+            &Roots(&["src"]),
+            vec![scored_row("src/a.rs", "hot", 50.0)],
+            None,
+        )
+        .0
+    };
+    let badge = Tool {
+        policy: Policy {
+            summary_formats: &[],
+            ..SECOND_TOOL.policy
+        },
+        ..SECOND_TOOL
+    };
+    // When both tools render the same row with a summary requested.
+    let text = String::from_utf8(write(&SECOND_TOOL)).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&write(&badge)).unwrap();
+    // Then the first tool writes summary text and the second writes a Shields badge.
+    assert!(
+        text.contains("Analyzed: 1") && text.contains("Crappy: 1"),
+        "{text}"
+    );
+    assert_eq!(json["message"], "1 crappy");
+}
+
+#[test]
+fn the_library_renders_the_callers_duplicate_group_and_weight() {
+    use cargo_crap::{
+        duplicates::{compare::DuplicatePair, extract::Location, group::DuplicateGroup},
+        filter::AllowSet,
+        run::{self, Analysis, RenderExtras},
+        signals::SignalSettings,
+    };
+
+    // Given a caller with two duplicate functions and a non-default scoring weight.
+    let member = |name: &str, line| Location {
+        file: "src/copies.rs".into(),
+        name: name.into(),
+        start_line: line,
+        end_line: line + 2,
+    };
+    let pair = DuplicatePair {
+        first: member("left", 3),
+        second: member("right", 9),
+        score: 0.875,
+    };
+    let group = DuplicateGroup::of_pair(&pair);
+    let extras = RenderExtras {
+        duplicates: Some(std::slice::from_ref(&pair)),
+        groups: Some(std::slice::from_ref(&group)),
+        try_weight: 0.5,
+        ..RenderExtras::default()
+    };
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = pipeline_settings(&allow, &signals);
+    let analysis = Analysis {
+        entries: vec![],
+        diagnostics: None,
+        scope: &Roots(&["src"]),
+    };
+
+    // When the caller supplies those extras to the public JSON report pipeline.
+    let mut out = Vec::new();
+    run::run(&SECOND_TOOL, &settings, analysis, None, &extras, &mut out).unwrap();
+
+    // Then the envelope carries the pair, the group with both source locations, and the weight.
+    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(doc["try_weight"], 0.5);
+    let pairs = doc["duplicates"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0]["first_function"], "left");
+    assert_eq!(pairs[0]["second_function"], "right");
+    assert_eq!(
+        doc["duplicate_groups"],
+        serde_json::json!([{
+            "score": 0.875,
+            "members": [
+                {"file": "src/copies.rs", "function": "left", "start_line": 3, "end_line": 5},
+                {"file": "src/copies.rs", "function": "right", "start_line": 9, "end_line": 11}
+            ]
+        }])
+    );
+}
+
+#[derive(Default)]
+struct CheckedWriter {
+    bytes: Vec<u8>,
+    flushes: usize,
+    fail_write: bool,
+    fail_flush: bool,
+}
+
+impl std::io::Write for CheckedWriter {
+    fn write(
+        &mut self,
+        bytes: &[u8],
+    ) -> std::io::Result<usize> {
+        if self.fail_write {
+            return Err(std::io::Error::other("write failed"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flushes += 1;
+        if self.fail_flush {
+            return Err(std::io::Error::other("flush failed"));
+        }
+        Ok(())
+    }
+}
+
+fn write_tripped_report(out: &mut CheckedWriter) -> anyhow::Result<cargo_crap::gate::GateOutcome> {
+    use cargo_crap::{
+        filter::AllowSet,
+        run::{self, Analysis, RenderExtras},
+        signals::SignalSettings,
+    };
+    let allow = AllowSet::compile(&[])?;
+    let signals = SignalSettings::default();
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.fail_above = true;
+    let analysis = Analysis {
+        entries: vec![scored_row("src/a.rs", "hot", 40.0)],
+        diagnostics: None,
+        scope: &Roots(&["src"]),
+    };
+    run::run(
+        &SECOND_TOOL,
+        &settings,
+        analysis,
+        None,
+        &RenderExtras::default(),
+        out,
+    )
+}
+
+#[test]
+fn an_output_failure_takes_precedence_over_a_tripped_gate_successful_flush() {
+    // Given the writer accepts every write and flush.
+    let mut out = CheckedWriter::default();
+    // When a report with a threshold violation is rendered.
+    let outcome = write_tripped_report(&mut out).unwrap();
+    // Then the writer contains the complete report, was flushed once, and the gate trips.
+    let doc: serde_json::Value = serde_json::from_slice(&out.bytes).expect("complete JSON report");
+    assert_eq!(doc["entries"][0]["function"], "hot");
+    assert_eq!(out.flushes, 1);
+    assert_eq!(outcome.exit_code(), std::process::ExitCode::from(1));
+}
+
+#[test]
+fn an_output_failure_takes_precedence_over_a_tripped_gate_failed_write() {
+    // Given the writer fails on its first write.
+    let mut out = CheckedWriter {
+        fail_write: true,
+        ..CheckedWriter::default()
+    };
+    // When a report with a threshold violation is rendered.
+    let error = write_tripped_report(&mut out).unwrap_err();
+    // Then the caller receives the write error.
+    assert_eq!(error.root_cause().to_string(), "write failed");
+}
+
+#[test]
+fn an_output_failure_takes_precedence_over_a_tripped_gate_failed_flush() {
+    // Given the writer accepts the report and fails on flush.
+    let mut out = CheckedWriter {
+        fail_flush: true,
+        ..CheckedWriter::default()
+    };
+    // When a report with a threshold violation is rendered.
+    let error = write_tripped_report(&mut out).unwrap_err();
+    // Then the caller receives the flush error after the complete report was written.
+    assert_eq!(error.to_string(), "flushing output");
+    assert_eq!(error.root_cause().to_string(), "flush failed");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.bytes).expect("writes completed before flush");
+    assert_eq!(doc["entries"][0]["function"], "hot");
+}
+
+#[test]
+fn the_library_counts_a_hidden_regression_and_keeps_the_genuine_removal() {
+    use cargo_crap::{
+        filter::AllowSet, report::Format, run::BaselineFilter, signals::SignalSettings,
+    };
+    // Given a leading row, a hidden regression and a removed baseline row.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let scope = Roots(&["src"]);
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.top = Some(1);
+    settings.fail_regression = true;
+    let current = vec![
+        scored_row("src/a.rs", "leader", 60.0),
+        scored_row("src/b.rs", "hidden", 20.0),
+    ];
+    let mut before = current.clone();
+    before[1].crap = 10.0;
+    before.push(scored_row("src/c.rs", "gone", 1.0));
+    let baseline = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(before));
+
+    // When the caller renders only the leading row.
+    let (out, verdict) = pipeline_report(
+        &SECOND_TOOL,
+        &settings,
+        &scope,
+        current.clone(),
+        Some(&baseline),
+    );
+    // Then the JSON preserves the removal and the hidden regression trips the gate.
+    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(doc["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["entries"][0]["function"], "leader");
+    assert_eq!(doc["removed"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["removed"][0]["function"], "gone");
+    assert_eq!(
+        (verdict.crappy, verdict.regressed, verdict.section_failures),
+        (1, 1, 0)
+    );
+    assert_eq!(verdict.exit_code(), std::process::ExitCode::from(1));
+    settings.format = Format::Human;
+    settings.summary = true;
+    // When the caller requests a text summary of the same delta.
+    let (out, summary_verdict) =
+        pipeline_report(&SECOND_TOOL, &settings, &scope, current, Some(&baseline));
+    // Then its counts and verdict still cover the full delta.
+    let summary = String::from_utf8(out).unwrap();
+    assert!(
+        summary.contains("↑ 1 regressed") && summary.contains("— 1 removed"),
+        "{summary}"
+    );
+    assert_eq!(summary_verdict, verdict);
+}
+
+#[test]
+fn the_delta_outcome_counts_hidden_score_changes_once_each() {
+    use cargo_crap::{
+        filter::AllowSet,
+        run::BaselineFilter,
+        signals::{SignalSettings, Signals},
+    };
+    // Given two score regressions with attached reasons and a one-row display limit.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings {
+        enabled: true,
+        ..SignalSettings::default()
+    };
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.top = Some(1);
+    settings.fail_regression = true;
+    let scope = Roots(&["src"]);
+    let before = vec![
+        scored_row("src/a.rs", "leader", 1.0),
+        scored_row("src/b.rs", "hidden", 1.0),
+    ];
+    let mut current = before.clone();
+    for row in &mut current {
+        row.crap = 40.0;
+        row.signals = Some(Signals::default());
+    }
+    let baseline = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(before));
+    // When the caller renders the delta.
+    let (_, outcome) = pipeline_report(&SECOND_TOOL, &settings, &scope, current, Some(&baseline));
+    // Then both regressions count once and one shown row exceeds the threshold.
+    assert_eq!(
+        (outcome.crappy, outcome.regressed, outcome.section_failures),
+        (1, 2, 0)
+    );
+    assert_eq!(outcome.exit_code(), std::process::ExitCode::from(1));
+}
+
+#[test]
+fn the_library_distinguishes_hidden_signal_reasons_from_score_regressions() {
+    use cargo_crap::{
+        filter::AllowSet,
+        report::Format,
+        run::BaselineFilter,
+        signals::{Signal, SignalSettings, Signals},
+    };
+    // Given a hidden row and a policy that gates nesting increases.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings {
+        enabled: true,
+        gate: vec![Signal::Nesting],
+        ..SignalSettings::default()
+    };
+    let scope = Roots(&["src"]);
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.min = Some(51.0);
+    settings.fail_regression = true;
+    settings.format = Format::Human;
+    settings.summary = true;
+    let mut before = scored_row("src/lib.rs", "work", 50.0);
+    before.signals = Some(Signals::default());
+    let baseline =
+        BaselineFilter::new(&scope, &allow).prepare(scored_baseline(vec![before.clone()]));
+    for (nesting, lines, code) in [(1, 0, 1), (0, 1, 0)] {
+        let mut current = before.clone();
+        current.signals = Some(Signals {
+            nesting,
+            lines,
+            ..Signals::default()
+        });
+        // When only nesting or line count increases.
+        let (out, verdict) = pipeline_report(
+            &SECOND_TOOL,
+            &settings,
+            &scope,
+            vec![current],
+            Some(&baseline),
+        );
+        // Then only nesting trips the gate and the CRAP counts stay zero.
+        let summary = String::from_utf8(out).unwrap();
+        assert!(summary.contains("↑ 0 regressed"), "{summary}");
+        assert_eq!(summary.contains("✗ 1 signal regression(s)"), code == 1);
+        assert_eq!(
+            (verdict.crappy, verdict.regressed, verdict.section_failures),
+            (0, 0, 0)
+        );
+        assert_eq!(verdict.exit_code(), std::process::ExitCode::from(code));
+    }
+}
+
+#[test]
+fn disabled_signals_are_omitted_from_public_reports_and_cannot_trip_a_gate() {
+    use cargo_crap::{
+        filter::AllowSet,
+        run::BaselineFilter,
+        signals::{SignalSettings, Signals},
+    };
+    // Given measured signals in both runs and signal reporting disabled.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let scope = Roots(&["src"]);
+    let signals = SignalSettings::default();
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.fail_regression = true;
+    let mut row = scored_row("src/a.rs", "work", 1.0);
+    row.signals = Some(Signals::default());
+    let before = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(vec![row.clone()]));
+    row.signals = Some(Signals {
+        nesting: 4,
+        ..Signals::default()
+    });
+    for baseline in [None, Some(&before)] {
+        // When the caller renders an absolute or delta report.
+        let (bytes, outcome) =
+            pipeline_report(&SECOND_TOOL, &settings, &scope, vec![row.clone()], baseline);
+        // Then the report omits signal data and the gate passes.
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let entry = &doc["entries"][0];
+        for key in ["signals", "baseline_signals", "reasons", "signal_spans"] {
+            assert!(entry.get(key).is_none(), "{key}: {entry}");
+        }
+        assert_eq!(outcome.exit_code(), std::process::ExitCode::SUCCESS);
+    }
 }

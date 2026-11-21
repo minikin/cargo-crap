@@ -51,7 +51,7 @@ pub struct Policy {
 impl Policy {
     /// Whether a summary request replaces the report in this format.
     #[must_use]
-    pub fn use_summary(
+    pub(crate) fn use_summary(
         self,
         requested: bool,
         format: Format,

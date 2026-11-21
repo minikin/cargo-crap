@@ -18,7 +18,7 @@ pub struct GateOutcome {
 impl GateOutcome {
     /// Apply the enabled gates to score and signal counts from a completed comparison.
     #[must_use]
-    pub fn from_counts(
+    pub(crate) fn from_counts(
         crappy: usize,
         regressed: usize,
         gating_signals: usize,

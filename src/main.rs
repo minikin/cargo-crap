@@ -14,19 +14,15 @@ use cargo_crap::{
     },
     complexity,
     coverage::{self, FileCoverage},
-    delta::{Baseline, compute_delta, load_baseline_with_weight},
+    delta::{Baseline, load_baseline_with_weight},
     duplicates,
     duplicates::compare::DuplicatePair,
     duplicates::triage::provider::{Provider, default_provider},
     duplicates::triage::verdict::Assessment,
-    filter::{self, AllowSet},
-    gate::GateOutcome,
+    filter::AllowSet,
     merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge},
-    report::{
-        self, Format, RenderOptions, SourceLinks, TriagedBy, crappy_count, output_width, render,
-        render_delta, render_delta_counts, render_summary, set_color_enabled,
-    },
-    run::{BaselineFilter, PreparedBaseline, Scope},
+    report::{Format, SourceLinks, TriagedBy, output_width, set_color_enabled},
+    run::{self, BaselineFilter, PreparedBaseline, RenderExtras, Scope},
     score::DEFAULT_THRESHOLD,
 };
 use clap::{Parser, ValueEnum};
@@ -1237,37 +1233,13 @@ fn validate_args(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Bundles the render-time options threaded into [`do_render`]. Bundling
-/// keeps the helper's signature under clippy's argument-count limit and makes
-/// call sites readable as "what to render" + "where to render it".
-struct RenderOpts<'a> {
-    /// Everything the report renderers consume, passed through verbatim.
-    render: RenderOptions<'a>,
-    epsilon: f64,
-    summary: bool,
-    fail_above: bool,
-    fail_regression: bool,
-    /// Final entry ordering (spec 17). Applied to the `DeltaReport` so
-    /// `removed` ordering is deterministic too.
-    sort: SortOrder,
-    /// The resolved `[signals]` table (spec 43), for reasons and the gate.
-    signals: &'a cargo_crap::signals::SignalSettings,
-}
-
-/// Load the `--baseline` file (if any) and filter it through the current
-/// run's identity-based filters (spec 18) before delta computation. The
-/// analyzed roots are the workspace member dirs, or the single `--path`
-/// root outside `--workspace` mode. A baseline scored under a different `?`
-/// weight than `try_weight` gets one stderr warning; the comparison still
-/// proceeds.
-fn load_filtered_baseline(
+/// Load the baseline, issue compatibility warnings and resolve recorded paths before preparation.
+fn load_report_baseline(
     baseline: Option<&PathBuf>,
-    allow: &AllowSet,
-    roots: &[ScanRoot],
-    member_scope: Option<MemberScope>,
+    workspace_root: Option<&Path>,
     try_weight: f64,
     signals_enabled: bool,
-) -> Result<Option<PreparedBaseline>> {
+) -> Result<Option<Baseline>> {
     let Some(baseline_path) = baseline else {
         return Ok(None);
     };
@@ -1275,11 +1247,8 @@ fn load_filtered_baseline(
     warn_on_try_weight_mismatch(baseline.try_weight, try_weight);
     warn_on_missing_signals(&baseline.entries, signals_enabled);
     let mut baseline = baseline;
-    // A run with signals off must not show a baseline's signals either.
-    keep_signals(&mut baseline.entries, signals_enabled);
-    resolve_relative_paths(&mut baseline, workspace_root(roots));
-    let scope = CargoScope::new(roots, member_scope);
-    Ok(Some(BaselineFilter::new(&scope, allow).prepare(baseline)))
+    resolve_relative_paths(&mut baseline, workspace_root);
+    Ok(Some(baseline))
 }
 
 /// In workspace mode, read every relative path in `baseline` as relative to
@@ -1503,17 +1472,19 @@ impl DuplicateSection<'_> {
         })
     }
 
-    /// Render options carrying this section, every other field at its
-    /// default.
-    fn render_options(&self) -> RenderOptions<'_> {
-        RenderOptions {
+    /// Metadata for this run's duplicate section and its score envelopes.
+    fn render_extras(
+        &self,
+        try_weight: f64,
+    ) -> RenderExtras<'_> {
+        RenderExtras {
             duplicates: self.pairs.as_deref(),
             groups: self.groups.as_deref(),
             triage: self.triage.as_deref(),
             triaged_by: self.triaged_by(),
             novelty: self.novelty.as_ref(),
             untriaged: self.untriaged,
-            ..RenderOptions::new(&cargo_crap::tool::CARGO_CRAP)
+            try_weight,
         }
     }
 }
@@ -1682,83 +1653,6 @@ fn triage_assessments(
         );
         None
     }
-}
-
-/// Render the final report and evaluate its gates.
-///
-/// `baseline` arrives pre-loaded and pre-filtered (see [`BaselineFilter`]) so
-/// this stays a pure render dispatcher. `entries` are the rows to show, and
-/// `compared` is the whole run the baseline is compared against, so a
-/// function `top` or `min` left out is never reported as removed.
-fn do_render(
-    entries: &[cargo_crap::merge::CrapEntry],
-    compared: &[cargo_crap::merge::CrapEntry],
-    baseline: Option<&[cargo_crap::merge::CrapEntry]>,
-    opts: &RenderOpts,
-    out: &mut dyn Write,
-) -> Result<GateOutcome> {
-    let summary = opts
-        .render
-        .tool
-        .policy
-        .use_summary(opts.summary, opts.render.format);
-    let (regressed, signal_gates) = if let Some(baseline_data) = baseline {
-        let mut report = compute_delta(compared, baseline_data, opts.epsilon);
-        let baseline_has_signals = baseline_data.iter().any(|b| b.signals.is_some());
-        cargo_crap::delta::attach_reasons(&mut report, opts.signals, baseline_has_signals);
-        // Counted before the rows are narrowed to the slice, so the gate and
-        // the count lines describe the whole comparison. A gating reason
-        // (spec 43) trips the regression gate too; a regressed CRAP score
-        // is one whenever signals are on.
-        let counts = report.counts();
-        let signal_gates = cargo_crap::delta::gating_signal_count(&report);
-        report.restrict_to(entries);
-        report.sort(opts.sort);
-        if summary {
-            render_delta_summary_lines(&counts, signal_gates, out)?;
-        } else {
-            let render = RenderOptions {
-                delta_counts: Some(counts),
-                ..opts.render
-            };
-            render_delta(&report, &render, out)?;
-        }
-        (counts.regressed, signal_gates)
-    } else {
-        if summary {
-            render_summary(entries, opts.render.threshold, opts.render.width, out)?;
-        } else {
-            render(entries, &opts.render, out)?;
-        }
-        (0, 0)
-    };
-    // After whichever table was printed, and only once: the section follows
-    // both branches and every row policy.
-    report::render_duplicates(&opts.render, out).context("writing duplicate report")?;
-    Ok(GateOutcome::from_counts(
-        crappy_count(entries, opts.render.threshold),
-        regressed,
-        signal_gates,
-        opts.fail_above,
-        opts.fail_regression,
-    ))
-}
-
-/// The `--summary` delta: the counts line, then a note when gating signal
-/// reasons (spec 43) fail the gate, since the counts only cover CRAP.
-fn render_delta_summary_lines(
-    counts: &cargo_crap::delta::DeltaCounts,
-    signal_gates: usize,
-    out: &mut dyn Write,
-) -> Result<()> {
-    render_delta_counts(counts, out)?;
-    if signal_gates > 0 {
-        writeln!(
-            out,
-            "✗ {signal_gates} signal regression(s); run without --summary for the reasons"
-        )?;
-    }
-    Ok(())
 }
 
 /// Resolve `--repo-url` / `--commit-ref` against the GitHub Actions env vars,
@@ -1940,20 +1834,6 @@ fn resolve_settings(
     }
 }
 
-/// Signals are always measured; only a run with `[signals] enabled = true`
-/// reports them (spec 43), so every other run's output stays as it was.
-fn keep_signals(
-    entries: &mut [cargo_crap::merge::CrapEntry],
-    enabled: bool,
-) {
-    if !enabled {
-        for entry in entries {
-            entry.signals = None;
-            entry.signal_spans = cargo_crap::signals::Spans::default();
-        }
-    }
-}
-
 fn run() -> Result<ExitCode> {
     let LoadedArgs {
         cli,
@@ -2002,70 +1882,60 @@ fn run() -> Result<ExitCode> {
     let diagnostics = merge_result.diagnostics;
     warn_scope_mismatch(diagnostics.as_ref());
     let mut entries = merge_result.entries;
-    keep_signals(&mut entries, signals.enabled);
     assign_crate_names(&mut entries, &members);
     let (min, top) = (cli.min.or(config.min), cli.top.or(config.top));
     let allow = AllowSet::compile(&effective_allow)?;
-    filter::allow(&mut entries, &allow);
-    // `entries` stays whole for the baseline comparison. `sliced_rows` holds
-    // the rows `min` and `top` select, ordered after `top` has picked by CRAP.
-    let sliced_rows = filter::slice(&mut entries, min, top, settings.sort_order);
-
-    // --- Baseline (loaded here, filtered per specs 18 + 25) ---
-    let baseline_data = load_filtered_baseline(
+    let workspace_root = workspace_root(&roots);
+    let raw = load_report_baseline(
         cli.baseline.as_ref(),
-        &allow,
-        &roots,
-        member_scope,
+        workspace_root,
         try_weight,
         signals.enabled,
     )?;
+    let scope = CargoScope::new(&roots, member_scope);
+    let analysis = run::Analysis {
+        entries,
+        diagnostics,
+        scope: &scope,
+    };
+    let baseline = raw.map(|raw| BaselineFilter::new(analysis.scope, &allow).prepare(raw));
 
-    // --- Render ---
-    let mut out_box = prepare_output(cli.output.as_ref())?;
-    let workspace_root = workspace_root(&roots).map(Path::to_path_buf);
-    let links = resolve_source_links(
-        cli.repo_url,
-        cli.commit_ref,
-        &knobs.cwd,
-        workspace_root.as_deref(),
+    let mut out = prepare_output(cli.output.as_ref())?;
+    let links = resolve_source_links(cli.repo_url, cli.commit_ref, &knobs.cwd, workspace_root);
+    let duplicates = duplicate_section(
+        &dup,
+        &roots,
+        cli.format.into(),
+        target.as_deref(),
+        baseline.as_ref().map(PreparedBaseline::as_baseline),
     );
-    let baseline = baseline_data.as_ref().map(PreparedBaseline::as_baseline);
-    let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref(), baseline);
-    let opts = RenderOpts {
-        render: RenderOptions {
-            threshold: settings.threshold,
-            format: cli.format.into(),
-            links: links.as_ref(),
-            diagnostics: diagnostics.as_ref(),
-            show_unchanged: settings.show_unchanged,
-            uncovered_hints: settings.uncovered_hints,
-            try_weight,
-            sliced: sliced_rows.is_some(),
-            width: output_width(cli.output.is_none()),
-            cwd: &knobs.cwd,
-            workspace_root: workspace_root.as_deref(),
-            ..dups.render_options()
-        },
+    let report = run::Settings {
+        allow: &allow,
+        min,
+        top,
+        sort: settings.sort_order,
+        threshold: settings.threshold,
         epsilon,
-        summary: cli.summary,
+        signals: &signals,
         fail_above: settings.fail_above,
         fail_regression: settings.fail_regression,
-        sort: settings.sort_order,
-        signals: &signals,
+        format: cli.format.into(),
+        summary: cli.summary,
+        show_unchanged: settings.show_unchanged,
+        uncovered_hints: settings.uncovered_hints,
+        width: output_width(cli.output.is_none()),
+        links: links.as_ref(),
+        cwd: &knobs.cwd,
+        workspace_root,
     };
-    let outcome = do_render(
-        sliced_rows.as_deref().unwrap_or(&entries),
-        &entries,
-        baseline.map(|b| b.entries.as_slice()),
-        &opts,
-        out_box.as_mut(),
+    let outcome = run::run(
+        &cargo_crap::tool::CARGO_CRAP,
+        &report,
+        analysis,
+        baseline.as_ref(),
+        &duplicates.render_extras(try_weight),
+        out.as_mut(),
     )?;
-    // Flush before returning the verdict. A write failure (e.g.
-    // ENOSPC) is a tool error (exit 2), never a gate verdict over a
-    // truncated report (#47, spec 23).
-    out_box.flush().context("flushing output")?;
-
     Ok(outcome.exit_code())
 }
 
@@ -2073,89 +1943,6 @@ fn run() -> Result<ExitCode> {
 mod tests {
     use super::*;
     use cargo_crap::duplicates::extract::Location;
-
-    const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
-        policy: cargo_crap::tool::CARGO_CRAP_POLICY,
-        name: "other-tool",
-        version: "7.7.7-other",
-        info_uri: "https://example.test/other-tool",
-        schemas: cargo_crap::report::Schemas {
-            report: "https://example.test/schemas/other-report.json",
-            delta: "https://example.test/schemas/other-delta.json",
-        },
-        comment_marker: "<!-- other-tool-marker -->",
-        baseline_hint: "other-tool --json",
-    };
-
-    #[test]
-    fn the_clis_delta_render_keeps_the_callers_tool() {
-        // Given render options carrying the second tool, the JSON format
-        // and a baseline
-        let entries = [signal_entry(None)];
-        let signals = cargo_crap::signals::SignalSettings::default();
-        let opts = RenderOpts {
-            render: RenderOptions {
-                format: Format::Json,
-                ..RenderOptions::new(&SECOND_TOOL)
-            },
-            epsilon: cargo_crap::delta::DEFAULT_EPSILON,
-            summary: false,
-            fail_above: false,
-            fail_regression: false,
-            sort: SortOrder::Crap,
-            signals: &signals,
-        };
-        // When do_render writes the delta report
-        let mut out = Vec::new();
-        do_render(&entries, &entries, Some(&entries), &opts, &mut out).expect("renders");
-        // Then the envelope carries the second tool's version and delta schema
-        let doc: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
-        assert_eq!(doc["version"], "7.7.7-other");
-        assert_eq!(
-            doc["$schema"],
-            "https://example.test/schemas/other-delta.json"
-        );
-    }
-
-    #[test]
-    fn the_delta_outcome_counts_hidden_score_changes_once_each() {
-        use cargo_crap::signals::{SignalSettings, Signals};
-        let before = vec![
-            baseline_entry("leader.rs", "leader"),
-            baseline_entry("hidden.rs", "hidden"),
-        ];
-        let mut current = before.clone();
-        for row in &mut current {
-            row.crap = 40.0;
-            row.signals = Some(Signals::default());
-        }
-        let signals = SignalSettings {
-            enabled: true,
-            ..SignalSettings::default()
-        };
-        let opts = RenderOpts {
-            render: RenderOptions::new(&SECOND_TOOL),
-            epsilon: cargo_crap::delta::DEFAULT_EPSILON,
-            summary: true,
-            fail_above: false,
-            fail_regression: true,
-            sort: SortOrder::Crap,
-            signals: &signals,
-        };
-        let outcome = do_render(
-            &current[..1],
-            &current,
-            Some(&before),
-            &opts,
-            &mut Vec::new(),
-        )
-        .unwrap();
-        assert_eq!(
-            (outcome.crappy, outcome.regressed, outcome.section_failures),
-            (1, 2, 0)
-        );
-        assert_eq!(outcome.exit_code(), ExitCode::from(1));
-    }
 
     /// An entry with or without signals, for the spec 43 baseline checks.
     fn signal_entry(signals: Option<cargo_crap::signals::Signals>) -> cargo_crap::merge::CrapEntry {
@@ -2188,26 +1975,6 @@ mod tests {
         assert!(missing_signals_warning(&mixed, true).is_none());
     }
 
-    #[test]
-    fn the_summary_notes_signal_regressions_only_when_there_are_some() {
-        let counts = cargo_crap::delta::DeltaCounts::default();
-        let text = |gates| {
-            let mut out = Vec::new();
-            render_delta_summary_lines(&counts, gates, &mut out).expect("writes");
-            String::from_utf8(out).expect("utf-8")
-        };
-        assert!(!text(0).contains("signal regression"), "{}", text(0));
-        assert!(text(1).contains("✗ 1 signal regression(s)"), "{}", text(1));
-    }
-
-    #[test]
-    fn signals_are_stripped_only_from_a_run_with_them_off() {
-        let mut entries = vec![signal_entry(Some(cargo_crap::signals::Signals::default()))];
-        keep_signals(&mut entries, true);
-        assert!(entries[0].signals.is_some());
-        keep_signals(&mut entries, false);
-        assert!(entries[0].signals.is_none());
-    }
     use cargo_crap::merge::StrayFiles;
 
     fn diag(
@@ -2946,7 +2713,7 @@ mod tests {
     }
 
     /// A filter over `dirs`, each walked under `excludes`, as
-    /// `load_filtered_baseline` builds one from the run's roots.
+    /// the CLI does for the current run.
     fn filter_for(
         excludes: &Excludes,
         allow: &[String],
