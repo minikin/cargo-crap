@@ -108,9 +108,9 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`src/entry.rs`** defines report rows, sorting and scope diagnostics. **`src/paths.rs`** contains shared path normalization and suffix helpers.
 
-**`src/coverage/lcov.rs`** parses LCOV files using the `lcov` crate. It consumes only `SF` (source file), `DA` (line data), and `end_of_record` records. Path normalization is deliberately absent here. That responsibility belongs to `merge`.
+**`src/coverage/lcov.rs`** parses LCOV files using the `lcov` crate. It consumes only `SF` (source file), `DA` (line data), and `end_of_record` records. Path normalization is deliberately absent here. The join delegates matching to `paths::assign`.
 
-**`src/merge.rs`** is the critical join layer. It uses `PathIndex` with two-level lookup:
+**`src/merge.rs`** is the critical join layer. It calls `paths::assign` once per batch of distinct source files. The two lookup tiers are:
 - **Fast path**: canonicalized absolute paths → direct hash lookup.
 - **Slow path**: component-wise suffix matching for relative LCOV paths (e.g., `src/foo.rs` matches `/home/alice/project/src/foo.rs`).
 - **Critical invariant**: relative paths are never canonicalized against CWD (regression test `relative_coverage_paths_are_not_resolved_against_cwd` pins this).

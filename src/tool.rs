@@ -467,6 +467,141 @@ mod tests {
         }
     }
 
+    /// The merge fixtures canonicalize temporary files, so test-only code must be excluded from this check.
+    fn merge_delegates(source: &str) -> bool {
+        use crate::complexity::{has_attr, is_cfg_test};
+        use syn::visit::{self, Visit};
+        #[derive(Clone, Copy, Default)]
+        enum Scope {
+            #[default]
+            Root,
+            Merge,
+            Other,
+        }
+        #[derive(Default)]
+        struct MergeCalls {
+            scope: Scope,
+            assigned: bool,
+            legacy: bool,
+        }
+        impl<'ast> Visit<'ast> for MergeCalls {
+            fn visit_item(
+                &mut self,
+                item: &'ast syn::Item,
+            ) {
+                let attrs: &[syn::Attribute] = match item {
+                    syn::Item::Mod(m) => &m.attrs,
+                    syn::Item::Fn(f) => &f.attrs,
+                    _ => &[],
+                };
+                if has_attr(attrs, "test") || is_cfg_test(attrs) {
+                    return;
+                }
+                let parent = self.scope;
+                self.scope = if matches!(parent, Scope::Root)
+                    && matches!(item, syn::Item::Fn(f) if f.sig.ident == "merge")
+                {
+                    Scope::Merge
+                } else {
+                    Scope::Other
+                };
+                visit::visit_item(self, item);
+                self.scope = parent;
+            }
+            fn visit_expr_block(
+                &mut self,
+                block: &'ast syn::ExprBlock,
+            ) {
+                if !is_cfg_test(&block.attrs) {
+                    visit::visit_expr_block(self, block);
+                }
+            }
+            fn visit_expr_call(
+                &mut self,
+                call: &'ast syn::ExprCall,
+            ) {
+                fn segments(expr: &syn::Expr) -> Vec<String> {
+                    let syn::Expr::Path(path) = expr else {
+                        return Vec::new();
+                    };
+                    path.path.segments.iter().map(|s| name(&s.ident)).collect()
+                }
+                if is_cfg_test(&call.attrs) {
+                    return;
+                }
+                let function = segments(&call.func);
+                self.legacy |= function.last().is_some_and(|name| name == "canonicalize");
+                let function = function.iter().map(String::as_str).collect::<Vec<_>>();
+                if matches!(self.scope, Scope::Merge)
+                    && matches!(
+                        function.as_slice(),
+                        ["paths", "assign"] | ["crate", "paths", "assign"]
+                    )
+                    && let Some(arg) = call.args.last()
+                {
+                    let policy = segments(arg);
+                    let policy = policy.iter().map(String::as_str).collect::<Vec<_>>();
+                    self.assigned |= matches!(
+                        policy.as_slice(),
+                        ["TiePolicy", "PerSource"]
+                            | ["paths", "TiePolicy", "PerSource"]
+                            | ["crate", "paths", "TiePolicy", "PerSource"]
+                    );
+                }
+                visit::visit_expr_call(self, call);
+            }
+            fn visit_expr_method_call(
+                &mut self,
+                call: &'ast syn::ExprMethodCall,
+            ) {
+                self.legacy |= call.method == "canonicalize";
+                visit::visit_expr_method_call(self, call);
+            }
+            fn visit_ident(
+                &mut self,
+                ident: &'ast syn::Ident,
+            ) {
+                self.legacy |= matches!(name(ident).as_str(), "PathIndex" | "path_has_suffix");
+            }
+        }
+        let mut calls = MergeCalls::default();
+        calls.visit_file(&syn::parse_file(source).expect("valid merge source"));
+        calls.assigned && !calls.legacy
+    }
+
+    #[test]
+    fn merge_matches_paths_only_through_paths_assign() {
+        assert!(merge_delegates(include_str!("merge.rs")));
+    }
+
+    #[test]
+    fn merge_delegation_guard_checks_the_production_call_and_policy() {
+        let valid = "fn merge() { paths::assign(&s, &k, TiePolicy::PerSource); }";
+        assert!(merge_delegates(&format!(
+            "{valid} #[cfg(test)] mod tests {{ fn probe() {{ path.canonicalize(); }} }}"
+        )));
+        for wrong in [
+            "fn merge() {} mod helpers { fn merge() { paths::assign(&s,&k,TiePolicy::PerSource); } }",
+            "fn merge() { fn merge() { paths::assign(&s,&k,TiePolicy::PerSource); } }",
+            "fn merge() { #[cfg(test)] { paths::assign(&s,&k,TiePolicy::PerSource); } }",
+            "fn merge() {} #[cfg(test)] mod tests { fn merge() { paths::assign(&s,&k,TiePolicy::PerSource); } }",
+            "fn merge() { paths::assign(&s,&k,TiePolicy::Unmatched); }",
+            "fn merge() { other::assign(&s,&k,TiePolicy::PerSource); }",
+            "fn merge() { wrong::paths::assign(&s,&k,TiePolicy::PerSource); }",
+            "#[cfg(test)] fn merge() { paths::assign(&s,&k,TiePolicy::PerSource); }",
+            "fn elsewhere() { paths::assign(&s,&k,TiePolicy::PerSource); }",
+        ] {
+            assert!(!merge_delegates(wrong), "{wrong}");
+        }
+        for legacy in [
+            "fn f(){file.canonicalize();}",
+            "struct PathIndex;",
+            "fn path_has_suffix(){}",
+        ] {
+            assert!(!merge_delegates(&format!("{valid} {legacy}")), "{legacy}");
+        }
+    }
+
     #[test]
     fn core_bound_files_read_no_package_version() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

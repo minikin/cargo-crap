@@ -642,7 +642,7 @@ modified. The scenario names below identify their owning tasks.
   Property test against an independent longest-component-suffix search
   over relative paths, including a source with no matching key.
 
-- [ ] **T6 — Drive span coverage and scope diagnostics from the per-source assignment.**
+- [x] **T6 — Drive span coverage and scope diagnostics from the per-source assignment.**
   Needs: T4, T5. Replace the old index in `merge()` with one
   `paths::assign` call over distinct source files using
   `TiePolicy::PerSource`. Borrow single-key coverage, merge the hit maps

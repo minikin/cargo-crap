@@ -340,6 +340,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn component_equal_spellings_merge_into_one_entry() {
+        assert_eq!(
+            per_source(&["/repo/src/lib.rs"], &["src/lib.rs", "./src/lib.rs"]).bindings,
+            [vec![0, 1]]
+        );
+    }
+
+    #[test]
+    fn longest_matching_suffix_wins_over_shorter_ambiguous_key() {
+        assert_eq!(
+            per_source(
+                &["/repo/vendor/dep/src/lib.rs", "/repo/src/lib.rs"],
+                &["src/lib.rs", "vendor/dep/src/lib.rs"]
+            )
+            .bindings,
+            [vec![1], vec![0]]
+        );
+    }
+
+    #[test]
+    fn degenerate_lcov_keys_never_wildcard_match() {
+        assert_eq!(
+            per_source(
+                &["/repo/src/bar.rs", "/repo/src/foo.rs"],
+                &[".", "", "src/foo.rs"]
+            )
+            .bindings,
+            [vec![], vec![2]]
+        );
+    }
+
     fn numbered_path(parts: &[u8]) -> std::path::PathBuf {
         parts.iter().map(u8::to_string).collect()
     }
