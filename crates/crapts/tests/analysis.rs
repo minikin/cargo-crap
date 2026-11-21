@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crapts::{Mode, analyze};
+use crapts::{Mode, Side, analyze};
 
 fn complexity(
     source: &str,
@@ -59,5 +59,47 @@ fn nested_bodies_are_scored_inside_declarations_and_bound_arrows() {
         let analysis = analyze(Path::new("nested.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
         let scores: Vec<_> = analysis.rows.iter().map(|row| row.cyclomatic).collect();
         assert_eq!(scores, [1, 2], "{source}");
+    }
+}
+
+#[test]
+fn reject_syntax_that_belongs_to_a_different_source_grammar() {
+    for (path, source) in [
+        ("wrong.ts", "const B = () => <b/>"),
+        ("wrong.js", "function f(x: number) {}"),
+    ] {
+        let message = analyze(Path::new(path), source.as_bytes(), Mode::Strict(Side::Head))
+            .unwrap_err()
+            .to_string();
+        for expected in ["head", path, "parse"] {
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+    for side in [Side::Base, Side::Head] {
+        let clean = analyze(
+            Path::new("good.ts"),
+            b"function f(x: number) {}",
+            Mode::Strict(side),
+        )
+        .unwrap();
+        assert_eq!(clean.rows[0].name, "f");
+    }
+}
+
+#[test]
+fn reject_invalid_utf8_source_bytes() {
+    for (mode, side) in [
+        (Mode::Ordinary, None),
+        (Mode::Strict(Side::Base), Some("base")),
+        (Mode::Strict(Side::Head), Some("head")),
+    ] {
+        let message = analyze(Path::new("invalid.ts"), &[0x66, 0x80, 0x0a], mode)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("invalid.ts"), "{message}");
+        assert!(message.contains("invalid UTF-8"), "{message}");
+        if let Some(side) = side {
+            assert!(message.contains(side), "{message}");
+        }
     }
 }

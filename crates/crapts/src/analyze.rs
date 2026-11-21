@@ -14,6 +14,13 @@ use oxc_syntax::scope::ScopeFlags;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Ordinary,
+    Strict(Side),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Base,
+    Head,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +44,7 @@ pub struct Row {
 #[derive(Debug)]
 pub struct InputError {
     path: PathBuf,
+    mode: Mode,
     message: String,
 }
 
@@ -45,6 +53,13 @@ impl fmt::Display for InputError {
         &self,
         f: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
+        if let Mode::Strict(side) = self.mode {
+            let label = match side {
+                Side::Base => "base",
+                Side::Head => "head",
+            };
+            write!(f, "{label} ")?;
+        }
         write!(f, "{}: {}", self.path.display(), self.message)
     }
 }
@@ -56,15 +71,21 @@ pub fn analyze(
     bytes: &[u8],
     mode: Mode,
 ) -> Result<FileAnalysis, InputError> {
-    let source = match mode {
-        Mode::Ordinary => String::from_utf8_lossy(bytes),
-    };
-    let grammar = grammar_for(path).map_err(|e| InputError {
+    let error = |message| InputError {
         path: path.to_owned(),
-        message: e.to_string(),
-    })?;
+        mode,
+        message,
+    };
+    let source = std::str::from_utf8(bytes)
+        .map_err(|e| error(format!("invalid UTF-8 at byte {}", e.valid_up_to())))?;
+    let grammar = grammar_for(path).map_err(|e| error(e.to_string()))?;
     let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, &source, grammar).parse();
+    let parsed = Parser::new(&allocator, source, grammar).parse();
+    if matches!(mode, Mode::Strict(_))
+        && let Some(diagnostic) = parsed.diagnostics.first()
+    {
+        return Err(error(format!("parse error: {diagnostic}")));
+    }
     let mut collector = Collector::default();
     collector.visit_program(&parsed.program);
     Ok(FileAnalysis {

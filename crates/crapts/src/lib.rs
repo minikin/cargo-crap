@@ -2,4 +2,4 @@
 
 mod analyze;
 
-pub use analyze::{FileAnalysis, FileStatus, InputError, Mode, Row, analyze};
+pub use analyze::{FileAnalysis, FileStatus, InputError, Mode, Row, Side, analyze};
