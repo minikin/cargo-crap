@@ -402,6 +402,8 @@ And strict analysis of the original returns a parse error with its side and path
 
 Implementations inside an explicitly declared module or namespace contribute zero rows, including when the parser recovers a body. For a string module without the `declare` modifier, a recovered implementation can supply a row. In `module "x" { function f() {} }` the name is `"x"::f`. In `module "p/q" { function f() {} }` it is `"p%2Fq"::f`. String module segments always retain their quotes and apply N11 and N12 to their decoded content. The declaration-file suffix filter applies before parsing.
 
+A `global { ... }` block supplies a `global` segment, including inside another namespace. `global { function f(){} }` yields `global::f`. An explicitly declared `declare global` block follows the ambient skip rule above.
+
 ### Scenario: Choose and absorb the first applicable segment (N4)
 
 ```gherkin

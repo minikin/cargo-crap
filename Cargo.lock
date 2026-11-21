@@ -414,6 +414,7 @@ dependencies = [
  "oxc_str",
  "oxc_syntax",
  "proptest",
+ "regex-syntax",
 ]
 
 [[package]]

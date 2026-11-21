@@ -21,6 +21,7 @@ oxc_syntax = { workspace = true, features = ["to_js_string"] }
 
 [dev-dependencies]
 proptest.workspace = true
+regex-syntax.workspace = true
 
 [lints]
 workspace = true

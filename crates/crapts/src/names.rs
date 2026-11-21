@@ -31,9 +31,9 @@ fn reserved(
     matches!(
         ch,
         '%' | ':' | '/' | '\\' | '*' | '?' | '[' | ']' | '{' | '}' | '|' | '`'
+            | '\0'..='\u{1f}' | '\u{7f}'..='\u{9f}' | '\u{a0}' | '\u{1680}'
+            | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
     ) || (quoted && ch == '"')
-        || ch.is_control()
-        || (ch.is_whitespace() && ch != ' ')
         || is_format_control(ch)
 }
 
@@ -63,6 +63,41 @@ fn unquoted(value: &str) -> String {
 
 fn quoted(value: JSStr<'_>) -> String {
     format!("\"{}\"", encode(value, true))
+}
+
+fn jsx_name(mut raw: &str) -> String {
+    // Oxc keeps the source spelling in JSXIdentifier, even for a clean parse.
+    let mut decoded = String::new();
+    while let Some((prefix, escape)) = raw.split_once("\\u") {
+        decoded.push_str(prefix);
+        if let Some((ch, rest)) = jsx_unicode_escape(escape) {
+            decoded.push(ch);
+            raw = rest;
+        } else {
+            decoded.push_str("\\u");
+            raw = escape;
+        }
+    }
+    if decoded.is_empty() {
+        return unquoted(raw);
+    }
+    decoded.push_str(raw);
+    unquoted(&decoded)
+}
+
+fn jsx_unicode_escape(text: &str) -> Option<(char, &str)> {
+    let (digits, rest) = if let Some(braced) = text.strip_prefix('{') {
+        let end = braced.find(|ch: char| !ch.is_ascii_hexdigit())?;
+        let (digits, suffix) = braced.split_at(end);
+        (digits, suffix.strip_prefix('}')?)
+    } else {
+        let (digits, rest) = text.split_at_checked(4)?;
+        if !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        (digits, rest)
+    };
+    Some((char::from_u32(u32::from_str_radix(digits, 16).ok()?)?, rest))
 }
 
 fn string_key(value: JSStr<'_>) -> String {
@@ -409,7 +444,7 @@ impl Names {
             },
             AstKind::ReturnStatement(n) => self.return_value(n.argument.as_ref()),
             AstKind::ArrowFunctionExpression(n) => self.return_value(n.body.as_expression()),
-            AstKind::JSXElement(n) => self.jsx(n, source),
+            AstKind::JSXElement(n) => self.jsx(n),
             AstKind::JSXFragment(n) => self.children("Fragment", &n.children),
             _ => {},
         }
@@ -473,15 +508,19 @@ impl Names {
     fn jsx(
         &mut self,
         element: &JSXElement<'_>,
-        source: Source<'_>,
     ) {
         let opening = &element.opening_element;
-        let tag = unquoted(opening.name.span().source_text(source.text));
+        let tag = jsx_name(&opening.name.to_string());
         for item in &opening.attributes {
             if let JSXAttributeItem::Attribute(attr) = item
                 && let Some(value) = attr.value.as_ref().and_then(attribute_target)
             {
-                let attr = unquoted(attr.name.span().source_text(source.text));
+                let attr = match &attr.name {
+                    oxc_ast::ast::JSXAttributeName::Identifier(id) => jsx_name(id.name.as_str()),
+                    oxc_ast::ast::JSXAttributeName::NamespacedName(name) => {
+                        jsx_name(&name.to_string())
+                    },
+                };
                 self.sites.push(Site {
                     kind: SiteKind::Role,
                     label: format!("<{tag} {attr}>"),
@@ -570,6 +609,7 @@ fn binding(
         AstKind::TSExternalModuleDeclaration(n) => {
             Some(Site::binding(quoted(n.id.value), n.span, n.span))
         },
+        AstKind::TSGlobalDeclaration(n) => Some(Site::binding("global".into(), n.span, n.span)),
         _ => member_binding(node, source),
     }
 }
@@ -579,19 +619,13 @@ fn assignment(
     value: &Expression<'_>,
     source: Source<'_>,
 ) -> Option<Site> {
-    let label = written_target(target.as_simple_assignment_target()?, source);
-    Some(Site::expression(SiteKind::Binding, label, value))
-}
-
-fn written_target(
-    target: &SimpleAssignmentTarget<'_>,
-    source: Source<'_>,
-) -> String {
-    match target {
+    let target = target.as_simple_assignment_target()?;
+    let label = match target {
         SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => unquoted(id.name.as_str()),
         _ if let Some(member) = target.as_member_expression() => member_chain(member, source),
-        _ => unquoted(target.span().source_text(source.text)),
-    }
+        _ => written(target.get_expression()?, source),
+    };
+    Some(Site::expression(SiteKind::Binding, label, value))
 }
 
 fn member_binding(
@@ -816,16 +850,69 @@ mod tests {
         assert_eq!(encode(lit.value, true), "%uD800%2F%uDFFF%2F😀%2F%25uD800");
     }
 
-    proptest::proptest! {
-        #[test]
-        fn all_unicode_format_controls_are_percent_encoded(text in "\\p{Cf}") {
-            let mut expected = String::new();
-            for b in text.bytes() {
-                write!(expected, "%{b:02X}").unwrap();
-            }
-            proptest::prop_assert_eq!(encode(oxc_str::JSStr::from(text.as_str()), false), expected);
+    fn unicode_members(pattern: &str) -> Vec<char> {
+        use regex_syntax::hir::{Class, HirKind};
+        let hir = regex_syntax::Parser::new().parse(pattern).unwrap();
+        let HirKind::Class(Class::Unicode(class)) = hir.kind() else {
+            panic!("expected Unicode character class for {pattern}");
+        };
+        class
+            .ranges()
+            .iter()
+            .flat_map(|r| r.start()..=r.end())
+            .collect()
+    }
+
+    #[test]
+    fn recovered_jsx_names_resume_after_an_invalid_escape() {
+        for (raw, expected) in [
+            (r"a\u{+41}\u0062", "a%5Cu%7B+41%7Db"),
+            (r"a\u+041\u0062", "a%5Cu+041b"),
+            (r"a\u{\u{\u0062", "a%5Cu%7B%5Cu%7Bb"),
+            (r"a\uD800\u0062", "a%5CuD800b"),
+            (r"a\u0", "a%5Cu0"),
+        ] {
+            assert_eq!(jsx_name(raw), expected, "{raw}");
         }
     }
+
+    #[test]
+    fn pin_every_unicode_16_format_control_and_its_encoding() {
+        let expected = unicode_members(r"\p{Cf}");
+        assert_eq!(expected.len(), 170);
+        let actual: Vec<_> = (char::MIN..=char::MAX)
+            .filter(|&ch| is_format_control(ch))
+            .collect();
+        assert_eq!(actual, expected);
+        for ch in expected {
+            let mut bytes = [0; 4];
+            let text = ch.encode_utf8(&mut bytes);
+            let mut encoded = String::new();
+            for b in text.bytes() {
+                write!(encoded, "%{b:02X}").unwrap();
+            }
+            assert_eq!(unquoted(text), encoded, "U+{:04X}", u32::from(ch));
+        }
+    }
+
+    #[test]
+    fn the_reserved_set_is_stable_across_toolchain_unicode_versions() {
+        let mut expected = std::collections::BTreeSet::from_iter(unicode_members(
+            r"[\p{Cf}\p{Cc}\p{White_Space}]",
+        ));
+        expected.remove(&' ');
+        expected.extend("%:/\\*?[]{}|`".chars());
+        for quoted in [false, true] {
+            if quoted {
+                expected.insert('"');
+            }
+            let actual: Vec<_> = (char::MIN..=char::MAX)
+                .filter(|&ch| reserved(ch, quoted))
+                .collect();
+            assert_eq!(actual, expected.iter().copied().collect::<Vec<_>>());
+        }
+    }
+
     #[test]
     fn transparent_wrappers_end_at_the_direct_value() {
         for (source, direct) in [

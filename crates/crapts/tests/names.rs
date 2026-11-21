@@ -304,10 +304,15 @@ fn encoded_segments_preserve_distinct_utf16_content() {
 }
 
 #[test]
-fn emit_encoded_segments_at_bindings_roles_and_namespace_boundaries() {
+fn encode_segment_content_before_joining_segments() {
     for (source, expected) in [
         (r"const obj = { a\u200Db() {} }", &["obj::a%E2%80%8Db"][..]),
         (r"a\u200Db = () => 0", &["a%E2%80%8Db"][..]),
+        (r"a\u200Db! = () => 0", &["a%E2%80%8Db"]),
+        (
+            r"class C { #x\u200Dy; m(){ this.#x\u200Dy = () => 0 } }",
+            &["C::m", "C::m::this.#x%E2%80%8Dy"],
+        ),
         (r"a\u200Db.c\u200Dd = () => 0", &["a%E2%80%8Db.c%E2%80%8Dd"]),
         (
             r"a\u200Db.c\u200Dd(() => 0)",
@@ -327,6 +332,14 @@ fn emit_encoded_segments_at_bindings_roles_and_namespace_boundaries() {
     assert_eq!(
         clean_names("tag.tsx", "const e = <ns:Box ns:cb={() => 0} />"),
         ["e::<ns%3ABox ns%3Acb>"]
+    );
+    assert_eq!(
+        clean_names("tag.tsx", r"const e = <a\u200Db c\u200Dd={() => 1}/>"),
+        ["e::<a%E2%80%8Db c%E2%80%8Dd>"]
+    );
+    assert_eq!(
+        clean_names("tag.tsx", r"const e = <A.\u{10400} x:a\u{200C}b={()=>1}/>"),
+        ["e::<A.𐐀 x%3Aa%E2%80%8Cb>"]
     );
     let module = analyze(
         Path::new("module.ts"),
@@ -360,6 +373,32 @@ fn skip_explicitly_declared_modules_and_name_rows_in_other_string_modules() {
         ),
         ("declare namespace A.B { function f() {} }", None, ambient),
         (
+            "export declare namespace A { function f(){} }",
+            None,
+            ambient,
+        ),
+        ("declare global { function f(){} }", None, ambient),
+        (
+            r#"declare module "x" { namespace N { function f(){} } }"#,
+            None,
+            ambient,
+        ),
+        (
+            "namespace N { declare namespace M { function f(){} } function g(){} }",
+            Some("N::g"),
+            ambient,
+        ),
+        (
+            r#"module "x" { namespace N { function f(){} } }"#,
+            Some("\"x\"::N::f"),
+            quoted,
+        ),
+        (
+            r#"module "p\u002Fq" { function f(){} }"#,
+            Some("\"p%2Fq\"::f"),
+            quoted,
+        ),
+        (
             r#"module "x" { function f() {} }"#,
             Some("\"x\"::f"),
             quoted,
@@ -383,6 +422,16 @@ fn skip_explicitly_declared_modules_and_name_rows_in_other_string_modules() {
             };
             assert_eq!(error.to_string(), format!("{label} {warning}"));
         }
+    }
+}
+
+#[test]
+fn global_augmentations_supply_a_namespace_segment() {
+    for (source, expected) in [
+        ("global { function f(){} }", "global::f"),
+        ("namespace N { global { function f(){} } }", "N::global::f"),
+    ] {
+        assert_eq!(clean_names("global.ts", source), [expected]);
     }
 }
 
