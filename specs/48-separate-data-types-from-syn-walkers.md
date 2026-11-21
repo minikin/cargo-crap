@@ -51,7 +51,7 @@ core-bound files and the core's dependencies. Today they do not:
 The path index is private to `merge.rs` (`PathIndex`, `:354`) and answers
 one source at a time. The TypeScript front end needs a rule that a
 per-source lookup cannot express: a relative coverage key that fits
-two or more sources (`src/index.ts` against
+two or more sources equally well (`src/index.ts` against
 `packages/a/src/index.ts` and `packages/b/src/index.ts`) binds to none of
 them, and the front end warns. cargo-crap binds such a key to every source
 that picks it (`merge.rs` test
@@ -114,8 +114,8 @@ Decisions taken in this draft, for the author to confirm:
   root package's tests. Spec 49 deletes it once the files sit in
   `crates/cargo-crap-core` and the compiler enforces the boundary.
 - **Tie rule.** Under `Unmatched`, consider every distinct source when
-  deciding which source owns a suffix group. A group that fits multiple
-  sources remains unused and produces one tie for the front end to warn
+  deciding which source owns a suffix group. An exact component match outranks
+  a proper suffix match. A group with multiple equally good owners remains unused and produces one tie for the front end to warn
   about. A source can appear in a tie while receiving coverage from a
   real-path group or a different uniquely owned suffix. Only sources
   without coverage count in `source_only`. cargo-crap uses `PerSource`.
@@ -361,6 +361,17 @@ Then  each key binds its own source
 And   no tie is reported
 ```
 
+### Scenario: an exact relative path owns the key over a looser suffix match
+
+```
+Given the source paths src/index.ts and packages/a/src/index.ts
+And   the relative coverage key src/index.ts
+When  paths::assign runs with TiePolicy::Unmatched
+Then  src/index.ts binds the key and packages/a/src/index.ts binds nothing
+And   no tie is reported, matched_files is 1, and lcov_only is empty
+And   under PerSource both sources still bind the key
+```
+
 ### Scenario Outline: a shared key stays ambiguous when another key covers one source
 
 ```
@@ -447,7 +458,7 @@ And   every run's diagnostics are equal
 Given any sources and coverage keys
 When  paths::assign runs under both policies
 Then  a surviving binding is the same real-path or longest suffix group selected under PerSource
-And   each suffix group that fits multiple sources appears in exactly one tie listing all its fitting sources
+And   each suffix group with multiple equally good owners appears in exactly one tie listing all its best owners
 And   those key spellings are absent from every binding and appear in lcov_only
 And   a source is counted in source_only exactly when it has no surviving binding
 ```
@@ -676,12 +687,14 @@ modified. The scenario names below identify their owning tasks.
 - [x] **T7 — Withdraw shared suffix groups under the tie-rejecting policy.**
   Needs: T6. Implement `TiePolicy::Unmatched` by deciding suffix-group
   ownership across all distinct sources, including sources with canonical
-  or longer matches. Return one tie per ambiguous group with every raw key
-  index and every fitting source index, sorted by spelling and path. Keep
+  or longer matches. Prefer sources whose complete normalized path equals the key.
+  Return one tie per ambiguous group with every raw key index and all equally
+  good source indices, sorted by spelling and path. Keep
   canonical matches and select the longest uniquely owned suffix when
   a source has no canonical match. Derive scope counts from the final bindings.
   Scenarios: _the tie-rejecting policy leaves a tied key unmatched_, _unique suffix groups bind their respective sources_,
-  _a shared key stays ambiguous when another key covers one source_, _spellings of one key bind together_,
+  _a shared key stays ambiguous when another key covers one source_,
+  _an exact relative path owns the key over a looser suffix match_, _spellings of one key bind together_,
   _a relative key is never resolved against the working directory_, _a degenerate key matches nothing_,
   _a partial component never matches_, _an assignment does not depend on input order_,
   _the tie-rejecting policy only withdraws ties_.
@@ -844,9 +857,10 @@ instead of once per function:
    otherwise its longest matching suffix group. Whole-component comparison
    makes the longest matching needle unique.
 3. Under `Unmatched`, first compare each suffix group with all distinct
-   sources. A group that fits several sources yields one `Tie` and binds
-   none, even when another key supplies coverage for one or more of its
-   candidates. A uniquely owned group is eligible for that source. Each
+   sources. Compare normalized components. If any source equals the whole
+   key, only the exact matches are candidates. Otherwise every matching
+   suffix is a candidate. A group with multiple candidates yields one
+   `Tie` and binds none, even when another key covers a candidate. A uniquely owned group is eligible for that source. Each
    source uses its real-path group if available, otherwise its longest
    eligible suffix. A real-path group can cover aliases of the same file.
    A uniquely owned but unused suffix remains in `lcov_only` without a tie.
@@ -890,7 +904,7 @@ spec.
 - `assign` is invariant under permutation of sources and of keys.
 - Under `PerSource`, each source binds the longest matching suffix group.
 - Under `Unmatched`, every ambiguous suffix group appears in one tie, with
-  every fitting source, regardless of which sources receive other coverage.
+  every equally good owner, regardless of which sources receive other coverage.
 - Strict and lenient LCOV reading agree on well-formed input.
 
 ### Mutation cost
