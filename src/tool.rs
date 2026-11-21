@@ -617,6 +617,61 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_core_bound_file_fails_the_source_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        for file in CORE_BOUND_FILES
+            .iter()
+            .copied()
+            .filter(|file| *file != "src/entry.rs")
+        {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        std::fs::create_dir_all(dir.path().join("src/report")).unwrap();
+        let err = check_core(dir.path()).expect_err("a missing listed file must fail");
+        assert!(format!("{err:#}").contains("src/entry.rs"), "{err:#}");
+    }
+
+    #[test]
+    fn every_listed_file_and_nested_report_is_checked_for_branding_and_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let required = [
+            (
+                "src",
+                "score entry paths delta report filter gate run policy",
+            ),
+            ("src/coverage", "mod lcov"),
+            ("src/signals", "model config"),
+            ("src/duplicates", "model compare group novelty verdict"),
+            ("src/report/subdirectory", "more"),
+        ]
+        .into_iter()
+        .flat_map(|(dir, stems)| {
+            stems
+                .split_whitespace()
+                .map(move |stem| format!("{dir}/{stem}.rs"))
+        })
+        .collect::<Vec<_>>();
+        let mut expected = Vec::new();
+        for file in &required {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                path,
+                "const V: &str = env!(\"CARGO_PKG_VERSION\");\nuse crate::merge::CrapEntry;",
+            )
+            .unwrap();
+            expected.push(format!("{file}:1: CARGO_PKG_"));
+            expected.push(format!("{file}:2: crate::merge"));
+        }
+        expected.sort();
+        let mut found = check_core(dir.path()).unwrap();
+        found.sort();
+        assert_eq!(found, expected);
+    }
+
+    #[test]
     fn cargo_crap_fixture_matches_cargo_crap_but_its_version() {
         let fixture = Tool {
             version: CARGO_CRAP.version,
@@ -753,30 +808,68 @@ mod tests {
         );
     }
 
-    /// Every `.rs` file under `dir`, with the module path it compiles as:
-    /// the checker needs it to resolve `super` from each file.
+    const CORE_BOUND_FILES: &[&str] = &[
+        "src/score.rs",
+        "src/entry.rs",
+        "src/paths.rs",
+        "src/coverage/mod.rs",
+        "src/coverage/lcov.rs",
+        "src/signals/model.rs",
+        "src/signals/config.rs",
+        "src/delta.rs",
+        "src/report.rs",
+        "src/duplicates/model.rs",
+        "src/duplicates/compare.rs",
+        "src/duplicates/group.rs",
+        "src/duplicates/novelty.rs",
+        "src/duplicates/verdict.rs",
+        "src/filter.rs",
+        "src/gate.rs",
+        "src/run.rs",
+        "src/policy.rs",
+    ];
+
     fn rust_files(
+        root: &Path,
         dir: &Path,
-        module: &[String],
-        out: &mut Vec<(std::path::PathBuf, Vec<String>)>,
-    ) {
-        for entry in std::fs::read_dir(dir).expect("reads the directory") {
-            let path = entry.expect("entry").path();
-            let stem = path
-                .file_stem()
-                .expect("stem")
-                .to_string_lossy()
-                .into_owned();
-            let mut inner = module.to_vec();
-            if stem != "mod" {
-                inner.push(stem);
-            }
-            if path.is_dir() {
-                rust_files(&path, &inner, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push((path, inner));
+        out: &mut Vec<std::path::PathBuf>,
+    ) -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        let entries = std::fs::read_dir(root.join(dir))
+            .with_context(|| format!("reading {}", dir.display()))?;
+        for entry in entries {
+            let entry = entry?;
+            let path = dir.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                rust_files(root, &path, out)?;
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
             }
         }
+        Ok(())
+    }
+
+    fn check_core(root: &Path) -> anyhow::Result<Vec<String>> {
+        use anyhow::Context as _;
+        let mut files: Vec<_> = CORE_BOUND_FILES
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+        rust_files(root, Path::new("src/report"), &mut files)?;
+        files.sort();
+        let mut found = Vec::new();
+        for path in files {
+            let source = std::fs::read_to_string(root.join(&path))
+                .with_context(|| format!("reading {}", crate::paths::path_key(&path)))?;
+            let module_path = path.strip_prefix("src")?.with_extension("");
+            let module: Vec<_> = module_path
+                .iter()
+                .filter_map(|part| part.to_str())
+                .filter(|part| *part != "mod")
+                .collect();
+            found.extend(violations_in(&path, &source, &module));
+        }
+        Ok(found)
     }
 
     /// The merge fixtures canonicalize temporary files, so test-only code must be excluded from this check.
@@ -929,22 +1022,8 @@ mod tests {
 
     #[test]
     fn core_bound_files_read_no_package_version() {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = vec![
-            (src.join("report.rs"), vec!["report".to_string()]),
-            (src.join("delta.rs"), vec!["delta".to_string()]),
-            (src.join("gate.rs"), vec!["gate".to_string()]),
-            (src.join("filter.rs"), vec!["filter".to_string()]),
-            (src.join("run.rs"), vec!["run".to_string()]),
-            (src.join("policy.rs"), vec!["policy".to_string()]),
-        ];
-        rust_files(&src.join("report"), &["report".to_string()], &mut files);
-        assert!(files.len() > 10, "{files:?}");
-        for (path, module) in files {
-            let source = std::fs::read_to_string(&path).expect("reads");
-            let module: Vec<&str> = module.iter().map(String::as_str).collect();
-            let found = violations_in(&path, &source, &module);
-            assert!(found.is_empty(), "{}: {found:?}", path.display());
-        }
+        let found =
+            check_core(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("read the core-bound files");
+        assert!(found.is_empty(), "{found:#?}");
     }
 }

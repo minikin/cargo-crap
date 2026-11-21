@@ -1,6 +1,6 @@
 # Spec 48: Separate data types from syn walkers
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** `src/entry.rs` (new), `src/paths.rs` (new), `src/merge.rs`, `src/coverage/` (from `src/coverage.rs`), `src/signals/` (from `src/signals.rs`), `src/score.rs`, `src/config.rs`, `src/duplicates/model.rs` (new), `src/duplicates/verdict.rs` (from `src/duplicates/triage/verdict.rs`), `src/duplicates/{mod,compare,group,novelty,extract,fingerprint}.rs`, `src/duplicates/triage/{mod.rs,provider/mod.rs}`, `src/delta.rs`, `src/report.rs`, `src/report/*.rs`, `src/main.rs`, `src/lib.rs` (declares `entry` and `paths`, module table), `src/tool.rs` (spec 46's source guard), `tests/library_paths.rs` (new), `tests/docs.rs`, `tests/width_snapshots.rs`, `docs/explanation/path-matching.md`, `CHANGELOG.md`, `CLAUDE.md`
 
@@ -725,7 +725,7 @@ modified. The scenario names below identify their owning tasks.
   an assertion macro, a forbidden doc link and the literal filename and
   prose from the passing example.
 
-- [ ] **T10 — Enforce the full file boundary and verify the split against the recorded outputs.**
+- [x] **T10 — Enforce the full file boundary and verify the split against the recorded outputs.**
   Needs: T9. Extend spec 46/47's shared file list to the complete set in
   the acceptance scenario, retaining recursive discovery under `src/report/`
   and all four spec 47 modules. Run the branding and dependency checks
