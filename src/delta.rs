@@ -16,6 +16,7 @@
 use crate::coverage::LineRange;
 use crate::duplicates::extract::Location;
 use crate::merge::{CrapEntry, SortOrder, path_key, unique_best_by_suffix};
+use crate::report::Tool;
 use crate::signals::{Signal, SignalSettings, Signals};
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -412,20 +413,28 @@ pub struct Baseline {
     pub duplicate_groups: Option<Vec<Vec<Location>>>,
 }
 
-/// Load a JSON baseline produced by a previous `cargo crap --format json` run.
-pub fn load_baseline(path: &Path) -> Result<Vec<CrapEntry>> {
-    load_baseline_with_weight(path).map(|baseline| baseline.entries)
+/// Load entries from a JSON baseline. Parse errors include the hint from
+/// the supplied tool.
+pub fn load_baseline(
+    path: &Path,
+    tool: &Tool,
+) -> Result<Vec<CrapEntry>> {
+    load_baseline_with_weight(path, tool).map(|baseline| baseline.entries)
 }
 
 /// [`load_baseline`], keeping the `?` weight the baseline was recorded under
 /// so a caller can tell when the current run scores under a different one.
-pub fn load_baseline_with_weight(path: &Path) -> Result<Baseline> {
+pub fn load_baseline_with_weight(
+    path: &Path,
+    tool: &Tool,
+) -> Result<Baseline> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading baseline {}", path.display()))?;
     let envelope: crate::report::Envelope = serde_json::from_str(&raw).with_context(|| {
         format!(
-            "parsing baseline {} — must be JSON from `cargo crap --format json`",
-            path.display()
+            "parsing baseline {} — must be JSON from `{}`",
+            path.display(),
+            tool.baseline_hint
         )
     })?;
     Ok(Baseline {
@@ -997,9 +1006,26 @@ mod tests {
             r#"{"version":"0.0.2","entries":[{"file":"src/lib.rs","function":"foo","line":1,"cyclomatic":1.0,"coverage":100.0,"crap":1.0}]}"#,
         )
         .expect("write");
-        let entries = load_baseline(&path).expect("wrapped baseline must parse");
+        let entries = load_baseline(&path, &crate::report::test_support::CARGO_CRAP_FIXTURE)
+            .expect("wrapped baseline must parse");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].function, "foo");
+    }
+
+    #[test]
+    fn a_baseline_that_does_not_parse_names_the_tools_hint() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("broken.json");
+        std::fs::write(&path, "not json").expect("write");
+        let tool = &crate::report::test_support::SECOND_TOOL;
+        let expected = format!(
+            "parsing baseline {} — must be JSON from `other-tool --json`",
+            path.display()
+        );
+        let entries = load_baseline(&path, tool).expect_err("does not parse");
+        assert_eq!(entries.to_string(), expected);
+        let weighted = load_baseline_with_weight(&path, tool).expect_err("does not parse");
+        assert_eq!(weighted.to_string(), expected);
     }
 
     #[test]
@@ -1011,7 +1037,7 @@ mod tests {
             r#"[{"file":"src/lib.rs","function":"foo","line":1,"cyclomatic":1.0,"coverage":100.0,"crap":1.0}]"#,
         )
         .expect("write");
-        assert!(load_baseline(&path).is_err());
+        assert!(load_baseline(&path, &crate::report::test_support::CARGO_CRAP_FIXTURE).is_err());
     }
 
     #[test]
@@ -1025,7 +1051,9 @@ mod tests {
             r#"{"version":"0.5.0","entries":[{"file":"src/lib.rs","function":"foo","line":1,"cyclomatic":1.0,"coverage":100.0,"crap":1.0}]}"#,
         )
         .expect("write");
-        let baseline = load_baseline_with_weight(&path).expect("parse");
+        let baseline =
+            load_baseline_with_weight(&path, &crate::report::test_support::CARGO_CRAP_FIXTURE)
+                .expect("parse");
         assert_eq!(baseline.try_weight, crate::config::DEFAULT_TRY_WEIGHT);
         assert_eq!(baseline.entries.len(), 1);
         assert_eq!(baseline.entries[0].function, "foo");
@@ -1040,11 +1068,18 @@ mod tests {
             r#"{"version":"0.5.0","try_weight":0.5,"entries":[{"file":"src/lib.rs","function":"foo","line":1,"cyclomatic":1.5,"coverage":100.0,"crap":1.5}]}"#,
         )
         .expect("write");
-        let baseline = load_baseline_with_weight(&path).expect("parse");
+        let baseline =
+            load_baseline_with_weight(&path, &crate::report::test_support::CARGO_CRAP_FIXTURE)
+                .expect("parse");
         assert_eq!(baseline.try_weight, 0.5);
         assert_eq!(baseline.entries.len(), 1);
         // The entries-only loader reads the same file unchanged.
-        assert_eq!(load_baseline(&path).expect("parse").len(), 1);
+        assert_eq!(
+            load_baseline(&path, &crate::report::test_support::CARGO_CRAP_FIXTURE)
+                .expect("parse")
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1058,10 +1093,11 @@ mod tests {
                 {"file":"src/b.rs","function":"g","start_line":3,"end_line":11}],"score":0.9}]}"#,
         )
         .expect("write");
-        let groups = load_baseline_with_weight(&path)
-            .expect("parse")
-            .duplicate_groups
-            .expect("a record");
+        let groups =
+            load_baseline_with_weight(&path, &crate::report::test_support::CARGO_CRAP_FIXTURE)
+                .expect("parse")
+                .duplicate_groups
+                .expect("a record");
         let at = |file: &str, name: &str, start_line, end_line| Location {
             file: PathBuf::from(file),
             start_line,
@@ -1087,7 +1123,9 @@ mod tests {
                 "score":0.9,"status":"shrunk","grown_from":2}]}"#,
         )
         .expect("write");
-        let baseline = load_baseline_with_weight(&path).expect("a lenient read");
+        let baseline =
+            load_baseline_with_weight(&path, &crate::report::test_support::CARGO_CRAP_FIXTURE)
+                .expect("a lenient read");
         assert_eq!(baseline.duplicate_groups.map(|g| g.len()), Some(1));
     }
 
@@ -1101,7 +1139,9 @@ mod tests {
             r#"{"version":"0.8.0","entries":[],"duplicate_groups":[]}"#,
         )
         .expect("write");
-        let baseline = load_baseline_with_weight(&path).expect("parse");
+        let baseline =
+            load_baseline_with_weight(&path, &crate::report::test_support::CARGO_CRAP_FIXTURE)
+                .expect("parse");
         assert_eq!(baseline.duplicate_groups, Some(vec![]));
     }
 
@@ -1110,7 +1150,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("plain.json");
         std::fs::write(&path, r#"{"version":"0.8.0","entries":[]}"#).expect("write");
-        let baseline = load_baseline_with_weight(&path).expect("parse");
+        let baseline =
+            load_baseline_with_weight(&path, &crate::report::test_support::CARGO_CRAP_FIXTURE)
+                .expect("parse");
         assert_eq!(baseline.duplicate_groups, None);
     }
 

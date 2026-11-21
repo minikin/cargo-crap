@@ -1459,7 +1459,7 @@ fn load_filtered_baseline(
     let Some(baseline_path) = baseline else {
         return Ok(None);
     };
-    let baseline = load_baseline_with_weight(baseline_path)?;
+    let baseline = load_baseline_with_weight(baseline_path, &cargo_crap::tool::CARGO_CRAP)?;
     warn_on_try_weight_mismatch(baseline.try_weight, try_weight);
     warn_on_missing_signals(&baseline.entries, signals_enabled);
     let mut baseline = baseline;

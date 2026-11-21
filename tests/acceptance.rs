@@ -9275,4 +9275,25 @@ fn the_markdown_and_pr_comment_reports_do_not_depend_on_the_tools_version() {
 
 // Spec 46 T5
 
+#[test]
+fn a_baseline_that_does_not_parse_names_the_second_tools_hint() {
+    // Given a baseline file broken.json holding the text "not json"
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("broken.json");
+    fs::write(&path, "not json").expect("write");
+    let expected = format!(
+        "parsing baseline {} — must be JSON from `other-tool --json`",
+        path.display()
+    );
+    // When it is loaded with the second tool, through load_baseline and
+    // through load_baseline_with_weight
+    let plain = cargo_crap::delta::load_baseline(&path, &SECOND_TOOL);
+    let weighted = cargo_crap::delta::load_baseline_with_weight(&path, &SECOND_TOOL);
+    // Then both loads fail
+    let (plain, weighted) = (plain.expect_err("fails"), weighted.expect_err("fails"));
+    // And each error's first line names the path and the second tool's hint
+    assert_eq!(plain.to_string(), expected);
+    assert_eq!(weighted.to_string(), expected);
+}
+
 // Spec 46 T6

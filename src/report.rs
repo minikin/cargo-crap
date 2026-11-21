@@ -48,7 +48,7 @@ mod tool;
 mod types;
 
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 // Re-exports — the rest of the crate depends on these names being on `report`.
 pub use json::Envelope;

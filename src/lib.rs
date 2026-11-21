@@ -129,7 +129,7 @@
 //! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic).entries;
 //!
 //! // Load baseline saved by a previous `--format json --output baseline.json` run.
-//! let baseline = load_baseline(std::path::Path::new("baseline.json"))?;
+//! let baseline = load_baseline(std::path::Path::new("baseline.json"), &CARGO_CRAP)?;
 //! let report = compute_delta(&entries, &baseline, DEFAULT_EPSILON);
 //!
 //! // Exit non-zero if any function regressed.
