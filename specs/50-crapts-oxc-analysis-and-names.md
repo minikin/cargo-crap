@@ -719,7 +719,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Keep the package and its parser independently buildable_.
   Tests: Acceptance through the parser-guard script with allowed and forbidden dependency trees, the CI configuration checks, the Rust 1.88 checks and the locked Spec 44 goldens.
 
-- [ ] **T3 - Analyze a clean file in its extension's grammar.** Needs: T1.
+- [x] **T3 - Analyze a clean file in its extension's grammar.** Needs: T1.
   Scenarios: _Choose the source grammar from the path_, _Name an arrow after its direct binding across body edits_.
   Tests: Acceptance through `analyze` for each source grammar, an empty file, a function declaration and a directly bound arrow across body and binding edits.
 
