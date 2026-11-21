@@ -775,7 +775,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Preserve member identity when the spelling changes (N5-N6)_.
   Tests: Unit tests for decoded identifiers, literal keys and ECMAScript numeric spellings. Acceptance for marker order, private members, accessors and computed keys.
 
-- [ ] **T14 - Name calls, constructions, tagged templates and JSX roles.** Needs: T13.
+- [x] **T14 - Name calls, constructions, tagged templates and JSX roles.** Needs: T13.
   Scenarios: _Reduce property chains and label call roles (N7-N8)_, _Encode both parts of namespaced JSX roles_.
   Tests: Acceptance for written and optional chains, labels, transparent spreads, nested call sites and encoded tag and attribute namespaces.
 
