@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    ArrowFunctionExpression, BindingPattern, Declaration, Expression, Function, LogicalExpression,
-    PropertyDefinition, TSClassImplements, TSInterfaceDeclaration, TSType, VariableDeclarator,
+    ArrowFunctionExpression, BindingPattern, Declaration, ExportDeclaration,
+    ExportDefaultDeclaration, ExportDefaultDeclarationKind, Expression, Function,
+    LogicalExpression, PropertyDefinition, TSClassImplements, TSInterfaceDeclaration, TSType,
+    VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
@@ -111,7 +113,19 @@ pub fn analyze(
         warnings: Vec::new(),
     };
     if let Some(diagnostic) = parsed.diagnostics.first() {
-        let problem = error(format!("parse error: {diagnostic}"));
+        // Oxc exposes a fatal flag without tagging the responsible diagnostic.
+        // A module error can follow it and a recoverable parser error can precede it.
+        let message = if parsed.fatal_error {
+            parsed
+                .diagnostics
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        } else {
+            diagnostic.to_string()
+        };
+        let problem = error(format!("parse error: {message}"));
         if side.is_some() {
             return Err(problem);
         }
@@ -141,6 +155,16 @@ struct Collector<'s> {
 }
 
 impl<'s> Collector<'s> {
+    fn include_export_modifiers(
+        &mut self,
+        first: usize,
+        start: u32,
+    ) {
+        if let Some(row) = self.rows.get_mut(first) {
+            row.span.start = self.lines.position(start);
+        }
+    }
+
     fn new(
         path: &'s Path,
         source: &str,
@@ -191,6 +215,31 @@ fn is_decision(kind: AstKind<'_>) -> bool {
 }
 
 impl<'a> Visit<'a> for Collector<'_> {
+    fn visit_export_declaration(
+        &mut self,
+        export: &ExportDeclaration<'a>,
+    ) {
+        let first = self.rows.len();
+        walk::walk_export_declaration(self, export);
+        if matches!(export.declaration, Declaration::FunctionDeclaration(_)) {
+            self.include_export_modifiers(first, export.span.start);
+        }
+    }
+
+    fn visit_export_default_declaration(
+        &mut self,
+        export: &ExportDefaultDeclaration<'a>,
+    ) {
+        let first = self.rows.len();
+        walk::walk_export_default_declaration(self, export);
+        if matches!(
+            export.declaration,
+            ExportDefaultDeclarationKind::FunctionDeclaration(_)
+        ) {
+            self.include_export_modifiers(first, export.span.start);
+        }
+    }
+
     fn visit_declaration(
         &mut self,
         decl: &Declaration<'a>,

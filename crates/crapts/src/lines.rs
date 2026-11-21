@@ -88,6 +88,36 @@ mod tests {
     use oxc_ast::ast::Statement;
     use oxc_parser::Parser;
     use oxc_span::SourceType;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn index_matches_a_forward_scan(chars in prop::collection::vec(
+            prop_oneof![any::<char>(), prop::sample::select(vec!['\r', '\n', '\u{2028}', '\u{2029}', '\u{feff}', 'x', '😀'])],
+            0..96,
+        )) {
+            let source: String = chars.into_iter().collect();
+            let index = LineIndex::new(&source);
+            let mut expected = Position { line: 1, column: 0 };
+            let mut chars = source.char_indices().peekable();
+            while let Some((byte, ch)) = chars.next() {
+                prop_assert_eq!(index.position(byte as u32), expected);
+                match (ch, chars.peek()) {
+                    ('\r', Some((lf, '\n'))) => {
+                        expected.column += 1;
+                        prop_assert_eq!(index.position(*lf as u32), expected);
+                        chars.next();
+                        expected = Position { line: expected.line + 1, column: 0 };
+                    }
+                    ('\r' | '\n' | '\u{2028}' | '\u{2029}', _) => {
+                        expected = Position { line: expected.line + 1, column: 0 };
+                    }
+                    _ => expected.column += ch.len_utf16() as u32,
+                }
+            }
+            prop_assert_eq!(index.position(source.len() as u32), expected);
+        }
+    }
 
     #[test]
     fn return_statement_follows_each_javascript_line_terminator() {

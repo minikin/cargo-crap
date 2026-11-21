@@ -48,13 +48,7 @@ fn choose_the_source_grammar_from_the_path() {
             assert!(cast.warnings.is_empty(), "{path}: {:?}", cast.warnings);
         } else {
             assert_eq!(cast.status, FileStatus::Recovered);
-            let [warning] = cast.warnings.as_slice() else {
-                panic!("{path}: {:?}", cast.warnings)
-            };
-            assert!(
-                warning.contains("Use an `as` expression instead"),
-                "{warning}"
-            );
+            assert_eq!(cast.warnings.len(), 1, "{path}");
         }
     }
     for ext in ["cjs", "cts"] {

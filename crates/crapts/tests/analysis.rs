@@ -177,6 +177,41 @@ const RECOVERABLE: &[u8] = b"const x; let [a]; function kept() { if (x) go() }";
 const FATAL: &[u8] = b"function partial() { if (x) {";
 
 #[test]
+fn a_fatal_parse_reports_the_failure_even_among_other_diagnostics() {
+    for source in [
+        "const x; function kept() {} \n let s = 'abc",
+        "export default 0; export default 1; const x; let s = 'abc",
+    ] {
+        let path = Path::new("mixed.js");
+        let file = analyze(path, source.as_bytes(), Mode::Ordinary).unwrap();
+        assert_eq!(file.status, FileStatus::SkippedFatal);
+        assert!(file.rows.is_empty());
+        let [warning] = file.warnings.as_slice() else {
+            panic!("{:?}", file.warnings)
+        };
+        assert!(warning.contains("Unterminated string"), "{warning}");
+        let error = analyze(path, source.as_bytes(), Mode::Strict(Side::Base)).unwrap_err();
+        assert!(error.to_string().contains("Unterminated string"), "{error}");
+    }
+}
+
+#[test]
+fn a_recovered_file_uses_oxc_diagnostic_order() {
+    // Oxc can return a lexer diagnostic before a parser diagnostic at an earlier byte.
+    let file = analyze(
+        Path::new("order.js"),
+        b"const x; function kept() {} \n 1 # 2",
+        Mode::Ordinary,
+    )
+    .unwrap();
+    assert_eq!(file.status, FileStatus::Recovered);
+    let [warning] = file.warnings.as_slice() else {
+        panic!("{:?}", file.warnings)
+    };
+    assert!(warning.contains("Invalid Character"), "{warning}");
+}
+
+#[test]
 fn return_recovered_rows_with_one_warning() {
     // Given two malformed declarations, choosing the last diagnostic would blame a different construct.
     let file = analyze(Path::new("recover.js"), RECOVERABLE, Mode::Ordinary).unwrap();
@@ -266,6 +301,45 @@ fn count_javascript_line_terminators() {
             panic!("{:?}", file.rows)
         };
         assert_eq!((row.span.end.line, row.span.end.column), (3, 1), "{br:?}");
+        let nested = ["function f() {", "  function inner() {}", "}"].join(br);
+        let file = analyze(Path::new("break.ts"), nested.as_bytes(), Mode::Ordinary).unwrap();
+        let [_, inner] = file.rows.as_slice() else {
+            panic!("{:?}", file.rows)
+        };
+        assert_eq!(
+            (inner.span.start.line, inner.span.start.column),
+            (2, 2),
+            "{br:?}"
+        );
+    }
+}
+
+#[test]
+fn exported_declarations_include_their_modifiers_in_their_source_span() {
+    for (source, (start, end)) in [
+        ("export function f() {}", (0, 22)),
+        ("export default function () {}", (0, 29)),
+        ("export const f = () => 0", (17, 24)),
+        ("export default (function () {})", (16, 30)),
+        (
+            "export function f(): void; const x = function () {}",
+            (37, 51),
+        ),
+    ] {
+        let file = analyze(
+            Path::new("export.ts"),
+            source.as_bytes(),
+            Mode::Strict(Side::Head),
+        )
+        .unwrap();
+        let [row] = file.rows.as_slice() else {
+            panic!("{:?}", file.rows)
+        };
+        assert_eq!(
+            (row.span.start.column, row.span.end.column),
+            (start, end),
+            "{source}"
+        );
     }
 }
 
