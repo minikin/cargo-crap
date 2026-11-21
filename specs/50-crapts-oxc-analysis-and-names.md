@@ -741,7 +741,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Reject syntax that belongs to a different source grammar_, _Reject invalid UTF-8 source bytes_.
   Tests: Acceptance through ordinary and strict decoding and through the strict wrong-grammar fixtures. Assert the path and comparison side where specified.
 
-- [ ] **T6 - Distinguish recovered and fatal parses in both modes.** Needs: T5.
+- [x] **T6 - Distinguish recovered and fatal parses in both modes.** Needs: T5.
   Scenarios: _Return recovered rows with one warning_, _Skip a fatal parse and continue the ordinary scan_, _A changed-file comparison requires a clean parse on both sides_.
   Tests: Acceptance through the file analysis result. Check status, retained rows, first diagnostic and continued ordinary scanning, then strict errors on each comparison side.
 
