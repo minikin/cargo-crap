@@ -673,7 +673,7 @@ modified. The scenario names below identify their owning tasks.
   production code for the actual call and policy and rejects each old
   matching mechanism named in the scenario.
 
-- [ ] **T7 — Withdraw shared suffix groups under the tie-rejecting policy.**
+- [x] **T7 — Withdraw shared suffix groups under the tie-rejecting policy.**
   Needs: T6. Implement `TiePolicy::Unmatched` by deciding suffix-group
   ownership across all distinct sources, including sources with canonical
   or longer matches. Return one tie per ambiguous group with every raw key

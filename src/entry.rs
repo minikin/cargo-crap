@@ -114,7 +114,8 @@ pub struct StrayFiles {
 
 impl StrayFiles {
     pub(crate) fn new(mut files: Vec<PathBuf>) -> Self {
-        files.sort();
+        // Component ordering equates distinct raw spellings such as a/./b and a/b.
+        files.sort_by(|a, b| a.cmp(b).then_with(|| a.as_os_str().cmp(b.as_os_str())));
         let count = files.len();
         files.truncate(SCOPE_EXAMPLE_CAP);
         Self {
