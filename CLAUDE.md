@@ -18,6 +18,7 @@ All feature specs live in `specs/`. They are written in Gherkin style (Given/Whe
 Both must be clean before any commit. Never commit with a failing CRAP gate or surviving mutants.
 
 Exception: a diff that touches only `.md` files (docs, specs) needs no pre-commit check: `just dev` and `just dev-mutants-diff` can be skipped.
+The exception does not cover a `specs/` file that a test reads, such as `specs/44-golden-outputs.md`, whose Cases table `tests/golden.rs` checks: an edit there needs `just dev`.
 
 ## Commands
 
