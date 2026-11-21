@@ -3,7 +3,7 @@
 **Status:** Approved
 **Effort:** Large
 **Module:** `crates/crapts/{Cargo.toml,src/{lib,cli,config,main,discover}.rs,tests/{cli,docs}.rs}`, `Cargo.lock`, `crates/cargo-crap-core/src/{lib,config,filter,policy,run,report}.rs` and `crates/cargo-crap-core/src/report/{tool,test_support,links,pr_comment,github,sarif}.rs`. Root integration and migration touch `src/{main,tool}.rs`, `tests/{workspace,library_paths,acceptance,crapts_policy}.rs`, `scripts/gates/{parser-guard,test}.sh`, `CHANGELOG.md` and `CLAUDE.md`. Compatibility checks exercise the core `report/{human,summary,markdown,shields}.rs` renderers, the width snapshots and the Spec 44 goldens.
-**Needs:** Specs 51 and 52, including the Spec 50 analyzer and Spec 49 core on which they depend. Before drafting tasks, re-check every input error delegated by the approved Spec 52 against the native CLI's exit-2, stderr and report-output expectations.
+**Needs:** Specs 51 and 52, including the Spec 50 analyzer and Spec 49 core on which they depend.
 
 ## Context
 
@@ -275,13 +275,11 @@ Examples:
 | --epsilon=-0.5                     | --epsilon must be at least 0 |
 | missing-dir --exclude 'src/['      | invalid glob src/[ before inspecting missing-dir |
 | absent.ts                          | path does not exist: absent.ts |
-| --coverage absent.info             | unreadable coverage path absent.info |
-| --coverage bad.data containing "{bad" | invalid JSON and the path bad.data |
 ```
 
 Repeat each pre-render failure with an existing output file containing `keep`. Its bytes stay intact.
 
-### Scenario Outline: Discovery, decoding and coverage errors exit 2 at the native binary
+### Scenario Outline: Discovery and source decoding errors exit 2 at the native binary
 
 ```gherkin
 Given a worktree containing the fixture and an output file containing "keep"
@@ -290,11 +288,47 @@ Then  exit is 2, stdout is empty, report.json still contains "keep" and stderr n
 
 Examples:
 | input | detail |
-| cov.info containing SF:a.ts, end_of_record, DA:8,1 on lines 1, 2, 3 | cov.info and line 3: DA outside an SF record |
-| coverage file mystery containing just [] | resolved path to mystery and unrecognized coverage format |
 | an explicit ../outside.ts beyond the worktree root, valid coverage | ../outside.ts and the worktree root |
 | invalid.ts with bytes 66 80 0A, valid coverage | invalid.ts and invalid UTF-8 |
 ```
+
+### Scenario Outline: Coverage input errors reach stderr before the native CLI opens a report
+
+Use a separate run for each variant. For the Istanbul cases, start with `run.json` containing `{"src/a.ts":{"statementMap":{"x":{"start":{"line":2,"column":3},"end":{"line":2,"column":4}}},"s":{"x":0}}}`. The scanned source is `src/score.ts`, so even an unmatched coverage key must pass validation. For LCOV, `\n` denotes a physical LF.
+
+```gherkin
+Given the fixture's clean source and the relative coverage <path> with <input>
+When  I run crapts src/score.ts --coverage <path> --format json --threshold 6 --fail-above
+Then  the process exits 2, stdout is empty and stderr names the report path and contains <detail>
+And   each Istanbul entry error names src/a.ts and each per-statement error also names the offending ID
+And   repeating with --output report.json gives the same status and streams, leaves an absent file absent
+      and preserves the bytes of an existing file containing "keep"
+
+Examples:
+| path | input | detail |
+| gone.info | file does not exist | ENOENT |
+| reports | directory in place of a file | EISDIR |
+| denied | the OS refuses to read the file | EACCES |
+| broken | { followed by LF and SF:a.ts | invalid JSON |
+| mystery | zero bytes, [], U+0085 followed by {}, TN:prefix SF:x followed by LF and DA:1,1, or two spaces before SF:a.ts | unrecognized coverage format |
+| run.json | replace the file entry with null, [], or a coverage summary object | not an Istanbul coverage-final.json |
+| run.json | remove statementMap or set it to [] | not an Istanbul coverage-final.json |
+| run.json | remove s or set it to null or [] | missing or invalid hit map s |
+| run.json | add s.extra = 1 without a span, both with a valid x and with a null span for x | statement extra has no span |
+| run.json | remove s.x or set it to -1, 0.5, null, true, "1" or the JSON number 1e400 | invalid hit count |
+| run.json | replace the span, start or end object for x with null or [] | invalid span |
+| run.json | set start.line to 0, -0, 1.5 or 1e400, or start.column to -1, null or 0.5 | invalid start |
+| run.json | set end to 1:null, 2.5:4, 2:2, 3:-1, 3:0.5 or 3:1e400, or omit end.column | invalid end |
+| cov.info | TN:x\nDA:8,1\nSF:a.ts or TN:x\nDA:malformed\nSF:a.ts | line 2: DA outside an SF record |
+| cov.info | SF:a.ts\nend_of_record\nDA:8,1 | line 3: DA outside an SF record |
+| cov.info | SF:a.ts\nSF: | line 2: missing SF path |
+| cov.info | SF:a.ts followed by DA:0,1 or DA:9007199254740992,1 on line 2 | line 2: invalid DA number |
+| cov.info | SF:a.ts followed on line 2 by "DA:+1,+2", "DA:1,-1", "DA:1,1.5", "DA:1,1," or "DA:1,1,checksum,extra" | line 2: invalid DA record |
+| cov.info | SF:a.ts then one DA for source line 2 with count 10^309 | line 2: invalid DA number |
+| cov.info | SF:a.ts then two DAs for source line 2, each with count 10^308 | line 3: invalid DA number |
+```
+
+For filesystem and format-detection failures, stderr includes the resolved report path. Run the access-denied case under an identity or filesystem policy that actually denies the binary's read. Write the LCOV overflow counts in full decimal digits so those examples exercise numeric conversion and addition.
 
 ### Scenario Outline: Companion checks and SARIF restrictions precede comparison I/O
 
@@ -476,7 +510,7 @@ Given config exclude = ["old/**"], flag --exclude 'gone/**', the recoverable and
 And   valid Istanbul coverage producing Spec 52's shared-key tie, low overlap and five-arrow producer warning
 When  I score the files in ordinary mode and request JSON
 Then  stderr has the two unused-exclude warnings below, then the first parse diagnostic per affected file in discovery order,
-      then the ambiguity warning, the overlap warning, and finally the producer warning, each exactly once
+      then the ambiguity warning, the overlap warning, and finally the producer warning, each exactly once with one "warning: " prefix
 And   recovered rows appear, fatal-file rows are absent and stdout is a complete report with notices []
 ```
 
@@ -710,7 +744,11 @@ Resolve the absolute lexically normalized base directories before compiling the 
 
 ### Analysis and rendering
 
-Spec 50 supplies `Discovery`, its borrowed scope, ordinary `analyze` results and warnings. Read coverage before source analysis as specified in the warning-order scenarios. Pass source analyses through Spec 52's `crapts::coverage` and `crapts::attribute`. Count distinct sources with rows before applying the missing policy. Provide the resulting `entry::CrapEntry` values, borrowed scope, `Some(ScopeDiagnostics)`, `Some(CoverageKind::Statements)` or `Some(CoverageKind::Lines)`, and empty report notices to `run::Analysis`.
+After discovery, call `crapts::coverage::read_coverage(cwd, path)` with the invocation directory and the coverage argument, both as `&Path`. It returns `Result<crapts::coverage::Coverage, crapts::InputError>`. On error, write the diagnostic to stderr and exit 2 before analyzing sources or opening the report destination.
+
+On success, collect Spec 50's ordinary `FileAnalysis` results in discovery order. Call `crapts::attribute::attribute(cwd, &analyses, &coverage, missing)` with the analysis slice and the effective `cargo_crap_core::entry::MissingCoveragePolicy` by value. It returns `Attribution`. After the discovery and parse warnings, write each string in `Attribution.warnings` to stderr in order with one `warning: ` prefix and a final LF.
+
+For Spec 51's `run::Analysis`, move each `AttributedRow.entry` from `Attribution.rows` into `entries`, borrow `Discovery.scope`, and pass `Some(Attribution.diagnostics)`. Those diagnostics already count distinct sources with rows before the missing policy is applied. Map `Attribution.unit` from `crapts::coverage::CoverageUnit::{Statements, Lines}` to the corresponding `Some(cargo_crap_core::coverage::CoverageKind::Statements)` or `Some(cargo_crap_core::coverage::CoverageKind::Lines)`, even for an empty report. Set `notices` to `&[]`.
 
 Construct the front-end `report::Tool` with the **crapts package** version, the report-v1 and delta-v1 schema URLs under `https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/`, the default marker, `crapts --format json` baseline hint and product URI `https://github.com/minikin/cargo-crap/tree/main/crates/crapts`. Use `EnvelopeKind::CraptsV1`, `PairPolicy::FileFunction`, `Population::All`, the three summary formats and `TieOrder::FileFunctionLine`. Call `run::run(tool, settings, analysis, None, &[], &RenderExtras::default(), out)` with `fail_sections: false` and disabled signal gates.
 
