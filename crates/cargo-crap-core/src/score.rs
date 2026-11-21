@@ -80,10 +80,6 @@ impl Severity {
 mod tests {
     use super::*;
 
-    // These tests fix properties of the formula. They are not "coverage for
-    // the sake of coverage" — each one would catch a specific regression if
-    // the formula were ever rewritten.
-
     #[test]
     fn trivial_method_scores_one() {
         // CC=1 is the minimum for any non-empty function: the straight-line
@@ -117,7 +113,6 @@ mod tests {
 
     #[test]
     fn score_is_monotonic_in_complexity_at_fixed_coverage() {
-        // Holding coverage constant, more complex code must never score lower.
         for cov in [0.0, 25.0, 50.0, 75.0, 100.0] {
             let a = crap(2.0, cov);
             let b = crap(5.0, cov);
@@ -129,8 +124,6 @@ mod tests {
 
     #[test]
     fn score_is_monotonic_nonincreasing_in_coverage_at_fixed_complexity() {
-        // Holding complexity constant, more tests must never make the score
-        // worse. This is a property users rely on when deciding to write tests.
         for cc in [1.0, 3.0, 10.0, 25.0] {
             let mut prev = f64::INFINITY;
             for cov in [0.0, 25.0, 50.0, 75.0, 100.0] {
@@ -151,7 +144,6 @@ mod tests {
 
     #[test]
     fn severity_classifies_at_threshold_boundary() {
-        // Exactly at the threshold is not crappy; strictly above is.
         assert_eq!(Severity::classify(30.0, 30.0), Severity::Clean);
         assert_eq!(Severity::classify(30.0001, 30.0), Severity::Crappy);
     }

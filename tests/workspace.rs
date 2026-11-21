@@ -130,8 +130,6 @@ fn the_workspace_has_cargo_crap_and_cargo_crap_core() {
 
 #[test]
 fn the_root_resolves_exactly_the_local_core() {
-    // Given the workspace manifests and their committed Cargo.lock
-    // When Cargo resolves the workspace with --locked
     let declared = metadata(&root(), &["--locked"]);
     let core_edges: Vec<&Value> = package(&declared, "cargo-crap")["dependencies"]
         .as_array()
@@ -140,14 +138,12 @@ fn the_root_resolves_exactly_the_local_core() {
         .filter(|dep| dep["name"] == "cargo-crap-core")
         .collect();
 
-    // Then cargo-crap has a required normal dependency on "=0.1.0"
     assert_eq!(core_edges.len(), 1, "{core_edges:#?}");
     let edge = core_edges[0];
     assert_eq!(edge["req"], "=0.1.0");
     assert_eq!(edge["kind"], Value::Null, "a normal dependency");
     assert_eq!(edge["optional"], false);
 
-    // And that edge resolves to the member at crates/cargo-crap-core, 0.1.0
     let resolved: Value = serde_json::from_str(&cargo(
         &root(),
         &["metadata", "--format-version", "1", "--locked"],
@@ -181,8 +177,6 @@ fn the_root_resolves_exactly_the_local_core() {
         serde_json::json!([{ "kind": null, "target": null }])
     );
 
-    // And the lock contains one core package, with its dependencies,
-    // and lists it under cargo-crap
     let lock: toml::Table = std::fs::read_to_string(root().join("Cargo.lock"))
         .expect("reading Cargo.lock")
         .parse()
@@ -268,8 +262,6 @@ fn package_identity_reads(src: &Path) -> Vec<String> {
 
 #[test]
 fn core_source_cannot_read_cargo_s_package_identity() {
-    // Given a temporary fixture at <tempdir>/src/report/json.rs that reads
-    // env!("CARGO_PKG_VERSION")
     let dir = tempfile::tempdir().expect("tempdir");
     let src = dir.path().join("src");
     std::fs::create_dir_all(src.join("report")).expect("fixture directories");
@@ -280,11 +272,8 @@ fn core_source_cannot_read_cargo_s_package_identity() {
     )
     .expect("fixture json.rs");
 
-    // When the root's plain-text checker scans <tempdir>/src recursively
-    // Then it rejects the fixture and names report/json.rs and the prefix
     assert_eq!(package_identity_reads(&src), ["report/json.rs: CARGO_PKG_"]);
 
-    // And the core's own source has no match
     assert_eq!(
         package_identity_reads(&root().join("crates/cargo-crap-core/src")),
         Vec::<String>::new()
@@ -348,9 +337,6 @@ fn mutants_of_the_core_run_the_whole_workspace_s_tests() {
 
 #[test]
 fn the_core_dependency_graph_excludes_language_parsers() {
-    // Given the populated core and the committed lockfile
-    // When cargo tree -p cargo-crap-core --all-features -e no-proc-macro
-    // --prefix none --locked runs
     let tree = cargo(
         &root(),
         &[
@@ -367,21 +353,18 @@ fn the_core_dependency_graph_excludes_language_parsers() {
     );
     let lines: Vec<&str> = tree.lines().collect();
 
-    // Then it succeeds with a nonempty tree rooted at cargo-crap-core
     assert!(
         lines
             .first()
             .is_some_and(|l| l.starts_with("cargo-crap-core ")),
         "{tree}"
     );
-    // And it contains lines starting with "lcov " and "comfy-table "
     for dependency in ["lcov ", "comfy-table "] {
         assert!(
             lines.iter().any(|l| l.starts_with(dependency)),
             "no {dependency:?} line in:\n{tree}"
         );
     }
-    // And no line starts with "syn " or "oxc_"
     let parsers: Vec<&&str> = lines
         .iter()
         .filter(|l| l.starts_with("syn ") || l.starts_with("oxc_"))
@@ -389,16 +372,33 @@ fn the_core_dependency_graph_excludes_language_parsers() {
     assert!(parsers.is_empty(), "{parsers:?}");
 }
 
-/// The seeds the moved properties replay, relative to the core's
-/// `proptest-regressions/`.
-const CORE_SEEDS: &[&str] = &[
-    "duplicates/compare.txt",
-    "duplicates/group.txt",
-    "duplicates/novelty.txt",
-    "report/duplicates.txt",
-    "report/human.txt",
-    "report/pr_comment.txt",
-    "report/types.txt",
+/// Every recorded seed file, by the package directory that replays it and
+/// its path under that package's `proptest-regressions/`. A new seed file
+/// joins this list in the change that records it.
+const SEEDS: &[(&str, &[&str])] = &[
+    (
+        "",
+        &[
+            "complexity.txt",
+            "duplicates/fingerprint.txt",
+            "duplicates/normalize.txt",
+            "duplicates/triage/budget.txt",
+            "duplicates/triage/cache.txt",
+            "signals/compute.txt",
+        ],
+    ),
+    (
+        "crates/cargo-crap-core",
+        &[
+            "duplicates/compare.txt",
+            "duplicates/group.txt",
+            "duplicates/novelty.txt",
+            "report/duplicates.txt",
+            "report/human.txt",
+            "report/pr_comment.txt",
+            "report/types.txt",
+        ],
+    ),
 ];
 
 /// The module whose properties replay `seed` in the package rooted at
@@ -415,33 +415,20 @@ fn seed_owner(
 
 #[test]
 fn recorded_property_test_seeds_follow_the_tests_that_replay_them() {
-    let core = root().join("crates/cargo-crap-core");
-
-    // Given the recorded seeds of both packages
-    let core_seeds = files_under(&core.join("proptest-regressions"));
-    let root_seeds = files_under(&root().join("proptest-regressions"));
-
-    // When each seed path is checked against the module that owns its
-    // property
-    // Then each moved seed file is present under the core's
-    // proptest-regressions/ at its test's lookup path
-    assert_eq!(core_seeds, CORE_SEEDS);
-    for seed in CORE_SEEDS {
-        assert!(
-            seed_owner(&core, seed).is_some(),
-            "no core module replays {seed}"
+    for (dir, seeds) in SEEDS {
+        let package = root().join(dir);
+        assert_eq!(
+            files_under(&package.join("proptest-regressions")),
+            *seeds,
+            "the seed files of {}",
+            package.display()
         );
-    }
-    // And no seed file under the root proptest-regressions/ names a core
-    // module
-    for seed in &root_seeds {
-        assert!(
-            !core.join("src").join(seed).with_extension("rs").exists(),
-            "the root keeps {seed}, a core module's seed"
-        );
-        assert!(
-            seed_owner(&root(), seed).is_some(),
-            "no root module replays {seed}"
-        );
+        for seed in *seeds {
+            assert!(
+                seed_owner(&package, seed).is_some(),
+                "no module in {} replays {seed}",
+                package.display()
+            );
+        }
     }
 }

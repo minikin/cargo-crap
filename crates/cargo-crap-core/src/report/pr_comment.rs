@@ -25,8 +25,6 @@ use std::path::{Path, PathBuf};
 /// the comment stays under GitHub's 65,536-character body limit on huge PRs.
 pub(crate) const MAX_ROWS_PER_SECTION: usize = 25;
 
-// ─── Path-prefix stripping for visible Location text ────────────────────────
-
 /// Compute the longest common path-component prefix across the directories
 /// of `paths`.
 ///
@@ -93,8 +91,6 @@ fn strip_to_display(
     path.strip_prefix(prefix)
         .map_or_else(|_| path.display().to_string(), |p| p.display().to_string())
 }
-
-// ─── Row writers ────────────────────────────────────────────────────────────
 
 /// Write one delta row in PR-comment format (with Δ column).
 fn write_pr_comment_row(
@@ -169,8 +165,6 @@ fn write_truncation_if_capped(
     }
     Ok(())
 }
-
-// ─── Bucketing ──────────────────────────────────────────────────────────────
 
 /// Sort key for "biggest mover" — used for Regressed and Improved lists.
 fn abs_delta(de: &DeltaEntry) -> f64 {
@@ -268,8 +262,6 @@ impl<'a> DeltaBuckets<'a> {
         compute_render_prefix(&paths, cwd)
     }
 }
-
-// ─── Section writers ────────────────────────────────────────────────────────
 
 /// The headline, unless no CRAP score regressed while gating signal
 /// reasons (spec 43) fail the gate: then it says so instead.
@@ -452,8 +444,6 @@ fn write_pr_comment_removed_section(
     writeln!(out, "</details>")?;
     Ok(())
 }
-
-// ─── Top-level renderers ────────────────────────────────────────────────────
 
 pub(crate) fn render_delta_pr_comment(
     report: &DeltaReport,

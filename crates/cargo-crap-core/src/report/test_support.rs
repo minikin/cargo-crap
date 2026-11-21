@@ -12,9 +12,8 @@ use crate::entry::CrapEntry;
 use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
 use std::path::PathBuf;
 
-/// cargo-crap's branding with a fixed version. The report tests use it in
-/// place of cargo-crap's own `Tool` value, which stays behind in the front
-/// end when the report moves into the core.
+/// cargo-crap's branding with a fixed version, so the report tests' expected
+/// output does not change with each release.
 pub(crate) const CARGO_CRAP_FIXTURE: Tool = include!("../../tests/fixtures/cargo_crap_tool.inc.rs");
 
 /// A tool whose seven branding strings differ from cargo-crap's and from one another,
