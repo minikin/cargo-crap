@@ -704,7 +704,7 @@ modified. The scenario names below identify their owning tasks.
   indices back to its own spellings, include an unrelated key), and check
   surviving bindings and every tied group against an independent all-sources owner search.
 
-- [ ] **T8 — Report front-end module imports at their source location.**
+- [x] **T8 — Report front-end module imports at their source location.**
   Needs: T7. Extend spec 46's checker in `src/tool.rs` using its existing
   path and use-tree resolution. Carry the file, source line and resolved
   module in diagnostics. Keep the original branding fixtures active.

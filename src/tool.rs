@@ -79,21 +79,44 @@ mod tests {
         source: &str,
         module: &[&str],
     ) -> Vec<String> {
-        let mut found: Vec<String> = ["CARGO_PKG_", "cargo_crap::tool"]
+        let path = Path::new("src").join(module.join("/")).with_extension("rs");
+        violations_in(&path, source, module)
+    }
+
+    fn violations_in(
+        path: &Path,
+        source: &str,
+        module: &[&str],
+    ) -> Vec<String> {
+        let filename = crate::paths::path_key(path);
+        let mut found: Vec<String> = doctest_tool_lines(source)
             .into_iter()
-            .filter(|token| source.contains(token))
-            .map(|token| format!("names `{token}`"))
+            .map(|line| format!("{filename}:{line}: crate::tool"))
             .collect();
-        if doctest_imports_the_tool_module(source) {
-            found.push("imports `cargo_crap::tool` in a doctest".to_string());
+        for (idx, line) in source.lines().enumerate() {
+            if line.contains("CARGO_PKG_") {
+                found.push(format!("{filename}:{}: CARGO_PKG_", idx + 1));
+            }
+            if line
+                .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                .any(|word| {
+                    let mut parts = word.trim_start_matches("::").split("::");
+                    parts.next() == Some("cargo_crap") && parts.next() == Some("tool")
+                })
+            {
+                found.push(format!("{filename}:{}: crate::tool", idx + 1));
+            }
         }
         let file = syn::parse_file(source).expect("parses");
-        let mut paths = PathsToTool {
+        let mut paths = CorePaths {
+            file: &filename,
             module: module.iter().map(|m| (*m).to_string()).collect(),
             found: Vec::new(),
         };
         syn::visit::Visit::visit_file(&mut paths, &file);
         found.extend(paths.found);
+        found.sort();
+        found.dedup();
         found
     }
 
@@ -107,17 +130,21 @@ mod tests {
     /// the path it hangs off, and a rename imports the path it renames.
     fn use_paths(
         tree: &syn::UseTree,
-        prefix: &mut Vec<String>,
-        out: &mut Vec<Vec<String>>,
+        prefix: &mut Vec<proc_macro2::Ident>,
+        out: &mut Vec<Vec<proc_macro2::Ident>>,
     ) {
         match tree {
             syn::UseTree::Path(p) => {
-                prefix.push(name(&p.ident));
+                prefix.push(p.ident.clone());
                 use_paths(&p.tree, prefix, out);
                 prefix.pop();
             },
-            syn::UseTree::Name(n) => out.push([prefix.as_slice(), &[name(&n.ident)]].concat()),
-            syn::UseTree::Rename(r) => out.push([prefix.as_slice(), &[name(&r.ident)]].concat()),
+            syn::UseTree::Name(n) => {
+                out.push([prefix.as_slice(), std::slice::from_ref(&n.ident)].concat());
+            },
+            syn::UseTree::Rename(r) => {
+                out.push([prefix.as_slice(), std::slice::from_ref(&r.ident)].concat());
+            },
             syn::UseTree::Glob(_) => out.push(prefix.clone()),
             syn::UseTree::Group(g) => {
                 for item in &g.items {
@@ -127,14 +154,14 @@ mod tests {
         }
     }
 
-    /// `text` without `/* */` and `//` comments, every run of whitespace
-    /// one space, so neither can split or hide a `use` statement.
     fn without_comments(text: &str) -> String {
         let mut out = String::new();
         let mut rest = text;
         while let Some(c) = rest.chars().next() {
             if let Some(tail) = rest.strip_prefix("/*") {
-                rest = tail.find("*/").map_or("", |end| &tail[end + 2..]);
+                let end = tail.find("*/").map_or(tail.len(), |at| at + 2);
+                out.extend(tail[..end].chars().filter(|&c| c == '\n'));
+                rest = &tail[end..];
                 out.push(' ');
             } else if let Some(tail) = rest.strip_prefix("//") {
                 rest = tail.find('\n').map_or("", |end| &tail[end..]);
@@ -143,15 +170,11 @@ mod tests {
                 rest = &rest[c.len_utf8()..];
             }
         }
-        out.split_whitespace().collect::<Vec<_>>().join(" ")
+        out
     }
 
-    /// Doctests are not parsed as code, so their `use cargo_crap::...;`
-    /// lines are taken from the doc comments, cleared of comments and extra
-    /// whitespace, and parsed as use trees, nested groups and renames
-    /// included.
-    fn doctest_imports_the_tool_module(source: &str) -> bool {
-        let docs: Vec<&str> = source
+    fn doctest_tool_lines(source: &str) -> Vec<usize> {
+        let docs = source
             .lines()
             .map(|line| {
                 let line = line.trim_start();
@@ -162,26 +185,44 @@ mod tests {
                     .trim_start();
                 line.strip_prefix("# ").unwrap_or(line)
             })
-            .collect();
-        let docs = without_comments(&docs.join("\n"));
-        docs.match_indices("use cargo_crap").any(|(at, _)| {
+            .collect::<Vec<_>>()
+            .join("\n");
+        let docs = without_comments(&docs);
+        let mut lines = Vec::new();
+        for (at, _) in docs.match_indices("use") {
             let statement = &docs[at..];
+            if !statement["use".len()..]
+                .trim_start()
+                .trim_start_matches("::")
+                .starts_with("cargo_crap")
+            {
+                continue;
+            }
             let Some(end) = statement.find(';') else {
-                return false;
+                continue;
             };
             let Ok(item) = syn::parse_str::<syn::ItemUse>(&statement[..=end]) else {
-                return false;
+                continue;
             };
             let mut paths = Vec::new();
             use_paths(&item.tree, &mut Vec::new(), &mut paths);
-            paths.iter().any(|p| p.get(1).is_some_and(|s| s == "tool"))
-        })
+            let offset = docs[..at].bytes().filter(|&c| c == b'\n').count();
+            for path in paths {
+                if let [root, module, ..] = path.as_slice()
+                    && name(root) == "cargo_crap"
+                    && name(module) == "tool"
+                {
+                    lines.push(offset + module.span().start().line);
+                }
+            }
+        }
+        lines
     }
 
     /// Every `a::b::c` path in a macro's tokens, which syn leaves unparsed.
     fn token_paths(
         tokens: proc_macro2::TokenStream,
-        out: &mut Vec<Vec<String>>,
+        out: &mut Vec<Vec<proc_macro2::Ident>>,
     ) {
         use proc_macro2::TokenTree;
         let trees: Vec<TokenTree> = tokens.into_iter().collect();
@@ -192,12 +233,12 @@ mod tests {
             match &trees[i] {
                 TokenTree::Group(g) => token_paths(g.stream(), out),
                 TokenTree::Ident(first) => {
-                    let mut path = vec![name(first)];
+                    let mut path = vec![first.clone()];
                     while colon(trees.get(i + 1)) && colon(trees.get(i + 2)) {
                         let Some(TokenTree::Ident(next)) = trees.get(i + 3) else {
                             break;
                         };
-                        path.push(name(next));
+                        path.push(next.clone());
                         i += 3;
                     }
                     out.push(path);
@@ -208,33 +249,56 @@ mod tests {
         }
     }
 
-    /// Collects every `use` tree and path that resolves to the root `tool`
-    /// module, resolving `crate`, `self` and `super` from the module the
-    /// item sits in.
-    ///
-    /// The guard is interim and has known limits: it does not follow glob
-    /// imports or renamed modules, and it reads a macro's tokens as loose
-    /// paths, so a macro that emits `use crate::{tool::CARGO_CRAP};` passes.
-    struct PathsToTool {
+    const FRONT_END_MODULES: &[&[&str]] = &[
+        &["tool"],
+        &["merge"],
+        &["complexity"],
+        &["cache"],
+        &["config"],
+        &["signals", "compute"],
+        &["duplicates", "extract"],
+        &["duplicates", "normalize"],
+        &["duplicates", "fingerprint"],
+        &["duplicates", "scan"],
+        &["duplicates", "triage"],
+    ];
+
+    struct CorePaths<'a> {
+        file: &'a str,
         module: Vec<String>,
         found: Vec<String>,
     }
 
-    impl PathsToTool {
+    impl CorePaths<'_> {
+        fn report(
+            &mut self,
+            line: usize,
+            path: &str,
+        ) {
+            self.found.push(format!("{}:{line}: {path}", self.file));
+        }
+
         fn check(
             &mut self,
-            segments: &[String],
+            segments: &[proc_macro2::Ident],
         ) {
-            let mut resolved = self.module.clone();
+            let Some(first) = segments.first() else {
+                return;
+            };
             let mut rest = segments;
-            match segments.first().map(String::as_str) {
-                Some("crate") => {
+            let mut resolved: Vec<_> = self
+                .module
+                .iter()
+                .map(|s| (s.clone(), first.span().start().line))
+                .collect();
+            match name(first).as_str() {
+                "crate" => {
                     resolved.clear();
-                    rest = &segments[1..];
+                    rest = &rest[1..];
                 },
-                Some("self" | "super") => {
+                "self" | "super" => {
                     while let Some(head) = rest.first() {
-                        match head.as_str() {
+                        match name(head).as_str() {
                             "self" => {},
                             "super" => {
                                 resolved.pop();
@@ -246,15 +310,24 @@ mod tests {
                 },
                 _ => return,
             }
-            resolved.extend(rest.iter().cloned());
-            if resolved.first().map(String::as_str) == Some("tool") {
-                self.found
-                    .push(format!("resolves to `{}`", resolved.join("::")));
+            resolved.extend(
+                rest.iter()
+                    .map(|ident| (name(ident), ident.span().start().line)),
+            );
+            let names: Vec<_> = resolved.iter().map(|(s, _)| s.as_str()).collect();
+            if let Some(prefix) = FRONT_END_MODULES
+                .iter()
+                .find(|prefix| names.starts_with(prefix))
+            {
+                self.report(
+                    resolved[prefix.len() - 1].1,
+                    &format!("crate::{}", prefix.join("::")),
+                );
             }
         }
     }
 
-    impl<'ast> syn::visit::Visit<'ast> for PathsToTool {
+    impl<'ast> syn::visit::Visit<'ast> for CorePaths<'_> {
         fn visit_item_mod(
             &mut self,
             item: &'ast syn::ItemMod,
@@ -291,10 +364,57 @@ mod tests {
             &mut self,
             path: &'ast syn::Path,
         ) {
-            let segments: Vec<String> = path.segments.iter().map(|s| name(&s.ident)).collect();
+            let segments: Vec<_> = path.segments.iter().map(|s| s.ident.clone()).collect();
             self.check(&segments);
             syn::visit::visit_path(self, path);
         }
+    }
+
+    #[test]
+    fn a_front_end_module_import_fails_the_source_guard() {
+        assert_eq!(
+            violations("\n\nuse crate::merge::CrapEntry;", &["delta"]),
+            ["src/delta.rs:3: crate::merge"]
+        );
+    }
+
+    #[test]
+    fn a_grouped_front_end_import_fails_the_source_guard() {
+        assert_eq!(
+            violations(
+                "use crate::{\n complexity::FunctionComplexity};",
+                &["delta"]
+            ),
+            ["src/delta.rs:2: crate::complexity"]
+        );
+    }
+
+    #[test]
+    fn the_root_tool_module_fails_the_source_guard_in_a_new_core_bound_file() {
+        assert_eq!(
+            violations("use crate::tool::CARGO_CRAP;", &["entry"]),
+            ["src/entry.rs:1: crate::tool"]
+        );
+    }
+
+    #[test]
+    fn a_sibling_front_end_module_import_fails_the_source_guard() {
+        assert_eq!(
+            violations("use super::extract::Location;", &["duplicates", "compare"]),
+            ["src/duplicates/compare.rs:1: crate::duplicates::extract"]
+        );
+    }
+
+    #[test]
+    fn grouped_doctest_imports_name_each_forbidden_segment_line() {
+        let source = "//! # use cargo_crap::{\n//! report::Format, /* ;\n//! */ tool::CARGO_CRAP};\n//! use cargo_crap::{tool::CARGO_CRAP};";
+        assert_eq!(
+            violations(source, &["report"]),
+            [
+                "src/report.rs:3: crate::tool",
+                "src/report.rs:4: crate::tool"
+            ]
+        );
     }
 
     #[test]
@@ -545,7 +665,10 @@ mod tests {
             ) {
                 let mut paths = Vec::new();
                 token_paths(mac.tokens.clone(), &mut paths);
-                self.legacy |= paths.iter().flatten().any(|segment| legacy_name(segment));
+                self.legacy |= paths
+                    .iter()
+                    .flatten()
+                    .any(|segment| legacy_name(&name(segment)));
                 visit::visit_macro(self, mac);
             }
             fn visit_ident(
@@ -621,7 +744,7 @@ mod tests {
         for (path, module) in files {
             let source = std::fs::read_to_string(&path).expect("reads");
             let module: Vec<&str> = module.iter().map(String::as_str).collect();
-            let found = violations(&source, &module);
+            let found = violations_in(&path, &source, &module);
             assert!(found.is_empty(), "{}: {found:?}", path.display());
         }
     }
