@@ -11,12 +11,12 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(relative: &str) -> String {
+pub(super) fn read(relative: &str) -> String {
     let path = root().join(relative);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
-fn block<'a>(
+pub(super) fn block<'a>(
     lines: &[&'a str],
     header: &str,
 ) -> Vec<&'a str> {
@@ -31,18 +31,18 @@ fn indent(line: &str) -> usize {
     line.len() - line.trim_start().len()
 }
 
-fn lines(text: &str) -> Vec<&str> {
+pub(super) fn lines(text: &str) -> Vec<&str> {
     text.lines().collect()
 }
 
-fn ci_commands<'a>(job: &[&'a str]) -> Vec<Vec<&'a str>> {
+pub(super) fn ci_commands<'a>(job: &[&'a str]) -> Vec<Vec<&'a str>> {
     job.iter()
         .filter_map(|l| l.trim().strip_prefix("run: "))
         .map(|command| command.split_whitespace().collect())
         .collect()
 }
 
-fn recipe_commands<'a>(recipe: &[&'a str]) -> Vec<Vec<&'a str>> {
+pub(super) fn recipe_commands<'a>(recipe: &[&'a str]) -> Vec<Vec<&'a str>> {
     recipe
         .iter()
         .map(|l| l.trim())
@@ -51,7 +51,7 @@ fn recipe_commands<'a>(recipe: &[&'a str]) -> Vec<Vec<&'a str>> {
         .collect()
 }
 
-fn is_cargo(
+pub(super) fn is_cargo(
     command: &[&str],
     sub: &[&str],
 ) -> bool {
@@ -79,7 +79,7 @@ fn selects_every_target(command: &[&str]) -> bool {
 }
 
 /// What every Justfile test run starts with.
-const VERIFY_PREFIX: [&str; 10] = [
+pub(super) const VERIFY_PREFIX: [&str; 10] = [
     "env",
     "-u",
     "GOLDEN_RECORD",
@@ -92,7 +92,7 @@ const VERIFY_PREFIX: [&str; 10] = [
     "INSTA_UPDATE=no",
 ];
 
-fn nextest_pair<'a, 'b>(
+pub(super) fn nextest_pair<'a, 'b>(
     commands: &'b [Vec<&'a str>],
     runner: &str,
 ) -> [&'b [&'a str]; 2] {

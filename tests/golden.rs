@@ -19,6 +19,9 @@ mod checks;
 #[path = "golden/config.rs"]
 mod config;
 
+#[path = "golden/gates.rs"]
+mod gates;
+
 #[path = "golden/encode.rs"]
 mod encode;
 

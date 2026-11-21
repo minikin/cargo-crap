@@ -15,9 +15,9 @@ set export
 # the variables that would record (GOLDEN_RECORD) or force-write (insta's
 # force and pending-dir settings) are cleared.
 test:
-    env -u GOLDEN_RECORD -u INSTA_FORCE_UPDATE -u INSTA_FORCE_UPDATE_SNAPSHOTS -u INSTA_PENDING_DIR INSTA_UPDATE=no cargo nextest run --all-targets
-    env -u GOLDEN_RECORD -u INSTA_FORCE_UPDATE -u INSTA_FORCE_UPDATE_SNAPSHOTS -u INSTA_PENDING_DIR INSTA_UPDATE=no cargo nextest run --all-targets --all-features
-    cargo test --doc --all-features
+    env -u GOLDEN_RECORD -u INSTA_FORCE_UPDATE -u INSTA_FORCE_UPDATE_SNAPSHOTS -u INSTA_PENDING_DIR INSTA_UPDATE=no cargo nextest run --workspace --all-targets
+    env -u GOLDEN_RECORD -u INSTA_FORCE_UPDATE -u INSTA_FORCE_UPDATE_SNAPSHOTS -u INSTA_PENDING_DIR INSTA_UPDATE=no cargo nextest run --workspace --all-targets --all-features
+    cargo test --doc --workspace --all-features
 
 # Apply formatting
 fmt:
@@ -26,13 +26,13 @@ fmt:
 # Check formatting and lints (mirrors CI)
 lint:
     cargo fmt --all -- --check
-    cargo clippy --all-targets -- -D warnings
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Fast compile check without building test binaries
 check:
-    cargo check --all-targets
-    cargo check --all-targets --all-features
+    cargo check --workspace --all-targets
+    cargo check --workspace --all-targets --all-features
 
 # Run all CI checks locally (requires cargo-nextest: cargo binstall cargo-nextest)
 ci: lint test
@@ -50,7 +50,7 @@ crap_scope := "--workspace --exclude 'tests/fixtures/**'"
 
 # Line coverage summary; fails mechanically below 90% lines
 cov:
-    cargo llvm-cov nextest --all-targets --all-features --summary-only --fail-under-lines 90
+    cargo llvm-cov nextest --workspace --all-targets --all-features --summary-only --fail-under-lines 90
 
 # Dogfood: coverage + CRAP gate, fails if any function scores above threshold 15
 crap:
@@ -109,7 +109,7 @@ crap-delta-main:
 # Full local gate: format, lint, tests, CRAP. Note `cov` is NOT part of it —
 # the `crap` recipe runs llvm-cov to produce lcov.info but never applies the
 # 90% line bar; run `just cov` for that.
-dev: fmt lint test action-test release-test crap
+dev: fmt lint test action-test release-test gates-test parser-guard crap
 
 # The GitHub Action's shell pieces: their tests, and shellcheck when it is
 # installed.
@@ -127,57 +127,27 @@ release-test:
     bash scripts/release/test.sh
     if command -v shellcheck > /dev/null; then shellcheck -x scripts/release/*.sh; fi
 
+# The workspace gates' shell tests, and shellcheck when it is installed.
+# They need just, cargo-mutants and jq on PATH.
+gates-test:
+    bash scripts/gates/test.sh
+    if command -v shellcheck > /dev/null; then shellcheck -x scripts/gates/*.sh; fi
+
+# No package links another front end's parser, and the core links none
+parser-guard:
+    bash scripts/gates/parser-guard.sh
+
 # Mutation tests for a specific file: just mutants src/delta.rs
 mutants FILE:
-    cargo mutants --file {{FILE}}
+    cargo mutants --workspace --file {{FILE}}
 
 # Mutation tests on every file (slow)
 mutants-all:
-    cargo mutants
+    cargo mutants --workspace
 
-# Mutation tests on changed lines only
+# Mutation tests on changed lines only, in every workspace member
 mutants-diff:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # Which lines: uncommitted changes vs HEAD, else the branch base, else
-    # the last commit.
-    # Both pathspecs: 'src/**/*.rs' catches files inside subdirectories
-    # (src/report/sarif.rs, etc.) while 'src/*.rs' catches the top level.
-    paths=('src/*.rs' 'src/**/*.rs')
-    # New files aren't in `git diff HEAD` — intent-to-add makes their full
-    # content show up in the diff; reset afterwards to leave the index as-is.
-    # NUL-delimited into an array: paths with spaces stay whole.
-    untracked=()
-    while IFS= read -r -d '' f; do untracked+=("$f"); done \
-        < <(git ls-files -z --others --exclude-standard -- "${paths[@]}" 2>/dev/null || true)
-    if [ "${#untracked[@]}" -gt 0 ]; then git add -N -- "${untracked[@]}"; fi
-    diff_file=$(mktemp)
-    trap 'rm -f "$diff_file"' EXIT
-    git diff HEAD -- "${paths[@]}" > "$diff_file" || true
-    if [ "${#untracked[@]}" -gt 0 ]; then git reset -q -- "${untracked[@]}"; fi
-    if [ ! -s "$diff_file" ]; then
-        # A clean tree is not a measured tree: src changes committed earlier
-        # on this branch still need mutating, so diff against the branch base.
-        base=""
-        for ref in origin/main origin/master main master; do
-            if candidate=$(git merge-base HEAD "$ref" 2>/dev/null); then base="$candidate"; break; fi
-        done
-        if [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; then
-            git diff "$base" HEAD -- "${paths[@]}" > "$diff_file" || true
-        fi
-    fi
-    if [ ! -s "$diff_file" ]; then
-        git diff HEAD~1 HEAD -- "${paths[@]}" > "$diff_file" 2>/dev/null || true
-    fi
-    if [ ! -s "$diff_file" ]; then
-        # An honest gate says what it did not measure — it never reports the
-        # absence of survivors as evidence about a change it cannot see.
-        # For everything mutants can measure, use `just mutants-all`.
-        echo "No src/ changes — outside the mutation gate's reach; nothing was measured"
-        exit 0
-    fi
-    echo "Running mutants on changed lines (--in-diff)"
-    cargo mutants --in-diff "$diff_file"
+    bash scripts/gates/mutants-diff.sh
 
 # The pre-commit gate: the full fast gate, then mutants on what changed
 dev-mutants-diff: dev mutants-diff

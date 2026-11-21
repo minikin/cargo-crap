@@ -38,11 +38,14 @@ cargo install --locked just cargo-nextest cargo-llvm-cov cargo-mutants
 just            # lists every recipe
 ```
 
+`just dev` also runs the gate scripts' tests, which need `jq` on PATH, and
+shellcheck when it is installed.
+
 ## The two commands to run before you push
 
 ```bash
 just dev                # fmt, clippy, tests, and the CRAP gate on this repo
-just dev-mutants-diff   # the same, then mutation tests on the src/ lines you changed
+just dev-mutants-diff   # the same, then mutation tests on the lines you changed in any workspace member
 ```
 
 `just dev` checks formatting, runs Clippy with pedantic lints as errors
@@ -51,7 +54,7 @@ tests in both builds, and then scores cargo-crap with itself: any function
 above 15 fails it.
 
 `just dev-mutants-diff` runs `cargo mutants` on the lines you changed under
-`src/`. A surviving mutant means a test would still pass with that line
+`src/` and `crates/*/src/`. A surviving mutant means a test would still pass with that line
 broken. Fix it by writing the test that catches it, never by reshaping the
 code until the mutant goes away. A diff that touches only Markdown can skip
 both commands.
@@ -69,7 +72,8 @@ CI runs the same gates and adds:
 - the tests on Linux, macOS and Windows;
 - a build and test run on Rust 1.88;
 - `cargo audit`;
-- mutation tests on every `src/` file the pull request changed;
+- mutation tests on the lines the pull request changed under `src/` and
+  `crates/*/src/`;
 - a CRAP comparison against the pull request's merge base, which fails when
   any function's score went up and posts its table as a comment on the pull
   request, so you can see which function it means.

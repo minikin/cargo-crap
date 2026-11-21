@@ -13,7 +13,7 @@ All feature specs live in `specs/`. They are written in Gherkin style (Given/Whe
 ## Before committing
 
 1. Run `just dev`: fmt, clippy, tests, and `just crap` (score the tool against its own source).
-2. If it passes, run `just dev-mutants-diff`. It mutation-tests the changed `src/` lines and re-runs `just dev` first. Skip this step only when the diff touches no files other than `.md` and `.yml`.
+2. If it passes, run `just dev-mutants-diff`. It mutation-tests the changed lines of every workspace member (`src/` and `crates/*/src/`) and re-runs `just dev` first. Skip this step only when the diff touches no files other than `.md` and `.yml`.
 
 Both must be clean before any commit. Never commit with a failing CRAP gate or surviving mutants.
 
@@ -24,16 +24,16 @@ The exception does not cover a `specs/` file that a test reads, such as `specs/4
 
 ```bash
 # Build
-cargo build --all-targets
+cargo build --workspace --all-targets
 
 # Run tests (all)
-cargo test --all-targets
+cargo test --workspace --all-targets
 
 # Run a single test by name
-cargo test <test_name>
+cargo test --workspace <test_name>
 
 # Run doc tests
-cargo test --doc
+cargo test --doc --workspace
 
 # Format check (CI enforces this)
 cargo fmt --all -- --check
@@ -42,7 +42,7 @@ cargo fmt --all -- --check
 cargo fmt --all
 
 # Lint (warnings are errors in CI: RUSTFLAGS="-D warnings")
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Run the tool against this repo (dogfood) — prefer the recipe, which is
 # the single definition of this gate; spelling it out here lets the two drift.
@@ -161,6 +161,10 @@ CRAP tool:
   and have no equivalent there, so they are ported into `ci.yml` at the
   end of the file; re-port them when they change upstream. `just
   keeler-upgrade` will re-drop `keeler.yml`; delete it again.
+- The gate table in `.claude/keeler.md` passes `--workspace` to clippy,
+  nextest and the doc tests, because a bare cargo command at the root of
+  this workspace skips `crates/cargo-crap-core`. `just keeler-upgrade`
+  reinstalls that file: put the flag back afterwards.
 - The justfile is tracked as `Justfile` (capital J) here, so anything reading
   it by path in CI must spell it that way. A case-insensitive filesystem
   hides the difference locally and git does not.

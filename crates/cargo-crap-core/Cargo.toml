@@ -1,0 +1,14 @@
+[package]
+name = "cargo-crap-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version = "1.88"
+authors.workspace = true
+license.workspace = true
+description = "Language-neutral CRAP scoring, coverage reading, delta and reports shared by cargo-crap and crapts"
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[lints]
+workspace = true

@@ -12,11 +12,14 @@ env:
 jobs:
   # Detect whether any Rust-relevant files changed. Every Rust job is gated
   # on `rust`, and mutation testing on `src`, so a pull request that touches
-  # only docs, scripts or other workflows skips them. The workflow still
-  # runs, and GitHub sees the jobs as "skipped", which satisfies required
-  # checks. This file is in both filters: a change to a job runs that job,
-  # on the pull request and again on main. The tests read the schemas and
-  # the proptest seeds, so those count as Rust too. `docs` gates the one
+  # only docs, other scripts or workflows other than this one and the Action
+  # workflow (which a Rust test reads) skips them. The workflow
+  # still runs, and GitHub sees the jobs as "skipped", which satisfies
+  # required checks. This file is in both filters: a change to a job runs
+  # that job, on the pull request and again on main. The tests read the
+  # schemas and the proptest seeds, so those count as Rust too, and the
+  # gate scripts under scripts/gates/ count as both: the gates job tests
+  # them, and the mutants job runs the diff script. `docs` gates the one
   # test that checks the README and docs/ against real runs.
   changes:
     name: Detect changes
@@ -35,7 +38,12 @@ jobs:
           filters: |
             rust:
               - '**/*.rs'
+              # Both: the root manifest does not depend on how picomatch reads
+              # a leading `**/`.
               - 'Cargo.toml'
+              - '**/Cargo.toml'
+              # The gates job tests these scripts.
+              - 'scripts/gates/**'
               - 'Cargo.lock'
               - '.cargo/**'
               - '.config/**'
@@ -46,6 +54,7 @@ jobs:
               - '.gitignore'
               - '.cargo-crap.toml'
               - 'tests/golden/encode.proptest-regressions'
+              - 'tests/golden/*.proptest-regressions'
               - 'specs/44-golden-outputs.md'
               - 'rust-toolchain.toml'
               - 'clippy.toml'
@@ -54,8 +63,14 @@ jobs:
               - 'schemas/**'
               - 'proptest-regressions/**'
               - '.github/workflows/ci.yml'
+              # tests/golden/gates.rs reads the Action workflow's paths.
+              - '.github/workflows/action.yml'
             src:
               - 'src/**/*.rs'
+              - 'crates/*/src/**/*.rs'
+              # The mutants gate's script and config decide what it measures.
+              - 'scripts/gates/**'
+              - '.cargo/mutants.toml'
               - '.github/workflows/ci.yml'
             docs:
               - 'README.md'
@@ -65,6 +80,8 @@ jobs:
             release:
               - 'scripts/release/**'
               - 'Cargo.toml'
+              # scripts/release/test.sh copies the core's manifest.
+              - 'crates/cargo-crap-core/Cargo.toml'
               - 'CHANGELOG.md'
               - 'action.yml'
               - '.github/ISSUE_TEMPLATE/**'
@@ -84,6 +101,33 @@ jobs:
         run: bash scripts/release/test.sh
       - name: Shellcheck
         run: shellcheck -x scripts/release/*.sh
+
+  # The workspace gates' own scripts: their shell tests run the real just
+  # and cargo-mutants against throwaway repositories, and the parser guard
+  # reads each package's dependency tree.
+  gates:
+    name: Gate scripts
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants,just
+      # The feature-gated guard case resolves offline against the cache.
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+      - name: Shell tests
+        run: bash scripts/gates/test.sh
+      - name: Shellcheck
+        run: shellcheck -x scripts/gates/*.sh
+      - name: Parser guard
+        run: bash scripts/gates/parser-guard.sh
 
   test:
     name: Test (${{ matrix.os }})
@@ -110,13 +154,13 @@ jobs:
       - name: Cargo.lock is tracked
         run: git ls-files --error-unmatch -- Cargo.lock
       - name: Test (default features)
-        run: cargo nextest run --all-targets --locked
+        run: cargo nextest run --workspace --all-targets --locked
       # The `triage` feature compiles the TypeSafe client (spec 30); its tests
       # only exist with it on.
       - name: Test (all features)
-        run: cargo nextest run --all-targets --all-features --locked
+        run: cargo nextest run --workspace --all-targets --all-features --locked
       - name: Doc tests
-        run: cargo test --doc --all-features --locked
+        run: cargo test --doc --workspace --all-features --locked
 
   # A docs-only change runs the docs test alone. When Rust changed too, the
   # test job above already runs it, unless the change is to this file.
@@ -149,9 +193,9 @@ jobs:
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy (default features)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: clippy (all features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   msrv:
     name: MSRV (Rust 1.88)
@@ -165,12 +209,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-nextest
+      # By name, not --workspace: a member with a higher MSRV can join the
+      # workspace without breaking this job.
       - name: Test (MSRV, default features)
-        run: cargo nextest run --all-targets
+        run: cargo nextest run -p cargo-crap -p cargo-crap-core --all-targets
       - name: Test (MSRV, all features)
-        run: cargo nextest run --all-targets --all-features
+        run: cargo nextest run -p cargo-crap -p cargo-crap-core --all-targets --all-features
       - name: Doc tests (MSRV)
-        run: cargo test --doc --all-features
+        run: cargo test --doc -p cargo-crap -p cargo-crap-core --all-features
 
   audit:
     name: Security audit
@@ -203,16 +249,12 @@ jobs:
       # mutants-diff` does locally. The full run on main measures the rest.
       - name: Run mutation tests (changed lines only, PRs)
         if: github.event_name == 'pull_request'
-        run: |
-          git diff origin/${{ github.base_ref }}...HEAD -- 'src/*.rs' > "$RUNNER_TEMP/pr.diff" || true
-          if [ ! -s "$RUNNER_TEMP/pr.diff" ]; then
-            echo "No changed src/*.rs lines, skipping mutants."
-            exit 0
-          fi
-          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bash scripts/gates/mutants-diff.sh --base "origin/$BASE_REF"
       - name: Run mutation tests (full, main)
         if: github.event_name == 'push'
-        run: cargo mutants
+        run: cargo mutants --workspace
       - name: Upload mutants output
         if: always()
         uses: actions/upload-artifact@v4
