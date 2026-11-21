@@ -570,3 +570,71 @@ proptest::proptest! {
         proptest::prop_assert_eq!(names, [format!("n::{canonical}"), format!("s::{canonical}")]);
     }
 }
+
+#[test]
+fn reduce_property_chains_and_label_call_roles() {
+    for (source, expected) in [
+        ("(obj?.ready)(()=>0)", &["obj.ready()"][..]),
+        (
+            r#"(obj?.[id])?.on<T>("save", () => 1)"#,
+            &["obj.(id).on(\"save\")"],
+        ),
+        (
+            r#"(obj!.next as X)?.on<T>("save", () => 1)"#,
+            &["obj.next.on(\"save\")"][..],
+        ),
+        (r#"(obj?.on!)?.call("k", () => 1)"#, &["obj.on.call(\"k\")"]),
+        ("factory().then(x=>x)", &["then()"]),
+        ("(foo<T>)(()=>1)", &["<call>()"]),
+        ("(x+y)(()=>1)", &["<call>()"]),
+        ("new (a+b)(()=>0)", &["new <call>()"]),
+        ("(a+b)`x${()=>0}`", &["<call>()"]),
+        ("obj.on<T>`a${() => 1}b`", &["obj.on()"]),
+        ("new Box(`a/b`, ()=>1)", &["new Box(\"a%2Fb\")"]),
+        ("Math.max(0, ...xs.map(x => x))", &["Math.max(0)::xs.map()"]),
+        (
+            r#"outer("a", ...[function named(){}])"#,
+            &["outer(\"a\")::named"],
+        ),
+        (
+            r#"app.get("/orders", auth, (req,res)=>0)"#,
+            &["app.get(\"%2Forders\")"],
+        ),
+        ("emit(0x2A, ()=>0)", &["emit(42)"]),
+        ("emit(42n, ()=>0)", &["emit()"]),
+        ("emit((42), ()=>0)", &["emit()"]),
+        ("emit(-42, ()=>0)", &["emit()"]),
+        ("emit(`a${0}`, ()=>0)", &["emit()"]),
+        ("import(() => 1)", &["<call>()"]),
+        (
+            r#"import("m", {with: {cb:()=>1}})"#,
+            &["<call>(\"m\")::with::cb"],
+        ),
+        ("import(f(() => 0))", &["<call>()::f()"]),
+        ("(factory().cb) = () => 0", &["cb"]),
+        ("(obj.x satisfies F) = () => 0", &["obj.x"]),
+        (
+            "class C extends B { m(){super.on('go',()=>0); this.#f(()=>0)} #f(){} }",
+            &["C::m", "C::m::super.on(\"go\")", "C::m::this.#f()", "C::#f"],
+        ),
+    ] {
+        assert_eq!(clean_names("role.tsx", source), expected, "{source}");
+    }
+}
+
+#[test]
+fn encode_both_parts_of_namespaced_jsx_roles() {
+    for source in [
+        "const x = <svg:rect xlink:href={() => 1}>{() => 2}</svg:rect>",
+        "const x = <svg : rect xlink : href={() => 1}>{() => 2}</svg : rect>",
+    ] {
+        assert_eq!(
+            clean_names("svg.tsx", source),
+            ["x::<svg%3Arect xlink%3Ahref>", "x::<svg%3Arect children>"]
+        );
+    }
+    assert_eq!(
+        clean_names("jsx.tsx", "const e = <UI . Button onClick={()=>0}/>"),
+        ["e::<UI.Button onClick>"]
+    );
+}

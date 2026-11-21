@@ -231,11 +231,11 @@ fn member_chain(
             },
         };
         parts.push(key);
-        let object = direct_value(member.object());
-        if let Some(parent) = object.as_member_expression() {
+        let object = chain_value(member.object());
+        if let Some(parent) = chain_member(object) {
             member = parent;
         } else {
-            parts.push(written_root(object, source));
+            parts.extend(written_root(object));
             break;
         }
     }
@@ -246,22 +246,56 @@ fn member_chain(
 fn written(
     expr: &Expression<'_>,
     source: Source<'_>,
-) -> String {
-    let expr = direct_value(expr);
-    match expr.as_member_expression() {
-        Some(member) => member_chain(member, source),
-        None => written_root(expr, source),
+) -> Option<String> {
+    let expr = chain_value(expr);
+    match chain_member(expr) {
+        Some(member) => Some(member_chain(member, source)),
+        None => written_root(expr),
     }
 }
 
-fn written_root(
-    expr: &Expression<'_>,
-    source: Source<'_>,
-) -> String {
-    match expr {
-        Expression::Identifier(id) => unquoted(id.name.as_str()),
-        inner => unquoted(inner.span().source_text(source.text)),
+fn chain_value<'b, 'a>(mut expr: &'b Expression<'a>) -> &'b Expression<'a> {
+    loop {
+        expr = direct_value(expr);
+        if let Expression::ChainExpression(chain) = expr
+            && let oxc_ast::ast::ChainElement::TSNonNullExpression(assertion) = &chain.expression
+        {
+            expr = &assertion.expression;
+        } else {
+            return expr;
+        }
     }
+}
+
+fn chain_member<'b, 'a>(expr: &'b Expression<'a>) -> Option<&'b MemberExpression<'a>> {
+    match expr {
+        Expression::ChainExpression(chain) => chain.expression.as_member_expression(),
+        _ => expr.as_member_expression(),
+    }
+}
+
+fn written_root(expr: &Expression<'_>) -> Option<String> {
+    match expr {
+        Expression::Identifier(id) => Some(unquoted(id.name.as_str())),
+        Expression::ThisExpression(_) => Some("this".into()),
+        Expression::Super(_) => Some("super".into()),
+        _ => None,
+    }
+}
+
+fn call_name(
+    callee: Option<&str>,
+    first: Option<&Expression<'_>>,
+    prefix: &str,
+) -> String {
+    let label = match first {
+        Some(Expression::StringLiteral(s)) => quoted(s.value),
+        Some(Expression::TemplateLiteral(t)) => t.single_quasi().map(quoted).unwrap_or_default(),
+        Some(Expression::NumericLiteral(n)) => n.value.to_js_string(),
+        _ => String::new(),
+    };
+    let name = callee.unwrap_or("<call>");
+    format!("{prefix}{name}({label})")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -435,10 +469,15 @@ impl Names {
         match node {
             AstKind::CallExpression(n) => self.call(&n.callee, &n.arguments, "", source),
             AstKind::NewExpression(n) => self.call(&n.callee, &n.arguments, "new ", source),
+            AstKind::ImportExpression(n) => self.role(
+                call_name(None, Some(&n.source), ""),
+                std::iter::once(&n.source)
+                    .chain(&n.options)
+                    .map(Target::expression),
+            ),
             AstKind::TaggedTemplateExpression(n) => {
-                let tag = written(&n.tag, source);
                 self.role(
-                    format!("{tag}()"),
+                    call_name(written(&n.tag, source).as_deref(), None, ""),
                     n.quasi.expressions.iter().map(Target::expression),
                 );
             },
@@ -480,9 +519,9 @@ impl Names {
             "<iife>".into(),
             callee,
         ));
-        let name = written(callee, source);
+        let first = arguments.first().and_then(Argument::as_expression);
         self.role(
-            format!("{prefix}{name}()"),
+            call_name(written(callee, source).as_deref(), first, prefix),
             arguments.iter().map(|arg| {
                 let scope = arg.span();
                 let direct = arg
@@ -623,7 +662,7 @@ fn assignment(
     let label = match target {
         SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => unquoted(id.name.as_str()),
         _ if let Some(member) = target.as_member_expression() => member_chain(member, source),
-        _ => written(target.get_expression()?, source),
+        _ => written(target.get_expression()?, source)?,
     };
     Some(Site::expression(SiteKind::Binding, label, value))
 }
