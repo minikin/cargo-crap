@@ -782,7 +782,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Reduce property chains and label call roles (N7-N8)_, _Encode both parts of namespaced JSX roles_.
   Tests: Acceptance for written and optional chains, labels, transparent spreads, nested call sites and encoded tag and attribute namespaces.
 
-- [ ] **T15 - Shorten long labels, quoted keys and computed text.** Needs: T14.
+- [x] **T15 - Shorten long labels, quoted keys and computed text.** Needs: T14.
   Scenarios: _Shorten delimited content in code points (N12)_.
   Tests: Unit tests at the 48/49-code-point boundary and for the first 40 code points. Acceptance through the analyzer for every N12 fixture, including lone surrogates, computed keys and the exact suffix from the full encoded content.
 
