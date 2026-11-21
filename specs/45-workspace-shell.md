@@ -361,6 +361,14 @@ When  crates/cargo-crap-core/src/lib.rs is the only changed path
 Then  the paths match it
 ```
 
+### Scenario: a change only to the Action workflow runs the check that reads it
+
+```
+Given the CI changes job's rust filter
+When  .github/workflows/action.yml is the only changed path
+Then  the rust filter matches it
+```
+
 ### Scenario: the MSRV job tests the 1.88 packages by name
 
 ```
@@ -475,7 +483,7 @@ go under their own comment heading, next to `release-test`.
 - [x] **T5 — The shared mutants diff script reaches the core.** Needs: T2, T4. Scenarios: _just mutants-diff mutates a changed line in the core; CI's base-ref diff mutates a committed change in the core; CI's base-ref diff with no source change measures nothing_. Tests: acceptance (`scripts/gates/test.sh` with the cargo shim).
 - [x] **T6 — Moves and path scope in the mutants diff.** Needs: T5. Scenarios: _a pure move costs no mutants; a move with one edited line mutates that line only; an untracked moved file still pairs as a rename; a source file under a member's tests directory is not in the diff_. Tests: acceptance (`scripts/gates/test.sh`). Property: none, see Implementation Notes "Invariant".
 - [x] **T7 — just mutants and just mutants-all reach the core.** Needs: T5. Scenarios: _just mutants and just mutants-all reach the core_. Tests: acceptance (`scripts/gates/test.sh` with the cargo shim).
-- [x] **T8 — CI mutants job, path filters, Action paths and the MSRV scope.** Needs: T4, T5. Scenarios: _CI's mutants job runs the shared diff script; a change only under crates/ runs the Rust and mutants jobs; a change only to a member's Cargo.toml runs the Rust jobs; a change only to the core's manifest runs the release-script tests; a change only to the mutants gate's own files runs the mutants job; a change only under crates/ runs the Action workflow; the MSRV job tests the 1.88 packages by name_. Tests: acceptance (workflow shape checks in Rust beside `tests/golden/config.rs`).
+- [x] **T8 — CI mutants job, path filters, Action paths and the MSRV scope.** Needs: T4, T5. Scenarios: _CI's mutants job runs the shared diff script; a change only under crates/ runs the Rust and mutants jobs; a change only to a member's Cargo.toml runs the Rust jobs; a change only to the core's manifest runs the release-script tests; a change only to the mutants gate's own files runs the mutants job; a change only under crates/ runs the Action workflow; a change only to the Action workflow runs the check that reads it; the MSRV job tests the 1.88 packages by name_. Tests: acceptance (workflow shape checks in Rust beside `tests/golden/config.rs`).
 - [x] **T9 — The parser guard.** Needs: T2. Scenarios: _the parser guard passes on this repository; the parser guard sees a feature-gated parser dependency; the parser guard sees a platform-gated parser dependency; a parser only the core's tests use is not a violation; the parser guard fails when the core links syn; the parser guard fails when cargo-crap links an Oxc crate; syn in cargo-crap's tree is not a violation; a guard that saw no tree does not pass_. Tests: acceptance (`scripts/gates/test.sh`).
 - [x] **T10 — just dev and a CI gates job run the gate scripts and the guard.** Needs: T8, T9. Scenarios: _just dev and CI both run the parser guard; a change only to a gate script runs the gate script tests_. Tests: acceptance (workflow and Justfile shape checks).
 
@@ -556,7 +564,7 @@ variable can point it at recorded tree outputs instead, which is how its
 shell test feeds the recorded cases. The feature-gated case runs the
 real `cargo tree` on a temporary workspace, so a dropped
 `--all-features` fails it, which recorded output cannot show. It pins
-the syn version from `Cargo.lock`. The `gates` job runs `cargo fetch
+the syn cargo-crap links, read from `cargo tree`. The `gates` job runs `cargo fetch
 --locked` first, so the crate is in the cache even though that job
 never builds cargo-crap. Spec 50 adds crapts' row (no `syn
 `, no `cargo-crap `). `no-proc-macro` stays: without it the tree shows syn
@@ -570,7 +578,8 @@ through `clap_derive` and `serde_derive`.
   `'scripts/gates/**'` and `'.cargo/mutants.toml'`, the files that decide
   what the mutation gate measures.
   `release` adds `'crates/cargo-crap-core/Cargo.toml'`, which
-  `scripts/release/test.sh` copies.
+  `scripts/release/test.sh` copies. `rust` adds
+  `'.github/workflows/action.yml'`, which the Action-paths check reads.
 - `test`: both nextest runs and the doc test add `--workspace`.
 - `lints`: both clippy runs add `--workspace` before their `--`.
   `cargo fmt --all -- --check` is unchanged.
@@ -615,7 +624,7 @@ pedantic-lint scenario goes in `scripts/gates/test.sh`.
 **One-time checks, recorded in the task's report, not as tests.** The
 lock diff adds only cargo-crap-core and changes no version or checksum.
 The sorted `cargo package --list -p cargo-crap` output equals the
-sorted list at the spec 44 tip, 87 files.
+sorted list at the commit below this spec, 86 files.
 `just crap` runs with a probe function in the core and shows its row.
 
 **Invariant.** For any set of changed paths, the mutants diff holds
