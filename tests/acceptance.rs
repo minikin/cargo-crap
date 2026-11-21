@@ -9140,6 +9140,36 @@ fn formats_without_branding_do_not_depend_on_the_tool() {
 
 // Spec 46 T2
 
+#[test]
+fn the_json_report_carries_the_second_tools_version_and_schema() {
+    // Given entries rendered with the second tool
+    // When they are rendered as --format json
+    let (absolute, _) = spec46_render(&SECOND_TOOL, cargo_crap::report::Format::Json);
+    let doc: serde_json::Value = serde_json::from_str(&absolute).expect("JSON");
+    // Then the envelope's version is the second tool's
+    assert_eq!(doc["version"], "7.7.7-other");
+    // And its $schema is the second tool's report schema
+    assert_eq!(
+        doc["$schema"],
+        "https://example.test/schemas/other-report.json"
+    );
+}
+
+#[test]
+fn the_json_delta_carries_the_second_tools_version_and_schema() {
+    // Given a delta report rendered with the second tool
+    // When it is rendered as --format json
+    let (_, delta) = spec46_render(&SECOND_TOOL, cargo_crap::report::Format::Json);
+    let doc: serde_json::Value = serde_json::from_str(&delta).expect("JSON");
+    // Then the envelope's version is the second tool's
+    assert_eq!(doc["version"], "7.7.7-other");
+    // And its $schema is the second tool's delta schema
+    assert_eq!(
+        doc["$schema"],
+        "https://example.test/schemas/other-delta.json"
+    );
+}
+
 // Spec 46 T3
 
 // Spec 46 T4

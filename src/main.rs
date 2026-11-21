@@ -2296,6 +2296,46 @@ fn run() -> Result<ExitCode> {
 mod tests {
     use super::*;
 
+    const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
+        name: "other-tool",
+        version: "7.7.7-other",
+        info_uri: "https://example.test/other-tool",
+        schemas: cargo_crap::report::Schemas {
+            report: "https://example.test/schemas/other-report.json",
+            delta: "https://example.test/schemas/other-delta.json",
+        },
+        comment_marker: "<!-- other-tool-marker -->",
+        baseline_hint: "other-tool --json",
+    };
+
+    #[test]
+    fn the_clis_delta_render_keeps_the_callers_tool() {
+        // Given render options carrying the second tool, the JSON format
+        // and a baseline
+        let entries = [signal_entry(None)];
+        let signals = cargo_crap::signals::SignalSettings::default();
+        let opts = RenderOpts {
+            render: RenderOptions {
+                format: Format::Json,
+                ..RenderOptions::new(&SECOND_TOOL)
+            },
+            epsilon: cargo_crap::delta::DEFAULT_EPSILON,
+            summary: false,
+            sort: SortOrder::Crap,
+            signals: &signals,
+        };
+        // When do_render writes the delta report
+        let mut out = Vec::new();
+        do_render(&entries, &entries, Some(&entries), &opts, &mut out).expect("renders");
+        // Then the envelope carries the second tool's version and delta schema
+        let doc: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+        assert_eq!(doc["version"], "7.7.7-other");
+        assert_eq!(
+            doc["$schema"],
+            "https://example.test/schemas/other-delta.json"
+        );
+    }
+
     /// An entry with or without signals, for the spec 43 baseline checks.
     fn signal_entry(signals: Option<cargo_crap::signals::Signals>) -> cargo_crap::merge::CrapEntry {
         cargo_crap::merge::CrapEntry {

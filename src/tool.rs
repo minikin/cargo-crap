@@ -24,21 +24,10 @@ pub const CARGO_CRAP: Tool = Tool {
     info_uri: "https://github.com/minikin/cargo-crap",
     schemas: Schemas {
         report: schema_url!("report-v1.json"),
+        // v2 added the `moved` status and the optional `previous_file`
+        // field, strictly additive for v1 readers.
         delta: schema_url!("delta-v2.json"),
     },
     comment_marker: "<!-- cargo-crap-report -->",
     baseline_hint: "cargo crap --format json",
 };
-
-#[cfg(test)]
-mod tests {
-    use super::CARGO_CRAP;
-    use crate::report;
-
-    #[test]
-    fn cargo_crap_matches_the_values_the_json_envelope_writes() {
-        assert_eq!(CARGO_CRAP.version, report::SCHEMA_VERSION);
-        assert_eq!(CARGO_CRAP.schemas.report, report::REPORT_SCHEMA_URL);
-        assert_eq!(CARGO_CRAP.schemas.delta, report::DELTA_SCHEMA_URL);
-    }
-}

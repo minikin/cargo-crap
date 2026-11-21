@@ -51,7 +51,7 @@ mod types;
 mod test_support;
 
 // Re-exports — the rest of the crate depends on these names being on `report`.
-pub use json::{DELTA_SCHEMA_URL, Envelope, REPORT_SCHEMA_URL, SCHEMA_VERSION};
+pub use json::Envelope;
 pub use links::SourceLinks;
 pub use summary::{render_delta_counts, render_delta_summary, render_summary};
 pub use tool::{Schemas, Tool};
