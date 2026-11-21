@@ -723,7 +723,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Choose the source grammar from the path_, _Name an arrow after its direct binding across body edits_.
   Tests: Acceptance through `analyze` for each source grammar, an empty file, a function declaration and a directly bound arrow across body and binding edits.
 
-- [ ] **T4 - Score decisions in a function's parameters and body.** Needs: T3.
+- [x] **T4 - Score decisions in a function's parameters and body.** Needs: T3.
   Scenarios: _Count each decision in its owning parameters or body_.
   Tests: Unit tests for the decision table and acceptance through the emitted CC, including the expressions that add zero.
 
