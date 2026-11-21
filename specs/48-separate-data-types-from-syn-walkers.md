@@ -715,7 +715,7 @@ modified. The scenario names below identify their owning tasks.
   grouped `crate::complexity`, absolute `crate::tool` in `entry.rs`
   and `super::extract` resolved from `duplicates::compare`.
 
-- [ ] **T9 — Catch forbidden crate paths in tests, macros and doc links.**
+- [x] **T9 — Catch forbidden crate paths in tests, macros and doc links.**
   Needs: T8. Extend the same checker to all external roots in the
   acceptance list, the three parser path markers inside macro bodies,
   and the specified `crate::` and `cargo_crap::` doc paths.

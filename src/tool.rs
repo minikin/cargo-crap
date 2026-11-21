@@ -75,6 +75,10 @@ mod tests {
         );
     }
 
+    fn path_words(line: &str) -> impl Iterator<Item = &str> {
+        line.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+    }
+
     fn violations(
         source: &str,
         module: &[&str],
@@ -94,16 +98,22 @@ mod tests {
             .map(|line| format!("{filename}:{line}: crate::tool"))
             .collect();
         for (idx, line) in source.lines().enumerate() {
+            for (marker, root) in [
+                ("syn::", "syn"),
+                ("quote::", "quote"),
+                ("proc_macro2::", "proc_macro2"),
+            ] {
+                if line.contains(marker) {
+                    found.push(format!("{filename}:{}: {root}", idx + 1));
+                }
+            }
             if line.contains("CARGO_PKG_") {
                 found.push(format!("{filename}:{}: CARGO_PKG_", idx + 1));
             }
-            if line
-                .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
-                .any(|word| {
-                    let mut parts = word.trim_start_matches("::").split("::");
-                    parts.next() == Some("cargo_crap") && parts.next() == Some("tool")
-                })
-            {
+            if path_words(line).any(|word| {
+                let mut parts = word.trim_start_matches("::").split("::");
+                parts.next() == Some("cargo_crap") && parts.next() == Some("tool")
+            }) {
                 found.push(format!("{filename}:{}: crate::tool", idx + 1));
             }
         }
@@ -115,6 +125,8 @@ mod tests {
         };
         syn::visit::Visit::visit_file(&mut paths, &file);
         found.extend(paths.found);
+        found.sort();
+        found.dedup();
         found.sort();
         found.dedup();
         found
@@ -263,6 +275,18 @@ mod tests {
         &["duplicates", "triage"],
     ];
 
+    const EXTERNAL_ROOTS: &[&str] = &[
+        "syn",
+        "quote",
+        "proc_macro2",
+        "ignore",
+        "indicatif",
+        "toml",
+        "ureq",
+        "rayon",
+        "clap",
+    ];
+
     struct CorePaths<'a> {
         file: &'a str,
         module: Vec<String>,
@@ -276,6 +300,39 @@ mod tests {
             path: &str,
         ) {
             self.found.push(format!("{}:{line}: {path}", self.file));
+        }
+
+        fn check_external(
+            &mut self,
+            segments: &[proc_macro2::Ident],
+        ) {
+            if let Some(root) = segments.first() {
+                let spelling = name(root);
+                if EXTERNAL_ROOTS.contains(&spelling.as_str()) {
+                    self.report(root.span().start().line, &spelling);
+                }
+            }
+        }
+
+        fn check_doc(
+            &mut self,
+            doc: &syn::LitStr,
+        ) {
+            for (offset, line) in doc.value().lines().enumerate() {
+                for word in path_words(line) {
+                    let mut parts = word.trim_start_matches("::").split("::");
+                    if !matches!(parts.next(), Some("crate" | "cargo_crap")) {
+                        continue;
+                    }
+                    let parts: Vec<_> = parts.collect();
+                    if let Some(prefix) = FRONT_END_MODULES.iter().find(|p| parts.starts_with(p)) {
+                        self.report(
+                            doc.span().start().line + offset,
+                            &format!("crate::{}", prefix.join("::")),
+                        );
+                    }
+                }
+            }
         }
 
         fn check(
@@ -328,6 +385,20 @@ mod tests {
     }
 
     impl<'ast> syn::visit::Visit<'ast> for CorePaths<'_> {
+        fn visit_attribute(
+            &mut self,
+            attr: &'ast syn::Attribute,
+        ) {
+            if attr.path().is_ident("doc")
+                && let syn::Meta::NameValue(meta) = &attr.meta
+                && let syn::Expr::Lit(expr) = &meta.value
+                && let syn::Lit::Str(doc) = &expr.lit
+            {
+                self.check_doc(doc);
+            }
+            syn::visit::visit_attribute(self, attr);
+        }
+
         fn visit_item_mod(
             &mut self,
             item: &'ast syn::ItemMod,
@@ -337,13 +408,25 @@ mod tests {
             self.module.pop();
         }
 
+        fn visit_item_extern_crate(
+            &mut self,
+            item: &'ast syn::ItemExternCrate,
+        ) {
+            self.check_external(std::slice::from_ref(&item.ident));
+            syn::visit::visit_item_extern_crate(self, item);
+        }
+
         fn visit_item_use(
             &mut self,
             item: &'ast syn::ItemUse,
         ) {
+            for attr in &item.attrs {
+                self.visit_attribute(attr);
+            }
             let mut paths = Vec::new();
             use_paths(&item.tree, &mut Vec::new(), &mut paths);
             for path in paths {
+                self.check_external(&path);
                 self.check(&path);
             }
         }
@@ -355,6 +438,9 @@ mod tests {
             let mut paths = Vec::new();
             token_paths(mac.tokens.clone(), &mut paths);
             for path in paths {
+                if path.len() > 1 {
+                    self.check_external(&path);
+                }
                 self.check(&path);
             }
             syn::visit::visit_macro(self, mac);
@@ -365,6 +451,9 @@ mod tests {
             path: &'ast syn::Path,
         ) {
             let segments: Vec<_> = path.segments.iter().map(|s| s.ident.clone()).collect();
+            if path.leading_colon.is_some() || segments.len() > 1 {
+                self.check_external(&segments);
+            }
             self.check(&segments);
             syn::visit::visit_path(self, path);
         }
@@ -414,6 +503,116 @@ mod tests {
                 "src/report.rs:3: crate::tool",
                 "src/report.rs:4: crate::tool"
             ]
+        );
+    }
+
+    #[test]
+    fn a_parser_crate_in_a_test_module_fails_the_source_guard() {
+        assert!(
+            violations(
+                "#[cfg(test)] mod tests { fn example(){ syn :: parse_str(); } }",
+                &["entry"]
+            )
+            .iter()
+            .any(|m| m == "src/entry.rs:1: syn")
+        );
+    }
+
+    #[test]
+    fn a_parser_crate_inside_a_macro_fails_the_source_guard() {
+        for marker in ["syn", "quote", "proc_macro2"] {
+            let source = format!(
+                "fn f() {{ assert!({marker}::parse_str::<{marker}::File>(\"\").is_ok()); }}"
+            );
+            assert!(
+                violations(&source, &["entry"])
+                    .iter()
+                    .any(|m| m.ends_with(&format!(": {marker}")))
+            );
+        }
+    }
+
+    #[test]
+    fn external_roots_fail_in_paths_and_grouped_imports() {
+        for external in [
+            "syn",
+            "quote",
+            "proc_macro2",
+            "ignore",
+            "indicatif",
+            "toml",
+            "ureq",
+            "rayon",
+            "clap",
+        ] {
+            for source in [
+                format!("use ::{external}::{{a,b}};"),
+                format!("fn f() {{ {external} :: example(); }}"),
+                format!("fn f() {{ assert!({external} :: example()); }}"),
+            ] {
+                assert!(
+                    violations(&source, &["entry"])
+                        .iter()
+                        .any(|m| m == &format!("src/entry.rs:1: {external}")),
+                    "{source}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_doc_link_to_a_front_end_module_fails_the_source_guard() {
+        for (doc, module) in [
+            ("/// See [`x`](crate::complexity).", "crate::complexity"),
+            (
+                "/// See [`cargo_crap::duplicates::extract::Location`].",
+                "crate::duplicates::extract",
+            ),
+        ] {
+            assert!(
+                violations(&format!("\n{doc}\nfn f() {{}}"), &["entry"])
+                    .iter()
+                    .any(|m| m == &format!("src/entry.rs:2: {module}"))
+            );
+        }
+    }
+
+    #[test]
+    fn a_crate_name_in_prose_is_not_a_violation() {
+        let src = "/// Files .cargo-crap.toml and the ignore list. See crate::configuration, cargo_crap::toolbox or super::config.\nfn f() { let _ = outer::ignore::word(); }";
+        assert_eq!(violations(src, &["signals", "model"]), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_doc_link_on_a_reexport_is_checked() {
+        assert_eq!(
+            violations(
+                "/// See crate::merge::CrapEntry.\npub use crate::entry::CrapEntry;",
+                &["report"]
+            ),
+            ["src/report.rs:1: crate::merge"]
+        );
+    }
+
+    #[test]
+    fn a_local_identifier_and_the_builtin_ignore_attribute_are_allowed() {
+        let source = "#[test] #[ignore] fn pending() { let ignore = true; assert!(ignore); let _ = ignore; }";
+        assert_eq!(violations(source, &["entry"]), Vec::<String>::new());
+        assert_eq!(
+            violations("use ignore;", &["entry"]),
+            ["src/entry.rs:1: ignore"]
+        );
+        assert_eq!(
+            violations("fn f() { let _ = ::clap; }", &["entry"]),
+            ["src/entry.rs:1: clap"]
+        );
+    }
+
+    #[test]
+    fn an_explicit_external_crate_alias_is_a_dependency() {
+        assert_eq!(
+            violations("extern crate syn as parser;", &["entry"]),
+            ["src/entry.rs:1: syn"]
         );
     }
 
