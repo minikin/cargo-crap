@@ -322,6 +322,7 @@ trees() {
     dir="$(mktemp -d "$scratch/trees.XXXXXX")" || exit 1
     printf 'cargo-crap v0.9.0 (/repo)\nanyhow v1.0.104\nsyn v2.0.119\n' > "$dir/cargo-crap.tree"
     printf 'cargo-crap-core v0.1.0 (/repo/crates/cargo-crap-core)\n' > "$dir/cargo-crap-core.tree"
+    printf 'crapts v0.1.0\noxc_parser v0.159.0\ncargo-crap-core v0.1.0\nsynstructure v0.13.0\n' > "$dir/crapts.tree"
     echo "$dir"
 }
 
@@ -329,38 +330,36 @@ out="$(cd "$repo" && bash scripts/gates/parser-guard.sh 2>&1)"
 status=$?
 check "the parser guard passes on this repository: exits 0" "0" "$status"
 check "the parser guard passes on this repository: names what it checked" "1" \
-    "$(grep -q 'cargo-crap, cargo-crap-core' <<< "$out" && echo 1 || echo 0)"
+    "$(grep -q 'checked cargo-crap, cargo-crap-core, crapts$' <<< "$out" && echo 1 || echo 0)"
 
 # The syn cargo-crap links directly, which every build downloads. The lock
 # holds more than one, and the full tree reaches another through a proc
 # macro first, so the query stops at cargo-crap's own dependencies.
 syn_version="$(cd "$repo" && "$real_cargo" tree -p cargo-crap -e normal --depth 1 --prefix none --locked 2> /dev/null |
     awk '$1 == "syn" { sub(/^v/, "", $2); print $2; exit }')"
-gated="$scratch/gated"
-{
-    mkdir -p "$gated/src" "$gated/crates/cargo-crap-core/src" &&
-        printf '[package]\nname = "cargo-crap"\nversion = "0.1.0"\nedition = "2024"\n\n[workspace]\nmembers = ["crates/cargo-crap-core"]\n' > "$gated/Cargo.toml" &&
-        printf '[package]\nname = "cargo-crap-core"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nsyn = { version = "=%s", optional = true }\n\n[features]\nparse = ["dep:syn"]\n' "$syn_version" > "$gated/crates/cargo-crap-core/Cargo.toml" &&
-        : > "$gated/src/lib.rs" && : > "$gated/crates/cargo-crap-core/src/lib.rs" &&
-        (cd "$gated" && "$real_cargo" generate-lockfile --offline -q)
-} > /dev/null 2>&1 || { echo "FAIL building the feature-gated workspace (syn $syn_version cached?)"; exit 1; }
-out="$(cd "$gated" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
-status=$?
-check "the parser guard sees a feature-gated parser dependency: exits 1" "1" "$status"
-check "the parser guard sees a feature-gated parser dependency: names the core and syn" "1" \
-    "$(grep -q "cargo-crap-core links syn v$syn_version" <<< "$out" && echo 1 || echo 0)"
-
 guard_workspace() {
     local dir="$scratch/$1"
     {
-        mkdir -p "$dir/src" "$dir/crates/cargo-crap-core/src" &&
-            printf '[package]\nname = "cargo-crap"\nversion = "0.1.0"\nedition = "2024"\n\n[workspace]\nmembers = ["crates/cargo-crap-core"]\n' > "$dir/Cargo.toml" &&
+        mkdir -p "$dir/src" "$dir/crates/cargo-crap-core/src" "$dir/crates/crapts/src" &&
+            printf '[package]\nname = "cargo-crap"\nversion = "0.1.0"\nedition = "2024"\n\n[workspace]\nmembers = ["crates/cargo-crap-core", "crates/crapts"]\n' > "$dir/Cargo.toml" &&
             printf '[package]\nname = "cargo-crap-core"\nversion = "0.1.0"\nedition = "2024"\n\n%s\n' "$2" > "$dir/crates/cargo-crap-core/Cargo.toml" &&
+            printf '[package]\nname = "crapts"\nversion = "0.1.0"\nedition = "2024"\n\n%s\n' "${3:-}" > "$dir/crates/crapts/Cargo.toml" &&
+            : > "$dir/crates/crapts/src/lib.rs" &&
             : > "$dir/src/lib.rs" && : > "$dir/crates/cargo-crap-core/src/lib.rs" &&
             (cd "$dir" && "$real_cargo" generate-lockfile --offline -q)
     } > /dev/null 2>&1 || { echo "FAIL building the $1 workspace (syn $syn_version cached?)" >&2; exit 1; }
     echo "$dir"
 }
+
+gated="$(guard_workspace gated "[dependencies]
+syn = { version = \"=$syn_version\", optional = true }
+[features]
+parse = [\"dep:syn\"]")" || exit 1
+out="$(cd "$gated" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
+status=$?
+check "the parser guard sees a feature-gated parser dependency: exits 1" "1" "$status"
+check "the parser guard sees a feature-gated parser dependency: names the core and syn" "1" \
+    "$(grep -q "cargo-crap-core links syn v$syn_version" <<< "$out" && echo 1 || echo 0)"
 
 dir="$(guard_workspace platform "[target.'cfg(windows)'.dependencies]
 syn = \"=$syn_version\"")" || exit 1
@@ -375,6 +374,30 @@ syn = \"=$syn_version\"")" || exit 1
 out="$(cd "$dir" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
 status=$?
 check "a parser only the core's tests use is not a violation" "0" "$status"
+
+dir="$(guard_workspace ts-build '' "[target.'cfg(windows)'.build-dependencies]
+cargo-crap = { path = '../..' }")" || exit 1
+out="$(cd "$dir" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
+status=$?
+check "the parser guard rejects cargo-crap in a crapts target build" "1" "$status"
+check "the parser guard identifies the forbidden front end" "1" \
+    "$(grep -q 'crapts links cargo-crap v0.1.0' <<< "$out" && echo 1 || echo 0)"
+
+dir="$(guard_workspace ts-dev '' "[dev-dependencies]
+cargo-crap = { path = '../..' }
+syn = '=$syn_version'")" || exit 1
+out="$(cd "$dir" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
+status=$?
+check "the parser guard permits both crates as crapts test dependencies" "0" "$status"
+
+dir="$(trees)" || exit 1
+guard "$dir"
+check "the parser guard allows Oxc, cargo-crap-core and synstructure in crapts" "0" "$status"
+printf 'syn v2.0.119\n' >> "$dir/crapts.tree"
+guard "$dir"
+check "the parser guard rejects syn in crapts" "1" "$status"
+check "the parser guard identifies the forbidden Rust parser" "1" \
+    "$(grep -q 'crapts links syn v2.0.119' <<< "$out" && echo 1 || echo 0)"
 
 dir="$(trees)" || exit 1
 printf 'cargo-crap-core v0.1.0 (/repo/crates/cargo-crap-core)\nsyn v2.0.119\n' > "$dir/cargo-crap-core.tree"

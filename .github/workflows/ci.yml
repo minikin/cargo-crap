@@ -202,6 +202,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NEXTEST_PROFILE: ci
+      RUSTUP_TOOLCHAIN: '1.88'
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.88
@@ -210,11 +211,22 @@ jobs:
       # By name, not --workspace: a member with a higher MSRV can join the
       # workspace without breaking this job.
       - name: Test (MSRV, default features)
-        run: cargo nextest run -p cargo-crap -p cargo-crap-core --all-targets
+        run: cargo nextest run -p cargo-crap -p cargo-crap-core --all-targets --locked
       - name: Test (MSRV, all features)
-        run: cargo nextest run -p cargo-crap -p cargo-crap-core --all-targets --all-features
+        run: cargo nextest run -p cargo-crap -p cargo-crap-core --all-targets --all-features --locked
       - name: Doc tests (MSRV)
-        run: cargo test --doc -p cargo-crap -p cargo-crap-core --all-features
+        run: cargo test --doc -p cargo-crap -p cargo-crap-core --all-features --locked
+
+  crapts-msrv:
+    name: crapts MSRV (Rust 1.98)
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.98
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo +1.98 test --locked -p crapts --all-targets
 
   audit:
     name: Security audit
