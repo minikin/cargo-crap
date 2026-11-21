@@ -753,7 +753,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Compose scheme-1 names from ancestors and sites (N1-N3)_, _Choose and absorb the first applicable segment (N4)_.
   Tests: Unit tests for precedence and transparent wrappers. Acceptance for traversal from the outermost site, absorption exactly once and fallback names.
 
-- [ ] **T9 - Collect nested bodies, spans and owned statement lines.** Needs: T8.
+- [x] **T9 - Collect nested bodies, spans and owned statement lines.** Needs: T8.
   Scenarios: _Separate nested decisions and skip declarations without bodies_, _Distinguish source regions from their outer line range_.
   Tests: Acceptance on the complete nested row sets, parameter decisions, declaration-only skips, concise-body bounds and UTF-16 columns. Assert exact sorted statement lines for each row.
 
