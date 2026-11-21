@@ -9392,3 +9392,59 @@ fn no_cargo_crap_branding_reaches_a_second_tools_output() {
         }
     }
 }
+
+// Spec 47 T3
+
+fn scored_row(
+    file: &str,
+    function: &str,
+    crap: f64,
+) -> cargo_crap::merge::CrapEntry {
+    cargo_crap::merge::CrapEntry {
+        file: file.into(),
+        function: function.into(),
+        line: 1,
+        cyclomatic: crap,
+        coverage: Some(100.0),
+        crap,
+        crate_name: None,
+        signals: None,
+        signal_spans: cargo_crap::signals::Spans::default(),
+        uncovered: Vec::new(),
+    }
+}
+
+#[test]
+fn top_selects_by_score_before_file_order_sorts_the_selected_rows() {
+    use cargo_crap::{filter, merge::SortOrder, report};
+    // Given descending scores with a tie at the top boundary.
+    let mut entries = vec![
+        scored_row("z.rs", "first", 50.0),
+        scored_row("b.rs", "second", 40.0),
+        scored_row("c.rs", "third", 40.0),
+        scored_row("a.rs", "last", 10.0),
+    ];
+    // When the caller selects the first two qualifying rows and requests file order.
+    let selected =
+        filter::slice(&mut entries, Some(40.0), Some(2), SortOrder::File).expect("slice");
+    let options = report::RenderOptions {
+        format: report::Format::Json,
+        ..report::RenderOptions::new(&SECOND_TOOL)
+    };
+    let mut out = Vec::new();
+    report::render(&selected, &options, &mut out).expect("report");
+    // Then the selected rows retain their identities and appear in file order.
+    let doc: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+    let rows: Vec<_> = doc["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["file"].as_str().unwrap(),
+                row["function"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(rows, [("b.rs", "second"), ("z.rs", "first")]);
+}

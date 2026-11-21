@@ -20,7 +20,8 @@ use cargo_crap::{
     duplicates::extract::Location,
     duplicates::triage::provider::{Provider, default_provider},
     duplicates::triage::verdict::Assessment,
-    merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
+    filter::{self, AllowSet},
+    merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge},
     report::{
         self, Format, RenderOptions, SourceLinks, TriagedBy, crappy_count, output_width, render,
         render_delta, render_delta_counts, render_summary, set_color_enabled,
@@ -28,7 +29,6 @@ use cargo_crap::{
     score::DEFAULT_THRESHOLD,
 };
 use clap::{Parser, ValueEnum};
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::fs::File;
@@ -399,73 +399,6 @@ fn strip_cargo_subcommand(mut args: Vec<String>) -> Vec<String> {
         args.remove(1);
     }
     args
-}
-
-/// True when an `--allow` entry should be treated as a path glob rather than a
-/// function-name glob. The rule is intentionally simple: contains `/` or `**`.
-/// This is documented in the `--allow` help text so users can predict the
-/// classification.
-fn is_path_allow_pattern(pattern: &str) -> bool {
-    pattern.contains('/') || pattern.contains("**")
-}
-
-/// Build a `GlobSet` for matching function names from allow-list patterns.
-///
-/// Unlike file-path exclusions, we do NOT set `literal_separator` — this lets
-/// `*` match across `::` so that `"Foo::*"` suppresses all methods on `Foo`.
-fn build_allow_set(patterns: &[&str]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pat in patterns {
-        let glob = GlobBuilder::new(pat)
-            .build()
-            .with_context(|| format!("invalid allow pattern: {pat:?}"))?;
-        builder.add(glob);
-    }
-    builder.build().context("building allow glob set")
-}
-
-/// Build a `GlobSet` for matching file paths. `what` names the option in
-/// error messages (`"allow"` / `"exclude"`).
-///
-/// Mirrors `analyze_tree`'s exclude build (`literal_separator(true)` so `*`
-/// stays within one path component and `**` is required to cross directories).
-fn build_path_set(
-    patterns: &[&str],
-    what: &str,
-) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pat in patterns {
-        let glob = GlobBuilder::new(pat)
-            .literal_separator(true)
-            .build()
-            .with_context(|| format!("invalid {what} pattern: {pat:?}"))?;
-        builder.add(glob);
-    }
-    builder
-        .build()
-        .with_context(|| format!("building {what} path glob set"))
-}
-
-/// True if any path-glob in `set` matches a component-suffix of `path`.
-///
-/// Walking suffixes lets a relative pattern like `src/generated/**` match an
-/// absolute file path like `/home/u/project/src/generated/foo.rs` without the
-/// caller having to know which form `entry.file` takes.
-fn path_set_matches_suffix(
-    set: &GlobSet,
-    path: &Path,
-) -> bool {
-    if set.is_empty() {
-        return false;
-    }
-    let components: Vec<_> = path.components().collect();
-    for i in 0..components.len() {
-        let suffix: PathBuf = components[i..].iter().collect();
-        if set.is_match(&suffix) {
-            return true;
-        }
-    }
-    false
 }
 
 /// One Cargo workspace member: package name + the directory containing its
@@ -901,68 +834,10 @@ fn assign_crate_names(
     }
 }
 
-/// Apply allow-list, min-score, and top-N filters to the entry list in place.
-///
-/// `--allow` entries split into two buckets via [`is_path_allow_pattern`]:
-/// path globs match the entry's source file, function-name globs match the
-/// entry's function name. An entry is dropped when either set matches.
-fn apply_filters(
-    entries: &mut Vec<cargo_crap::merge::CrapEntry>,
-    allow_patterns: &[String],
-) -> Result<()> {
-    if !allow_patterns.is_empty() {
-        let (path_pats, name_pats): (Vec<&str>, Vec<&str>) = allow_patterns
-            .iter()
-            .map(String::as_str)
-            .partition(|p| is_path_allow_pattern(p));
-        let name_set = build_allow_set(&name_pats)?;
-        let path_set = build_path_set(&path_pats, "allow")?;
-        entries.retain(|e| {
-            !name_set.is_match(&e.function) && !path_set_matches_suffix(&path_set, &e.file)
-        });
-    }
-    Ok(())
-}
-
-/// The rows a run shows, in the requested order. Without `min` or `top`
-/// every entry is shown, so `entries` is sorted in place and `None` comes
-/// back: the run keeps one list. With a slice, `entries` stays whole and in
-/// CRAP order for the baseline comparison, and the slice is a sorted copy.
-fn shown_rows(
-    entries: &mut [cargo_crap::merge::CrapEntry],
-    min: Option<f64>,
-    top: Option<usize>,
-    order: SortOrder,
-) -> Option<Vec<cargo_crap::merge::CrapEntry>> {
-    if !is_sliced(min, top) {
-        sort_entries(entries, order);
-        return None;
-    }
-    let mut shown = slice_of(entries, min, top);
-    sort_entries(&mut shown, order);
-    Some(shown)
-}
-
-/// The rows `min` and `top` select: scores at or above the cutoff, then the
-/// N highest. `entries` must be in descending CRAP order, as `merge` leaves
-/// them.
-fn slice_of(
-    entries: &[cargo_crap::merge::CrapEntry],
-    min: Option<f64>,
-    top: Option<usize>,
-) -> Vec<cargo_crap::merge::CrapEntry> {
-    entries
-        .iter()
-        .filter(|e| min.is_none_or(|cutoff| e.crap >= cutoff))
-        .take(top.unwrap_or(usize::MAX))
-        .cloned()
-        .collect()
-}
-
 /// Drops baseline entries that the current run's identity-based filters
 /// would have dropped (spec 18): exclude globs (default + user, matched
 /// relative to the analyzed roots, exactly as the walk applies them) and
-/// `--allow` patterns (same path/name split as [`apply_filters`]).
+/// `--allow` patterns (same path/name split as [`filter::allow`]).
 ///
 /// Without this, changing the exclusion set between the baseline run and the
 /// current run floods `removed` with functions that were not deleted — and
@@ -973,29 +848,20 @@ struct BaselineFilter {
     /// longest-first so the deepest root claims the prefix — the same
     /// longest-match rule as [`assign_crate_names`].
     roots: Vec<(PathBuf, complexity::ExcludeMatcher)>,
-    name_allow: GlobSet,
-    path_allow: GlobSet,
+    allow: AllowSet,
 }
 
 impl BaselineFilter {
     fn new(
         roots: &[ScanRoot],
-        allow_patterns: &[String],
+        allow: AllowSet,
     ) -> Result<Self> {
-        let (path_pats, name_pats): (Vec<&str>, Vec<&str>) = allow_patterns
-            .iter()
-            .map(String::as_str)
-            .partition(|p| is_path_allow_pattern(p));
         let mut roots = roots
             .iter()
             .map(|root| Ok((root.dir.clone(), root.matcher()?)))
             .collect::<Result<Vec<_>>>()?;
         roots.sort_by_key(|(dir, _)| std::cmp::Reverse(dir.as_os_str().len()));
-        Ok(Self {
-            roots,
-            name_allow: build_allow_set(&name_pats)?,
-            path_allow: build_path_set(&path_pats, "allow")?,
-        })
+        Ok(Self { roots, allow })
     }
 
     /// True when the walk would have excluded `file`, normalized to forward
@@ -1031,17 +897,6 @@ impl BaselineFilter {
         }
     }
 
-    /// True when the current run would produce `function` in `file`.
-    fn keeps(
-        &self,
-        file: &Path,
-        function: &str,
-    ) -> bool {
-        !self.is_excluded(file)
-            && !self.name_allow.is_match(function)
-            && !path_set_matches_suffix(&self.path_allow, file)
-    }
-
     /// Drop every entry the current run would not have produced. Filtered
     /// entries vanish for delta purposes: they appear in no bucket
     /// (`removed` included) and cannot pair in the name-fallback pass.
@@ -1049,7 +904,8 @@ impl BaselineFilter {
         &self,
         entries: &mut Vec<cargo_crap::merge::CrapEntry>,
     ) {
-        entries.retain(|e| self.keeps(&e.file, &e.function));
+        entries.retain(|entry| !self.is_excluded(&entry.file));
+        filter::allow(entries, &self.allow);
     }
 }
 
@@ -1301,15 +1157,6 @@ fn resolve_missing(
         .unwrap_or(MissingCoveragePolicy::Pessimistic)
 }
 
-/// Whether the user asked for a slice of the entries with `top` or `min`,
-/// which turns off the human table's cap. Keeps the `||` out of `run`.
-fn is_sliced(
-    min: Option<f64>,
-    top: Option<usize>,
-) -> bool {
-    min.is_some() || top.is_some()
-}
-
 /// Bail when `flag` is set but `--baseline` is absent. Keeps the per-flag
 /// `&& baseline.is_none()` checks out of [`validate_args`].
 fn require_baseline(
@@ -1437,7 +1284,7 @@ struct RenderOpts<'a> {
 /// proceeds.
 fn load_filtered_baseline(
     baseline: Option<&PathBuf>,
-    allow_patterns: &[String],
+    allow: AllowSet,
     roots: &[ScanRoot],
     member_scope: Option<&MemberScope>,
     try_weight: f64,
@@ -1453,7 +1300,7 @@ fn load_filtered_baseline(
     // A run with signals off must not show a baseline's signals either.
     keep_signals(&mut baseline.entries, signals_enabled);
     resolve_relative_paths(&mut baseline, workspace_root(roots));
-    let filter = BaselineFilter::new(roots, allow_patterns)?;
+    let filter = BaselineFilter::new(roots, allow)?;
     filter.retain(&mut baseline.entries);
     apply_member_scope(&mut baseline.entries, member_scope);
     // At most one record: `for_each` filters it when the baseline has one.
@@ -2219,15 +2066,16 @@ fn run() -> Result<ExitCode> {
     keep_signals(&mut entries, signals.enabled);
     assign_crate_names(&mut entries, &members);
     let (min, top) = (cli.min.or(config.min), cli.top.or(config.top));
-    apply_filters(&mut entries, &effective_allow)?;
+    let allow = AllowSet::compile(&effective_allow)?;
+    filter::allow(&mut entries, &allow);
     // `entries` stays whole for the baseline comparison. `sliced_rows` holds
     // the rows `min` and `top` select, ordered after `top` has picked by CRAP.
-    let sliced_rows = shown_rows(&mut entries, min, top, settings.sort_order);
+    let sliced_rows = filter::slice(&mut entries, min, top, settings.sort_order);
 
     // --- Baseline (loaded here, filtered per specs 18 + 25) ---
     let baseline_data = load_filtered_baseline(
         cli.baseline.as_ref(),
-        &effective_allow,
+        allow,
         &roots,
         member_scope.as_ref(),
         try_weight,
@@ -2254,7 +2102,7 @@ fn run() -> Result<ExitCode> {
             show_unchanged: settings.show_unchanged,
             uncovered_hints: settings.uncovered_hints,
             try_weight,
-            sliced: is_sliced(min, top),
+            sliced: sliced_rows.is_some(),
             width: output_width(cli.output.is_none()),
             cwd: &knobs.cwd,
             workspace_root: workspace_root.as_deref(),
@@ -2915,84 +2763,6 @@ mod tests {
     }
 
     #[test]
-    fn without_a_slice_the_run_keeps_one_list_in_the_requested_order() {
-        // Merge order: highest CRAP first.
-        let merged = || -> Vec<cargo_crap::merge::CrapEntry> {
-            [("b", 9.0), ("a", 7.0)]
-                .iter()
-                .map(|&(name, crap)| cargo_crap::merge::CrapEntry {
-                    file: PathBuf::from(format!("src/{name}.rs")),
-                    function: name.into(),
-                    line: 1,
-                    cyclomatic: 1.0,
-                    coverage: Some(0.0),
-                    crap,
-                    crate_name: None,
-                    signals: None,
-                    signal_spans: cargo_crap::signals::Spans::default(),
-                    uncovered: Vec::new(),
-                })
-                .collect()
-        };
-        let mut entries = merged();
-        assert!(shown_rows(&mut entries, None, None, SortOrder::File).is_none());
-        let order: Vec<&str> = entries.iter().map(|e| e.function.as_str()).collect();
-        assert_eq!(order, ["a", "b"]);
-
-        let mut entries = merged();
-        let shown = shown_rows(&mut entries, None, Some(1), SortOrder::File).expect("a slice");
-        let shown: Vec<&str> = shown.iter().map(|e| e.function.as_str()).collect();
-        assert_eq!(shown, ["b"]);
-        let order: Vec<&str> = entries.iter().map(|e| e.function.as_str()).collect();
-        assert_eq!(
-            order,
-            ["b", "a"],
-            "a sliced run leaves the compared list alone"
-        );
-    }
-
-    #[test]
-    fn the_slice_keeps_scores_at_the_cutoff_then_the_top_n() {
-        let entries: Vec<cargo_crap::merge::CrapEntry> = [9.0, 7.0, 5.0, 3.0]
-            .iter()
-            .enumerate()
-            .map(|(i, &crap)| cargo_crap::merge::CrapEntry {
-                file: PathBuf::from("src/lib.rs"),
-                function: format!("f{i}"),
-                line: i + 1,
-                cyclomatic: 1.0,
-                coverage: Some(0.0),
-                crap,
-                crate_name: None,
-                signals: None,
-                signal_spans: cargo_crap::signals::Spans::default(),
-                uncovered: Vec::new(),
-            })
-            .collect();
-        let names = |v: Vec<cargo_crap::merge::CrapEntry>| -> Vec<String> {
-            v.into_iter().map(|e| e.function).collect()
-        };
-        assert_eq!(
-            names(slice_of(&entries, None, None)),
-            ["f0", "f1", "f2", "f3"]
-        );
-        assert_eq!(
-            names(slice_of(&entries, Some(5.0), None)),
-            ["f0", "f1", "f2"]
-        );
-        assert_eq!(names(slice_of(&entries, None, Some(2))), ["f0", "f1"]);
-        assert_eq!(names(slice_of(&entries, Some(8.0), Some(2))), ["f0"]);
-    }
-
-    #[test]
-    fn a_top_or_min_value_is_a_requested_slice() {
-        assert!(!is_sliced(None, None));
-        assert!(is_sliced(Some(5.0), None));
-        assert!(is_sliced(None, Some(50)));
-        assert!(is_sliced(Some(5.0), Some(50)));
-    }
-
-    #[test]
     fn resolve_missing_cli_wins_then_config_then_pessimistic() {
         assert_eq!(
             resolve_missing(
@@ -3021,54 +2791,6 @@ mod tests {
         assert!(!resolve_bool(false, Some(false)));
         // Neither set → default false.
         assert!(!resolve_bool(false, None));
-    }
-
-    #[test]
-    fn name_glob_classifier_keeps_function_patterns() {
-        assert!(!is_path_allow_pattern("trivial"));
-        assert!(!is_path_allow_pattern("Foo::*"));
-        assert!(!is_path_allow_pattern("generated_*"));
-        assert!(!is_path_allow_pattern("*"));
-    }
-
-    #[test]
-    fn path_glob_classifier_recognizes_path_patterns() {
-        assert!(is_path_allow_pattern("src/generated/**"));
-        assert!(is_path_allow_pattern("tests/**"));
-        assert!(is_path_allow_pattern("**/build.rs"));
-        assert!(is_path_allow_pattern("a/b"));
-    }
-
-    #[test]
-    fn path_set_matches_relative_pattern_against_absolute_file() {
-        let set = build_path_set(&["src/generated/**"], "allow").unwrap();
-        let abs = Path::new("/home/u/project/src/generated/foo.rs");
-        assert!(path_set_matches_suffix(&set, abs));
-    }
-
-    #[test]
-    fn path_set_does_not_match_unrelated_file() {
-        let set = build_path_set(&["src/generated/**"], "allow").unwrap();
-        let other = Path::new("/home/u/project/src/main.rs");
-        assert!(!path_set_matches_suffix(&set, other));
-    }
-
-    #[test]
-    fn empty_path_set_is_no_op() {
-        let set = build_path_set(&[], "allow").unwrap();
-        assert!(!path_set_matches_suffix(&set, Path::new("any/path.rs")));
-    }
-
-    #[test]
-    fn path_set_respects_literal_separator() {
-        // `src/*` matches direct children of `src/`, but `*` must not cross a
-        // separator — so `src/generated/foo.rs` (a grandchild) does not match.
-        // Crossing directories requires `**`.
-        let set = build_path_set(&["src/*"], "allow").unwrap();
-        assert!(!path_set_matches_suffix(
-            &set,
-            Path::new("/abs/proj/src/generated/foo.rs"),
-        ));
     }
 
     // --- effective_excludes (spec 14 precedence) ---------------------------
@@ -3242,7 +2964,7 @@ mod tests {
                 )
             })
             .collect();
-        BaselineFilter::new(&roots, allow)
+        BaselineFilter::new(&roots, AllowSet::compile(allow)?)
     }
 
     #[test]
@@ -3588,7 +3310,7 @@ mod tests {
     #[test]
     fn baseline_filter_applies_path_allow_patterns() {
         // Path-shaped allow patterns use the same suffix matching as
-        // apply_filters, so they work against absolute baseline paths too.
+        // filter::allow, so they work against absolute baseline paths too.
         let filter = filter_for(
             &Excludes::default(),
             &strs(&["src/generated/**"]),
