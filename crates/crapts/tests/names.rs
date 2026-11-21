@@ -90,7 +90,6 @@ fn an_unknown_extension_identifies_the_path_without_guessing_a_grammar() {
 
 #[test]
 fn compose_scheme_one_names_from_ancestors_and_sites() {
-    // Namespace components and callable ancestors must survive binding absorption.
     for (source, expected) in [
         (
             "namespace A.B { export function f(cb = () => 0) { class C { go(){return () => 1} } } }",
@@ -237,6 +236,26 @@ fn property_keys_and_jsx_values_inherit_the_site_that_owns_them() {
     ] {
         assert_eq!(clean_names("sites.tsx", source), expected, "{source}");
     }
+}
+
+#[test]
+fn defaults_in_destructuring_assignments_use_the_written_target() {
+    for (source, expected) in [
+        ("[a = () => 1] = arr", "a"),
+        ("({ c: d = () => 3 } = o)", "c::d"),
+        ("({ b = () => 2 } = o)", "<anonymous>"),
+        ("[{ k: obj.m = function impl(){} }] = src", "k::obj.m"),
+        ("({group: [child = () => 1]} = obj)", "group::child"),
+        ("({group: {b = () => 1}} = obj)", "group::<anonymous>"),
+        ("({c: d = [() => 1]} = obj)", "c::d::<anonymous>"),
+        ("const { c: d = () => 3 } = o", "d"),
+    ] {
+        assert_eq!(clean_names("target.ts", source), [expected], "{source}");
+    }
+    let names = clean_names("target.ts", "({[pick(()=>0)]: d = () => 1} = o)");
+    assert_eq!(names.len(), 2);
+    assert_eq!(names[0], "pick()");
+    assert!(names[1].ends_with("::d"), "{names:?}");
 }
 
 #[test]

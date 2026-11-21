@@ -2,8 +2,8 @@ use std::fmt::Write as _;
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    Argument, BindingPattern, Expression, JSXAttributeItem, JSXAttributeValue, JSXChild,
-    JSXElement, MethodDefinitionKind, PropertyKey, PropertyKind, SimpleAssignmentTarget,
+    Argument, AssignmentTarget, BindingPattern, Expression, JSXAttributeItem, JSXAttributeValue,
+    JSXChild, JSXElement, MethodDefinitionKind, PropertyKey, PropertyKind, SimpleAssignmentTarget,
     StaticMemberExpression,
 };
 use oxc_span::{GetSpan, Span};
@@ -414,9 +414,12 @@ fn binding(
         AstKind::AssignmentExpression(n)
             if n.operator == AssignmentOperator::Assign || n.operator.is_logical() =>
         {
-            let target = n.left.as_simple_assignment_target()?;
-            let label = written_target(target, source);
-            Some(Site::expression(SiteKind::Binding, label, &n.right))
+            assignment(&n.left, &n.right, source)
+        },
+        AstKind::AssignmentTargetWithDefault(n) => assignment(&n.binding, &n.init, source),
+        AstKind::AssignmentTargetPropertyProperty(n) => {
+            let scope = n.binding.span();
+            Some(Site::binding(member_key(&n.name, source), scope, scope))
         },
         AstKind::ExportDefaultDeclaration(n) => {
             let direct = n
@@ -438,6 +441,15 @@ fn binding(
         },
         _ => member_binding(node, source),
     }
+}
+
+fn assignment(
+    target: &AssignmentTarget<'_>,
+    value: &Expression<'_>,
+    source: &str,
+) -> Option<Site> {
+    let label = written_target(target.as_simple_assignment_target()?, source);
+    Some(Site::expression(SiteKind::Binding, label, value))
 }
 
 fn written_target(

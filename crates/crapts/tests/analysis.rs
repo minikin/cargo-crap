@@ -528,19 +528,53 @@ fn method_spans_include_the_key_and_modifiers_but_method_regions_begin_at_the_bl
 
 #[test]
 fn explicitly_type_only_module_declarations_have_no_executable_line() {
+    use FileStatus::{Clean, Recovered};
     for (typed, value) in [
-        ("import type {T} from 'm';", "import {T} from 'm';"),
-        ("import type X = M.T;", "import X = M.T;"),
-        ("export type {T};", "export {T};"),
-        ("export type {T} from 'm';", "export {T} from 'm';"),
-        ("export type * from 'm';", "export * from 'm';"),
+        (
+            ("import type {T} from 'm';", Recovered),
+            ("import {T} from 'm';", Recovered),
+        ),
+        (
+            ("import type X = M.T;", Recovered),
+            ("import X = M.T;", Clean),
+        ),
+        (("export type {T};", Clean), ("export {T};", Clean)),
+        (
+            ("export type {T} from 'm';", Recovered),
+            ("export {T} from 'm';", Recovered),
+        ),
+        (
+            ("export type * from 'm';", Recovered),
+            ("export * from 'm';", Recovered),
+        ),
     ] {
-        for (item, expected) in [(typed, &[2][..]), (value, &[2, 3][..])] {
+        for ((item, status), expected) in [(typed, &[2][..]), (value, &[2, 3][..])] {
             let source = format!("function f(){{\nnamespace N {{\n{item}\n}}\n}}");
             let file = analyze(Path::new("import.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+            assert_eq!(file.status, status, "{item}");
+            assert_eq!(
+                file.warnings.len(),
+                usize::from(status == Recovered),
+                "{item}"
+            );
             assert_eq!(file.rows[0].statement_lines, expected, "{item}");
         }
     }
+}
+
+#[test]
+fn statement_lines_remain_sorted_across_parameters_and_a_concise_body() {
+    let source = b"const f = (x = class {\n  static {\n    prep();\n  }\n}) =>\n  x;";
+    let file = analyze(Path::new("order.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    let mut union = std::collections::BTreeSet::new();
+    for row in file.rows {
+        assert!(
+            row.statement_lines.windows(2).all(|w| w[0] < w[1]),
+            "{row:?}"
+        );
+        union.extend(row.statement_lines);
+    }
+    assert_eq!(union, [3, 6].into());
 }
 
 proptest::proptest! {
