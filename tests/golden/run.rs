@@ -92,12 +92,41 @@ pub fn prepare(case: &Case) -> CaseDir {
     prepare_in(case, &std::env::temp_dir())
 }
 
+/// The order a copy's files are created in: the fixture's own listing, or
+/// that listing reversed. tmpfs and overlayfs list a directory in creation
+/// order and APFS does not, so two copies built in opposite orders show
+/// whether a case's bytes depend on the listing only where it follows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    Forward,
+    Reverse,
+}
+
+/// A fresh copy built in `order`, with the fixture files in the order
+/// they were created.
+pub fn prepare_ordered(
+    case: &Case,
+    parent: &Path,
+    order: Order,
+) -> (CaseDir, Vec<PathBuf>) {
+    build(case, parent, order)
+}
+
 fn prepare_in(
     case: &Case,
     parent: &Path,
 ) -> CaseDir {
+    build(case, parent, Order::Forward).0
+}
+
+fn build(
+    case: &Case,
+    parent: &Path,
+    order: Order,
+) -> (CaseDir, Vec<PathBuf>) {
     let dir = tempfile::tempdir_in(parent).expect("temp dir");
-    copy_tree(&case.fixture.dir(), dir.path());
+    let mut created = Vec::new();
+    copy_tree(&case.fixture.dir(), dir.path(), order, &mut created);
     let config = case.config.map_or_else(Vec::new, |name| {
         read(&fixtures().join("golden/configs").join(name))
     });
@@ -106,7 +135,15 @@ fn prepare_in(
         let name = input.file_name().expect("an input file name");
         write(&dir.path().join(name), &read(&input));
     }
-    CaseDir { dir }
+    let created = created
+        .into_iter()
+        .map(|path| {
+            path.strip_prefix(dir.path())
+                .expect("inside the copy")
+                .to_path_buf()
+        })
+        .collect();
+    (CaseDir { dir }, created)
 }
 
 /// An argument that names a file under `golden/lcov/` or `golden/baselines/`.
@@ -124,10 +161,18 @@ fn input(arg: &str) -> Option<PathBuf> {
 fn copy_tree(
     from: &Path,
     to: &Path,
+    order: Order,
+    created: &mut Vec<PathBuf>,
 ) {
     let crate_root = from.join("Cargo.toml").is_file();
-    for entry in std::fs::read_dir(from).unwrap_or_else(|e| panic!("{}: {e}", from.display())) {
-        let entry = entry.expect("a directory entry");
+    let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(from)
+        .unwrap_or_else(|e| panic!("{}: {e}", from.display()))
+        .map(|entry| entry.expect("a directory entry"))
+        .collect();
+    if order == Order::Reverse {
+        entries.reverse();
+    }
+    for entry in entries {
         let name = entry.file_name();
         if crate_root && (name == "target" || name == "Cargo.lock") {
             continue;
@@ -135,9 +180,10 @@ fn copy_tree(
         let (source, dest) = (entry.path(), to.join(&name));
         if entry.file_type().expect("a file type").is_dir() {
             std::fs::create_dir_all(&dest).expect("create dir");
-            copy_tree(&source, &dest);
+            copy_tree(&source, &dest, order, created);
         } else {
             write(&dest, &read(&source));
+            created.push(dest);
         }
     }
 }
@@ -227,13 +273,22 @@ pub const WARM_CACHE: &str = "w_warm_cache";
 /// The copy comes back too: the output checks need its path.
 pub fn run(case: &Case) -> Result<(Run, CaseDir), Vec<String>> {
     let copy = prepare(case);
-    let host = |key: &str| std::env::var_os(key);
-    let run = if case.id == WARM_CACHE {
-        cold_then_warm(case.id, &copy, &mut || run_with(case, &copy, &host))?
-    } else {
-        run_with(case, &copy, &host)
-    };
+    let run = run_on(case, &copy)?;
     Ok((run, copy))
+}
+
+/// Runs the case on a copy already prepared for it, with this process's
+/// environment as host.
+pub fn run_on(
+    case: &Case,
+    copy: &CaseDir,
+) -> Result<Run, Vec<String>> {
+    let host = |key: &str| std::env::var_os(key);
+    if case.id == WARM_CACHE {
+        cold_then_warm(case.id, copy, &mut || run_with(case, copy, &host))
+    } else {
+        Ok(run_with(case, copy, &host))
+    }
 }
 
 fn cache_file(copy: &CaseDir) -> PathBuf {
@@ -656,7 +711,7 @@ mod tests {
             write(&s.join(file), bytes.as_bytes());
         }
         let dest = tempfile::tempdir().expect("dest");
-        copy_tree(s, dest.path());
+        copy_tree(s, dest.path(), Order::Forward, &mut Vec::new());
         let d = dest.path();
         assert_eq!(read(&d.join("crates/a/src/lib.rs")), b"pub fn a() {}\n");
         assert!(d.join("Cargo.toml").is_file());

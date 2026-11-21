@@ -106,3 +106,125 @@ fn equal_scores_in_one_file_keep_source_order_under_the_default_sort() {
         "{stdout}"
     );
 }
+
+#[test]
+fn a_cases_bytes_do_not_depend_on_file_creation_order() {
+    // Given a fixture with more than one source file
+    let cases: Vec<run::Case> = cases::all()
+        .into_iter()
+        .filter(|case| matches!(case.fixture, run::Fixture::W | run::Fixture::D))
+        .collect();
+    let count = |fixture| cases.iter().filter(|case| case.fixture == fixture).count();
+    assert_eq!((count(run::Fixture::W), count(run::Fixture::D)), (23, 17));
+    // ext4 with dir_index, the CI runner's /tmp, lists a directory in hash
+    // order whatever order its files were created in. tmpfs lists them in
+    // creation order, so the copies go to /dev/shm where there is one.
+    let shm = std::path::Path::new("/dev/shm");
+    let parent = if shm.is_dir() {
+        shm.to_path_buf()
+    } else {
+        std::env::temp_dir()
+    };
+    let mut reordered = false;
+    for case in &cases {
+        // When a case runs on one copy created in directory-listing order
+        let (forward, forward_files) = run::prepare_ordered(case, &parent, run::Order::Forward);
+        // And on a second copy whose files were created in reverse order
+        let (reverse, reverse_files) = run::prepare_ordered(case, &parent, run::Order::Reverse);
+        let mut reversed = forward_files.clone();
+        reversed.reverse();
+        assert_eq!(
+            reverse_files, reversed,
+            "{}: the copies were not built in opposite orders",
+            case.id
+        );
+        reordered |= listings(forward.root()) != listings(reverse.root());
+        // Then both runs give the same bytes
+        let document = |copy: &run::CaseDir| {
+            let run =
+                run::run_on(case, copy).and_then(|run| checks::finish(case, run, copy.root()));
+            encode::encode(
+                case.id,
+                &run.unwrap_or_else(|e| panic!("{}: {e:?}", case.id)),
+            )
+        };
+        assert_eq!(
+            document(&forward),
+            document(&reverse),
+            "{} depends on creation order",
+            case.id
+        );
+    }
+    if !reordered {
+        let filesystem = filesystem_of(&parent);
+        // CI runs on Linux, where this check is the only place the
+        // scenario can fail: a filesystem there that ignores creation
+        // order must not pass silently.
+        assert!(
+            std::env::consts::OS != "linux",
+            "{filesystem} lists both copies identically: the creation-order check proved nothing"
+        );
+        eprintln!(
+            "SKIPPED: {filesystem} lists every directory of both copies identically, so \
+             a_cases_bytes_do_not_depend_on_file_creation_order proved nothing here"
+        );
+    }
+}
+
+/// Every directory under `root`, with its entries in the order `read_dir` lists them.
+fn listings(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<std::ffi::OsString>)> {
+    let mut all = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("a copy's directory") {
+            let entry = entry.expect("an entry");
+            if entry.file_type().expect("a file type").is_dir() {
+                pending.push(entry.path());
+            }
+            names.push(entry.file_name());
+        }
+        let relative = dir
+            .strip_prefix(root)
+            .expect("inside the copy")
+            .to_path_buf();
+        all.push((relative, names));
+    }
+    all.sort();
+    all
+}
+
+/// The filesystem type holding `path`, as `stat` (Linux) or `mount`
+/// (macOS) names it.
+fn filesystem_of(path: &std::path::Path) -> String {
+    let output = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+    };
+    let shown = path.display().to_string();
+    if let Some(kind) = output("stat", &["-f", "-c", "%T", &shown]) {
+        return format!("the {kind} filesystem holding {shown}");
+    }
+    let mount_point = output("df", &["-P", &shown]).and_then(|df| {
+        df.lines()
+            .last()
+            .and_then(|l| l.split_whitespace().last())
+            .map(str::to_owned)
+    });
+    let kind = mount_point.as_ref().and_then(|point| {
+        output("mount", &[])?
+            .lines()
+            .find(|line| line.contains(&format!(" on {point} (")))
+            .and_then(|line| line.split(" (").nth(1))
+            .and_then(|rest| rest.split([',', ')']).next())
+            .map(str::to_owned)
+    });
+    format!(
+        "the {} filesystem holding {shown}",
+        kind.unwrap_or_else(|| "unknown".into())
+    )
+}
