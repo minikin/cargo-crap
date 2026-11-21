@@ -286,7 +286,7 @@ points. Keep the spec 44 snapshots in verification mode throughout.
   Tests: unit (policy values and inclusion of a format), CLI acceptance
   (both SARIF cases), and the existing spec 44 suite in both feature builds.
 
-- [ ] **T3 — Select and order rows with one compiled allow set.**
+- [x] **T3 — Select and order rows with one compiled allow set.**
   Needs: T2. Introduce `filter::AllowSet`, `filter::allow` and
   `filter::slice`. Register `src/filter.rs` in the shared guard list.
   Replace the CLI helpers with those library operations. Keep allow
