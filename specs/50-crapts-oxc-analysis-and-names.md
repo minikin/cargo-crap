@@ -144,6 +144,16 @@ And an empty .js file succeeds with zero rows and zero warnings
 
 Use JavaScript with JSX for `.js`, `.mjs`, `.cjs` and `.jsx`, TypeScript without JSX for `.ts`, `.mts` and `.cts`, and TSX for `.tsx`. Preserve the extension's module kind.
 
+### Scenario: Identify arrow functions for coverage attribution
+
+```gherkin
+Given "const concise = () => 1; const block = () => {}; const expr = function expr() {};" in arrows.ts
+And "function decl() {}" in the same file
+When the analyzer emits rows for these four functions
+Then is_arrow is true for concise and block
+And is_arrow is false for expr and decl
+```
+
 ### Scenario: Reject syntax that belongs to a different source grammar
 
 ```gherkin
@@ -736,8 +746,8 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Tests: Acceptance through the file analysis result. Check status, retained rows, first diagnostic and continued ordinary scanning, then strict errors on each comparison side.
 
 - [ ] **T7 - Map source bytes to JavaScript line and column positions.** Needs: T6.
-  Scenarios: _A UTF-8 BOM counts toward source columns_, _Count JavaScript line terminators_.
-  Tests: Unit tests for the line index and acceptance for the BOM, CRLF as one break, lone CR, LF and both Unicode separators.
+  Scenarios: _A UTF-8 BOM counts toward source columns_, _Count JavaScript line terminators_, _Identify arrow functions for coverage attribution_.
+  Tests: Unit tests for the line index and acceptance for the BOM, CRLF as one break, lone CR, LF and both Unicode separators. Check arrow identity for concise and block arrows, an ordinary function expression and a declaration.
 
 - [ ] **T8 - Compose enclosing segments and choose the row's own segment.** Needs: T7.
   Scenarios: _Compose scheme-1 names from ancestors and sites (N1-N3)_, _Choose and absorb the first applicable segment (N4)_.
@@ -816,7 +826,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
 ## Implementation Notes
 
 - Spec 45 supplies the workspace shell. Add `crates/crapts` with `publish = false` and a library target for this stage. Spec 53 adds the executable and Spec 57 owns publication. Extend the workspace-membership and parser-guard fixtures added by Spec 45 to include the new member. Spec 49 owns the core move. The set of public `cargo_crap` exports is identical before and after Spec 50.
-- `discover(roots, options)` returns `Discovery` with sorted `files`, the `scope` predicate and `unused_excludes`. `analyze(path, bytes, mode) -> Result<FileAnalysis, InputError>` accepts `Ordinary` or `Strict(Base | Head)`. `FileAnalysis` carries `status` (`Clean`, `Recovered` or `SkippedFatal`), `rows` and `warnings`. Warnings are returned data for the caller to display. Ordinary input decoding failures and strict parse or decoding failures return `InputError`. Each `Row` carries `file`, `name`, `span`, `body_regions`, `statement_lines` and `cyclomatic`. Regions use the half-open positions specified above.
+- `discover(roots, options)` returns `Discovery` with sorted `files`, the `scope` predicate and `unused_excludes`. `analyze(path, bytes, mode) -> Result<FileAnalysis, InputError>` accepts `Ordinary` or `Strict(Base | Head)`. `FileAnalysis` carries `status` (`Clean`, `Recovered` or `SkippedFatal`), `rows` and `warnings`. Warnings are returned data for the caller to display. Ordinary input decoding failures and strict parse or decoding failures return `InputError`. Each `Row` carries `file`, `name`, `span`, `body_regions`, `statement_lines`, `cyclomatic` and `pub is_arrow: bool`. Spec 52 uses `is_arrow` for coverage attribution. It is true for block and concise arrow functions and false for every other scored unit, including ordinary function expressions. Regions use the half-open positions specified above.
 - Pin `oxc_allocator`, `oxc_ast`, `oxc_ast_visit`, `oxc_parser`, `oxc_span`, `oxc_str` and `oxc_syntax` to `=0.159.0` in the workspace manifest and group their updates in `.github/dependabot.yml`. Use the parser's lexer tokens for the text of computed names. Attribute decisions to the row that executes each expression.
 - Resolve the new dependency closure from the landed lockfile. Compare package IDs against that base. Dependency lists in existing records can gain version qualifiers when a second version enters the lockfile.
 - Keep the naming fixtures and generated-source checks under `crates/crapts/tests/`. Add the Rust 1.98 job and extend Spec 45's `cargo tree -p <package> --all-features --target all -e normal,build,no-proc-macro --prefix none --locked` guard to crapts. Run the workspace gates with `INSTA_UPDATE=no`.
