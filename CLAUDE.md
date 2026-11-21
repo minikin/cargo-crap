@@ -57,14 +57,14 @@ Seven orthogonal modules feed into a pipeline:
 syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
          │                                        │
          ▼                                        ▼
-  src/complexity.rs                      src/coverage.rs
+  src/complexity.rs                      src/coverage/lcov.rs
   FunctionComplexity {                   HashMap<PathBuf, FileCoverage>
     file, name, start_line,              FileCoverage { lines: BTreeMap<u32, u64> }
     end_line, cyclomatic }
          │                                      │
          └──────────────┬───────────────────────┘
                         ▼
-                  src/merge.rs           ← path normalization lives here
+                  src/merge.rs           ← produces rows defined in src/entry.rs
                   Vec<CrapEntry>
                         │
                         ├──────────────▶ src/delta.rs  (optional --baseline)
@@ -87,13 +87,14 @@ syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
                   └── test_support.rs     shared fixtures (cfg(test))
 
 syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicates
+                     ├── model.rs          Location, FunctionPrint, Fingerprint
+                     ├── verdict.rs        decoded answers and confidence floor
                      ├── extract.rs        one FunctionPrint per non-test fn
                      ├── normalize.rs      AST ──▶ NormNode (names/literals erased)
                      ├── fingerprint.rs    NormNode ──▶ BTreeSet<Fingerprint>
                      ├── compare.rs        pairwise Jaccard ──▶ Vec<DuplicatePair>
-                     ├── scan.rs           walk a tree, drive the four above
+                     ├── scan.rs           walk a tree and compare extracted functions
                      └── triage/           opt-in advisory verdicts (spec 30)
-                         ├── verdict.rs    decode answers; the confidence floor
                          ├── request.rs    one pair's state + the three questions
                          ├── cache.rs      content-keyed verdicts under target/
                          └── client.rs     ureq client, retries (`triage` feature)
@@ -103,7 +104,11 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`src/complexity.rs`** walks the Rust AST with `syn` and extracts `FunctionComplexity` tuples. It handles `ItemFn` (free functions) and `ImplItemFn` (methods) via the `Visit` trait. Closures and items nested inside function bodies (local `fn`, `impl`, `mod` and the rest) are not recursed into, since their decision points belong to their own scope. `analyze_tree` uses the `ignore` crate to respect `.gitignore`. The `proc-macro2` dependency must have the `span-locations` feature enabled to call `Span::start()`/`Span::end()` at runtime.
 
-**`src/coverage.rs`** parses LCOV files using the `lcov` crate. It consumes only `SF` (source file), `DA` (line data), and `end_of_record` records. Path normalization is deliberately absent here. That responsibility belongs to `merge`.
+**`src/signals/`** keeps signal values and settings in `model.rs`, their configuration in `config.rs`, and the Rust syntax walker in `compute.rs`.
+
+**`src/entry.rs`** defines report rows, sorting and scope diagnostics. **`src/paths.rs`** contains shared path normalization and suffix helpers.
+
+**`src/coverage/lcov.rs`** parses LCOV files using the `lcov` crate. It consumes only `SF` (source file), `DA` (line data), and `end_of_record` records. Path normalization is deliberately absent here. That responsibility belongs to `merge`.
 
 **`src/merge.rs`** is the critical join layer. It uses `PathIndex` with two-level lookup:
 - **Fast path**: canonicalized absolute paths → direct hash lookup.

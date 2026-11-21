@@ -7,7 +7,7 @@
 use super::{Format, RenderOptions, Schemas, Tool};
 use crate::coverage::LineRange;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
-use crate::duplicates::triage::verdict::Assessment;
+use crate::duplicates::verdict::Assessment;
 use crate::entry::CrapEntry;
 use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
 use std::path::PathBuf;

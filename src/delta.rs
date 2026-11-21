@@ -14,7 +14,7 @@
 //! ```
 
 use crate::coverage::LineRange;
-use crate::duplicates::extract::Location;
+use crate::duplicates::model::Location;
 use crate::entry::{CrapEntry, SortOrder};
 use crate::paths::{path_key, unique_best_by_suffix};
 use crate::report::Tool;

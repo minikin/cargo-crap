@@ -2,7 +2,7 @@
 //! one finding instead of every pair between them.
 
 use crate::duplicates::compare::{DuplicatePair, strongest_first};
-use crate::duplicates::extract::Location;
+use crate::duplicates::model::Location;
 
 /// Functions each at or above the threshold with every other member.
 #[derive(Debug, Clone, PartialEq)]

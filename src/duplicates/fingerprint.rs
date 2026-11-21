@@ -16,9 +16,7 @@ use std::hash::{Hash, Hasher};
 
 use super::normalize::NormNode;
 
-/// A structural fingerprint: the hash of one normalized subtree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Fingerprint(pub u64);
+pub use super::model::Fingerprint;
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;

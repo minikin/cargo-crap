@@ -611,7 +611,7 @@ modified. The scenario names below identify their owning tasks.
   malformed fixture. Property test that both modes succeed with equal maps
   for generated well-formed records over the specified line and count ranges.
 
-- [ ] **T4 — Use duplicate data and verdicts through their new and published library paths.**
+- [x] **T4 — Use duplicate data and verdicts through their new and published library paths.**
   Needs: T2, T3. Declare `duplicates::model` for `Location`,
   `FunctionPrint` and `Fingerprint`, and `duplicates::verdict` for the
   verdict types and `Answers`. Re-export each moved type at its former

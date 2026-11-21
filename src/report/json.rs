@@ -6,10 +6,10 @@
 
 use crate::delta::{DeltaEntry, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
-use crate::duplicates::extract::Location;
 use crate::duplicates::group::DuplicateGroup;
+use crate::duplicates::model::Location;
 use crate::duplicates::novelty::Novelty;
-use crate::duplicates::triage::verdict::Assessment;
+use crate::duplicates::verdict::Assessment;
 use crate::entry::{CrapEntry, ScopeDiagnostics};
 use crate::report::RenderOptions;
 use anyhow::Result;
@@ -610,7 +610,7 @@ mod tests {
     }
 
     fn one_pair() -> Vec<DuplicatePair> {
-        use crate::duplicates::extract::Location;
+        use crate::duplicates::model::Location;
         let at = |line: usize, name: &str| Location {
             file: PathBuf::from("src/a.rs"),
             start_line: line,
@@ -626,7 +626,7 @@ mod tests {
 
     fn duplicates_json(
         pairs: &[DuplicatePair],
-        triage: Option<&[crate::duplicates::triage::verdict::Assessment]>,
+        triage: Option<&[crate::duplicates::verdict::Assessment]>,
     ) -> serde_json::Value {
         let triage = triage.map(super::super::test_support::every);
         let mut buf = Vec::new();
@@ -646,7 +646,7 @@ mod tests {
 
     #[test]
     fn an_asserted_verdict_is_carried_beside_its_pair() {
-        use crate::duplicates::triage::verdict::{Assessment, Kind, Verdict, WorthExtracting};
+        use crate::duplicates::verdict::{Assessment, Kind, Verdict, WorthExtracting};
         let triage = [Assessment::Kind(Verdict {
             kind: Kind::SameLogic,
             confidence: 0.9,
@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn an_uncertain_verdict_asserts_nothing_but_its_confidence() {
-        use crate::duplicates::triage::verdict::Assessment;
+        use crate::duplicates::verdict::Assessment;
         let triage = [Assessment::Uncertain { confidence: 0.31 }];
         let pair = &duplicates_json(&one_pair(), Some(&triage))[0];
         assert_eq!(
@@ -698,7 +698,7 @@ mod tests {
     fn the_delta_envelope_carries_the_verdict_too() {
         use super::super::render_delta;
         use super::super::test_support::fractional_cc_delta;
-        use crate::duplicates::triage::verdict::Assessment;
+        use crate::duplicates::verdict::Assessment;
         let pairs = one_pair();
         let triage = [Some(Assessment::Uncertain { confidence: 0.4 })];
         let mut buf = Vec::new();

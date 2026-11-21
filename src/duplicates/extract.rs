@@ -4,47 +4,16 @@
 //! arbitrary span. Nested items are visited so that a `fn` declared inside
 //! another function's body is a candidate in its own right.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use syn::visit::{self, Visit};
 use syn::{Block, File, ImplItemFn, ItemFn, ItemMod, Signature, TraitItemFn};
 
-use super::fingerprint::{Fingerprint, fingerprints};
+use super::fingerprint::fingerprints;
 use super::normalize::normalize;
 use crate::complexity::{has_attr, is_cfg_test};
 
-/// Where one function is, and what it is called.
-///
-/// Carried apart from the fingerprints because it is all a reported pair
-/// needs: the sets answer "how alike", the location answers "which two", and
-/// only the second survives into the report.
-///
-/// The field order is the ordering. File and start line alone are not a total
-/// order — `fn a() {} fn b() {}` on one line share both, and a tie there would
-/// let the order functions happened to be discovered in leak into the report.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Location {
-    /// File the function was found in.
-    pub file: PathBuf,
-    /// 1-indexed first line, inclusive.
-    pub start_line: usize,
-    /// 1-indexed last line, inclusive.
-    pub end_line: usize,
-    /// Function or method name, as written.
-    pub name: String,
-}
-
-/// One function, located and fingerprinted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FunctionPrint {
-    /// Where it is and what it is called.
-    pub location: Location,
-    /// Number of nodes in the normalized tree.
-    pub node_count: usize,
-    /// Every distinct normalized subtree shape in the function.
-    pub prints: BTreeSet<Fingerprint>,
-}
+pub use super::model::{FunctionPrint, Location};
 
 /// Fingerprint every function and method in a parsed file.
 #[must_use]
@@ -162,6 +131,69 @@ pub fn functions_in_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::duplicates::compare::{find_pairs, jaccard};
+
+    fn fns(src: &str) -> Vec<FunctionPrint> {
+        functions_in_source(src, Path::new("a.rs")).expect("test source must parse")
+    }
+
+    const ALPHA_BETA: &str = "
+        fn alpha(xs: &[i32]) -> Vec<i32> {
+            let mut ys = Vec::new();
+            for x in xs { if x % 2 == 1 { ys.push(x + 1); } }
+            ys
+        }
+        fn beta(items: &[i32]) -> Vec<i32> {
+            let mut kept = Vec::new();
+            for item in items { if item % 2 == 0 { kept.push(item + 1); } }
+            kept
+        }
+    ";
+
+    #[test]
+    fn the_alpha_beta_pair_scores_one() {
+        let f = fns(ALPHA_BETA);
+        assert_eq!(f.len(), 2);
+        assert!((jaccard(&f[0], &f[1]) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn identical_functions_are_reported_at_one() {
+        let f = fns("fn a(x: i32) -> i32 { x + 1 } fn b(x: i32) -> i32 { x + 1 }");
+        let pairs = find_pairs(&f, 0.82);
+        assert_eq!(pairs.len(), 1);
+        assert!((pairs[0].score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn partially_similar_functions_score_between_the_extremes() {
+        let f = fns("
+            fn a(v: V) { for x in v { if p(x) { g(x); } } }
+            fn b(v: V) { for x in v { if p(x) { g(x); } } h(v); k(v); m(v); }
+        ");
+        let score = jaccard(&f[0], &f[1]);
+        assert!(
+            score > 0.0 && score < 1.0,
+            "expected a partial score, got {score}"
+        );
+    }
+
+    #[test]
+    fn unrelated_functions_fall_below_the_default_threshold() {
+        let f = fns(r#"
+            fn a(name: &str) -> String { format!("{}-{}", name, name.len()) }
+            fn b(path: &Path) -> Result<usize, Error> {
+                let file = File::open(path)?;
+                let mut n = 0;
+                for line in BufReader::new(file).lines() { if line?.is_empty() { n += 1; } }
+                Ok(n)
+            }
+        "#);
+        assert!(
+            find_pairs(&f, 0.82).is_empty(),
+            "unrelated shapes must not pair"
+        );
+    }
 
     const MIXED: &str = "
         fn real_a(xs: &[i32]) -> i32 { let mut n = 0; for x in xs { n += x; } n }

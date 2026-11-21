@@ -22,7 +22,7 @@ use crate::delta::{DeltaCounts, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::group::DuplicateGroup;
 use crate::duplicates::novelty::Comparison;
-use crate::duplicates::triage::verdict::Assessment;
+use crate::duplicates::verdict::Assessment;
 use crate::entry::{CrapEntry, ScopeDiagnostics};
 use crate::score::Severity;
 use anyhow::{Result, bail};
@@ -985,7 +985,7 @@ mod tests {
 
     mod duplicate_groups {
         use super::*;
-        use crate::duplicates::extract::Location;
+        use crate::duplicates::model::Location;
 
         fn pair(n: usize) -> DuplicatePair {
             let at = |line: usize| Location {
@@ -1094,8 +1094,8 @@ mod tests {
 
     mod pair_triage {
         use super::*;
-        use crate::duplicates::extract::Location;
         use crate::duplicates::group::group_pairs;
+        use crate::duplicates::model::Location;
 
         fn f(n: usize) -> Location {
             Location {

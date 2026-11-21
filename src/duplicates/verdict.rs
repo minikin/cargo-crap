@@ -1,8 +1,23 @@
 //! What the model said about one pair, and how sure it has to be before the
 //! report repeats it.
 
-use crate::duplicates::triage::provider::Answers;
 use std::fmt;
+
+/// The three answers as a provider decoded them, before any range check.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Answers {
+    /// The chosen kind.
+    pub kind: Kind,
+    /// The kind Choice's confidence.
+    pub kind_confidence: f64,
+    /// The worth Score's position across its levels, the lowest being 0.
+    pub worth: f64,
+    /// The worth Score's confidence.
+    pub worth_confidence: f64,
+    /// The probability that a fix to one side would be missed in the other.
+    /// Neither API returns a confidence for it.
+    pub divergence: f64,
+}
 
 /// Question id of the Choice that names the kind of duplication.
 pub const KIND_QUESTION: &str = "duplication_kind";

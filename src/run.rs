@@ -2,7 +2,7 @@
 
 use crate::delta::{Baseline, DeltaCounts, attach_reasons, compute_delta, gating_signal_count};
 use crate::duplicates::{
-    compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, triage::verdict::Assessment,
+    compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, verdict::Assessment,
 };
 use crate::entry::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::filter::{self, AllowSet};
@@ -415,7 +415,7 @@ mod tests {
         fn score_and_duplicate_selections_preserve_the_order_of_their_survivors(
             choices in proptest::collection::vec((proptest::bool::ANY, proptest::bool::ANY), 0..30)
         ) {
-            use crate::duplicates::extract::Location;
+            use crate::duplicates::model::Location;
             use crate::entry::CrapEntry;
             use proptest::prop_assert_eq;
             struct Source;

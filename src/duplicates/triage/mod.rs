@@ -18,7 +18,7 @@ pub mod cache;
 pub mod client;
 pub mod provider;
 pub mod request;
-pub mod verdict;
+pub use super::verdict;
 
 #[cfg(feature = "triage")]
 pub use client::{Settings, TriageError};

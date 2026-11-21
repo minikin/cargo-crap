@@ -1,6 +1,6 @@
 //! Jaccard similarity over fingerprint sets, and the pairs it qualifies.
 
-use super::extract::{FunctionPrint, Location};
+use super::model::{FunctionPrint, Location};
 
 /// One candidate duplicate: two functions and how alike their shapes are.
 ///
@@ -115,75 +115,28 @@ fn ordered_pair(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::duplicates::extract::functions_in_source;
+    use crate::duplicates::model::Fingerprint;
     use proptest::prelude::*;
-    use std::path::Path;
 
-    fn fns(src: &str) -> Vec<FunctionPrint> {
-        functions_in_source(src, Path::new("a.rs")).expect("test source must parse")
-    }
-
-    const ALPHA_BETA: &str = "
-        fn alpha(xs: &[i32]) -> Vec<i32> {
-            let mut ys = Vec::new();
-            for x in xs { if x % 2 == 1 { ys.push(x + 1); } }
-            ys
+    fn function(
+        name: &str,
+        ids: &[u64],
+    ) -> FunctionPrint {
+        FunctionPrint {
+            location: Location {
+                file: "a.rs".into(),
+                start_line: 1,
+                end_line: 1,
+                name: name.into(),
+            },
+            node_count: ids.len(),
+            prints: ids.iter().copied().map(Fingerprint).collect(),
         }
-        fn beta(items: &[i32]) -> Vec<i32> {
-            let mut kept = Vec::new();
-            for item in items { if item % 2 == 0 { kept.push(item + 1); } }
-            kept
-        }
-    ";
-
-    #[test]
-    fn the_alpha_beta_pair_scores_one() {
-        let f = fns(ALPHA_BETA);
-        assert_eq!(f.len(), 2);
-        assert!((jaccard(&f[0], &f[1]) - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn identical_functions_are_reported_at_one() {
-        let f = fns("fn a(x: i32) -> i32 { x + 1 } fn b(x: i32) -> i32 { x + 1 }");
-        let pairs = find_pairs(&f, 0.82);
-        assert_eq!(pairs.len(), 1);
-        assert!((pairs[0].score - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn partially_similar_functions_score_between_the_extremes() {
-        let f = fns("
-            fn a(v: V) { for x in v { if p(x) { g(x); } } }
-            fn b(v: V) { for x in v { if p(x) { g(x); } } h(v); k(v); m(v); }
-        ");
-        let score = jaccard(&f[0], &f[1]);
-        assert!(
-            score > 0.0 && score < 1.0,
-            "expected a partial score, got {score}"
-        );
-    }
-
-    #[test]
-    fn unrelated_functions_fall_below_the_default_threshold() {
-        let f = fns(r#"
-            fn a(name: &str) -> String { format!("{}-{}", name, name.len()) }
-            fn b(path: &Path) -> Result<usize, Error> {
-                let file = File::open(path)?;
-                let mut n = 0;
-                for line in BufReader::new(file).lines() { if line?.is_empty() { n += 1; } }
-                Ok(n)
-            }
-        "#);
-        assert!(
-            find_pairs(&f, 0.82).is_empty(),
-            "unrelated shapes must not pair"
-        );
     }
 
     #[test]
     fn the_threshold_is_inclusive() {
-        let f = fns("fn a(x: i32) -> i32 { x + 1 } fn b(x: i32) -> i32 { x + 1 }");
+        let f = [function("a", &[1]), function("b", &[1])];
         let score = jaccard(&f[0], &f[1]);
         assert_eq!(
             find_pairs(&f, score).len(),
@@ -194,10 +147,7 @@ mod tests {
 
     #[test]
     fn raising_the_threshold_filters_pairs_out() {
-        let f = fns("
-            fn a(v: V) { for x in v { if p(x) { g(x); } } }
-            fn b(v: V) { for x in v { if p(x) { g(x); } } h(v); }
-        ");
+        let f = [function("a", &[1, 2]), function("b", &[2, 3])];
         let score = jaccard(&f[0], &f[1]);
         assert!(score > 0.0 && score < 1.0);
         assert!(
@@ -213,7 +163,7 @@ mod tests {
 
     #[test]
     fn a_function_is_never_paired_with_itself() {
-        let f = fns("fn only(x: i32) -> i32 { x + 1 }");
+        let f = [function("only", &[1])];
         assert!(
             find_pairs(&f, 0.0).is_empty(),
             "one function cannot be a pair"
@@ -222,7 +172,7 @@ mod tests {
 
     #[test]
     fn each_pair_is_reported_once() {
-        let f = fns("fn a(x: i32) -> i32 { x + 1 } fn b(x: i32) -> i32 { x + 1 }");
+        let f = [function("a", &[1]), function("b", &[1])];
         let pairs = find_pairs(&f, 0.0);
         assert_eq!(pairs.len(), 1, "not once per orientation");
         assert_ne!(pairs[0].first.name, pairs[0].second.name);
@@ -230,18 +180,15 @@ mod tests {
 
     #[test]
     fn three_identical_functions_yield_three_pairs() {
-        let f = fns("fn a() -> i32 { 1 } fn b() -> i32 { 1 } fn c() -> i32 { 1 }");
+        let f = ["a", "b", "c"].map(|name| function(name, &[1]));
         assert_eq!(find_pairs(&f, 0.0).len(), 3, "n·(n−1)/2 for n = 3");
     }
 
     proptest! {
         /// Similarity is always a proportion.
         #[test]
-        fn the_score_is_within_bounds(n in 1usize..6, m in 1usize..6) {
-            let a = "g(x); ".repeat(n);
-            let b = "h(y); ".repeat(m);
-            let f = fns(&format!("fn a(x: X) {{ {a} }} fn b(y: Y) {{ {b} }}"));
-            let score = jaccard(&f[0], &f[1]);
+        fn the_score_is_within_bounds(a in prop::collection::vec(0..10u64, 0..12), b in prop::collection::vec(0..10u64, 0..12)) {
+            let score = jaccard(&function("a", &a), &function("b", &b));
             prop_assert!((0.0..=1.0).contains(&score), "score was {}", score);
         }
 
@@ -251,10 +198,9 @@ mod tests {
             reason = "reflexivity is exactly 1.0; an epsilon would weaken the law"
         )]
         #[test]
-        fn similarity_is_reflexive(n in 1usize..6) {
-            let body = "g(x); ".repeat(n);
-            let f = fns(&format!("fn a(x: X) {{ {body} }}"));
-            prop_assert_eq!(jaccard(&f[0], &f[0]), 1.0);
+        fn similarity_is_reflexive(ids in prop::collection::vec(0..10u64, 0..12)) {
+            let f = function("a", &ids);
+            prop_assert_eq!(jaccard(&f, &f), 1.0);
         }
 
         /// Order of arguments never changes the answer.
@@ -263,34 +209,30 @@ mod tests {
             reason = "symmetry is exact: both sides run the same operations on the same sets"
         )]
         #[test]
-        fn similarity_is_symmetric(n in 1usize..6, m in 1usize..6) {
-            let a = "g(x); ".repeat(n);
-            let b = "if p(y) { h(y); } ".repeat(m);
-            let f = fns(&format!("fn a(x: X) {{ {a} }} fn b(y: Y) {{ {b} }}"));
-            prop_assert_eq!(jaccard(&f[0], &f[1]), jaccard(&f[1], &f[0]));
+        fn similarity_is_symmetric(a in prop::collection::vec(0..10u64, 0..12), b in prop::collection::vec(0..10u64, 0..12)) {
+            let a = function("a", &a);
+            let b = function("b", &b);
+            prop_assert_eq!(jaccard(&a, &b), jaccard(&b, &a));
         }
 
         /// Never more pairs than there are unordered pairs.
         #[test]
         fn pair_count_is_bounded(n in 1usize..7) {
-            let mut src = String::new();
-            for i in 0..n {
-                use std::fmt::Write as _;
-                let _ = write!(src, "fn f{i}() -> i32 {{ 1 }} ");
-            }
-            let f = fns(&src);
+            let f: Vec<_> = (0..n).map(|i| function(&i.to_string(), &[1])).collect();
             prop_assert_eq!(find_pairs(&f, 0.0).len(), n * (n - 1) / 2);
         }
     }
 
     #[test]
     fn stronger_candidates_are_listed_first() {
-        let src = "
-            fn a(v: V) { for x in v { if p(x) { g(x); } } }
-            fn b(v: V) { for x in v { if p(x) { g(x); } } }
-            fn c(v: V) { for x in v { if p(x) { g(x); } } h(v); k(v); }
-        ";
-        let mut pairs = find_pairs(&fns(src), 0.0);
+        let mut pairs = find_pairs(
+            &[
+                function("a", &[1]),
+                function("b", &[1]),
+                function("c", &[1, 2]),
+            ],
+            0.0,
+        );
         sort_pairs(&mut pairs);
         assert!(pairs.len() >= 2);
         for w in pairs.windows(2) {
@@ -300,15 +242,13 @@ mod tests {
 
     #[test]
     fn equal_scores_are_broken_by_location() {
-        let src = "fn a() -> i32 { 1 } fn b() -> i32 { 1 } fn c() -> i32 { 1 }";
-        let mut pairs = find_pairs(&fns(src), 0.0);
+        let functions = ["c", "b", "a"].map(|name| function(name, &[1]));
+        let mut pairs = find_pairs(&functions, 0.0);
         sort_pairs(&mut pairs);
         let keys: Vec<_> = pairs
             .iter()
-            .map(|p| (p.first.start_line, p.second.start_line))
+            .map(|p| (p.first.name.as_str(), p.second.name.as_str()))
             .collect();
-        let mut sorted = keys.clone();
-        sorted.sort_unstable();
-        assert_eq!(keys, sorted, "ties fall back to location order");
+        assert_eq!(keys, [("a", "b"), ("a", "c"), ("b", "c")]);
     }
 }
