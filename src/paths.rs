@@ -566,47 +566,40 @@ mod tests {
         });
         let sources = [a.as_path(), b.as_path()];
         let shared = Path::new("src/index.ts");
-        for additional in [
-            Path::new("a/src/index.ts"),
-            Path::new("packages/a/src/index.ts"),
-            &a,
-        ] {
-            let keys = [shared, additional];
-            let result = assign(&sources, &keys, TiePolicy::Unmatched);
-            assert_eq!(result.bindings, [vec![1], vec![]]);
-            assert_eq!(
-                result.ties,
-                [Tie {
-                    keys: vec![0],
-                    sources: vec![0, 1]
-                }]
-            );
-            let diagnostics = result.diagnostics(&sources, &keys);
-            assert_eq!(diagnostics.matched_files, 1);
-            assert_eq!(diagnostics.source_only.examples, [b.as_path()]);
-            assert_eq!(diagnostics.lcov_only.examples, [shared]);
-            let per_source = assign(&sources, &keys, TiePolicy::PerSource);
-            assert_eq!(per_source.bindings, [vec![1], vec![0]]);
-            assert_eq!(per_source.ties, []);
-        }
-        let keys = [
-            shared,
-            Path::new("a/src/index.ts"),
-            Path::new("b/src/index.ts"),
+        let a_short = Path::new("a/src/index.ts");
+        let a_full = Path::new("packages/a/src/index.ts");
+        let b_short = Path::new("b/src/index.ts");
+        let leaf = Path::new("index.ts");
+        let cases = [
+            (vec![shared], vec![], vec![], vec![0], 0),
+            (vec![shared, a_short], vec![1], vec![], vec![0], 1),
+            (vec![shared, a_full], vec![1], vec![], vec![0], 1),
+            (vec![shared, a.as_path()], vec![1], vec![], vec![0], 1),
+            (vec![shared, a_short, b_short], vec![1], vec![2], vec![0], 2),
+            (vec![shared, leaf], vec![], vec![], vec![1, 0], 0),
         ];
-        let both = assign(&sources, &keys, TiePolicy::Unmatched);
-        assert_eq!(both.bindings, [vec![1], vec![2]]);
-        assert_eq!(
-            both.ties,
-            [Tie {
-                keys: vec![0],
-                sources: vec![0, 1]
-            }]
-        );
-        let diagnostics = both.diagnostics(&sources, &keys);
-        assert_eq!(diagnostics.matched_files, 2);
-        assert_eq!(diagnostics.source_only.count, 0);
-        assert_eq!(diagnostics.lcov_only.examples, [shared]);
+        for (keys, bound_a, bound_b, tied_keys, matched_files) in cases {
+            let matched = assign(&sources, &keys, TiePolicy::Unmatched);
+            assert_eq!(matched.bindings, [bound_a, bound_b], "{keys:?}");
+            let expected_ties: Vec<_> = tied_keys
+                .iter()
+                .map(|&i| Tie {
+                    keys: vec![i],
+                    sources: vec![0, 1],
+                })
+                .collect();
+            assert_eq!(matched.ties, expected_ties, "{keys:?}");
+            let diagnostics = matched.diagnostics(&sources, &keys);
+            assert_eq!(diagnostics.matched_files, matched_files);
+            assert_eq!(diagnostics.source_only.count, sources.len() - matched_files);
+            check_strays(
+                tied_keys.iter().map(|&i| keys[i]).collect(),
+                &diagnostics.lcov_only,
+            );
+            let per_source = assign(&sources, &keys, TiePolicy::PerSource);
+            assert_eq!(per_source.ties, []);
+            assert!(per_source.bindings.iter().all(|bound| !bound.is_empty()));
+        }
         let alias = a.parent().unwrap().join("../src/index.ts");
         let same_file = assign(&[&a, &alias], &[&a], TiePolicy::Unmatched);
         assert_eq!(same_file.bindings, [vec![0], vec![0]]);
@@ -666,12 +659,21 @@ mod tests {
         for &(dir, file, long) in files {
             sources.insert(PathBuf::from(format!("root/{dir}/src/f{file}")));
             keys.insert(format!("src/f{file}").into());
+            keys.insert(format!("f{file}").into());
+            if dir == 0 {
+                sources.insert(PathBuf::from(format!("src/f{file}")));
+            }
             keys.insert(format!("src/./f{file}").into());
             keys.insert(format!("./src/f{file}").into());
             if long {
                 keys.insert(format!("{dir}/src/f{file}").into());
             }
         }
+        let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+        sources.insert(real.clone());
+        sources.insert(PathBuf::from("generated/src/lib.rs"));
+        keys.insert(real.into_os_string());
+        keys.insert("lib.rs".into());
         (
             sources.into_iter().collect(),
             keys.into_iter().map(PathBuf::from).collect(),
@@ -709,14 +711,27 @@ mod tests {
 
     #[test]
     fn diagnostics_keep_raw_stray_spellings_in_the_same_order() {
-        // Path's component ordering equates these different textual spellings.
-        let keys = paths(["stray/./file.rs", "stray/file.rs"]);
-        let reversed = [keys[1], keys[0]];
+        let aliases = paths(["a/b", "a-b", "a/./b"]);
+        let reversed = [aliases[2], aliases[1], aliases[0]];
         for policy in [TiePolicy::PerSource, TiePolicy::Unmatched] {
-            assert_eq!(
-                observations(&[], &keys, policy),
-                observations(&[], &reversed, policy)
-            );
+            for keys in [aliases, reversed] {
+                let diagnostics = assign(&[], &keys, policy).diagnostics(&[], &keys);
+                let actual: Vec<_> = diagnostics
+                    .lcov_only
+                    .examples
+                    .iter()
+                    .map(|p| p.as_os_str())
+                    .collect();
+                assert_eq!(
+                    actual,
+                    [aliases[2], aliases[0], aliases[1]].map(Path::as_os_str)
+                );
+            }
+            let distinct = paths(["a-b", "a/b"]);
+            let mut original_order = distinct.map(Path::to_path_buf);
+            original_order.sort();
+            let diagnostics = assign(&[], &distinct, policy).diagnostics(&[], &distinct);
+            assert_eq!(diagnostics.lcov_only.examples, original_order);
         }
     }
 
@@ -736,7 +751,7 @@ mod tests {
     fn lexical_components(path: &Path) -> Vec<&str> {
         path.to_str()
             .unwrap()
-            .split('/')
+            .split(std::path::is_separator)
             .filter(|part| !part.is_empty() && *part != ".")
             .collect()
     }
@@ -794,11 +809,24 @@ mod tests {
             let components: Vec<_> = sources.iter().map(|p| lexical_components(p)).collect();
             let needles: Vec<_> = keys.iter().map(|p| lexical_components(p)).collect();
             let owners: Vec<Vec<usize>> = needles.iter().map(|needle| {
-                (0..sources.len()).filter(|&i| components[i].ends_with(needle)).collect()
+                let equal: Vec<_> = (0..sources.len()).filter(|&i| components[i] == *needle).collect();
+                let mut best: Vec<_> = if equal.is_empty() {
+                    (0..sources.len()).filter(|&i| components[i].ends_with(needle)).collect()
+                } else {
+                    equal
+                };
+                best.sort_by_key(|&i| sources[i].as_os_str());
+                best
             }).collect();
             let expected: Vec<_> = (0..sources.len())
                 .map(|source| expected_bindings(&owners, &needles, source)).collect();
             let strict = assign(&sources, &keys, TiePolicy::Unmatched);
+            let per_source = assign(&sources, &keys, TiePolicy::PerSource);
+            for (surviving, per_source_group) in strict.bindings.iter().zip(&per_source.bindings) {
+                if !surviving.is_empty() {
+                    prop_assert_eq!(surviving, per_source_group);
+                }
+            }
             prop_assert_eq!(&strict.bindings, &expected);
             let diagnostics = strict.diagnostics(&sources, &keys);
             prop_assert_eq!(diagnostics.analyzed_files, sources.len());
