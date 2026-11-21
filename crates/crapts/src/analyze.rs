@@ -4,10 +4,9 @@ use std::path::{Path, PathBuf};
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    ArrowFunctionExpression, BindingPattern, Declaration, ExportDeclaration,
-    ExportDefaultDeclaration, ExportDefaultDeclarationKind, Expression, Function,
+    ArrowFunctionExpression, Class, ClassType, Declaration, ExportDeclaration,
+    ExportDefaultDeclaration, ExportDefaultDeclarationKind, Expression, Function, FunctionType,
     LogicalExpression, PropertyDefinition, TSClassImplements, TSInterfaceDeclaration, TSType,
-    VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
@@ -15,6 +14,7 @@ use oxc_span::{SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::lines::{LineIndex, SourceSpan};
+use crate::names::{Names, Unit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -148,10 +148,11 @@ fn grammar_for(path: &Path) -> Result<SourceType, oxc_span::UnknownExtension> {
 
 struct Collector<'s> {
     path: &'s Path,
+    source: &'s str,
     lines: LineIndex,
     rows: Vec<Row>,
     owner: Option<usize>,
-    arrow_binding: Option<String>,
+    names: Names,
 }
 
 impl<'s> Collector<'s> {
@@ -167,20 +168,21 @@ impl<'s> Collector<'s> {
 
     fn new(
         path: &'s Path,
-        source: &str,
+        source: &'s str,
     ) -> Self {
         Self {
             path,
+            source,
             lines: LineIndex::new(source),
             rows: Vec::new(),
             owner: None,
-            arrow_binding: None,
+            names: Names::default(),
         }
     }
 
     fn in_callable(
         &mut self,
-        name: &str,
+        name: String,
         span: Span,
         is_arrow: bool,
         visit: impl FnOnce(&mut Self),
@@ -188,13 +190,23 @@ impl<'s> Collector<'s> {
         let previous = self.owner.replace(self.rows.len());
         self.rows.push(Row {
             file: self.path.to_owned(),
-            name: name.to_owned(),
+            name: name.clone(),
             span: self.lines.span(span),
             cyclomatic: 1,
             is_arrow,
         });
-        visit(self);
+        self.with_name(name, visit);
         self.owner = previous;
+    }
+
+    fn with_name(
+        &mut self,
+        name: String,
+        visit: impl FnOnce(&mut Self),
+    ) {
+        let enclosing = std::mem::replace(&mut self.names, Names::enclosing(name));
+        visit(self);
+        self.names = enclosing;
     }
 }
 
@@ -306,11 +318,19 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         kind: AstKind<'a>,
     ) {
+        self.names.enter(kind, self.source);
         if let Some(owner) = self.owner
             && is_decision(kind)
         {
             self.rows[owner].cyclomatic += 1;
         }
+    }
+
+    fn leave_node(
+        &mut self,
+        _: AstKind<'a>,
+    ) {
+        self.names.leave();
     }
 
     fn visit_function(
@@ -319,10 +339,16 @@ impl<'a> Visit<'a> for Collector<'_> {
         flags: ScopeFlags,
     ) {
         if function.body.is_some() {
-            let name = function
-                .id
-                .as_ref()
-                .map_or("<anonymous>", |id| id.name.as_str());
+            let unit = if function.r#type == FunctionType::FunctionDeclaration {
+                Unit::FunctionDeclaration
+            } else {
+                Unit::FunctionExpression
+            };
+            let name = self.names.resolve(
+                function.span,
+                function.id.as_ref().map(|id| id.name.as_str()),
+                unit,
+            );
             self.in_callable(name, function.span, false, |visitor| {
                 walk::walk_function(visitor, function, flags);
             });
@@ -333,31 +359,49 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         arrow: &ArrowFunctionExpression<'a>,
     ) {
-        let binding = self.arrow_binding.take();
-        let name = binding.as_deref().unwrap_or("<anonymous>");
+        let name = self
+            .names
+            .resolve(arrow.span, None, Unit::FunctionExpression);
         self.in_callable(name, arrow.span, true, |visitor| {
             walk::walk_arrow_function_expression(visitor, arrow);
         });
     }
 
-    fn visit_variable_declarator(
+    fn visit_class(
         &mut self,
-        decl: &VariableDeclarator<'a>,
+        class: &Class<'a>,
     ) {
-        if let (
-            BindingPattern::BindingIdentifier(id),
-            Some(Expression::ArrowFunctionExpression(_)),
-        ) = (&decl.id, &decl.init)
-        {
-            self.arrow_binding = Some(id.name.to_string());
-        }
-        walk::walk_variable_declarator(self, decl);
+        let unit = if class.r#type == ClassType::ClassDeclaration {
+            Unit::ClassDeclaration
+        } else {
+            Unit::ClassExpression
+        };
+        let name = self.names.resolve(
+            class.span,
+            class.id.as_ref().map(|id| id.name.as_str()),
+            unit,
+        );
+        self.with_name(name, |v| walk::walk_class(v, class));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_statements_release_their_naming_sites() {
+        // Disjoint spans mask stale frames in the output, but retaining each
+        // completed sibling would make the next lookup scan the entire file.
+        let source = "const a = factory(() => 1); const b = factory(() => 2);";
+        let arena = Allocator::default();
+        let parsed = Parser::new(&arena, source, SourceType::ts()).parse();
+        let mut collector = Collector::new(Path::new("scopes.ts"), source);
+        for statement in &parsed.program.body {
+            collector.visit_statement(statement);
+            assert_eq!(collector.names.retained_frames(), (0, 0));
+        }
+    }
 
     #[test]
     fn explicit_module_extensions_keep_their_module_kind() {

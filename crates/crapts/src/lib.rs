@@ -2,6 +2,7 @@
 
 mod analyze;
 mod lines;
+mod names;
 
 pub use analyze::{FileAnalysis, FileStatus, InputError, Mode, Row, Side, analyze};
 pub use lines::{Position, SourceSpan};
