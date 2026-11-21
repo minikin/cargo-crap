@@ -274,7 +274,7 @@ points. Keep the spec 44 snapshots in verification mode throughout.
   before starting T2. Scenarios: _invalid report inputs preserve an existing output file_,
   _analysis and coverage diagnostics precede allow validation_. Tests: CLI acceptance.
 
-- [ ] **T2 — Give each tool its report policy and dispatch summaries through it.**
+- [x] **T2 — Give each tool its report policy and dispatch summaries through it.**
   Needs: T1. Add the policy types in `src/policy.rs`, register that file in
   spec 46's shared guard list, add `Tool.policy` and `Format` equality, and
   update the tool literals and their migration note. Define the production
