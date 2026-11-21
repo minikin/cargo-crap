@@ -36,6 +36,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
@@ -418,10 +419,8 @@ struct WorkspaceMember {
 #[derive(Debug, Clone)]
 struct ScanRoot {
     dir: PathBuf,
-    /// The defaults and the nested-member excludes: matched below `dir` only.
-    member_only: Vec<String>,
-    /// Config and CLI globs: matched below `dir` and below `workspace_root`.
-    user: Vec<String>,
+    /// Shared with the baseline scope after the walk has captured its match counts.
+    matcher: Arc<complexity::ExcludeMatcher>,
     /// `None` outside workspace mode, where `dir` is the only base.
     workspace_root: Option<PathBuf>,
 }
@@ -434,24 +433,20 @@ impl ScanRoot {
         excludes: &Excludes,
         nested: Vec<String>,
         workspace_root: Option<PathBuf>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut member_only = excludes.defaults.clone();
         member_only.extend(nested);
-        Self {
-            dir,
-            member_only,
-            user: excludes.user.clone(),
-            workspace_root,
-        }
-    }
-
-    fn matcher(&self) -> Result<complexity::ExcludeMatcher> {
-        complexity::ExcludeMatcher::new(
-            &self.member_only,
-            &self.user,
-            self.workspace_root.as_deref(),
+        let matcher = complexity::ExcludeMatcher::new(
+            &member_only,
+            &excludes.user,
+            workspace_root.as_deref(),
         )
-        .with_context(|| format!("analyzing {}", self.dir.display()))
+        .with_context(|| format!("analyzing {}", dir.display()))?;
+        Ok(Self {
+            dir,
+            matcher: Arc::new(matcher),
+            workspace_root,
+        })
     }
 }
 
@@ -496,8 +491,8 @@ fn analyze_sources(
             .with_context(|| format!("configuring rayon thread pool to {n} threads"))?;
     }
     if !workspace && packages.is_empty() {
-        let root = ScanRoot::new(path.to_path_buf(), excludes, Vec::new(), None);
-        let (fns, user_globs_matched, target) = analyze_path(&root, knobs)?;
+        let root = ScanRoot::new(path.to_path_buf(), excludes, Vec::new(), None)?;
+        let (fns, user_globs_matched, target) = analyze_path(&root, knobs);
         return Ok(AnalyzedSources {
             fns,
             roots: vec![root],
@@ -516,11 +511,11 @@ fn analyze_sources(
 fn analyze_path(
     root: &ScanRoot,
     knobs: &AnalysisKnobs,
-) -> Result<(
+) -> (
     Vec<complexity::FunctionComplexity>,
     Vec<bool>,
     Option<PathBuf>,
-)> {
+) {
     let path = &root.dir;
     let config_dir = knobs.config_dir.as_deref();
     let target = target_dir(None, path, config_dir, &knobs.cwd, |name| {
@@ -531,11 +526,11 @@ fn analyze_path(
         .filter(|_| knobs.cache)
         .and_then(|target| Session::open(target, knobs.try_weight));
     let mut records = Vec::new();
-    let (fns, matched) = analyze_root(root, knobs.try_weight, session.as_ref(), &mut records)?;
+    let (fns, matched) = analyze_root(root, knobs.try_weight, session.as_ref(), &mut records);
     if let Some(session) = session {
         session.save(std::slice::from_ref(path), records);
     }
-    Ok((fns, matched, target))
+    (fns, matched, target)
 }
 
 /// Walk one root, through `session`'s cache when there is one, adding the
@@ -546,17 +541,17 @@ fn analyze_root(
     try_weight: f64,
     session: Option<&Session>,
     records: &mut Vec<FileRecord>,
-) -> Result<(Vec<complexity::FunctionComplexity>, Vec<bool>)> {
-    let excludes = root.matcher()?;
+) -> (Vec<complexity::FunctionComplexity>, Vec<bool>) {
+    let excludes = &root.matcher;
     let fns = session.map_or_else(
-        || complexity::analyze_tree_matching(&root.dir, &excludes, try_weight),
+        || complexity::analyze_tree_matching(&root.dir, excludes, try_weight),
         |session| {
-            let analysis = complexity::analyze_tree_cached(&root.dir, &excludes, session.cache());
+            let analysis = complexity::analyze_tree_cached(&root.dir, excludes, session.cache());
             records.extend(analysis.records);
             analysis.functions
         },
     );
-    Ok((fns, excludes.user_globs_matched()))
+    (fns, excludes.user_globs_matched())
 }
 
 /// Mark in `all` every user glob `root` says matched under one more root.
@@ -607,8 +602,8 @@ fn analyze_workspace_members(
             excludes,
             nested_member_excludes(&m.dir, &discovered),
             Some(workspace_root.clone()),
-        );
-        let (member_fns, matched) = analyze_root(&root, knobs.try_weight, cache, &mut records)?;
+        )?;
+        let (member_fns, matched) = analyze_root(&root, knobs.try_weight, cache, &mut records);
         fns.extend(member_fns);
         add_matches(&mut user_globs_matched, &matched);
         roots.push(root);
@@ -838,7 +833,7 @@ fn assign_crate_names(
 /// The exclude globs and selected workspace members of cargo-crap's source walk.
 struct CargoScope {
     /// Deepest root first, so a nested member owns its files.
-    roots: Vec<(PathBuf, complexity::ExcludeMatcher)>,
+    roots: Vec<(PathBuf, Arc<complexity::ExcludeMatcher>)>,
     members: Option<MemberScope>,
 }
 
@@ -846,13 +841,13 @@ impl CargoScope {
     fn new(
         roots: &[ScanRoot],
         members: Option<MemberScope>,
-    ) -> Result<Self> {
-        let mut roots = roots
+    ) -> Self {
+        let mut roots: Vec<_> = roots
             .iter()
-            .map(|root| Ok((root.dir.clone(), root.matcher()?)))
-            .collect::<Result<Vec<_>>>()?;
+            .map(|root| (root.dir.clone(), Arc::clone(&root.matcher)))
+            .collect();
         roots.sort_by_key(|(dir, _)| std::cmp::Reverse(dir.as_os_str().len()));
-        Ok(Self { roots, members })
+        Self { roots, members }
     }
 
     /// True when the walk would have excluded `file`, normalized to forward
@@ -1283,7 +1278,7 @@ fn load_filtered_baseline(
     // A run with signals off must not show a baseline's signals either.
     keep_signals(&mut baseline.entries, signals_enabled);
     resolve_relative_paths(&mut baseline, workspace_root(roots));
-    let scope = CargoScope::new(roots, member_scope)?;
+    let scope = CargoScope::new(roots, member_scope);
     Ok(Some(BaselineFilter::new(&scope, allow).prepare(baseline)))
 }
 
@@ -1447,9 +1442,9 @@ fn duplicate_pairs(
     settings: &DupSettings,
     roots: &[ScanRoot],
     format: Format,
-) -> Result<Option<Vec<DuplicatePair>>> {
+) -> Option<Vec<DuplicatePair>> {
     if !settings.enabled {
-        return Ok(None);
+        return None;
     }
     // Only four formats can carry the pairs. Paying for a quadratic sweep and
     // then discarding it silently is worse than saying so and skipping it.
@@ -1461,11 +1456,11 @@ fn duplicate_pairs(
             "warning: --duplicates has no effect with this format; \
              use --format human, json, markdown or pr-comment"
         );
-        return Ok(None);
+        return None;
     }
     let mut functions = Vec::new();
     for root in roots {
-        functions.extend(duplicates::scan::scan_matching(&root.dir, &root.matcher()?));
+        functions.extend(duplicates::scan::scan_matching(&root.dir, &root.matcher));
     }
     // Small functions are dropped before comparison rather than filtered out
     // of the results: every pair of trivial accessors is a genuine structural
@@ -1474,7 +1469,7 @@ fn duplicate_pairs(
     functions.sort_by(|a, b| a.location.cmp(&b.location));
     let mut pairs = duplicates::compare::find_pairs(&functions, settings.threshold);
     duplicates::compare::sort_pairs(&mut pairs);
-    Ok(Some(pairs))
+    Some(pairs)
 }
 
 /// The duplicate section's content: the pairs, their groups, and one triage
@@ -1535,8 +1530,8 @@ fn duplicate_section<'a>(
     format: Format,
     target: Option<&Path>,
     baseline: Option<&Baseline>,
-) -> Result<DuplicateSection<'a>> {
-    let pairs = duplicate_pairs(settings, roots, format)?;
+) -> DuplicateSection<'a> {
+    let pairs = duplicate_pairs(settings, roots, format);
     let groups = pairs
         .as_deref()
         .map(|pairs| duplicates::group::group_pairs(pairs, settings.threshold));
@@ -1554,7 +1549,7 @@ fn duplicate_section<'a>(
     });
     let (triage, untriaged) =
         triage.map_or((None, 0), |(verdicts, skipped)| (Some(verdicts), skipped));
-    Ok(DuplicateSection {
+    DuplicateSection {
         pairs,
         groups,
         novelty,
@@ -1562,7 +1557,7 @@ fn duplicate_section<'a>(
         untriaged,
         provider: settings.triage_provider.display_name(),
         model: &settings.triage_model,
-    })
+    }
 }
 
 /// Each answer held to the confidence floor, `None` where the budget asked
@@ -2036,7 +2031,7 @@ fn run() -> Result<ExitCode> {
         workspace_root.as_deref(),
     );
     let baseline = baseline_data.as_ref().map(PreparedBaseline::as_baseline);
-    let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref(), baseline)?;
+    let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref(), baseline);
     let opts = RenderOpts {
         render: RenderOptions {
             threshold: settings.threshold,
@@ -2968,9 +2963,9 @@ mod tests {
                     workspace_root.map(Path::to_path_buf),
                 )
             })
-            .collect();
+            .collect::<Result<_>>()?;
         Ok(Selection {
-            scope: CargoScope::new(&roots, None)?,
+            scope: CargoScope::new(&roots, None),
             allow: AllowSet::compile(allow)?,
         })
     }

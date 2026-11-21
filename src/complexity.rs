@@ -415,8 +415,8 @@ impl ExcludeMatcher {
 
     /// Match `file`, found by walking `root`, and remember every user glob
     /// that matched for [`user_globs_matched`](Self::user_globs_matched).
-    /// The record is this matcher's own: a pass that must not count toward
-    /// the no-match warning builds its own matcher.
+    /// Capture the walk's match counts before reusing this matcher in a later pass.
+    /// Subsequent checks also contribute to its cumulative counts.
     #[must_use]
     pub fn check(
         &self,
