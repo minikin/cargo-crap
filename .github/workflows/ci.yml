@@ -114,7 +114,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants,just
+          tool: cargo-mutants,cargo-nextest,just
       # The feature-gated guard case resolves offline against the cache.
       - name: Fetch dependencies
         run: cargo fetch --locked

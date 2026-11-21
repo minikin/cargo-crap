@@ -201,3 +201,16 @@ fn cargo_crap_s_published_package_holds_no_core_and_no_gate_script() {
         .collect();
     assert!(leaked.is_empty(), "packaged: {leaked:?}");
 }
+
+#[test]
+fn mutants_of_the_core_run_the_whole_workspace_s_tests() {
+    let path = root().join(".cargo/mutants.toml");
+    let config: toml::Table = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+        .parse()
+        .expect(".cargo/mutants.toml is TOML");
+    assert_eq!(
+        config.get("test_workspace"),
+        Some(&toml::Value::Boolean(true))
+    );
+}

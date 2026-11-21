@@ -217,7 +217,7 @@ snapshot created or modified. Moves go in dependency order, so each task
 leaves both packages compiling. Until T4 retires it, the `src/tool.rs`
 source guard drops each file as it moves.
 
-- [ ] **T1 — Run root consumer tests against core mutants.**
+- [x] **T1 — Run root consumer tests against core mutants.**
   Set `test_workspace = true` in `.cargo/mutants.toml` first, so the
   mutation gate of every later move also runs the root's tests. Add the
   two-package `double` fixture to `scripts/gates/test.sh` with the real
