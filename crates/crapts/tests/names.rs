@@ -18,6 +18,8 @@ fn clean_names(
 
 #[test]
 fn choose_the_source_grammar_from_the_path() {
+    // When checking the TS/TSX boundary, a type annotation fits both grammars.
+    // An angle-bracket assertion distinguishes them.
     for ext in ["js", "mjs", "cjs", "jsx", "tsx"] {
         assert_eq!(
             clean_names(&format!("view.{ext}"), "const B = () => <b/>"),
@@ -28,7 +30,7 @@ fn choose_the_source_grammar_from_the_path() {
         assert_eq!(
             clean_names(
                 &format!("typed.{ext}"),
-                "function f(x: number) { return x }"
+                "const v = <number>x; function f(x: number) { return x }"
             ),
             ["f"]
         );
@@ -39,11 +41,19 @@ fn choose_the_source_grammar_from_the_path() {
             ["f"]
         );
     }
+    for ext in ["mjs", "mts"] {
+        assert_eq!(
+            clean_names(&format!("module.{ext}"), "await 1; const f = () => 1"),
+            ["f"]
+        );
+    }
     assert_eq!(clean_names("empty.js", ""), Vec::<String>::new());
 }
 
 #[test]
 fn name_an_arrow_after_its_direct_binding_across_body_edits() {
+    // Given scheme 1 identifies a row across revisions, body tokens belong
+    // to the separate fingerprint specified in Spec 55.
     for (source, name) in [
         ("const f = () => 1", "f"),
         ("const f = () => 2", "f"),
@@ -55,8 +65,9 @@ fn name_an_arrow_after_its_direct_binding_across_body_edits() {
 
 #[test]
 fn an_unknown_extension_identifies_the_path_without_guessing_a_grammar() {
+    // Then a multi-root scan needs the path alongside Oxc's list of accepted extensions.
     let error = analyze(Path::new("src/unknown.txt"), b"", Mode::Ordinary).unwrap_err();
     let message = error.to_string();
     assert!(message.contains("src/unknown.txt"), "{message}");
-    assert!(message.len() > "src/unknown.txt: ".len(), "{message}");
+    assert!(message.contains("Unknown file extension"), "{message}");
 }

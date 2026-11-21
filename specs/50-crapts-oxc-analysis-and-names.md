@@ -2,7 +2,7 @@
 
 **Status:** Approved
 **Effort:** Large
-**Module:** `crates/crapts/{Cargo.toml,src/lib.rs,src/discover.rs,src/analyze.rs,src/lines.rs,src/names.rs,tests/names.rs,tests/properties.rs}`, `Cargo.toml`, `Cargo.lock`, `tests/workspace.rs`, `tests/fixtures/spec45-package-ids.txt`, `tests/golden/config.rs`, `scripts/gates/parser-guard.sh`, `scripts/gates/test.sh`, `.github/workflows/ci.yml`, `.github/dependabot.yml`
+**Module:** `crates/crapts/{Cargo.toml,src/lib.rs,src/discover.rs,src/analyze.rs,src/lines.rs,src/names.rs,tests/analysis.rs,tests/names.rs,tests/properties.rs}`, `Cargo.toml`, `Cargo.lock`, `tests/workspace.rs`, `tests/fixtures/spec45-package-ids.txt`, `tests/golden/config.rs`, `tests/golden/gates.rs`, `scripts/gates/parser-guard.sh`, `scripts/gates/test.sh`, `.github/workflows/ci.yml`, `.github/dependabot.yml`
 
 ## Context
 
@@ -365,7 +365,7 @@ Examples:
 
 Spec 55 maps this input error to exit status 2 at the changed-gate CLI boundary.
 
-### Scenario: Compose scheme-1 names from ancestors and sites (N1–N3)
+### Scenario: Compose scheme-1 names from ancestors and sites (N1-N3)
 
 ```gherkin
 Given a row enclosed by rows, classes, TypeScript namespace or module blocks, and naming sites
@@ -415,7 +415,7 @@ And parentheses, JSX expression containers, "as", "satisfies", angle-bracket typ
 
 Both constructor kinds use `constructor`. Static blocks use `<static-block>`. A static initializer row absorbs its field site. A direct function or class value uses the field binding. An instance initializer supplies its field segment to any nested functions regardless of which constructor owns its execution.
 
-### Scenario: Preserve member identity when the spelling changes (N5–N6)
+### Scenario: Preserve member identity when the spelling changes (N5-N6)
 
 ```gherkin
 Given a class or object member
@@ -427,7 +427,7 @@ And identifier and private identifier escapes are decoded
 
 For a string key, use the decoded value bare if it is an ECMAScript IdentifierName or exactly equals `ToString(ToNumber(value))`. Otherwise enclose it in double quotes. Numeric and BigInt literals use their ECMAScript decimal property-key string. Computed string, no-substitution template, Number and BigInt literals use the corresponding literal key. Other computed keys enclose N9 text in parentheses.
 
-### Scenario: Reduce property chains and label call roles (N7–N8)
+### Scenario: Reduce property chains and label call roles (N7-N8)
 
 ```gherkin
 Given an assignment target, call, construction or tagged template
@@ -817,7 +817,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
 
 - Spec 45 supplies the workspace shell. Add `crates/crapts` with `publish = false` and a library target for this stage. Spec 53 adds the executable and Spec 57 owns publication. Extend the workspace-membership and parser-guard fixtures added by Spec 45 to include the new member. Spec 49 owns the core move. The set of public `cargo_crap` exports is identical before and after Spec 50.
 - `discover(roots, options)` returns `Discovery` with sorted `files`, the `scope` predicate and `unused_excludes`. `analyze(path, bytes, mode) -> Result<FileAnalysis, InputError>` accepts `Ordinary` or `Strict(Base | Head)`. `FileAnalysis` carries `status` (`Clean`, `Recovered` or `SkippedFatal`), `rows` and `warnings`. Warnings are returned data for the caller to display. Ordinary input decoding failures and strict parse or decoding failures return `InputError`. Each `Row` carries `file`, `name`, `span`, `body_regions`, `statement_lines` and `cyclomatic`. Regions use the half-open positions specified above.
-- Pin `oxc_allocator`, `oxc_ast`, `oxc_ast_visit`, `oxc_parser`, `oxc_span`, `oxc_str` and `oxc_syntax` to `=0.159.0` in the workspace manifest and group their updates in `.github/dependabot.yml`. Use the parser’s lexer tokens for the text of computed names. Attribute decisions to the row that executes each expression.
+- Pin `oxc_allocator`, `oxc_ast`, `oxc_ast_visit`, `oxc_parser`, `oxc_span`, `oxc_str` and `oxc_syntax` to `=0.159.0` in the workspace manifest and group their updates in `.github/dependabot.yml`. Use the parser's lexer tokens for the text of computed names. Attribute decisions to the row that executes each expression.
 - Resolve the new dependency closure from the landed lockfile. Compare package IDs against that base. Dependency lists in existing records can gain version qualifiers when a second version enters the lockfile.
 - Keep the naming fixtures and generated-source checks under `crates/crapts/tests/`. Add the Rust 1.98 job and extend Spec 45's `cargo tree -p <package> --all-features --target all -e normal,build,no-proc-macro --prefix none --locked` guard to crapts. Run the workspace gates with `INSTA_UPDATE=no`.
 
@@ -842,7 +842,7 @@ Spec 51 report rows omit `fingerprint`. Spec 54 uses names and paths for baselin
 
 This draft started on Spec 46 T1 (`kqqoyrnt`), alongside Spec 46 T2 (`krtxkooq`). After approval and the Spec 45 `ALL-DONE` handoff, rebase only the Spec 50 working change onto the confirmed final Spec 45 revision before building. The intermediate Spec 45 workspace tip is not a build base.
 
-Spec 44 T1 pins two tests in `tests/golden/config.rs`. Preserve both when adding the new job and dependencies.
+Spec 44 T1 pins two tests in `tests/golden/config.rs`, `tests/golden/gates.rs`. Preserve both when adding the new job and dependencies.
 
 - `the_goldens_build_against_the_committed_lock` checks that `Cargo.lock` exists, is tracked and is not ignored. The CI `test` job verifies tracking before Cargo runs, then runs one default and one all-features nextest across all targets plus one doctest run, all locked. Keep the crapts-only Rust 1.98 run in its own job.
 - `just_test_and_ci_verify_without_writing` pins the verify-only Justfile test environment, the CI `test` job's `INSTA_UPDATE: "no"` and its Rust-change condition, output and required path-filter entries, including `tests/snapshots/**`. Extend the Spec 45 workspace coverage without narrowing those checks.
@@ -852,7 +852,7 @@ Spec 44 T1 pins two tests in `tests/golden/config.rs`. Preserve both when adding
 
 Coverage ingestion, hit attribution and CRAP scoring belong to later integration. Reports, CLI and config wiring, baseline pairing, Git diffs, changed-function verdicts, release packaging and corpus benchmarks are outside this spec.
 
-## Appendix for Spec 55 — Oracle-checked row fingerprints
+## Appendix for Spec 55 - Oracle-checked row fingerprints
 
 At frozen TypeScript revision `5e1ae62f`, all 16 exact digest fixtures and all 61 fingerprint comparisons matched the reference. This appendix preserves the token streams, normalization rules and observed comparisons for Spec 55. Spec 50's acceptance tests end above.
 

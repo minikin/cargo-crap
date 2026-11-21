@@ -37,3 +37,27 @@ fn returning_from_a_nested_callable_restores_the_scoring_owner() {
     let scores: Vec<_> = result.rows.iter().map(|row| row.cyclomatic).collect();
     assert_eq!(scores, [3, 2]);
 }
+
+#[test]
+fn a_bodyless_overload_does_not_add_a_second_row() {
+    let result = analyze(
+        Path::new("overload.ts"),
+        b"function f(x: number): number; function f(x: number) { return x }",
+        Mode::Ordinary,
+    )
+    .unwrap();
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].name, "f");
+}
+
+#[test]
+fn nested_bodies_are_scored_inside_declarations_and_bound_arrows() {
+    for source in [
+        "function outer() { function inner() { if (v) run() } }",
+        "const outer = () => { function inner() { if (v) run() } }",
+    ] {
+        let analysis = analyze(Path::new("nested.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+        let scores: Vec<_> = analysis.rows.iter().map(|row| row.cyclomatic).collect();
+        assert_eq!(scores, [1, 2], "{source}");
+    }
+}

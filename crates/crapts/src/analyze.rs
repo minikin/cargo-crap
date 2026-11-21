@@ -54,20 +54,17 @@ impl std::error::Error for InputError {}
 pub fn analyze(
     path: &Path,
     bytes: &[u8],
-    Mode::Ordinary: Mode,
+    mode: Mode,
 ) -> Result<FileAnalysis, InputError> {
-    let error = |message| InputError {
-        path: path.to_owned(),
-        message,
+    let source = match mode {
+        Mode::Ordinary => String::from_utf8_lossy(bytes),
     };
-    let source = std::str::from_utf8(bytes).map_err(|e| error(e.to_string()))?;
-    let grammar = SourceType::from_path(path).map_err(|e| error(e.to_string()))?;
-    let grammar = grammar.with_jsx(grammar.is_javascript());
+    let grammar = grammar_for(path).map_err(|e| InputError {
+        path: path.to_owned(),
+        message: e.to_string(),
+    })?;
     let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, source, grammar).parse();
-    if let Some(diagnostic) = parsed.diagnostics.errors().next() {
-        return Err(error(diagnostic.to_string()));
-    }
+    let parsed = Parser::new(&allocator, &source, grammar).parse();
     let mut collector = Collector::default();
     collector.visit_program(&parsed.program);
     Ok(FileAnalysis {
@@ -75,6 +72,10 @@ pub fn analyze(
         rows: collector.rows,
         warnings: Vec::new(),
     })
+}
+
+fn grammar_for(path: &Path) -> Result<SourceType, oxc_span::UnknownExtension> {
+    SourceType::from_path(path).map(|grammar| grammar.with_jsx(grammar.is_javascript()))
 }
 
 #[derive(Default)]
@@ -173,6 +174,22 @@ impl<'a> Visit<'a> for Collector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_module_extensions_keep_their_module_kind() {
+        for (path, kind) in [
+            ("a.mjs", oxc_span::ModuleKind::Module),
+            ("a.mts", oxc_span::ModuleKind::Module),
+            ("a.cjs", oxc_span::ModuleKind::CommonJS),
+            ("a.cts", oxc_span::ModuleKind::CommonJS),
+        ] {
+            assert_eq!(
+                grammar_for(Path::new(path)).unwrap().module_kind(),
+                kind,
+                "{path}"
+            );
+        }
+    }
 
     #[test]
     fn decision_table() {

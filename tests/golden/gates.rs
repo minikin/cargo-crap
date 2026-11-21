@@ -661,18 +661,21 @@ fn the_msrv_job_tests_the_1_88_packages_by_name() {
 
 #[test]
 fn keep_the_package_and_its_parser_independently_buildable() {
+    // Given rust-toolchain.toml selects stable, installing the MSRV alone can
+    // leave Cargo using stable.
     let ci = read(CI);
     let job = block(&lines(&ci), "  crapts-msrv:");
     assert!(job.contains(&"    needs: [changes]"));
     assert!(job.contains(&"    if: needs.changes.outputs.rust == 'true'"));
     assert!(job.contains(&"      - uses: dtolnay/rust-toolchain@1.98"));
+    assert!(block(&job, "    env:").contains(&"      RUSTUP_TOOLCHAIN: '1.98'"));
     let steps = steps(&job);
     assert!(steps.iter().any(|step| {
         step.condition.is_empty()
             && step
                 .run
                 .iter()
-                .any(|line| line == "cargo +1.98 test --locked -p crapts --all-targets")
+                .any(|line| line == "cargo test --locked -p crapts --all-targets")
     }));
 }
 
