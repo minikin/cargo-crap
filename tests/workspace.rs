@@ -174,7 +174,14 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
                 .expect("dependency name")
         })
         .collect();
-    let required_helpers = ["cargo-crap-core", "globset", "serde", "serde_json", "sha2"];
+    let required_helpers = [
+        "cargo-crap-core",
+        "globset",
+        "libc",
+        "serde",
+        "serde_json",
+        "sha2",
+    ];
     let expected: BTreeSet<_> = parser_pins.into_iter().chain(required_helpers).collect();
     assert_eq!(declared, expected, "direct dependencies of crapts");
     let json = dependencies
@@ -197,7 +204,12 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
         .filter(|name| *name != "cargo-crap-core")
     {
         assert_eq!(
-            member["dependencies"][name]["workspace"].as_bool(),
+            if name == "libc" {
+                &member["target"]["cfg(unix)"]["dependencies"]
+            } else {
+                &member["dependencies"]
+            }[name]["workspace"]
+                .as_bool(),
             Some(true),
             "{name}"
         );

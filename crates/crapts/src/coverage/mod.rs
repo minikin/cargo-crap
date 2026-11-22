@@ -68,16 +68,44 @@ pub fn read_coverage(
     read_with(cwd, path, |label| std::fs::read(label))
 }
 
+#[cfg(unix)]
+const LINK_LOOP: i32 = libc::ELOOP;
+#[cfg(unix)]
+const NAME_TOO_LONG: i32 = libc::ENAMETOOLONG;
+
+// std::fs returns Win32 error codes, not the C runtime's errno values.
+#[cfg(windows)]
+const LINK_LOOP: i32 = 1921; // ERROR_CANT_RESOLVE_FILENAME
+#[cfg(windows)]
+const NAME_TOO_LONG: i32 = 206; // ERROR_FILENAME_EXCED_RANGE
+
+#[cfg(any(test, windows))]
+fn windows_denial_code(path: &Path) -> &'static str {
+    if path.is_dir() { "EISDIR" } else { "EACCES" }
+}
+
 fn read_error(
     label: &Path,
     error: io::Error,
 ) -> InputError {
-    let code = match error.kind() {
-        io::ErrorKind::NotFound => "ENOENT",
-        io::ErrorKind::IsADirectory => "EISDIR",
-        io::ErrorKind::PermissionDenied if label.is_dir() => "EISDIR",
-        io::ErrorKind::PermissionDenied => "EACCES",
-        io::ErrorKind::NotADirectory => "ENOTDIR",
+    let code = match (error.raw_os_error(), error.kind()) {
+        #[cfg(any(unix, windows))]
+        (Some(LINK_LOOP), _) => "ELOOP",
+        #[cfg(any(unix, windows))]
+        (Some(NAME_TOO_LONG), _) => "ENAMETOOLONG",
+        (_, io::ErrorKind::NotFound) => "ENOENT",
+        (_, io::ErrorKind::IsADirectory) => "EISDIR",
+        (_, io::ErrorKind::PermissionDenied) => {
+            #[cfg(windows)]
+            {
+                windows_denial_code(label)
+            }
+            #[cfg(not(windows))]
+            {
+                "EACCES"
+            }
+        },
+        (_, io::ErrorKind::NotADirectory) => "ENOTDIR",
         _ => return InputError::at(label, error),
     };
     InputError::at(label, code)
@@ -88,7 +116,7 @@ fn read_with(
     path: &Path,
     read: impl FnOnce(&Path) -> io::Result<Vec<u8>>,
 ) -> Result<Coverage, InputError> {
-    let base = std::path::absolute(cwd).map_err(|error| read_error(cwd, error))?;
+    let base = std::path::absolute(cwd).unwrap_or_else(|_| cwd.to_owned());
     let label = crate::discover::resolve(&base, path);
     let bytes = read(&label).map_err(|error| read_error(&label, error))?;
     let decoded = String::from_utf8_lossy(&bytes);
@@ -128,8 +156,13 @@ mod tests {
         let cwd = tempfile::tempdir().unwrap();
         let directory = cwd.path().join("reports");
         std::fs::create_dir(&directory).unwrap();
+        assert_eq!(windows_denial_code(&directory), "EISDIR");
+        assert_eq!(windows_denial_code(&directory.join("unreadable")), "EACCES");
         for (label, kind, expected) in [
+            #[cfg(windows)]
             (&directory, io::ErrorKind::PermissionDenied, "EISDIR"),
+            #[cfg(not(windows))]
+            (&directory, io::ErrorKind::PermissionDenied, "EACCES"),
             (
                 &directory.join("file/child"),
                 io::ErrorKind::NotADirectory,
@@ -141,6 +174,31 @@ mod tests {
                 error.to_string(),
                 format!("{}: {expected}", label.display())
             );
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn operating_system_errors_keep_the_symbolic_loop_and_name_length_codes() {
+        let cwd = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let errors = {
+            let loop_path = cwd.path().join("loop");
+            std::os::unix::fs::symlink("loop", &loop_path).unwrap();
+            [
+                std::fs::read(loop_path).unwrap_err(),
+                std::fs::read(cwd.path().join("x".repeat(1024))).unwrap_err(),
+            ]
+        };
+        #[cfg(windows)]
+        let errors = [
+            io::Error::from_raw_os_error(1921),
+            io::Error::from_raw_os_error(206),
+        ];
+        for (os_error, code) in errors.into_iter().zip(["ELOOP", "ENAMETOOLONG"]) {
+            let path = cwd.path().join("report");
+            let error = read_with(cwd.path(), &path, |_| Err(os_error)).unwrap_err();
+            assert_eq!(error.to_string(), format!("{}: {code}", path.display()));
         }
     }
 
@@ -160,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn lcov_dispatch_preserves_the_core_readers_counts_and_diagnostics() {
+    fn lcov_dispatch_merges_duplicate_sf_records_by_key() {
         let cwd = tempfile::tempdir().unwrap();
         let path = cwd.path().join("cov");
         std::fs::write(&path, "TN:\nSF:./a\nDA:2,0\nSF:b\nSF:./a\nDA:2,7").unwrap();

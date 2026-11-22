@@ -24,6 +24,9 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 proptest.workspace = true
 regex-syntax.workspace = true

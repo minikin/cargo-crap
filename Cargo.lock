@@ -426,6 +426,7 @@ version = "0.1.0"
 dependencies = [
  "cargo-crap-core",
  "globset",
+ "libc",
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
