@@ -784,7 +784,7 @@ Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.
   and gitfile root detection, `../outside.ts` escape checks, and invalid
   UTF-8 errors, plus property tests (proptest) for base-relative glob
   matching across nested subdirectories.
-- [ ] **T5 - Implement strict `.crapts.toml` loading and worktree-bounded lookup.**
+- [x] **T5 - Implement strict `.crapts.toml` loading and worktree-bounded lookup.**
   Needs: T1, T3. Implement `crates/crapts/src/config.rs` using
   `cargo_crap_core::config::find_upwards` stopped inclusively at the
   worktree root (or filesystem root outside Git). Parse strict TOML with

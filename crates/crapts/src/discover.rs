@@ -514,6 +514,9 @@ impl Worktree {
             return Ok(Self::default());
         }
         let root = PathBuf::from(git_name(git_line(&top.stdout)));
+        let root = root.canonicalize().map_err(|error| {
+            InputError::at(&root, format!("git rev-parse --show-toplevel: {error}"))
+        })?;
         Ok(Self {
             root: Some(root),
             prefix: git_prefix(cwd)?,
