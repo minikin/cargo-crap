@@ -285,7 +285,7 @@ source guard drops each file as it moves.
   Tests: acceptance through `run::run`, selected alone by
   `cargo test -p cargo-crap-core --test acceptance --locked`.
 
-- [ ] **T6 — Both crate names refer to the same public types.**
+- [x] **T6 — Both crate names refer to the same public types.**
   Needs: T4. Extend `tests/library_paths.rs` with the core paths beside the
   old imports, the identity of the LCOV, signal and duplicate model types,
   and the `filter`, `policy`, `run` and `gate` root re-exports.
