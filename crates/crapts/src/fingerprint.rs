@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::fmt::{self, Write as _};
 
-use oxc_ast::ast::{LogicalExpression, Program, StringLiteral, TSType, TemplateElement};
+use oxc_ast::ast::{
+    LogicalExpression, Program, StringLiteral, TSQualifiedName, TSType, TemplateElement,
+};
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{Kind, Token};
 use oxc_span::Span;
@@ -201,8 +203,8 @@ struct Literals {
 }
 
 impl<'a> Visit<'a> for Literals {
-    /// Oxc parses `T[][]` and `T['k']['k']` in a loop but nests one node per
-    /// suffix, so a recursive walk can exhaust the stack on valid input.
+    /// Oxc parses `T[][]`, `T['k']['k']` and `A.B.B` in a loop but nests one
+    /// node per suffix, so a recursive walk can exhaust the stack on valid input.
     fn visit_ts_type(
         &mut self,
         mut ty: &TSType<'a>,
@@ -217,6 +219,13 @@ impl<'a> Visit<'a> for Literals {
                 _ => return walk::walk_ts_type(self, ty),
             }
         }
+    }
+
+    /// A qualified name holds identifiers only.
+    fn visit_ts_qualified_name(
+        &mut self,
+        _: &TSQualifiedName<'a>,
+    ) {
     }
 
     fn visit_logical_expression(

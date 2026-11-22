@@ -458,3 +458,18 @@ fn a_library_caller_can_build_a_row_from_a_known_digest() {
     };
     assert_eq!(built.fingerprint.to_string(), PINNED[0].3);
 }
+
+#[test]
+fn long_qualified_type_names_fit_on_a_test_thread_stack() {
+    let count = 100_000;
+    let path = ".B".repeat(count);
+    let expected = print("short.ts", "function f() { return 1 }", "f");
+    for declaration in [
+        format!("type V = A{path};"),
+        format!("type Q = typeof a{path};"),
+        format!("class C implements A{path} {{}}"),
+    ] {
+        let source = format!("{declaration}\nfunction f() {{ return 1 }}");
+        assert_eq!(print("long.ts", &source, "f"), expected);
+    }
+}
