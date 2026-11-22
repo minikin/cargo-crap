@@ -79,6 +79,8 @@ pub struct DiscoveryScope {
 }
 
 impl DiscoveryScope {
+    /// # Errors
+    /// Filesystem lookup or Git ignore checks can fail for paths absent from the discovery result.
     pub fn keeps(
         &self,
         path: &Path,
@@ -167,6 +169,9 @@ struct Listing {
     leaves: BTreeSet<PathBuf>,
 }
 
+/// # Errors
+/// Root errors take precedence over invalid globs, which still fail an empty scan.
+/// Filesystem traversal and Git listing failures also return an input error.
 pub fn discover(
     roots: &[PathBuf],
     options: &DiscoveryOptions,
@@ -182,9 +187,9 @@ pub fn discover(
     } else {
         invoked.clone()
     };
+    let resolved = resolve_roots(roots, &invoked, &cwd, repository.as_deref())?;
     let defaults = compile(&options.defaults)?;
     let extras = compile(&options.excludes)?;
-    let resolved = resolve_roots(roots, &invoked, &cwd, repository.as_deref())?;
     let directories = resolved
         .iter()
         .filter(|root| root.is_dir)
@@ -295,8 +300,8 @@ fn resolve_roots(
                     format!("outside the repository at {}", repo.display()),
                 ));
             }
-            let kind = file_type_at(root, &absolute)?
-                .ok_or_else(|| InputError::at(root, "path does not exist"))?;
+            let kind =
+                file_type_at(root, &absolute)?.ok_or_else(|| InputError::missing_root(root))?;
             Ok(Root {
                 absolute,
                 is_dir: kind.is_dir(),
@@ -305,12 +310,34 @@ fn resolve_roots(
         .collect()
 }
 
+fn has_brace_group(head: &str) -> bool {
+    let mut chars = head.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '{' => return true,
+            '\\' => {
+                chars.next();
+            },
+            '[' => {
+                // Globset allows a literal ']' as the first class member after an optional negation.
+                chars.next_if(|c| matches!(c, '!' | '^'));
+                chars.next();
+                chars.by_ref().find(|&c| c == ']');
+            },
+            _ => {},
+        }
+    }
+    false
+}
+
 fn parent_variants(pattern: &str) -> Vec<&str> {
     // A globstar can match zero directories before an explicit parent, but cannot consume `..`.
     let mut variants = vec![pattern];
     let mut current = pattern;
     while let Some((head, tail)) = current.trim_start_matches("**/").split_once('/') {
         if head.starts_with('*')
+            || head.starts_with(".*")
+            || has_brace_group(head)
             || !glob(head).is_ok_and(|matcher| matcher.compile_matcher().is_match(".."))
         {
             break;
@@ -507,16 +534,15 @@ fn relative(
     cwd: &Path,
     path: &Path,
 ) -> OsString {
-    let Some(common) = cwd.ancestors().find(|dir| path.starts_with(dir)) else {
+    let Some((depth, tail)) = cwd
+        .ancestors()
+        .enumerate()
+        .find_map(|(depth, dir)| path.strip_prefix(dir).ok().map(|tail| (depth, tail)))
+    else {
         return path.as_os_str().to_owned();
     };
-    let up = cwd
-        .strip_prefix(common)
-        .unwrap()
-        .iter()
-        .map(|_| OsStr::new(".."));
-    let down = path.strip_prefix(common).unwrap().iter();
-    let parts: Vec<_> = up.chain(down).collect();
+    let up = std::iter::repeat_n(OsStr::new(".."), depth);
+    let parts: Vec<_> = up.chain(tail).collect();
     if parts.is_empty() {
         OsString::from(".")
     } else {
@@ -614,6 +640,9 @@ mod tests {
             "*/shared/x.ts",
             "??/shared/x.ts",
             r"\.\./shared/x.ts",
+            "**/.*/**",
+            ".*/**",
+            "{..,x}/**",
         ]
         .map(|p| ExcludePattern {
             pattern: p.to_owned(),
@@ -623,7 +652,11 @@ mod tests {
         let mut indices = Vec::new();
         for (path, expected) in [
             ("shared/x.ts", &[0][..]),
+            (".cache/y.ts", &[7, 8]),
+            ("shared/.cache/y.ts", &[7]),
+            ("x/y.ts", &[9]),
             ("../shared/x.ts", &[1, 3, 5, 6]),
+            ("../shared/.cache/y.ts", &[]),
             ("../../shared/x.ts", &[2]),
             ("../../x.ts", &[2]),
             ("../../../shared/x.ts", &[]),
@@ -631,6 +664,31 @@ mod tests {
             set.matches_into(Path::new(path), &mut indices);
             assert_eq!(indices, expected, "{path}");
             assert_eq!(set.is_match(Path::new(path)), !expected.is_empty());
+        }
+    }
+
+    #[test]
+    fn only_explicit_glob_heads_can_match_a_parent_component() {
+        assert!(!has_brace_group(r"\{a,b\}"));
+        for (head, expected) in [
+            ("??", true),
+            ("?.", true),
+            (".?", true),
+            ("[.][.]", true),
+            ("?*", true),
+            ("[.]*", true),
+            (r"\.\.", true),
+            ("[.{][.]", true),
+            ("[.a{].", true),
+            ("[^]{].", true),
+            ("*", false),
+            (".*", false),
+            ("{..,foo}", false),
+            ("?{.,x}", false),
+        ] {
+            let pattern = format!("{head}/shared/**");
+            let variants = parent_variants(&pattern);
+            assert_eq!(variants.contains(&"shared/**"), expected, "{head}");
         }
     }
 

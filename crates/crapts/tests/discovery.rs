@@ -847,6 +847,7 @@ fn a_recursive_exclusion_cannot_consume_parent_directory_components() {
     let cwd = dir.path().join("pkg");
     for file in [
         "pkg/in.ts",
+        "shared/.cache/y.ts",
         "shared/a.test.ts",
         "shared/dist/b.ts",
         "shared/gen/g.ts",
@@ -860,11 +861,14 @@ fn a_recursive_exclusion_cannot_consume_parent_directory_components() {
             git(dir.path(), &["init", "-q"]);
         }
         let mut options = DiscoveryOptions::new(&cwd);
-        options.excludes = ["**/gen/**", "**/ok.ts"].map(flag).to_vec();
+        options.excludes = ["**/gen/**", "**/ok.ts", "**/.*/**", ".*/**", "{..,x}/**"]
+            .map(flag)
+            .to_vec();
         let scan = discover(&roots, &options).unwrap();
         assert_eq!(
             scan.files,
             paths(&[
+                "../shared/.cache/y.ts",
                 "../shared/a.test.ts",
                 "../shared/dist/b.ts",
                 "../shared/gen/g.ts",
@@ -875,6 +879,11 @@ fn a_recursive_exclusion_cannot_consume_parent_directory_components() {
         assert_eq!(scan.unused_excludes, options.excludes);
         assert!(
             scan.scope
+                .keeps(Path::new("../shared/.cache/old.ts"))
+                .unwrap()
+        );
+        assert!(
+            scan.scope
                 .keeps(Path::new("../shared/old.test.ts"))
                 .unwrap()
         );
@@ -882,7 +891,12 @@ fn a_recursive_exclusion_cannot_consume_parent_directory_components() {
         let scan = discover(&roots, &options).unwrap();
         assert_eq!(
             scan.files,
-            paths(&["../shared/a.test.ts", "../shared/dist/b.ts", "in.ts"])
+            paths(&[
+                "../shared/.cache/y.ts",
+                "../shared/a.test.ts",
+                "../shared/dist/b.ts",
+                "in.ts"
+            ])
         );
         assert_eq!(scan.unused_excludes, Vec::<ExcludePattern>::new());
         assert!(!scan.scope.keeps(Path::new("../shared/gen/old.ts")).unwrap());
@@ -970,11 +984,9 @@ fn check_malformed_glob_failures() {
         assert!(text.starts_with("invalid glob src/["), "{text}");
         assert!(!text.contains(&cwd_text), "{text}");
 
-        let before_missing = discover(&paths(&["missing-dir"]), &opts).unwrap_err();
-        assert!(
-            before_missing.to_string().starts_with("invalid glob src/["),
-            "{before_missing}"
-        );
+        let missing = discover(&paths(&["gone.ts"]), &opts).unwrap_err();
+        assert_eq!(missing.path(), Path::new("gone.ts"));
+        assert_eq!(missing.to_string(), "path does not exist: gone.ts");
 
         let config_path = PathBuf::from("crapts.toml");
         opts.excludes = vec![ExcludePattern {

@@ -68,10 +68,23 @@ impl InputError {
         path: &Path,
         message: impl fmt::Display,
     ) -> Self {
+        let message = if path.as_os_str().is_empty() {
+            message.to_string()
+        } else {
+            format!("{}: {message}", path.display())
+        };
         Self {
             path: path.to_owned(),
             side: None,
-            message: message.to_string(),
+            message,
+        }
+    }
+
+    pub(crate) fn missing_root(path: &Path) -> Self {
+        Self {
+            path: path.to_owned(),
+            side: None,
+            message: format!("path does not exist: {}", path.display()),
         }
     }
 
@@ -83,6 +96,7 @@ impl InputError {
         }
     }
 
+    /// A failing flag or default glob has an empty path because it has no source file.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -106,16 +120,14 @@ impl fmt::Display for InputError {
             };
             write!(f, "{label} ")?;
         }
-        if self.path.as_os_str().is_empty() {
-            f.write_str(&self.message)
-        } else {
-            write!(f, "{}: {}", self.path.display(), self.message)
-        }
+        f.write_str(&self.message)
     }
 }
 
 impl std::error::Error for InputError {}
 
+/// # Errors
+/// Invalid UTF-8 and unknown extensions fail in either mode. Strict mode also rejects any parse diagnostic.
 pub fn analyze(
     path: &Path,
     bytes: &[u8],
@@ -125,10 +137,9 @@ pub fn analyze(
         Mode::Ordinary => None,
         Mode::Strict(side) => Some(side),
     };
-    let error = |message| InputError {
-        path: path.to_owned(),
+    let error = |message: String| InputError {
         side,
-        message,
+        ..InputError::at(path, message)
     };
     let source = std::str::from_utf8(bytes)
         .map_err(|e| error(format!("invalid UTF-8 at byte {}", e.valid_up_to())))?;
@@ -335,10 +346,11 @@ impl<'s> Collector<'s> {
                 .names
                 .resolve(inner.span(), None, Unit::FunctionExpression);
             self.new_row(name, span, false)
+        } else if let Some(ctor) = self.constructor {
+            ctor.row
         } else {
-            self.constructor
-                .expect("initialized instance field has a constructor")
-                .row
+            self.visit_expression(value);
+            return;
         };
         self.rows[row].body_regions.push(self.lines.span(span));
         self.with_owner(row, |v| {
