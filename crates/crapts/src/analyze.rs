@@ -789,6 +789,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_binding_name_does_not_determine_the_arrow_flag() {
+        for (source, is_arrow) in [
+            ("const f = () => 1", true),
+            ("const f = () => { return 1 }", true),
+            ("const f = function () { return 1 }", false),
+        ] {
+            let file = analyze(Path::new("a.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+            let [row] = &file.rows[..] else {
+                panic!("{source} produced {:?}", file.rows)
+            };
+            assert_eq!((row.name.as_str(), row.is_arrow), ("f", is_arrow));
+        }
+        let source = b"class C { a = 1; constructor() {} method() {} static s = build(() => 1) }";
+        let file = analyze(Path::new("a.ts"), source, Mode::Ordinary).unwrap();
+        let rows: Vec<_> = file
+            .rows
+            .iter()
+            .map(|row| (row.name.as_str(), row.is_arrow))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("C::constructor", false),
+                ("C::method", false),
+                ("C::static s", false),
+                ("C::static s::build()", true)
+            ]
+        );
+    }
+
+    #[test]
     fn completed_statements_release_their_naming_sites() {
         // Disjoint spans mask stale frames in the output, but retaining each
         // completed sibling would make the next lookup scan the entire file.

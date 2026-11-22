@@ -635,7 +635,7 @@ Spec 52 builds after Spec 50 rebases onto Spec 49. Every task is one jj change a
   hits, and overflow on the second `10^308` record. Property test in
   `lcov.rs` generating valid `SF`/`DA` records and permuting complete records
   with equal per-line sums to check invariant keys and line counts.
-- [ ] **T3 - Pin cargo-crap-core in crapts, add Row::is_arrow, and guard the workspace.**
+- [x] **T3 - Pin cargo-crap-core in crapts, add Row::is_arrow, and guard the workspace.**
   Add `cargo-crap-core = { path = "../cargo-crap-core", version = "=0.1.0" }`
   (matching the root package pin) and `serde` / `serde_json` (without
   `preserve_order`) in `crates/crapts/Cargo.toml` and update `Cargo.lock`.
