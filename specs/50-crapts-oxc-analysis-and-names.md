@@ -804,7 +804,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Apply ordinals after the full names are known (N10)_, _Pin the 78 compatibility examples_, _Resolve key, role and wrapper edge cases_.
   Tests: Unit tests for repeated full stems and per-file reset. Acceptance replays all 78 compatibility fixtures and 29 key, role and wrapper fixtures with their individual expected names. Exercise individual cases in the earlier rule tests as each rule lands.
 
-- [ ] **T20 - Check name stability and literal matching on generated source.** Needs: T19.
+- [x] **T20 - Check name stability and literal matching on generated source.** Needs: T19.
   Scenarios: _Name stability under edits that preserve naming sites_, _Generated names can be used literally_.
   Tests: Property tests through the analyzer and the anchored glob matcher. A file move, trivia edit or nested body edit preserving naming sites and stem order preserves the chosen name. A supplying identifier rename changes it. Equal stems number in source order, segments split intact and each emitted glob matches exactly its own row.
 
