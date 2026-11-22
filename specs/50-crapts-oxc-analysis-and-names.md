@@ -824,7 +824,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Select the eight source extensions case-sensitively_, _Apply default and caller-supplied exclusions_, _Explicit file roots use the same filters as directory roots_.
   Tests: Unit tests for the suffix and declaration-file rules. Acceptance for default, replacement and appended exclusions on directory roots and named files.
 
-- [ ] **T24 - Account for matching extra globs and reuse discovery scope on old paths.** Needs: T23.
+- [x] **T24 - Account for matching extra globs and reuse discovery scope on old paths.** Needs: T23.
   Scenarios: _Match path globs and account for unused exclusions_, _Apply discovery scope to old paths_.
   Tests: Acceptance for overlapping matches, ordered unused patterns with their origins, and present or absent paths across root, ignore and repository boundaries.
 
