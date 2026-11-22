@@ -4,9 +4,9 @@
 #[path = "support/schemas.rs"]
 mod schemas;
 
-use cargo_crap_core::coverage::CoverageKind;
+use cargo_crap_core::coverage::{CoverageKind, LineRange};
 use cargo_crap_core::delta::{Baseline, DEFAULT_EPSILON, load_crapts_baseline};
-use cargo_crap_core::entry::{CrapEntry, SortOrder};
+use cargo_crap_core::entry::{CrapEntry, ScopeDiagnostics, SortOrder, StrayFiles};
 use cargo_crap_core::filter::AllowSet;
 use cargo_crap_core::gate::GateOutcome;
 use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
@@ -18,7 +18,7 @@ use std::path::Path;
 
 const CRAPTS: Tool = Tool {
     policy: Policy {
-        envelope: EnvelopeKind::CargoCrapV1,
+        envelope: EnvelopeKind::CraptsV1,
         pairing: PairPolicy::FileFunction,
         fail_above_counts: Population::All,
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
@@ -28,12 +28,28 @@ const CRAPTS: Tool = Tool {
     version: "0.2.3",
     info_uri: "https://example.test/crapts",
     schemas: Schemas {
-        report: "https://example.test/crapts/report-v1.json",
-        delta: "https://example.test/crapts/delta-v1.json",
+        report: "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v1.json",
+        delta: "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/delta-v1.json",
     },
     comment_marker: "<!-- crapts-report -->",
     baseline_hint: "crapts --format json",
 };
+
+fn zero_diagnostics() -> ScopeDiagnostics {
+    ScopeDiagnostics {
+        analyzed_files: 0,
+        lcov_files: 0,
+        matched_files: 0,
+        source_only: StrayFiles {
+            count: 0,
+            examples: Vec::new(),
+        },
+        lcov_only: StrayFiles {
+            count: 0,
+            examples: Vec::new(),
+        },
+    }
+}
 
 struct Everything;
 
@@ -82,6 +98,9 @@ struct Knobs {
     sort: SortOrder,
     allow: Vec<String>,
     scope: &'static dyn Scope,
+    coverage_kind: CoverageKind,
+    fail_above: bool,
+    fail_regression: Option<bool>,
 }
 
 impl Default for Knobs {
@@ -94,6 +113,9 @@ impl Default for Knobs {
             sort: SortOrder::Crap,
             allow: Vec::new(),
             scope: &Everything,
+            coverage_kind: CoverageKind::Lines,
+            fail_above: false,
+            fail_regression: None,
         }
     }
 }
@@ -149,6 +171,58 @@ impl Report {
     }
 }
 
+fn write_crapts_baseline_file(
+    dir: &tempfile::TempDir,
+    name: &str,
+    tool: &Tool,
+    kind: CoverageKind,
+    entries: Vec<CrapEntry>,
+) -> std::path::PathBuf {
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = Settings {
+        allow: &allow,
+        min: None,
+        top: None,
+        sort: SortOrder::File,
+        threshold: 30.0,
+        epsilon: DEFAULT_EPSILON,
+        signals: &signals,
+        fail_above: false,
+        fail_regression: false,
+        format: Format::Json,
+        summary: false,
+        show_unchanged: false,
+        uncovered_hints: false,
+        width: None,
+        links: None,
+        cwd: Path::new(""),
+        workspace_root: None,
+        fail_sections: false,
+    };
+    let analysis = Analysis {
+        entries,
+        diagnostics: Some(zero_diagnostics()),
+        scope: &Everything,
+        coverage_kind: Some(kind),
+        notices: &[],
+    };
+    let mut out = Vec::new();
+    run::run(
+        tool,
+        &settings,
+        analysis,
+        None,
+        &[],
+        &RenderExtras::default(),
+        &mut out,
+    )
+    .expect("baseline renders");
+    let path = dir.path().join(name);
+    std::fs::write(&path, out).unwrap();
+    path
+}
+
 fn render_json(
     knobs: &Knobs,
     head: Vec<CrapEntry>,
@@ -164,8 +238,8 @@ fn render_json(
         threshold: 30.0,
         epsilon: knobs.epsilon,
         signals: &signals,
-        fail_above: false,
-        fail_regression: baseline.is_some(),
+        fail_above: knobs.fail_above,
+        fail_regression: knobs.fail_regression.unwrap_or(baseline.is_some()),
         format: Format::Json,
         summary: false,
         show_unchanged: false,
@@ -176,20 +250,36 @@ fn render_json(
         workspace_root: None,
         fail_sections: false,
     };
+    let is_delta = baseline.is_some();
+    let dir = tempfile::tempdir().unwrap();
     let prepared = baseline.map(|entries| {
-        BaselineFilter::new(knobs.scope, &allow).prepare(Baseline {
-            entries,
-            try_weight: cargo_crap_core::score::DEFAULT_TRY_WEIGHT,
-            duplicate_groups: None,
-        })
+        let filter = BaselineFilter::new(knobs.scope, &allow);
+        if knobs.tool.policy.envelope == EnvelopeKind::CraptsV1 {
+            let base_path = write_crapts_baseline_file(
+                &dir,
+                "base.json",
+                &knobs.tool,
+                knobs.coverage_kind,
+                entries,
+            );
+            let loaded = load_crapts_baseline(&base_path, &knobs.tool, knobs.coverage_kind)
+                .expect("written baseline loads");
+            filter.prepare_crapts(loaded)
+        } else {
+            filter.prepare(Baseline {
+                entries,
+                try_weight: cargo_crap_core::score::DEFAULT_TRY_WEIGHT,
+                duplicate_groups: None,
+            })
+        }
     });
     let mut head = head;
     head.retain(|r| knobs.scope.keeps(&r.file));
     let analysis = Analysis {
         entries: head,
-        diagnostics: None,
+        diagnostics: Some(zero_diagnostics()),
         scope: knobs.scope,
-        coverage_kind: None,
+        coverage_kind: Some(knobs.coverage_kind),
         notices: &[],
     };
     let mut out = Vec::new();
@@ -204,11 +294,17 @@ fn render_json(
     )
     .expect("the report renders");
     let raw = String::from_utf8(out).unwrap();
-    Report {
-        json: serde_json::from_str(&raw).expect("one JSON document"),
-        raw,
-        outcome,
+    let json: Value = serde_json::from_str(&raw).expect("one JSON document");
+    if knobs.tool.policy.envelope == EnvelopeKind::CraptsV1 {
+        let schema_path = if is_delta {
+            "schemas/crapts/delta-v1.json"
+        } else {
+            "schemas/crapts/report-v1.json"
+        };
+        let validator = schemas::compile(schema_path);
+        assert!(validator.is_valid(&json), "{schema_path} rejected:\n{raw}");
     }
+    Report { raw, json, outcome }
 }
 
 fn absolute(
@@ -554,6 +650,9 @@ fn scope_and_allows_apply_before_pairing() {
     assert_eq!(report.json["entries"].as_array().unwrap().len(), 1);
     assert_eq!(report.outcome.crappy, 0);
     assert_eq!(report.outcome.regressed, 0);
+    assert_eq!(report.json["summary"]["total"], 1);
+    assert_eq!(report.json["summary"]["crappy"], 0);
+    assert_eq!(report.json["summary"]["regressed"], 0);
 }
 
 #[test]
@@ -1066,4 +1165,573 @@ fn both_schemas_and_the_baseline_reader_enforce_semver() {
             assert!(msg.contains(bad_version), "{msg}");
         }
     }
+}
+
+#[test]
+fn a_caller_can_change_tie_policy_alone() {
+    // Given two fixture tools both named "audit" using the crapts envelope, identical except for tie_order
+    let audit_stable = Tool {
+        name: "audit",
+        policy: Policy {
+            tie_order: TieOrder::Stable,
+            ..CRAPTS.policy
+        },
+        ..CRAPTS
+    };
+    let audit_settled = Tool {
+        name: "audit",
+        policy: Policy {
+            tie_order: TieOrder::FileFunctionLine,
+            ..CRAPTS.policy
+        },
+        ..CRAPTS
+    };
+    // And two rows supplied as b.ts::b=40 then a.ts::a=40
+    let rows = || vec![row("b.ts", "b", 1, 40.0), row("a.ts", "a", 1, 40.0)];
+    // When each caller writes JSON with top 1
+    let stable_rep = absolute(
+        &Knobs {
+            tool: audit_stable,
+            top: Some(1),
+            ..Knobs::default()
+        },
+        rows(),
+    );
+    let settled_rep = absolute(
+        &Knobs {
+            tool: audit_settled,
+            top: Some(1),
+            ..Knobs::default()
+        },
+        rows(),
+    );
+    // Then Stable shows b.ts::b and FileFunctionLine shows a.ts::a
+    assert_eq!(
+        stable_rep.identities(),
+        vec![("b.ts".into(), "b".into(), 1)]
+    );
+    assert_eq!(
+        settled_rep.identities(),
+        vec![("a.ts".into(), "a".into(), 1)]
+    );
+    // And both report selection {"top":1,"min":null} and summary.crappy 2
+    for rep in [&stable_rep, &settled_rep] {
+        assert_eq!(rep.json["selection"], json!({"top": 1, "min": null}));
+        assert_eq!(rep.json["summary"]["crappy"], 2);
+    }
+}
+
+#[test]
+fn summary_counts_and_the_threshold_gate_include_eligible_rows_hidden_by_a_slice() {
+    // Given hot=50, warm=40, edge=30, an allowed skip=80, and baseline rows hot=50, warm=20, edge=30, gone=1
+    let head = vec![
+        row("src/a.ts", "hot", 1, 50.0),
+        row("src/a.ts", "warm", 2, 40.0),
+        row("src/a.ts", "edge", 3, 30.0),
+        row("src/a.ts", "skip", 4, 80.0),
+    ];
+    let baseline = vec![
+        row("src/a.ts", "hot", 1, 50.0),
+        row("src/a.ts", "warm", 2, 20.0),
+        row("src/a.ts", "edge", 3, 30.0),
+        row("src/a.ts", "gone", 5, 1.0),
+    ];
+    // When the caller requests min 51 and a JSON delta with fail-above enabled
+    let knobs = Knobs {
+        allow: vec!["skip".into()],
+        min: Some(51.0),
+        fail_above: true,
+        fail_regression: Some(false),
+        ..Knobs::default()
+    };
+    let report = compare(&knobs, head, baseline);
+    // Then entries is empty, selection is {"top":null,"min":51}, and removed contains only gone
+    assert_eq!(report.json["entries"], json!([]));
+    assert_eq!(report.json["selection"], json!({"top": null, "min": 51.0}));
+    assert_eq!(
+        report.removed(),
+        vec![("src/a.ts".to_owned(), "gone".to_owned(), 1.0)]
+    );
+    // And summary gives total 3, crappy 2, regressed 1, unchanged 2, removed 1 and all other status counts 0
+    assert_eq!(
+        report.json["summary"],
+        json!({
+            "total": 3,
+            "crappy": 2,
+            "regressed": 1,
+            "improved": 0,
+            "new": 0,
+            "moved": 0,
+            "unchanged": 2,
+            "removed": 1,
+            "changed_failures": null
+        })
+    );
+    // And the outcome gives crappy 2, regressed 1 and exit 1
+    assert_eq!(report.outcome.crappy, 2);
+    assert_eq!(report.outcome.regressed, 1);
+    assert_eq!(report.outcome.exit_code(), std::process::ExitCode::from(1));
+}
+
+#[test]
+fn a_summary_request_respects_the_tools_format_policy() {
+    // Given a row hot=50 and the seven formats of an absolute report
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let render = |format: Format, summary: bool| -> Vec<u8> {
+        let settings = Settings {
+            allow: &allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: DEFAULT_EPSILON,
+            signals: &signals,
+            fail_above: false,
+            fail_regression: false,
+            format,
+            summary,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: false,
+        };
+        let mut out = Vec::new();
+        run::run(
+            &CRAPTS,
+            &settings,
+            Analysis {
+                entries: vec![row("src/a.ts", "hot", 1, 50.0)],
+                diagnostics: Some(zero_diagnostics()),
+                scope: &Everything,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            None,
+            &[],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        out
+    };
+    // When the caller toggles summary with the crapts policy for Human, Markdown, PrComment
+    // Then the report has aggregate counts in place of the function table
+    for format in [Format::Human, Format::Markdown, Format::PrComment] {
+        let full = String::from_utf8(render(format, false)).unwrap();
+        let sum = String::from_utf8(render(format, true)).unwrap();
+        assert_ne!(full, sum, "{format:?}");
+        assert!(sum.contains("Analyzed: 1"), "{format:?}: {sum}");
+        assert!(sum.contains("Crappy: 1"), "{format:?}: {sum}");
+    }
+    // And for Json, GitHub, Sarif, Shields it has the same format and bytes as with summary switched off
+    for format in [Format::Json, Format::GitHub, Format::Sarif, Format::Shields] {
+        assert_eq!(render(format, false), render(format, true), "{format:?}");
+    }
+}
+
+#[test]
+fn even_an_empty_absolute_report_identifies_its_coverage() {
+    let schema = schemas::compile("schemas/crapts/report-v1.json");
+    for (kind, expected_kind) in [
+        (CoverageKind::Statements, "statements"),
+        (CoverageKind::Lines, "lines"),
+    ] {
+        // Given no rows, measured coverage kind <kind>, zero file counts and no sections
+        // When the caller writes an unsliced absolute JSON report
+        let report = absolute(
+            &Knobs {
+                coverage_kind: kind,
+                ..Knobs::default()
+            },
+            vec![],
+        );
+        // Then it validates against schemas/crapts/report-v1.json with version "0.2.3", name_scheme 1, threshold 30 and coverage_kind <kind>
+        assert!(schema.is_valid(&report.json), "{}", report.raw);
+        assert_eq!(report.json["version"], "0.2.3");
+        assert_eq!(report.json["name_scheme"], 1);
+        assert_eq!(report.json["threshold"], 30.0);
+        assert_eq!(report.json["coverage_kind"], expected_kind);
+        // And selection is null, notices and entries are [], total and crappy are 0, and all other summary counts are null
+        assert!(report.json["selection"].is_null());
+        assert_eq!(report.json["notices"], json!([]));
+        assert_eq!(report.json["entries"], json!([]));
+        assert_eq!(
+            report.json["summary"],
+            json!({
+                "total": 0,
+                "crappy": 0,
+                "regressed": null,
+                "improved": null,
+                "new": null,
+                "moved": null,
+                "unchanged": null,
+                "removed": null,
+                "changed_failures": null
+            })
+        );
+        // And diagnostics includes coverage_files 0 and coverage_only {"count":0,"examples":[]}
+        assert_eq!(report.json["diagnostics"]["coverage_files"], 0);
+        assert_eq!(
+            report.json["diagnostics"]["coverage_only"],
+            json!({"count": 0, "examples": []})
+        );
+    }
+}
+
+#[test]
+fn the_schema_distinguishes_missing_coverage_from_zero_coverage() {
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+    // Given the input file path src\f.ts and function f at line 7 with cyclomatic 2.0 (f64), coverage null and crap 6
+    let f = CrapEntry {
+        file: r"src\f.ts".into(),
+        function: "f".into(),
+        line: 7,
+        cyclomatic: 2.0,
+        coverage: None,
+        crap: 6.0,
+        ..CrapEntry::default()
+    };
+    // And g in that file has coverage 0 and an uncovered range from 12 to 14 inclusive
+    let g = CrapEntry {
+        file: r"src\f.ts".into(),
+        function: "g".into(),
+        line: 11,
+        cyclomatic: 1.0,
+        coverage: Some(0.0),
+        crap: 2.0,
+        uncovered: vec![LineRange { start: 12, end: 14 }],
+        ..CrapEntry::default()
+    };
+    // When the caller writes absolute and delta JSON
+    let abs = absolute(&Knobs::default(), vec![f.clone(), g.clone()]);
+    let delta = compare(&Knobs::default(), vec![f, g], vec![]);
+    // Then both file strings are "src/f.ts", f has coverage null and g has coverage 0
+    // And the JSON token for f's cyclomatic is the integer literal 2 in both reports
+    // And f omits uncovered, g writes [{"start":12,"end":14}], and the two documents validate against their respective schemas
+    for (rep, schema) in [(&abs, &abs_schema), (&delta, &delta_schema)] {
+        assert!(schema.is_valid(&rep.json), "{}", rep.raw);
+        let f_json = rep.entry("src/f.ts", "f");
+        let g_json = rep.entry("src/f.ts", "g");
+        assert!(f_json["coverage"].is_null());
+        assert_eq!(g_json["coverage"].as_f64(), Some(0.0));
+        assert!(rep.raw.contains("\"cyclomatic\": 2,"), "{}", rep.raw);
+        assert!(!rep.raw.contains("\"cyclomatic\": 2.0"), "{}", rep.raw);
+        assert!(f_json.get("uncovered").is_none());
+        assert_eq!(g_json["uncovered"], json!([{"start": 12, "end": 14}]));
+    }
+}
+
+#[test]
+fn the_crapts_json_writer_rejects_fractional_complexity() {
+    let dir = tempfile::tempdir().unwrap();
+    let base_path =
+        write_crapts_baseline_file(&dir, "base.json", &CRAPTS, CoverageKind::Lines, vec![]);
+    let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
+    let allow = AllowSet::compile(&[]).unwrap();
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+    let signals = SignalSettings::default();
+    let settings = Settings {
+        allow: &allow,
+        min: None,
+        top: None,
+        sort: SortOrder::File,
+        threshold: 30.0,
+        epsilon: DEFAULT_EPSILON,
+        signals: &signals,
+        fail_above: false,
+        fail_regression: false,
+        format: Format::Json,
+        summary: false,
+        show_unchanged: false,
+        uncovered_hints: false,
+        width: None,
+        links: None,
+        cwd: Path::new(""),
+        workspace_root: None,
+        fail_sections: false,
+    };
+    // Given src/f.ts::f with cyclomatic 2.5 and otherwise valid scored data
+    let bad = CrapEntry {
+        file: "src/f.ts".into(),
+        function: "f".into(),
+        line: 1,
+        cyclomatic: 2.5,
+        coverage: Some(100.0),
+        crap: 2.5,
+        ..CrapEntry::default()
+    };
+    // When the caller requests absolute or delta JSON through run
+    for base in [None, Some(&prepared)] {
+        let mut out = Vec::new();
+        let err = run::run(
+            &CRAPTS,
+            &settings,
+            Analysis {
+                entries: vec![bad.clone()],
+                diagnostics: Some(zero_diagnostics()),
+                scope: &Everything,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            base,
+            &[],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .expect_err("fractional cyclomatic must fail");
+        // Then run returns Err naming cyclomatic and 2.5
+        let msg = format!("{err:#}");
+        assert!(msg.contains("cyclomatic"), "{msg}");
+        assert!(msg.contains("2.5"), "{msg}");
+        assert_eq!(out, [] as [u8; 0]);
+    }
+}
+
+#[test]
+fn both_crapts_report_shapes_admit_rows_without_a_wire_fingerprint() {
+    let dir = tempfile::tempdir().unwrap();
+    // Given a CrapEntry with fingerprint Some containing 64 lowercase a's and a second row with None
+    let mut first = row("src/a.ts", "first", 1, 20.0);
+    first.fingerprint = Some("a".repeat(64));
+    let second = row("src/a.ts", "second", 5, 10.0);
+    // When the caller writes crapts absolute and delta reports and reloads each as a baseline
+    let abs = absolute(&Knobs::default(), vec![first.clone(), second.clone()]);
+    let delta = compare(
+        &Knobs::default(),
+        vec![first.clone(), second.clone()],
+        vec![],
+    );
+    // Then neither row object in either document contains a fingerprint key
+    for (name, rep) in [("abs.json", &abs), ("delta.json", &delta)] {
+        for entry in rep.json["entries"].as_array().unwrap() {
+            assert!(entry.get("fingerprint").is_none(), "{name}: {}", rep.raw);
+        }
+        let path = dir.path().join(name);
+        std::fs::write(&path, &rep.raw).unwrap();
+        // And both complete reports are admitted and their rows pair by file and name
+        let loaded = load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines).unwrap();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+        let signals = SignalSettings::default();
+        let settings = Settings {
+            allow: &allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: DEFAULT_EPSILON,
+            signals: &signals,
+            fail_above: false,
+            fail_regression: false,
+            format: Format::Json,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: false,
+        };
+        let mut out = Vec::new();
+        run::run(
+            &CRAPTS,
+            &settings,
+            Analysis {
+                entries: vec![
+                    row("src/a.ts", "first", 99, 25.0),
+                    row("src/a.ts", "second", 105, 10.0),
+                ],
+                diagnostics: Some(zero_diagnostics()),
+                scope: &Everything,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            Some(&prepared),
+            &[],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        let next: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(next["entries"][0]["delta"], 5.0);
+        assert_eq!(next["entries"][1]["delta"], 0.0);
+    }
+}
+
+#[test]
+fn v1_reserves_a_valid_optional_row_fingerprint_for_a_later_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+    // Given a complete absolute and delta report for src/a.ts::f at score 20 and a copy with a row fingerprint of 64 lowercase a's
+    let abs = absolute(&Knobs::default(), vec![row("src/a.ts", "f", 1, 20.0)]);
+    let delta = compare(
+        &Knobs::default(),
+        vec![row("src/a.ts", "f", 1, 20.0)],
+        vec![row("src/a.ts", "f", 1, 15.0)],
+    );
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = Settings {
+        allow: &allow,
+        min: None,
+        top: None,
+        sort: SortOrder::File,
+        threshold: 30.0,
+        epsilon: DEFAULT_EPSILON,
+        signals: &signals,
+        fail_above: false,
+        fail_regression: false,
+        format: Format::Json,
+        summary: false,
+        show_unchanged: false,
+        uncovered_hints: false,
+        width: None,
+        links: None,
+        cwd: Path::new(""),
+        workspace_root: None,
+        fail_sections: false,
+    };
+    for (shape, orig, schema) in [
+        ("abs", &abs.json, &abs_schema),
+        ("delta", &delta.json, &delta_schema),
+    ] {
+        let mut with_fp = orig.clone();
+        with_fp["entries"][0]["fingerprint"] = json!("a".repeat(64));
+        // When the offline schema validator and the public crapts baseline loader read each document
+        for (tag, doc) in [("plain", orig), ("fp", &with_fp)] {
+            assert!(schema.is_valid(doc), "{shape}/{tag}");
+            let path = write_json(&dir, &format!("{shape}-{tag}.json"), doc);
+            let loaded = load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines).unwrap();
+            let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+            let mut out = Vec::new();
+            run::run(
+                &CRAPTS,
+                &settings,
+                Analysis {
+                    entries: vec![row("src/a.ts", "f", 1, 22.0)],
+                    diagnostics: Some(zero_diagnostics()),
+                    scope: &Everything,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                Some(&prepared),
+                &[],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            // Then comparing head f=22 against either gives the same pair and delta 2
+            let next: Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(next["entries"][0]["baseline_crap"], 20.0);
+            assert_eq!(next["entries"][0]["delta"], 2.0);
+            assert_eq!(next["entries"][0]["status"], "regressed");
+        }
+    }
+}
+
+#[test]
+fn a_complete_saved_report_supplies_just_its_current_rows_as_the_next_baseline() {
+    let dir = tempfile::tempdir().unwrap();
+    // Given an unsliced absolute and delta report recording src/a.ts::run at 20 (for delta: baseline_crap 5 and removed old.ts::gone)
+    let abs = absolute(&Knobs::default(), vec![row("src/a.ts", "run", 1, 20.0)]);
+    let delta = compare(
+        &Knobs::default(),
+        vec![row("src/a.ts", "run", 1, 20.0)],
+        vec![
+            row("src/a.ts", "run", 1, 5.0),
+            row("old.ts", "gone", 1, 9.0),
+        ],
+    );
+    assert_eq!(delta.entry("src/a.ts", "run")["baseline_crap"], 5.0);
+    assert_eq!(
+        delta.removed(),
+        vec![("old.ts".to_owned(), "gone".to_owned(), 9.0)]
+    );
+
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = Settings {
+        allow: &allow,
+        min: None,
+        top: None,
+        sort: SortOrder::File,
+        threshold: 30.0,
+        epsilon: DEFAULT_EPSILON,
+        signals: &signals,
+        fail_above: false,
+        fail_regression: false,
+        format: Format::Json,
+        summary: false,
+        show_unchanged: false,
+        uncovered_hints: false,
+        width: None,
+        links: None,
+        cwd: Path::new(""),
+        workspace_root: None,
+        fail_sections: false,
+    };
+    for (name, rep) in [("abs.json", &abs), ("delta.json", &delta)] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, &rep.raw).unwrap();
+        // When a caller loads this report and compares src/a.ts::run at 22
+        let loaded = load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines).unwrap();
+        let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+        let mut out = Vec::new();
+        run::run(
+            &CRAPTS,
+            &settings,
+            Analysis {
+                entries: vec![row("src/a.ts", "run", 1, 22.0)],
+                diagnostics: Some(zero_diagnostics()),
+                scope: &Everything,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            Some(&prepared),
+            &[],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        // Then the only pair has baseline_crap 20 and delta 2, and removed is empty
+        let next: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(next["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(next["entries"][0]["baseline_crap"], 20.0);
+        assert_eq!(next["entries"][0]["delta"], 2.0);
+        assert_eq!(next["removed"], json!([]));
+    }
+}
+
+#[test]
+fn an_effective_selection_is_recorded_even_when_every_row_fits() {
+    let dir = tempfile::tempdir().unwrap();
+    // Given an analysis with one row at score 40 and resolved top 5 and min 10
+    let sliced = absolute(
+        &Knobs {
+            top: Some(5),
+            min: Some(10.0),
+            ..Knobs::default()
+        },
+        vec![row("src/a.ts", "f", 1, 40.0)],
+    );
+    // When the caller writes absolute JSON first with those limits, then with both cleared for all-rows
+    let unsliced = absolute(&Knobs::default(), vec![row("src/a.ts", "f", 1, 40.0)]);
+    // Then the first report has selection {"top":5,"min":10} and is refused as a baseline
+    assert_eq!(sliced.json["selection"], json!({"top": 5, "min": 10.0}));
+    let sliced_path = dir.path().join("sliced.json");
+    std::fs::write(&sliced_path, &sliced.raw).unwrap();
+    assert!(load_crapts_baseline(&sliced_path, &CRAPTS, CoverageKind::Lines).is_err());
+    // And the second has selection null and is admitted, with the same current row in both reports
+    assert!(unsliced.json["selection"].is_null());
+    let unsliced_path = dir.path().join("unsliced.json");
+    std::fs::write(&unsliced_path, &unsliced.raw).unwrap();
+    assert!(load_crapts_baseline(&unsliced_path, &CRAPTS, CoverageKind::Lines).is_ok());
+    assert_eq!(sliced.json["entries"], unsliced.json["entries"]);
 }

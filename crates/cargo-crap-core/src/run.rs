@@ -2,7 +2,8 @@
 
 use crate::coverage::CoverageKind;
 use crate::delta::{
-    Baseline, CraptsBaseline, DeltaCounts, attach_reasons, compare, gating_signal_count,
+    Baseline, CraptsBaseline, DeltaCounts, DeltaReport, attach_reasons, compare,
+    gating_signal_count,
 };
 use crate::duplicates::{
     compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, verdict::Assessment,
@@ -10,6 +11,7 @@ use crate::duplicates::{
 use crate::entry::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::filter::{self, AllowSet};
 use crate::gate::{GateOutcome, threshold_count};
+use crate::policy::EnvelopeKind;
 use crate::report::{self, Format, RenderOptions, Section, SourceLinks, Tool, TriagedBy};
 use crate::score::DEFAULT_TRY_WEIGHT;
 use crate::signals::SignalSettings;
@@ -59,6 +61,7 @@ impl<'a> BaselineFilter<'a> {
         }
         PreparedBaseline {
             baseline,
+            baseline_version: None,
             notice: None,
         }
     }
@@ -75,6 +78,7 @@ impl<'a> BaselineFilter<'a> {
                 try_weight: DEFAULT_TRY_WEIGHT,
                 duplicate_groups: None,
             },
+            baseline_version: Some(baseline.baseline_version),
             notice: baseline.notice,
         }
     }
@@ -91,6 +95,7 @@ impl<'a> BaselineFilter<'a> {
 #[derive(Debug)]
 pub struct PreparedBaseline {
     baseline: Baseline,
+    baseline_version: Option<String>,
     notice: Option<String>,
 }
 
@@ -103,6 +108,10 @@ impl PreparedBaseline {
     #[must_use]
     pub fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
+    }
+
+    pub(crate) fn baseline_version(&self) -> Option<&str> {
+        self.baseline_version.as_deref()
     }
 }
 
@@ -237,10 +246,31 @@ pub fn run(
         try_weight: extras.try_weight,
     };
     let summary = tool.policy.use_summary(settings.summary, settings.format);
-    let (regressed, gating_signals) = if let Some(baseline) = baseline {
-        write_delta(settings, &eligible, shown, baseline, &options, summary, out)?
+    let crappy = threshold_count(
+        tool.policy.fail_above_counts,
+        &eligible,
+        shown,
+        settings.threshold,
+    );
+    let (regressed, gating_signals) = if summary {
+        write_summary(settings, &eligible, shown, baseline, tool, out)?
+    } else if tool.policy.envelope == EnvelopeKind::CraptsV1 && settings.format == Format::Json {
+        write_crapts_json(
+            tool,
+            settings,
+            &eligible,
+            shown,
+            crappy,
+            analysis.coverage_kind,
+            analysis.diagnostics.as_ref(),
+            analysis.notices,
+            baseline,
+            out,
+        )?
+    } else if let Some(baseline) = baseline {
+        write_delta(settings, &eligible, shown, baseline, &options, out)?
     } else {
-        write_absolute(settings, shown, &options, summary, out)?;
+        report::render(shown, &options, out)?;
         (0, 0)
     };
     report::render_duplicates(&options, out).context("writing duplicate report")?;
@@ -249,12 +279,7 @@ pub fn run(
     Ok(GateOutcome {
         section_failures,
         ..GateOutcome::from_counts(
-            threshold_count(
-                tool.policy.fail_above_counts,
-                &eligible,
-                shown,
-                settings.threshold,
-            ),
+            crappy,
             regressed,
             gating_signals,
             settings.fail_above,
@@ -263,22 +288,26 @@ pub fn run(
     })
 }
 
-fn write_delta(
+fn collect_notices<'a>(
+    caller: &'a [String],
+    baseline: Option<&'a PreparedBaseline>,
+) -> Vec<&'a str> {
+    let mut all: Vec<&str> = caller.iter().map(String::as_str).collect();
+    if let Some(notice) = baseline.and_then(PreparedBaseline::notice) {
+        all.push(notice);
+    }
+    all
+}
+
+fn compute_prepared_delta(
     settings: &Settings<'_>,
     eligible: &[CrapEntry],
     shown: &[CrapEntry],
     baseline: &PreparedBaseline,
-    options: &RenderOptions<'_>,
-    summary: bool,
-    out: &mut dyn Write,
-) -> Result<(usize, usize)> {
+    tool: &Tool,
+) -> (DeltaReport, DeltaCounts, usize) {
     let before = &baseline.as_baseline().entries;
-    let mut delta = compare(
-        eligible,
-        before,
-        settings.epsilon,
-        options.tool.policy.pairing,
-    );
+    let mut delta = compare(eligible, before, settings.epsilon, tool.policy.pairing);
     if settings.signals.enabled {
         attach_reasons(
             &mut delta,
@@ -293,34 +322,96 @@ fn write_delta(
     let counts = delta.counts();
     let gating_signals = gating_signal_count(&delta);
     delta.restrict_to(shown);
-    delta.sort_with_ties(settings.sort, options.tool.policy.tie_order);
-    if summary {
-        render_delta_summary_lines(&counts, gating_signals, out)?;
-    } else {
-        report::render_delta(
-            &delta,
-            &RenderOptions {
-                delta_counts: Some(counts),
-                ..*options
-            },
-            out,
-        )?;
-    }
+    delta.sort_with_ties(settings.sort, tool.policy.tie_order);
+    (delta, counts, gating_signals)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal dispatch carrying run inputs without allocating an intermediate wrapper"
+)]
+fn write_crapts_json(
+    tool: &Tool,
+    settings: &Settings<'_>,
+    eligible: &[CrapEntry],
+    shown: &[CrapEntry],
+    crappy: usize,
+    coverage_kind: Option<CoverageKind>,
+    diagnostics: Option<&ScopeDiagnostics>,
+    caller_notices: &[String],
+    baseline: Option<&PreparedBaseline>,
+    out: &mut dyn Write,
+) -> Result<(usize, usize)> {
+    let coverage_kind =
+        coverage_kind.ok_or_else(|| anyhow::anyhow!("crapts JSON requires coverage_kind"))?;
+    let diagnostics =
+        diagnostics.ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
+    let notices = collect_notices(caller_notices, baseline);
+    let selection =
+        (settings.top.is_some() || settings.min.is_some()).then_some(report::CraptsSelection {
+            top: settings.top,
+            min: settings.min,
+        });
+    let ctx = report::CraptsJsonContext {
+        tool,
+        coverage_kind,
+        threshold: settings.threshold,
+        selection,
+        notices: &notices,
+        total: eligible.len(),
+        crappy,
+        diagnostics,
+    };
+    let Some(baseline) = baseline else {
+        report::render_crapts_json(shown, &ctx, out)?;
+        return Ok((0, 0));
+    };
+    let baseline_version = baseline.baseline_version().ok_or_else(|| {
+        anyhow::anyhow!("crapts delta JSON requires a baseline prepared with prepare_crapts")
+    })?;
+    let (delta, counts, gating_signals) =
+        compute_prepared_delta(settings, eligible, shown, baseline, tool);
+    report::render_crapts_delta_json(&delta, &counts, baseline_version, &ctx, out)?;
     Ok((counts.regressed, gating_signals))
 }
 
-fn write_absolute(
+fn write_summary(
     settings: &Settings<'_>,
+    eligible: &[CrapEntry],
     shown: &[CrapEntry],
-    options: &RenderOptions<'_>,
-    summary: bool,
+    baseline: Option<&PreparedBaseline>,
+    tool: &Tool,
     out: &mut dyn Write,
-) -> Result<()> {
-    if summary {
-        report::render_summary(shown, settings.threshold, settings.width, out)
-    } else {
-        report::render(shown, options, out)
-    }
+) -> Result<(usize, usize)> {
+    let Some(baseline) = baseline else {
+        report::render_summary(shown, settings.threshold, settings.width, out)?;
+        return Ok((0, 0));
+    };
+    let (_, counts, gating_signals) =
+        compute_prepared_delta(settings, eligible, shown, baseline, tool);
+    render_delta_summary_lines(&counts, gating_signals, out)?;
+    Ok((counts.regressed, gating_signals))
+}
+
+fn write_delta(
+    settings: &Settings<'_>,
+    eligible: &[CrapEntry],
+    shown: &[CrapEntry],
+    baseline: &PreparedBaseline,
+    options: &RenderOptions<'_>,
+    out: &mut dyn Write,
+) -> Result<(usize, usize)> {
+    let (delta, counts, gating_signals) =
+        compute_prepared_delta(settings, eligible, shown, baseline, options.tool);
+    report::render_delta(
+        &delta,
+        &RenderOptions {
+            delta_counts: Some(counts),
+            ..*options
+        },
+        out,
+    )?;
+    Ok((counts.regressed, gating_signals))
 }
 
 fn render_delta_summary_lines(
@@ -632,6 +723,7 @@ mod tests {
         });
         let prepared_crapts = filter.prepare_crapts(CraptsBaseline {
             entries: rows,
+            baseline_version: "0.1.9".into(),
             notice: Some("skip note".into()),
         });
         let names = |p: &PreparedBaseline| -> Vec<String> {
@@ -646,7 +738,134 @@ mod tests {
         assert_eq!(prepared_crapts.as_baseline().try_weight, DEFAULT_TRY_WEIGHT);
         assert!(prepared_crapts.as_baseline().duplicate_groups.is_none());
         assert_eq!(prepared_plain.notice(), None);
+        assert_eq!(prepared_plain.baseline_version(), None);
         assert_eq!(prepared_crapts.notice(), Some("skip note"));
+        assert_eq!(prepared_crapts.baseline_version(), Some("0.1.9"));
+    }
+
+    fn crapts_test_tool() -> Tool {
+        use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+        Tool {
+            policy: Policy {
+                envelope: EnvelopeKind::CraptsV1,
+                pairing: PairPolicy::FileFunction,
+                fail_above_counts: Population::All,
+                summary_formats: &[Format::Human],
+                tie_order: TieOrder::FileFunctionLine,
+            },
+            version: "0.2.3",
+            ..crate::report::test_support::SECOND_TOOL
+        }
+    }
+
+    fn empty_test_diag() -> ScopeDiagnostics {
+        ScopeDiagnostics {
+            analyzed_files: 0,
+            lcov_files: 0,
+            matched_files: 0,
+            source_only: crate::entry::StrayFiles {
+                count: 0,
+                examples: Vec::new(),
+            },
+            lcov_only: crate::entry::StrayFiles {
+                count: 0,
+                examples: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn crapts_json_rejects_missing_metadata_and_orders_notices() {
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let settings = Settings {
+            allow: &allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: crate::delta::DEFAULT_EPSILON,
+            signals: &signals,
+            fail_above: false,
+            fail_regression: false,
+            format: Format::Json,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: false,
+        };
+        let run_case = |kind: Option<CoverageKind>,
+                        diag: Option<ScopeDiagnostics>,
+                        base: Option<&PreparedBaseline>| {
+            let mut out = Vec::new();
+            let res = run(
+                &tool,
+                &settings,
+                Analysis {
+                    entries: Vec::new(),
+                    diagnostics: diag,
+                    scope: &AllFiles,
+                    coverage_kind: kind,
+                    notices: &[],
+                },
+                base,
+                &[],
+                &RenderExtras::default(),
+                &mut out,
+            );
+            (res.unwrap_err().to_string(), out)
+        };
+
+        let (err, out) = run_case(None, Some(empty_test_diag()), None);
+        assert!(err.contains("coverage_kind") && out.is_empty(), "{err}");
+        let (err, out) = run_case(Some(CoverageKind::Lines), None, None);
+        assert!(err.contains("diagnostics") && out.is_empty(), "{err}");
+        let plain_base = BaselineFilter::new(&AllFiles, &allow).prepare(Baseline {
+            entries: Vec::new(),
+            try_weight: DEFAULT_TRY_WEIGHT,
+            duplicate_groups: None,
+        });
+        let (err, out) = run_case(
+            Some(CoverageKind::Lines),
+            Some(empty_test_diag()),
+            Some(&plain_base),
+        );
+        assert!(err.contains("prepare_crapts") && out.is_empty(), "{err}");
+
+        let cross_base = BaselineFilter::new(&AllFiles, &allow).prepare_crapts(CraptsBaseline {
+            entries: Vec::new(),
+            baseline_version: "0.1.9".into(),
+            notice: Some("baseline notice".into()),
+        });
+        let caller_notices = ["caller notice".to_owned()];
+        let mut out = Vec::new();
+        run(
+            &tool,
+            &settings,
+            Analysis {
+                entries: Vec::new(),
+                diagnostics: Some(empty_test_diag()),
+                scope: &AllFiles,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &caller_notices,
+            },
+            Some(&cross_base),
+            &[],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            doc["notices"],
+            serde_json::json!(["caller notice", "baseline notice"])
+        );
+        assert_eq!(doc["regression_gate"]["skipped"], true);
     }
 
     #[test]

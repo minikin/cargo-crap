@@ -668,7 +668,7 @@ the first byte, like a missing coverage kind.
   major/minor comparison, unit for scope and allow parity between
   `prepare_crapts` and `prepare`, acceptance with handwritten documents
   and the offline validator.
-- [ ] **T5 - Write the crapts v1 envelope.** Needs: T3, T4.
+- [x] **T5 - Write the crapts v1 envelope.** Needs: T3, T4.
   `EnvelopeKind::CraptsV1` for absolute and delta JSON: outer member order,
   `selection`, `regression_gate` with its computed `skipped`, `notices`, full-population summary with
   `Population::All`, the diagnostics mapping, integer cyclomatic,

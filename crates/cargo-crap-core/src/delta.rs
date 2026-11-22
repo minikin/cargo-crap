@@ -450,6 +450,7 @@ pub fn load_baseline_with_weight(
 #[derive(Debug, Clone)]
 pub struct CraptsBaseline {
     pub(crate) entries: Vec<CrapEntry>,
+    pub(crate) baseline_version: String,
     pub(crate) notice: Option<String>,
 }
 
@@ -498,7 +499,11 @@ fn parse_crapts_baseline(
             tool.name, baseline_version, tool.name, tool.version
         )
     });
-    Ok(CraptsBaseline { entries, notice })
+    Ok(CraptsBaseline {
+        entries,
+        baseline_version,
+        notice,
+    })
 }
 
 pub(crate) fn is_valid_semver(s: &str) -> bool {
