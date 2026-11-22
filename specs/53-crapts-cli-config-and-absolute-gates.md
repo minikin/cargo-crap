@@ -713,6 +713,218 @@ And   all fourteen canonical config keys and all three aliases parse with repres
 
 ## Tasks
 
+Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.99.0`). Every task is one jj change and passes `RUSTUP_TOOLCHAIN=1.99.0 just dev` and `RUSTUP_TOOLCHAIN=1.99.0 just dev-mutants-diff` with `INSTA_UPDATE=no`. Until T7 lands, core compatibility and policy tests exercise the new core fields directly through `cargo-crap` and fixture tools.
+
+- [ ] **T1 - Add core upward config search and base-relative allow matching.**
+  Add `cargo_crap_core::config::find_upwards(start, name, stop_at)` in
+  `crates/cargo-crap-core/src/{lib,config}.rs` to check `start` and ancestors
+  through inclusive `stop_at` (or the filesystem root when `None`) while
+  propagating non-absence I/O errors. Add
+  `AllowSet::compile_with_bases(cwd, patterns)` in
+  `crates/cargo-crap-core/src/filter.rs`, owning normalized bases, matching
+  path globs by re-expressing paths relative to each pattern's base with
+  component-suffix fallback, preserving `AllowSet::compile(&[String])`, and
+  supporting name-glob syntax (`?`, `[!ab]`, braces, backslash quoting, `*`
+  crossing `::`, literal `name:`). Scenarios: none directly at the process
+  boundary (exercised end-to-end in T6 and T7). Tests: unit tests for
+  `find_upwards` boundary/error cases and `AllowSet::compile_with_bases`
+  base-relative, suffix, and name-glob syntax, plus property tests (proptest)
+  for nearest-ancestor precedence and equivalence with `AllowSet::compile`
+  when bases equal `cwd`.
+- [ ] **T2 - Extend core policy, settings, renderers and migrate cargo-crap.**
+  Add `signal_detail_hint: Option<&'static str>` to `policy::Policy` in
+  `crates/cargo-crap-core/src/policy.rs` and apply it in
+  `crates/cargo-crap-core/src/report/summary.rs` on positive signal
+  regressions. Add `pr_comment_marker: Option<&'a str>` and
+  `repo_prefix: Option<&'a Path>` to `run::Settings<'a>` and
+  `report::RenderOptions<'a>` (`RenderOptions::new` sets both to `None`) in
+  `crates/cargo-crap-core/src/{run,report}.rs` and update
+  `crates/cargo-crap-core/src/report/{tool,test_support,links,pr_comment,github,sarif}.rs`
+  so `pr_comment_marker` overrides only `PrComment` (including summaries),
+  `repo_prefix` projects cwd-relative paths with lexical dot-component
+  collapse and normalized separators for link URLs, GitHub `file` properties
+  and SARIF artifact URIs without altering JSON rows, and workflow command
+  encoding escapes `%`, CR, LF, `:`, and `,`. Migrate `src/{main,tool}.rs`,
+  `tests/{acceptance,library_paths,crapts_policy}.rs`, and
+  `crates/cargo-crap-core/tests/acceptance.rs` keeping `cargo-crap`'s
+  existing hint (`Some("run without --summary for the reasons")`) and `None`
+  overrides. Scenarios: _Cargo-crap keeps its recorded reports_,
+  _A language-specific hint follows the caller's policy_. Tests: unit tests
+  for hint formatting, marker override isolation, lexical `repo_prefix`
+  projection including `../shared.ts`, and workflow command escaping,
+  property tests (proptest) for path-projection normalization, and acceptance
+  tests for the Spec 44 golden matrix in default and `--all-features` builds
+  with `INSTA_UPDATE=no`, width snapshots, and the alternate-tool hint.
+- [ ] **T3 - Wire the crapts binary target and parser guard.** Needs: T1, T2.
+  Add the `crapts` `[[bin]]` target and CLI dependencies (`clap`, `toml`,
+  preserving the workspace pin to `cargo-crap-core`) in
+  `crates/crapts/Cargo.toml` and `Cargo.lock`, with a minimal `src/main.rs`
+  entry point. Update `tests/workspace.rs`, `scripts/gates/parser-guard.sh`,
+  and `scripts/gates/test.sh` so workspace package checks cover the new
+  binary and the parser guard enforces no `oxc_` in `cargo-crap`, neither
+  `oxc_` nor `syn ` in `cargo-crap-core`, and no `syn ` in `crapts`.
+  Scenarios: none. Tests: unit/integration checks in `tests/workspace.rs`
+  and `bash scripts/gates/parser-guard.sh` plus `bash scripts/gates/test.sh`.
+- [ ] **T4 - Extend crapts discovery with glob origins, bases and Git-free fallback.**
+  Needs: T3. Update `crapts::discover` in `crates/crapts/src/discover.rs` so
+  default and extra exclusions take
+  `ExcludePattern { pattern, origin, base_dir }` with
+  `GlobOrigin::{Default, Config(PathBuf), Flag}`, lexically normalize base
+  directories before compiling globs, re-express paths relative to each
+  pattern's base, retain original spelling and origin in unused exclusions
+  and original bases in `Discovery.scope`, and format unused-exclude
+  warnings. Probe Git (`git rev-parse --show-toplevel` and
+  `git rev-parse --is-inside-work-tree --show-prefix`) returning exit-2
+  diagnostics on post-probe Git failures, and implement the Git-free
+  fallback walking ordinary files (skipping `.git` and `node_modules`) while
+  recognizing the nearest `.git` directory or gitfile as the worktree root
+  and deriving `repo_prefix`. Scenarios: none directly at the binary
+  (wired into CLI acceptance in T6, T7, T8 and T9). Tests: unit tests for
+  origin/base retention, unused-exclude warnings, Git-free `.git` directory
+  and gitfile root detection, `../outside.ts` escape checks, and invalid
+  UTF-8 errors, plus property tests (proptest) for base-relative glob
+  matching across nested subdirectories.
+- [ ] **T5 - Implement strict `.crapts.toml` loading and worktree-bounded lookup.**
+  Needs: T1, T3. Implement `crates/crapts/src/config.rs` using
+  `cargo_crap_core::config::find_upwards` stopped inclusively at the
+  worktree root (or filesystem root outside Git). Parse strict TOML with
+  `deny_unknown_fields` for all 14 canonical keys (`threshold`,
+  `fail-above`, `missing`, `exclude`, `default-excludes`, `allow`, `min`,
+  `top`, `sort`, `epsilon`, `fail-regression`, `show-unchanged`,
+  `fail-changed`, `uncovered-hints`) and the 3 aliases (`default_excludes`,
+  `show_unchanged`, `uncovered_hints`), rejecting duplicate aliases,
+  flag-only keys, underscore `fail_*` keys, wrong types, non-finite numbers,
+  negative `epsilon`, and out-of-range `top` (`1..=9007199254740991`), while
+  surfacing config path and TOML line/column on syntax errors. Scenarios:
+  none directly at the binary (verified end-to-end in T6 and T7). Tests:
+  unit tests for every valid key/alias, rejection of unknown/flag-only/
+  duplicate/wrong-type keys, and TOML syntax location formatting, plus
+  property tests (proptest) for finite float acceptance and `top` bounds.
+- [ ] **T6 - Build crapts CLI parsing, priority routing and `--print-config`.**
+  Needs: T4, T5. Implement `crates/crapts/src/cli.rs` and wire priority
+  routing in `crates/crapts/src/{lib,main}.rs`. Enforce priority order
+  (`-h`/`--help`, then `-V`/`--version`, then `--print-config`), handle
+  `-hV`, `--coverage --help`, `-- --help`, `--help=1`, and
+  `--print-config=1`, validate all CLI options/numbers/globs (last-wins
+  scalars, repeatable `--exclude`/`--allow`, `--no-default-excludes`,
+  `--all-rows` clearing `min`/`top` after validation while keeping origin),
+  merge defaults -> config -> flags -> environment link fallbacks, and emit
+  two-space-indented `--print-config` JSON (`config_path` and 24 snake_case
+  `settings` with `value` and `origin`) without opening scoring inputs or
+  output files. Scenarios:
+  _Help and version have priority over scoring and config_,
+  _Priority options respect value positions and the option terminator_,
+  _The nearest config wins within the Git worktree_,
+  _Outside Git the walk reaches the filesystem root_,
+  _Print-config resolves settings without reading scoring inputs_,
+  _Print-config records explicit equal values and the source of cleared limits_,
+  _Print-config validates the settings it explains_,
+  _Config reports type, spelling and syntax errors at their source_,
+  _CLI help and the printed settings cover the public contract_. Tests: unit
+  tests for option merging, origin precedence and `--print-config` JSON
+  schema/keys, property tests (proptest) for scalar last-wins and
+  `--all-rows` origin preservation, and acceptance tests in
+  `crates/crapts/tests/{cli,docs}.rs` covering the 9 owned scenarios and
+  public option/config-key inventory parity.
+- [ ] **T7 - Wire the absolute scoring pipeline, selection and gate invariants.**
+  Needs: T2, T6. Connect the full scoring path in
+  `crates/crapts/src/{lib,main}.rs`: `discover` -> `coverage::read_coverage`
+  -> ordinary `FileAnalysis` in discovery order -> `attribute::attribute` ->
+  `AllowSet::compile_with_bases` -> `run::Analysis` (`CoverageKind`,
+  `Attribution.diagnostics`, borrowed `Discovery.scope`, `notices: &[]`) ->
+  `run::run` with the `crapts` `report::Tool` (package version,
+  `schemas/crapts/{report-v1,delta-v1}.json`, `EnvelopeKind::CraptsV1`,
+  `PairPolicy::FileFunction`, `Population::All`, `TieOrder::FileFunctionLine`,
+  `fail_sections: false`, disabled signal gates) -> `GateOutcome::exit_code()`.
+  Support `--missing` (`pessimistic`, `optimistic`, `skip`), `--min`, `--top`,
+  `--sort` (`crap`, `file`), `--all-rows`, config/flag glob bases, and name
+  allows. Scenarios:
+  _An absolute report identifies the tool, inputs and scores_,
+  _Istanbul input is recognized under an LCOV filename_,
+  _Only a strictly greater score trips an enabled gate_,
+  _Top chooses the worst rows before the requested display sort_,
+  _All-rows overrides selection without changing eligibility_,
+  _Repeated scalar options use the last finite value_,
+  _Missing coverage follows the selected policy through the gate_,
+  _Config gates apply according to the selected mode_,
+  _File and flag globs keep their origins across a subdirectory run_,
+  _A config path allow can match a component suffix_,
+  _Parent config defaults replace the built-in list relative to the config directory_,
+  _Name allows use the grammar of the emitted names_,
+  _The exit verdict and counts are invariant under presentation_,
+  _All-rows is equivalent to clearing the two limits_. Tests: unit tests for
+  `Tool` metadata and `CoverageKind` mapping even on empty runs, property
+  tests (proptest) in `crates/crapts/tests/cli.rs` (or library tests plus
+  binary cross-checks) for verdict/count invariance under presentation and
+  `--all-rows` equivalence across ties/limits, and CLI acceptance tests
+  validating outputs against `schemas/crapts/report-v1.json`.
+- [ ] **T8 - Support all output formats, width/Unicode/colour, links and PR comment rules.**
+  Needs: T7. Wire all 7 `--format` values (`text`/`human`, `json`,
+  `markdown`, `pr-comment`, `github`, `sarif`, `shields`), `--summary`,
+  `uncovered-hints`, sink/env colour detection (`NO_COLOR`, `FORCE_COLOR`,
+  terminal vs pipe vs `--output` via `report::set_color_enabled`), width
+  selection (positive stdout terminal width, then positive `COLUMNS`, else
+  unlimited via `report::output_width`), `SourceLinks` (`--repo-url`,
+  `--commit-ref`, `GITHUB_SERVER_URL`/`GITHUB_REPOSITORY`/`GITHUB_SHA`
+  pair rule), `repo_prefix`, and `--comment-marker` validation (single
+  nonempty line without CR/LF). Scenarios:
+  _Each format produces a usable absolute report_,
+  _A passing run has no findings in any format_,
+  _The badge changes colour at six findings_,
+  _An empty display slice still runs the gate on every eligible row_,
+  _The human renderer reports the population it receives_,
+  _Summary respects the format and the selected rows_,
+  _Worktree boundaries and report paths when Git is unavailable_,
+  _PR comment markers and links belong to the invocation_,
+  _Repository paths are projected only for link and annotation destinations_,
+  _Workflow commands escape properties and already-encoded names_,
+  _A PR comment caps the absolute findings table at 25 rows_,
+  _A marker occupies exactly one nonempty line_,
+  _The text width selects visible columns_,
+  _Unicode cells are cut to exact display columns_,
+  _Colour follows the crapts sink and environment_,
+  _Uncovered cells show three ranges and the number omitted_,
+  _The default text cap applies only to an unsliced report_. Tests: unit tests
+  for marker validation, colour/width env precedence and GitHub link pair
+  assembly, plus CLI acceptance tests in `crates/crapts/tests/cli.rs`
+  covering all 17 owned scenarios.
+- [ ] **T9 - Enforce pre-render error precedence, diagnostic ordering and reserved flags.**
+  Needs: T8. Enforce pre-render execution order in
+  `crates/crapts/src/{lib,main}.rs`: validate config, options, allow globs,
+  marker, companion checks (`--fail-regression`/`--show-unchanged` need
+  `--baseline`, `--fail-changed` needs `--base`, SARIF rejects `--baseline`/
+  `--base`) and reserved comparison errors (`--baseline is not implemented
+  yet`, `--base is not implemented yet`), run discovery and emit unused-exclude
+  warnings before `read_coverage` (so absent/unreadable/invalid coverage
+  never opens `--output`), then analyze sources and emit parse diagnostics in
+  discovery order, then `Attribution.warnings` in order with one `warning: `
+  prefix and LF, and finally open, write and flush the output destination
+  so any open/write/flush failure returns exit 2. Scenarios:
+  _Invalid input is diagnosed before a report is opened_,
+  _Discovery and source decoding errors exit 2 at the native binary_,
+  _Coverage input errors reach stderr before the native CLI opens a report_,
+  _Companion checks and SARIF restrictions precede comparison I/O_,
+  _Baseline comparison is reserved until Spec 54_,
+  _Git-base comparison is reserved until Spec 55_,
+  _Diagnostics arrive in discovery, parse, path and producer order_,
+  _Coverage read errors follow unused exclusions and precede source analysis_,
+  _A complete report precedes the gate status_,
+  _A destination failure takes precedence at the process boundary_,
+  _A flush-only error overrides the runner's verdict_. Tests: in-process
+  runner unit test with an injected stdout writer failing only on `flush`,
+  plus CLI acceptance tests in `crates/crapts/tests/cli.rs` covering every
+  pre-render error case (preserving absent or `"keep"` `--output` files),
+  LCOV/Istanbul diagnostics, closed-pipe stdout failures, and diagnostic
+  ordering.
+- [ ] **T10 - Update CHANGELOG, CLAUDE.md and run final compatibility checks.**
+  Needs: T9. Add the Unreleased / Changed breaking library API entry from
+  Implementation Notes to `CHANGELOG.md` and document the `crates/crapts`
+  pipeline, config/allow base handling and updated core APIs in `CLAUDE.md`.
+  Scenarios: none. Tests: `tests/docs.rs`, `tests/workspace.rs`, Spec 44
+  verify-only goldens (`INSTA_UPDATE=no`) in default and `--all-features`
+  builds, width snapshots, `bash scripts/gates/parser-guard.sh`, and
+  `bash scripts/gates/test.sh`.
+
 ---
 
 ## Implementation Notes
