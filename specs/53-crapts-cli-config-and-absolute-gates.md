@@ -715,7 +715,7 @@ And   all fourteen canonical config keys and all three aliases parse with repres
 
 Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.99.0`). Every task is one jj change and passes `RUSTUP_TOOLCHAIN=1.99.0 just dev` and `RUSTUP_TOOLCHAIN=1.99.0 just dev-mutants-diff` with `INSTA_UPDATE=no`. Until T7 lands, core compatibility and policy tests exercise the new core fields directly through `cargo-crap` and fixture tools.
 
-- [ ] **T1 - Add core upward config search and base-relative allow matching.**
+- [x] **T1 - Add core upward config search and base-relative allow matching.**
   Add `cargo_crap_core::config::find_upwards(start, name, stop_at)` in
   `crates/cargo-crap-core/src/{lib,config}.rs` to check `start` and ancestors
   through inclusive `stop_at` (or the filesystem root when `None`) while

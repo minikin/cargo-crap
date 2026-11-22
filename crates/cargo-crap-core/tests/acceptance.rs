@@ -367,3 +367,22 @@ fn read_strict_lcov_at_its_numeric_boundaries() {
     let error = read_strict_lcov(&overflow, Path::new("cov.info")).unwrap_err();
     assert_eq!(error.to_string(), "cov.info: line 3: invalid DA number");
 }
+
+#[test]
+fn a_caller_can_find_a_parent_config_and_apply_its_allows_to_missing_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("packages/app");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(root.path().join(".example"), "pack*/app/old/**").unwrap();
+    let config = cargo_crap_core::config::find_upwards(&cwd, ".example", Some(root.path()))
+        .unwrap()
+        .unwrap();
+    let pattern = std::fs::read_to_string(&config).unwrap();
+    let set = AllowSet::compile_with_bases(&cwd, &[(&pattern, config.parent().unwrap())]).unwrap();
+    let mut rows = vec![CrapEntry {
+        file: "old/missing.ts".into(),
+        ..CrapEntry::default()
+    }];
+    cargo_crap_core::filter::allow(&mut rows, &set);
+    assert!(rows.is_empty());
+}

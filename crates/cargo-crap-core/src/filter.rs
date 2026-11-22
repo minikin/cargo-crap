@@ -4,13 +4,40 @@ use crate::entry::{CrapEntry, SortOrder, sort_entries_with_ties};
 use crate::policy::TieOrder;
 use anyhow::{Context, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
 
 /// Name and file globs compiled once for current and baseline scores.
 #[derive(Debug)]
 pub struct AllowSet {
     names: GlobSet,
-    paths: GlobSet,
+    paths: FileAllows,
+}
+
+#[derive(Debug)]
+enum FileAllows {
+    Legacy(GlobSet),
+    Based {
+        cwd: PathBuf,
+        groups: BTreeMap<PathBuf, GlobSet>,
+    },
+}
+
+impl FileAllows {
+    fn matches(
+        &self,
+        file: &Path,
+    ) -> bool {
+        match self {
+            Self::Legacy(set) => path_set_matches_suffix(set, file),
+            Self::Based { cwd, groups } => {
+                let file = resolve(cwd, file);
+                groups
+                    .iter()
+                    .any(|(base, set)| path_set_matches_suffix(set, &relative_to(base, &file)))
+            },
+        }
+    }
 }
 
 impl AllowSet {
@@ -25,21 +52,90 @@ impl AllowSet {
             .partition(|pattern| is_path_allow_pattern(pattern));
         Ok(Self {
             names: build_allow_set(&names)?,
-            paths: build_path_set(&paths)?,
+            paths: FileAllows::Legacy(build_path_set(&paths)?),
         })
     }
+    /// Match a displayed file relative to each pattern's directory, even for a deleted file.
+    pub fn compile_with_bases(
+        cwd: &Path,
+        patterns: &[(&str, &Path)],
+    ) -> Result<Self> {
+        let cwd = std::path::absolute(cwd)?;
+        let mut names = GlobSetBuilder::new();
+        let mut groups = BTreeMap::<PathBuf, GlobSetBuilder>::new();
+        for &(pattern, base) in patterns {
+            let path = is_path_allow_pattern(pattern);
+            let glob = based_glob(pattern, path)
+                .with_context(|| format!("invalid allow pattern: {pattern:?}"))?;
+            if path {
+                groups
+                    .entry(resolve(&cwd, base))
+                    .or_insert_with(GlobSetBuilder::new)
+                    .add(glob);
+            } else {
+                names.add(glob);
+            }
+        }
+        let groups = groups
+            .into_iter()
+            .map(|(base, builder)| Ok((base, builder.build()?)))
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            names: names.build()?,
+            paths: FileAllows::Based { cwd, groups },
+        })
+    }
+}
+
+fn based_glob(
+    pattern: &str,
+    path: bool,
+) -> Result<globset::Glob> {
+    let mut builder = GlobBuilder::new(pattern);
+    builder.backslash_escape(true).literal_separator(path);
+    let glob = builder.build()?;
+    // Globset silently drops empty alternatives. Its two translations differ exactly when it did so.
+    if !path && glob.regex() != builder.empty_alternates(true).build()?.regex() {
+        anyhow::bail!("empty alternative");
+    }
+    Ok(glob)
+}
+
+fn resolve(
+    base: &Path,
+    path: &Path,
+) -> PathBuf {
+    let mut result = PathBuf::new();
+    for part in base.join(path).components() {
+        if part == Component::ParentDir {
+            result.pop();
+        } else {
+            result.push(part);
+        }
+    }
+    result
+}
+
+fn relative_to(
+    base: &Path,
+    path: &Path,
+) -> PathBuf {
+    for (depth, ancestor) in base.ancestors().enumerate() {
+        if let Ok(tail) = path.strip_prefix(ancestor) {
+            let mut relative: PathBuf = std::iter::repeat_n("..", depth).collect();
+            relative.push(tail);
+            return relative;
+        }
+    }
+    path.to_owned()
 }
 
 pub fn allow(
     entries: &mut Vec<CrapEntry>,
     allow_set: &AllowSet,
 ) {
-    if allow_set.names.is_empty() && allow_set.paths.is_empty() {
-        return;
-    }
     entries.retain(|entry| {
-        !allow_set.names.is_match(&entry.function)
-            && !path_set_matches_suffix(&allow_set.paths, &entry.file)
+        !allow_set.names.is_match(&entry.function) && !allow_set.paths.matches(&entry.file)
     });
 }
 
@@ -541,6 +637,87 @@ mod tests {
             let out_b = sel_b.as_deref().unwrap_or(&permuted);
             prop_assert_eq!(key(out_a), key(&expected));
             prop_assert_eq!(key(out_b), key(&expected));
+        }
+    }
+}
+
+#[cfg(test)]
+mod based_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn remains(
+        set: &AllowSet,
+        file: &str,
+        name: &str,
+    ) -> bool {
+        let mut rows = vec![CrapEntry {
+            file: file.into(),
+            function: name.into(),
+            ..CrapEntry::default()
+        }];
+        allow(&mut rows, set);
+        !rows.is_empty()
+    }
+
+    #[test]
+    fn based_paths_use_each_patterns_directory_and_component_suffixes() {
+        let cwd = Path::new("/repo/packages/app");
+        let set = AllowSet::compile_with_bases(
+            cwd,
+            &[
+                ("pack*/app/src/hot.ts", Path::new("../unused/../..")),
+                ("../shared/*.ts", Path::new(".")),
+                ("lib/tool.ts", cwd),
+            ],
+        )
+        .unwrap();
+        for path in ["./src/x/../hot.ts", "../shared/old.ts", "deep/lib/tool.ts"] {
+            assert!(!remains(&set, path, "f"), "{path}");
+        }
+        for path in [
+            "src/other.ts",
+            "../shared/deep/old.ts",
+            "deep/mylib/tool.ts",
+        ] {
+            assert!(remains(&set, path, "f"), "{path}");
+        }
+        let flag = AllowSet::compile_with_bases(cwd, &[("pack*/app/src/hot.ts", cwd)]).unwrap();
+        assert!(remains(&flag, "src/hot.ts", "f"));
+    }
+
+    #[test]
+    fn based_name_allows_use_anchored_emitted_name_grammar() {
+        let cwd = Path::new(".");
+        for (pattern, yes, no) in [
+            ("{Cart::add,Cart::add#*}", "Cart::add#2", "Cart::add::inner"),
+            ("Cart::*", "Cart::add::inner", "cart::add"),
+            ("[!ab]?", "cd", "ad"),
+            (r"get\*", "get*", "gets"),
+            ("name:f", "name:f", "f"),
+            (r"{\{,x}", "{", "y"),
+        ] {
+            let set = AllowSet::compile_with_bases(cwd, &[(pattern, cwd)]).unwrap();
+            assert!(!remains(&set, "file", yes), "{pattern}");
+            assert!(remains(&set, "file", no), "{pattern}");
+        }
+        for pattern in ["{,x}", "{x,}", "z{a,,b}", "[", "src/["] {
+            let err = AllowSet::compile_with_bases(cwd, &[(pattern, cwd)]).unwrap_err();
+            assert!(err.to_string().contains(pattern), "{err}");
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn cwd_based_patterns_agree_with_legacy_on_local_rows(
+            dir in "[a-z]{1,4}", name in "[a-z]{1,4}", depth in 0usize..4,
+            pattern in prop::sample::select(vec!["*", "a*", "a/**", "**/b.ts", "a/*.ts", "b?", "b"]),
+        ) {
+            let cwd = Path::new("/project");
+            let file = format!("{}{dir}/{name}.ts", "sub/".repeat(depth));
+            let legacy = AllowSet::compile(&[pattern.to_owned()]).unwrap();
+            let based = AllowSet::compile_with_bases(cwd, &[(pattern, cwd)]).unwrap();
+            prop_assert_eq!(remains(&legacy, &file, &name), remains(&based, &file, &name));
         }
     }
 }
