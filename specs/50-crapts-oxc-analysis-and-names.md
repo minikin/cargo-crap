@@ -812,7 +812,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Discover the ordinary Git file set_, _Resolve input roots and preserve path spelling_.
   Tests: Acceptance in disposable Git worktrees for tracked, deleted, ignored and untracked files, embedded repositories, gitlinks, absolute roots, overlapping roots and exact sorted path spelling.
 
-- [ ] **T22 - Walk regular files and skip symbolic links.** Needs: T21.
+- [x] **T22 - Walk regular files and skip symbolic links.** Needs: T21.
   Scenarios: _Walk regular files outside a Git worktree_, _Skip symbolic links to files and directories_.
   Tests: Acceptance in temporary directories with and without Git, including explicit symlink roots and a scan with Git absent from PATH.
 
