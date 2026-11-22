@@ -161,7 +161,7 @@
         "file": {
           "type": "string",
           "pattern": "^([^./\\\\]|\\.[^/\\\\])[^\\\\]*$",
-          "not": { "pattern": "^[A-Za-z]:" }
+          "not": { "pattern": "^[A-Za-z]:/" }
         },
         "function": { "type": "string", "minLength": 1 },
         "line": { "type": "integer", "minimum": 1 },

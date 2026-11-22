@@ -608,18 +608,19 @@ fn draft07_pos_u64(v: &serde_json::Value) -> Option<u64> {
         return (n >= 1).then_some(n);
     }
     let f = v.as_f64()?;
-    let exact = (1.0..=9_007_199_254_740_992.0).contains(&f) && f.fract() == 0.0;
+    // 2^64 is exact in f64; every integral f64 strictly below it fits u64.
+    let in_range = (1.0..18_446_744_073_709_551_616.0).contains(&f) && f.fract() == 0.0;
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "range and fract checks guarantee an exact positive integer"
+        reason = "range [1, 2^64) and fract == 0 guarantee an exact u64"
     )]
-    exact.then_some(f as u64)
+    in_range.then_some(f as u64)
 }
 
 fn is_drive_rooted(s: &str) -> bool {
     let bytes = s.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
 }
 
 fn is_valid_crapts_path(s: &str) -> bool {
@@ -629,6 +630,90 @@ fn is_valid_crapts_path(s: &str) -> bool {
         && !s.starts_with("./")
         && !s.contains('\\')
         && !is_drive_rooted(s)
+}
+
+fn is_unreserved(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~')
+}
+
+fn is_sub_delim(b: u8) -> bool {
+    matches!(
+        b,
+        b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+    )
+}
+
+fn is_pchar_plain(b: u8) -> bool {
+    is_unreserved(b) || is_sub_delim(b) || matches!(b, b':' | b'@')
+}
+
+fn is_valid_pct_seq(
+    s: &str,
+    allowed: fn(u8) -> bool,
+) -> bool {
+    let mut bytes = s.bytes();
+    while let Some(b) = bytes.next() {
+        if b == b'%' {
+            let ok = bytes.next().is_some_and(|c| c.is_ascii_hexdigit())
+                && bytes.next().is_some_and(|c| c.is_ascii_hexdigit());
+            if !ok {
+                return false;
+            }
+        } else if !allowed(b) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_valid_ip_literal(lit: &str) -> bool {
+    if lit.parse::<std::net::Ipv6Addr>().is_ok() {
+        return true;
+    }
+    let Some(rest) = lit.strip_prefix(['v', 'V']) else {
+        return false;
+    };
+    let Some((ver, addr)) = rest.split_once('.') else {
+        return false;
+    };
+    !ver.is_empty()
+        && ver.bytes().all(|b| b.is_ascii_hexdigit())
+        && !addr.is_empty()
+        && addr
+            .bytes()
+            .all(|b| is_unreserved(b) || is_sub_delim(b) || b == b':')
+}
+
+fn is_valid_bracketed_host_port(after_open: &str) -> bool {
+    let Some((lit, tail)) = after_open.split_once(']') else {
+        return false;
+    };
+    let valid_tail = tail.is_empty()
+        || tail
+            .strip_prefix(':')
+            .is_some_and(|p| p.bytes().all(|b| b.is_ascii_digit()));
+    is_valid_ip_literal(lit) && valid_tail
+}
+
+fn is_valid_authority(auth: &str) -> bool {
+    let host_port = match auth.split_once('@') {
+        Some((user, rest)) => {
+            if !is_valid_pct_seq(user, |b| is_unreserved(b) || is_sub_delim(b) || b == b':') {
+                return false;
+            }
+            rest
+        },
+        None => auth,
+    };
+    if let Some(after_open) = host_port.strip_prefix('[') {
+        return is_valid_bracketed_host_port(after_open);
+    }
+    let (host, port) = match host_port.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (host_port, None),
+    };
+    is_valid_pct_seq(host, |b| is_unreserved(b) || is_sub_delim(b))
+        && port.is_none_or(|p| p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn is_valid_uri(s: &str) -> bool {
@@ -642,15 +727,30 @@ fn is_valid_uri(s: &str) -> bool {
         && scheme
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'));
-    valid_scheme
-        && !rest.is_empty()
-        && rest.bytes().all(|b| {
-            b.is_ascii_graphic()
-                && !matches!(
-                    b,
-                    b'<' | b'>' | b'"' | b'{' | b'}' | b'|' | b'\\' | b'^' | b'`'
-                )
-        })
+    if !valid_scheme {
+        return false;
+    }
+    let (rest, fragment) = match rest.split_once('#') {
+        Some((a, b)) => (a, Some(b)),
+        None => (rest, None),
+    };
+    let (hier, query) = match rest.split_once('?') {
+        Some((a, b)) => (a, Some(b)),
+        None => (rest, None),
+    };
+    let valid_hier = if let Some(after_slashes) = hier.strip_prefix("//") {
+        let (auth, path) = match after_slashes.split_once('/') {
+            Some((a, p)) => (a, p),
+            None => (after_slashes, ""),
+        };
+        is_valid_authority(auth) && is_valid_pct_seq(path, |b| is_pchar_plain(b) || b == b'/')
+    } else {
+        is_valid_pct_seq(hier, |b| is_pchar_plain(b) || b == b'/')
+    };
+    let qf = |b| is_pchar_plain(b) || matches!(b, b'/' | b'?');
+    valid_hier
+        && query.is_none_or(|q| is_valid_pct_seq(q, qf))
+        && fragment.is_none_or(|f| is_valid_pct_seq(f, qf))
 }
 
 fn is_valid_fingerprint(s: &str) -> bool {
@@ -3801,13 +3901,24 @@ mod crapts_admission_tests {
 
         assert_eq!(draft07_pos_u64(&json!(1)), Some(1));
         assert_eq!(draft07_pos_u64(&json!(2.0)), Some(2));
+        assert_eq!(
+            draft07_pos_u64(&json!(18_014_398_509_481_984_u64)),
+            Some(18_014_398_509_481_984)
+        );
+        assert_eq!(
+            draft07_pos_u64(&json!(18_014_398_509_481_984.0)),
+            Some(18_014_398_509_481_984)
+        );
+        assert_eq!(draft07_pos_u64(&json!(18_446_744_073_709_551_616.0)), None);
         assert_eq!(draft07_pos_u64(&json!(0)), None);
         assert_eq!(draft07_pos_u64(&json!(0.0)), None);
         assert_eq!(draft07_pos_u64(&json!(1.5)), None);
         assert_eq!(draft07_pos_u64(&json!(1e20)), None);
         assert_eq!(draft07_pos_u64(&json!("1")), None);
 
-        for ok in ["a.ts", "src/a.ts", ".env.ts", "a", "0:x.ts"] {
+        for ok in [
+            "a.ts", "src/a.ts", ".env.ts", "a", "0:x.ts", "a:b.ts", "Z:", "0:/a.ts",
+        ] {
             assert!(is_valid_crapts_path(ok), "{ok}");
         }
         for bad in [
@@ -3817,28 +3928,9 @@ mod crapts_admission_tests {
             "./a.ts",
             "src\\a.ts",
             "C:/src/a.ts",
-            "c:src/a.ts",
-            "Z:",
+            "C:/",
         ] {
             assert!(!is_valid_crapts_path(bad), "{bad}");
-        }
-
-        for ok in [
-            "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v1.json",
-            "custom+v1.0-a:foo/bar",
-        ] {
-            assert!(is_valid_uri(ok), "{ok}");
-        }
-        for bad in [
-            "not a uri",
-            ":missing-scheme",
-            "1bad://example.test",
-            "ht_tp://example.test",
-            "http:",
-            "http://bad uri",
-            "http://bad<uri",
-        ] {
-            assert!(!is_valid_uri(bad), "{bad}");
         }
 
         assert!(is_valid_fingerprint(&"0123456789abcdef".repeat(4)));
@@ -3852,6 +3944,57 @@ mod crapts_admission_tests {
             format!("{}`", "a".repeat(63)),
         ] {
             assert!(!is_valid_fingerprint(&bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn uri_validator_enforces_rfc3986_components() {
+        for ok in [
+            "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v1.json",
+            "custom+v1.0-a:foo/bar@baz:1?k=v/1?2#frag/3?4",
+            "x:",
+            "https://user:p%40ss!@ex!ample.test:8080/a%20b/c!@:?q=1&r=%2F#s~1",
+            "https://example.test",
+            "http://[::1]:8080/a",
+            "http://[::1]/a",
+            "http://[v1.fe80:a!]/a",
+            "http://[V1a.b]/a",
+        ] {
+            assert!(is_valid_uri(ok), "{ok}");
+        }
+        for bad in [
+            "not a uri",
+            ":missing-scheme",
+            "1bad://example.test",
+            "ht_tp://example.test",
+            "https://example.test/%ZZ",
+            "https://example.test/%Z2",
+            "https://example.test/%2Z",
+            "https://example.test/%2",
+            "https://example.test/%",
+            "https://example.test/%20%ZZ",
+            "https://user%ZZ@example.test/",
+            "https://user<bad>@example.test/",
+            "https://bad<host/a",
+            "https://example.test:abc/",
+            "https://example.test:1:2/",
+            "https://[::1/a",
+            "https://[::1]extra/a",
+            "https://[::1]:abc/a",
+            "https://[bad]/a",
+            "https://[v.a]/a",
+            "https://[vG.a]/a",
+            "https://[v1.]/a",
+            "https://[v1.a b]/a",
+            "https://example.test/a?%ZZ",
+            "https://example.test/a?bad<q",
+            "https://example.test/a#%ZZ",
+            "https://example.test/a#bad<f",
+            "http://bad uri",
+            "http://bad<uri",
+            "x:%ZZ",
+        ] {
+            assert!(!is_valid_uri(bad), "{bad}");
         }
     }
 

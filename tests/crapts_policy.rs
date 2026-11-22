@@ -1140,12 +1140,19 @@ fn admission_matches_schema_on_wide_integers_and_schema_uri() {
         doc["entries"][0]["cyclomatic"] = json!(4_294_967_296_u64);
         doc["summary"]["total"] = json!(18_014_398_509_481_984.0);
         doc["entries"][0]["file"] = json!("src/a.ts");
-        assert!(schema.is_valid(&doc), "{name} wide integers must validate");
-        let path = write_json(&dir, &format!("{name}-wide.json"), &doc);
-        assert!(
-            load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines).is_ok(),
-            "{name} wide integers must load"
-        );
+        for (tag, line_val) in [
+            ("int", json!(18_014_398_509_481_984_u64)),
+            ("float", json!(18_014_398_509_481_984.0)),
+        ] {
+            let mut wide = doc.clone();
+            wide["entries"][0]["line"] = line_val;
+            assert!(schema.is_valid(&wide), "{name}/{tag} must validate");
+            let path = write_json(&dir, &format!("{name}-wide-{tag}.json"), &wide);
+            assert!(
+                load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines).is_ok(),
+                "{name}/{tag} must load"
+            );
+        }
 
         let mut omitted_schema = doc.clone();
         omitted_schema.as_object_mut().unwrap().remove("$schema");
@@ -1153,13 +1160,43 @@ fn admission_matches_schema_on_wide_integers_and_schema_uri() {
         let omitted_path = write_json(&dir, &format!("{name}-no-schema.json"), &omitted_schema);
         assert!(load_crapts_baseline(&omitted_path, &CRAPTS, CoverageKind::Lines).is_ok());
 
-        let mut bad_uri = doc;
-        bad_uri["$schema"] = json!("not a uri");
-        let bad_uri_path = write_json(&dir, &format!("{name}-bad-uri.json"), &bad_uri);
-        let err = load_crapts_baseline(&bad_uri_path, &CRAPTS, CoverageKind::Lines)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("$schema"), "{err}");
+        let mut minimal_uri = doc.clone();
+        minimal_uri["$schema"] = json!("x:");
+        assert!(schema.is_valid(&minimal_uri));
+        let minimal_path = write_json(&dir, &format!("{name}-min-uri.json"), &minimal_uri);
+        assert!(load_crapts_baseline(&minimal_path, &CRAPTS, CoverageKind::Lines).is_ok());
+
+        for (tag, uri) in [
+            ("spaces", "not a uri"),
+            ("bad-pct", "https://example.test/%ZZ"),
+        ] {
+            let mut bad_uri = doc.clone();
+            bad_uri["$schema"] = json!(uri);
+            let bad_uri_path = write_json(&dir, &format!("{name}-bad-uri-{tag}.json"), &bad_uri);
+            let err = load_crapts_baseline(&bad_uri_path, &CRAPTS, CoverageKind::Lines)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("$schema"), "{name}/{tag}: {err}");
+        }
+    }
+
+    let abs = absolute(&Knobs::default(), vec![row("a:b.ts", "run", 1, 20.0)]);
+    let delta = compare(
+        &Knobs::default(),
+        vec![row("a:b.ts", "run", 1, 20.0)],
+        vec![row("a:b.ts", "run", 1, 15.0)],
+    );
+    for (name, rep, schema) in [
+        ("colon-abs.json", &abs, &abs_schema),
+        ("colon-delta.json", &delta, &delta_schema),
+    ] {
+        assert!(schema.is_valid(&rep.json), "{name}: {}", rep.raw);
+        let path = dir.path().join(name);
+        std::fs::write(&path, &rep.raw).unwrap();
+        assert!(
+            load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines).is_ok(),
+            "{name} must round-trip"
+        );
     }
 }
 
