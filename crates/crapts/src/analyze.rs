@@ -146,6 +146,7 @@ pub fn analyze(
     let mut collector = Collector::new(path, source, &parsed.tokens);
     collector.visit_program(&parsed.program);
     collector.rows.sort_by_key(|row| row.span.start);
+    crate::names::assign_ordinals(collector.rows.iter_mut().map(|row| &mut row.name));
     for row in &mut collector.rows {
         row.statement_lines.sort_unstable();
         row.statement_lines.dedup();

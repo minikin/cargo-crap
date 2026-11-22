@@ -16,6 +16,17 @@ use oxc_syntax::number::ToJsString;
 use oxc_syntax::operator::AssignmentOperator;
 use sha2::{Digest, Sha256};
 
+pub(super) fn assign_ordinals<'a>(names: impl IntoIterator<Item = &'a mut String>) {
+    let mut counts = HashMap::<String, usize>::new();
+    for name in names {
+        let ordinal = counts.entry(name.clone()).or_default();
+        *ordinal += 1;
+        if *ordinal > 1 {
+            write!(name, "#{ordinal}").unwrap();
+        }
+    }
+}
+
 // Scheme 1 pins General_Category=Cf to Unicode 16.0.0 across Rust toolchains.
 fn is_format_control(ch: char) -> bool {
     matches!(u32::from(ch),
@@ -765,6 +776,33 @@ mod tests {
     use oxc_allocator::Allocator;
     use oxc_parser::Parser;
     use oxc_span::SourceType;
+
+    #[test]
+    fn ordinals_count_whole_stems_again_for_each_file() {
+        for _ in 0..2 {
+            let mut names = [
+                "outer",
+                "outer::fn",
+                "other::fn",
+                "outer",
+                "outer::fn",
+                "outer",
+            ]
+            .map(String::from);
+            assign_ordinals(&mut names);
+            assert_eq!(
+                names,
+                [
+                    "outer",
+                    "outer::fn",
+                    "other::fn",
+                    "outer#2",
+                    "outer::fn#2",
+                    "outer#3"
+                ]
+            );
+        }
+    }
 
     #[test]
     fn member_keys_use_decoded_identifiers_and_ecmascript_literal_values() {

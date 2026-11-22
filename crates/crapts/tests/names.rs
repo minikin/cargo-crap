@@ -572,6 +572,65 @@ proptest::proptest! {
 }
 
 #[test]
+fn apply_ordinals_after_the_full_names_are_known() {
+    let function = "function dup() { function inner() {} }";
+    let source = function.repeat(2);
+    for path in ["original.ts", "another.ts"] {
+        assert_eq!(
+            clean_names(path, &source),
+            ["dup", "dup::inner", "dup#2", "dup::inner#2"]
+        );
+    }
+    assert_eq!(
+        clean_names("original.ts", &format!("{source}function dup() {{}}")),
+        ["dup", "dup::inner", "dup#2", "dup::inner#2", "dup#3"]
+    );
+    assert_eq!(
+        clean_names("tags.ts", "tag`${()=>0}${()=>1}`"),
+        ["tag()", "tag()#2"]
+    );
+    let source = br#"class C { ["constructor"](){ if(ok)go() } x = 1 }"#;
+    let file = analyze(Path::new("order.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    let rows: Vec<_> = file
+        .rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.span.start.column, r.cyclomatic))
+        .collect();
+    assert_eq!(
+        rows,
+        [("C::constructor", 10, 2), ("C::constructor#2", 46, 1)]
+    );
+}
+
+fn check_naming_corpus(
+    path: &str,
+    fixtures: &str,
+    count: usize,
+) {
+    assert_eq!(fixtures.lines().count(), count);
+    for line in fixtures.lines() {
+        let mut cells = line.split('\t');
+        let source = cells.next().unwrap();
+        let expected: Vec<_> = cells.collect();
+        assert_eq!(clean_names(path, source), expected, "{source}");
+    }
+}
+
+#[test]
+fn pin_the_78_compatibility_examples() {
+    check_naming_corpus(
+        "fixture.tsx",
+        include_str!("fixtures/names-compatibility.tsv"),
+        78,
+    );
+}
+
+#[test]
+fn resolve_key_role_and_wrapper_edge_cases() {
+    check_naming_corpus("fixture.ts", include_str!("fixtures/names-edges.tsv"), 29);
+}
+
+#[test]
 fn reduce_property_chains_and_label_call_roles() {
     for (source, expected) in [
         ("(obj?.ready)(()=>0)", &["obj.ready()"][..]),
