@@ -101,13 +101,21 @@ pub(crate) fn render_markdown(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
+    write_pr_comment_marker(opts.tool, out)?;
+    render_markdown_body(entries, opts, out)
+}
+
+pub(crate) fn render_markdown_body(
+    entries: &[CrapEntry],
+    opts: &RenderOptions,
+    out: &mut dyn Write,
+) -> Result<()> {
     let RenderOptions {
         threshold,
         links,
         uncovered_hints,
         ..
     } = *opts;
-    write_pr_comment_marker(opts.tool, out)?;
     if entries.is_empty() {
         writeln!(out, "_No functions found._")?;
         return Ok(());
@@ -216,6 +224,16 @@ pub(crate) fn render_delta_markdown(
     counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
+    write_pr_comment_marker(opts.tool, out)?;
+    render_delta_markdown_body(report, opts, counts, out)
+}
+
+pub(crate) fn render_delta_markdown_body(
+    report: &DeltaReport,
+    opts: &RenderOptions,
+    counts: &DeltaCounts,
+    out: &mut dyn Write,
+) -> Result<()> {
     let RenderOptions {
         threshold,
         links,
@@ -223,7 +241,6 @@ pub(crate) fn render_delta_markdown(
         uncovered_hints,
         ..
     } = *opts;
-    write_pr_comment_marker(opts.tool, out)?;
     if counts.is_empty() {
         writeln!(out, "_No functions found._")?;
         return Ok(());

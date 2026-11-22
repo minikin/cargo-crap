@@ -451,6 +451,16 @@ pub(crate) fn render_delta_pr_comment(
     counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
+    write_pr_comment_marker(opts.tool, out)?;
+    render_delta_pr_comment_body(report, opts, counts, out)
+}
+
+pub(crate) fn render_delta_pr_comment_body(
+    report: &DeltaReport,
+    opts: &RenderOptions,
+    counts: &DeltaCounts,
+    out: &mut dyn Write,
+) -> Result<()> {
     let RenderOptions {
         threshold,
         links,
@@ -458,7 +468,6 @@ pub(crate) fn render_delta_pr_comment(
         cwd,
         ..
     } = *opts;
-    write_pr_comment_marker(opts.tool, out)?;
     if counts.is_empty() {
         writeln!(out, "_No functions found._")?;
         return Ok(());
@@ -571,6 +580,15 @@ pub(crate) fn render_pr_comment(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
+    write_pr_comment_marker(opts.tool, out)?;
+    render_pr_comment_body(entries, opts, out)
+}
+
+pub(crate) fn render_pr_comment_body(
+    entries: &[CrapEntry],
+    opts: &RenderOptions,
+    out: &mut dyn Write,
+) -> Result<()> {
     let RenderOptions {
         threshold,
         links,
@@ -578,7 +596,6 @@ pub(crate) fn render_pr_comment(
         cwd,
         ..
     } = *opts;
-    write_pr_comment_marker(opts.tool, out)?;
     if entries.is_empty() {
         writeln!(out, "_No functions found._")?;
         return Ok(());

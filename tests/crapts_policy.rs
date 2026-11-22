@@ -1735,3 +1735,184 @@ fn an_effective_selection_is_recorded_even_when_every_row_fits() {
     assert!(load_crapts_baseline(&unsliced_path, &CRAPTS, CoverageKind::Lines).is_ok());
     assert_eq!(sliced.json["entries"], unsliced.json["entries"]);
 }
+
+#[test]
+fn a_version_mismatch_skips_only_the_regression_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+
+    for (base_ver, fail_above, expected_skip, expected_code) in [
+        ("0.2.0", false, false, 1u8),
+        ("0.1.9", false, true, 0u8),
+        ("1.2.3", false, true, 0u8),
+        ("0.1.9", true, true, 1u8),
+        ("0.2.0-rc.1+build.7", false, false, 1u8),
+        ("0.1.9-beta.2", false, true, 0u8),
+    ] {
+        // Given a compatible complete baseline at version <base> with f=20, current version 0.2.3 with f=40, and fail-regression enabled
+        let base_tool = Tool {
+            version: base_ver,
+            ..CRAPTS
+        };
+        let base_path = write_crapts_baseline_file(
+            &dir,
+            "base.json",
+            &base_tool,
+            CoverageKind::Lines,
+            vec![row("src/a.ts", "f", 1, 20.0)],
+        );
+        let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
+        let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+        // When the caller renders a JSON delta with fail-above <above>
+        let settings = Settings {
+            allow: &allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: DEFAULT_EPSILON,
+            signals: &signals,
+            fail_above,
+            fail_regression: true,
+            format: Format::Json,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: false,
+        };
+        let mut out = Vec::new();
+        let outcome = run::run(
+            &CRAPTS,
+            &settings,
+            Analysis {
+                entries: vec![row("src/a.ts", "f", 1, 40.0)],
+                diagnostics: Some(zero_diagnostics()),
+                scope: &Everything,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            Some(&prepared),
+            &[],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        let doc: Value = serde_json::from_slice(&out).unwrap();
+        assert!(delta_schema.is_valid(&doc), "{base_ver}: {doc}");
+        // Then f is regressed with delta 20, summary.regressed is 1 and the exit code is <code>
+        assert_eq!(doc["entries"][0]["status"], "regressed", "{base_ver}");
+        assert_eq!(doc["entries"][0]["delta"], 20.0, "{base_ver}");
+        assert_eq!(doc["summary"]["regressed"], 1, "{base_ver}");
+        assert_eq!(outcome.regressed, 1, "{base_ver}");
+        assert_eq!(
+            outcome.exit_code(),
+            std::process::ExitCode::from(expected_code),
+            "{base_ver} fail_above={fail_above}"
+        );
+        // And regression_gate has skipped <skip>, baseline_version <base> and version "0.2.3"
+        assert_eq!(
+            doc["regression_gate"]["skipped"], expected_skip,
+            "{base_ver}"
+        );
+        assert_eq!(doc["regression_gate"]["baseline_version"], base_ver);
+        assert_eq!(doc["regression_gate"]["version"], "0.2.3");
+        // And a skipped gate produces one refresh notice naming both versions, while a same-minor run produces none
+        let notices = doc["notices"].as_array().unwrap();
+        if expected_skip {
+            let expected_msg = format!(
+                "regression gate skipped: baseline from crapts {base_ver}, running crapts 0.2.3. Refresh the baseline."
+            );
+            assert_eq!(notices, &[json!(expected_msg)], "{base_ver}");
+        } else {
+            assert_eq!(notices, &[] as &[Value], "{base_ver}");
+        }
+    }
+}
+
+#[test]
+fn a_skipped_regression_notice_reaches_each_text_renderer() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    // Given baseline 0.1.9, tool 0.2.3, a regression, no caller notices and no sections
+    let base_tool = Tool {
+        version: "0.1.9",
+        ..CRAPTS
+    };
+    let base_path = write_crapts_baseline_file(
+        &dir,
+        "base.json",
+        &base_tool,
+        CoverageKind::Lines,
+        vec![row("src/a.ts", "f", 1, 20.0)],
+    );
+    let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
+    // When the caller prepares the baseline and renders Human, Markdown and PrComment
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+    let expected = "regression gate skipped: baseline from crapts 0.1.9, running crapts 0.2.3. Refresh the baseline.";
+    // Then PreparedBaseline::notice() yields the exact skip message
+    assert_eq!(prepared.notice(), Some(expected));
+
+    for format in [Format::Human, Format::Markdown, Format::PrComment] {
+        let settings = Settings {
+            allow: &allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: DEFAULT_EPSILON,
+            signals: &signals,
+            fail_above: false,
+            fail_regression: true,
+            format,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: false,
+        };
+        let mut out = Vec::new();
+        let outcome = run::run(
+            &CRAPTS,
+            &settings,
+            Analysis {
+                entries: vec![row("src/a.ts", "f", 1, 40.0)],
+                diagnostics: Some(zero_diagnostics()),
+                scope: &Everything,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            Some(&prepared),
+            &[],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(outcome.exit_code(), std::process::ExitCode::SUCCESS);
+        let text = String::from_utf8(out).unwrap();
+        // And Human opens with that message and both Markdown formats open with the marker then the quoted note
+        // And the notice appears once in each report
+        if format == Format::Human {
+            assert!(text.starts_with(&format!("{expected}\n")), "{text}");
+        } else {
+            assert!(
+                text.starts_with(&format!(
+                    "{}\n\n> **Note:** {expected}\n",
+                    CRAPTS.comment_marker
+                )),
+                "{format:?}: {text}"
+            );
+            assert_eq!(text.matches(CRAPTS.comment_marker).count(), 1, "{format:?}");
+        }
+        assert_eq!(text.matches(expected).count(), 1, "{format:?}: {text}");
+    }
+}

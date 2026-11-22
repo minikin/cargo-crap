@@ -280,6 +280,15 @@ pub fn render(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
+    render_inner(entries, opts, true, out)
+}
+
+pub(crate) fn render_inner(
+    entries: &[CrapEntry],
+    opts: &RenderOptions,
+    include_marker: bool,
+    out: &mut dyn Write,
+) -> Result<()> {
     let threshold = opts.threshold;
     let shown = entries_below_root(entries, text_root(opts));
     match opts.format {
@@ -296,8 +305,10 @@ pub fn render(
             out,
         ),
         Format::GitHub => github::render_github(entries, threshold, opts.cwd, out),
-        Format::Markdown => markdown::render_markdown(&shown, opts, out),
-        Format::PrComment => pr_comment::render_pr_comment(&shown, opts, out),
+        Format::Markdown if include_marker => markdown::render_markdown(&shown, opts, out),
+        Format::Markdown => markdown::render_markdown_body(&shown, opts, out),
+        Format::PrComment if include_marker => pr_comment::render_pr_comment(&shown, opts, out),
+        Format::PrComment => pr_comment::render_pr_comment_body(&shown, opts, out),
         Format::Sarif => sarif::render_sarif(&shown, threshold, opts.tool, out),
         Format::Shields => shields::render_shields(entries, threshold, out),
     }
@@ -318,6 +329,15 @@ pub fn render_delta(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
+    render_delta_inner(report, opts, true, out)
+}
+
+pub(crate) fn render_delta_inner(
+    report: &DeltaReport,
+    opts: &RenderOptions,
+    include_marker: bool,
+    out: &mut dyn Write,
+) -> Result<()> {
     let threshold = opts.threshold;
     let counts = opts.delta_counts.unwrap_or_else(|| report.counts());
     let below = text_root(opts).map(|root| report_below_root(report, root));
@@ -329,8 +349,14 @@ pub fn render_delta(
         },
         Format::Human => human::render_delta_human(shown, opts, &counts, out),
         Format::GitHub => github::render_delta_github(report, threshold, opts.cwd, out),
-        Format::Markdown => markdown::render_delta_markdown(shown, opts, &counts, out),
-        Format::PrComment => pr_comment::render_delta_pr_comment(shown, opts, &counts, out),
+        Format::Markdown if include_marker => {
+            markdown::render_delta_markdown(shown, opts, &counts, out)
+        },
+        Format::Markdown => markdown::render_delta_markdown_body(shown, opts, &counts, out),
+        Format::PrComment if include_marker => {
+            pr_comment::render_delta_pr_comment(shown, opts, &counts, out)
+        },
+        Format::PrComment => pr_comment::render_delta_pr_comment_body(shown, opts, &counts, out),
         // SARIF describes the *current* set of findings, not deltas. The
         // upstream consumers (GitHub Code Scanning, VS Code) don't model
         // baseline diffs, so combining `--baseline` with `--format sarif`

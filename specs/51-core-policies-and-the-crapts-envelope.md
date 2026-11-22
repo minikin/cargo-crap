@@ -686,7 +686,7 @@ the first byte, like a missing coverage kind.
   `tests/crapts_policy.rs` from the T2 hybrid to the full crapts tool.
   Tests: unit for member order, the cyclomatic token and `skipped`,
   acceptance with schema validation and reload.
-- [ ] **T6 - Skip only the regression gate across a minor version.**
+- [x] **T6 - Skip only the regression gate across a minor version.**
   Needs: T5. The suppressed regression verdict, `PreparedBaseline::notice()`, and
   notices written first in Human, Markdown and PrComment. Scenarios: _a
   version mismatch skips only the regression gate_, _a skipped-regression

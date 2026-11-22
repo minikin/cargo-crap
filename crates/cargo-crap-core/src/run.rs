@@ -252,6 +252,8 @@ pub fn run(
         shown,
         settings.threshold,
     );
+    let notices = collect_notices(analysis.notices, baseline);
+    let include_marker = write_text_notices(tool, settings.format, &notices, out)?;
     let (regressed, gating_signals) = if summary {
         write_summary(settings, &eligible, shown, baseline, tool, out)?
     } else if tool.policy.envelope == EnvelopeKind::CraptsV1 && settings.format == Format::Json {
@@ -263,18 +265,29 @@ pub fn run(
             crappy,
             analysis.coverage_kind,
             analysis.diagnostics.as_ref(),
-            analysis.notices,
+            &notices,
             baseline,
             out,
         )?
     } else if let Some(baseline) = baseline {
-        write_delta(settings, &eligible, shown, baseline, &options, out)?
+        write_delta(
+            settings,
+            &eligible,
+            shown,
+            baseline,
+            &options,
+            include_marker,
+            out,
+        )?
     } else {
-        report::render(shown, &options, out)?;
+        report::render_inner(shown, &options, include_marker, out)?;
         (0, 0)
     };
     report::render_duplicates(&options, out).context("writing duplicate report")?;
     out.flush().context("flushing output")?;
+    let regression_skipped = baseline
+        .and_then(PreparedBaseline::baseline_version)
+        .is_some_and(|v| !crate::delta::same_major_minor(v, tool.version));
     let section_failures = sections.iter().filter_map(|s| s.failures()).sum();
     Ok(GateOutcome {
         section_failures,
@@ -283,9 +296,34 @@ pub fn run(
             regressed,
             gating_signals,
             settings.fail_above,
-            settings.fail_regression,
+            settings.fail_regression && !regression_skipped,
         )
     })
+}
+
+fn write_text_notices(
+    tool: &Tool,
+    format: Format,
+    notices: &[&str],
+    out: &mut dyn Write,
+) -> Result<bool> {
+    if notices.is_empty() || !matches!(format, Format::Human | Format::Markdown | Format::PrComment)
+    {
+        return Ok(true);
+    }
+    let markdown = matches!(format, Format::Markdown | Format::PrComment);
+    if markdown {
+        report::write_pr_comment_marker(tool, out)?;
+    }
+    for notice in notices {
+        if markdown {
+            writeln!(out, "> **Note:** {notice}")?;
+        } else {
+            writeln!(out, "{notice}")?;
+        }
+    }
+    writeln!(out)?;
+    Ok(!markdown)
 }
 
 fn collect_notices<'a>(
@@ -338,7 +376,7 @@ fn write_crapts_json(
     crappy: usize,
     coverage_kind: Option<CoverageKind>,
     diagnostics: Option<&ScopeDiagnostics>,
-    caller_notices: &[String],
+    notices: &[&str],
     baseline: Option<&PreparedBaseline>,
     out: &mut dyn Write,
 ) -> Result<(usize, usize)> {
@@ -346,7 +384,6 @@ fn write_crapts_json(
         coverage_kind.ok_or_else(|| anyhow::anyhow!("crapts JSON requires coverage_kind"))?;
     let diagnostics =
         diagnostics.ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
-    let notices = collect_notices(caller_notices, baseline);
     let selection =
         (settings.top.is_some() || settings.min.is_some()).then_some(report::CraptsSelection {
             top: settings.top,
@@ -357,7 +394,7 @@ fn write_crapts_json(
         coverage_kind,
         threshold: settings.threshold,
         selection,
-        notices: &notices,
+        notices,
         total: eligible.len(),
         crappy,
         diagnostics,
@@ -399,16 +436,18 @@ fn write_delta(
     shown: &[CrapEntry],
     baseline: &PreparedBaseline,
     options: &RenderOptions<'_>,
+    include_marker: bool,
     out: &mut dyn Write,
 ) -> Result<(usize, usize)> {
     let (delta, counts, gating_signals) =
         compute_prepared_delta(settings, eligible, shown, baseline, options.tool);
-    report::render_delta(
+    report::render_delta_inner(
         &delta,
         &RenderOptions {
             delta_counts: Some(counts),
             ..*options
         },
+        include_marker,
         out,
     )?;
     Ok((counts.regressed, gating_signals))
@@ -866,6 +905,76 @@ mod tests {
             serde_json::json!(["caller notice", "baseline notice"])
         );
         assert_eq!(doc["regression_gate"]["skipped"], true);
+    }
+
+    #[test]
+    fn text_notices_precede_human_and_markdown_bodies_and_stay_out_of_machine_formats() {
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let caller_notices = ["first note".to_owned()];
+        let render_with = |format: Format| {
+            let settings = Settings {
+                allow: &allow,
+                min: None,
+                top: None,
+                sort: SortOrder::Crap,
+                threshold: 30.0,
+                epsilon: crate::delta::DEFAULT_EPSILON,
+                signals: &signals,
+                fail_above: false,
+                fail_regression: false,
+                format,
+                summary: false,
+                show_unchanged: false,
+                uncovered_hints: false,
+                width: None,
+                links: None,
+                cwd: Path::new(""),
+                workspace_root: None,
+                fail_sections: false,
+            };
+            let mut out = Vec::new();
+            run(
+                &tool,
+                &settings,
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &caller_notices,
+                },
+                None,
+                &[],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        let human = render_with(Format::Human);
+        assert!(human.starts_with("first note\n\n"), "{human}");
+        assert_eq!(human.matches("first note").count(), 1);
+
+        for format in [Format::Markdown, Format::PrComment] {
+            let md = render_with(format);
+            assert!(
+                md.starts_with(&format!(
+                    "{}\n\n> **Note:** first note\n\n",
+                    tool.comment_marker
+                )),
+                "{format:?}: {md}"
+            );
+            assert_eq!(md.matches(tool.comment_marker).count(), 1, "{format:?}");
+            assert_eq!(md.matches("first note").count(), 1, "{format:?}");
+        }
+
+        for format in [Format::GitHub, Format::Sarif, Format::Shields] {
+            let out = render_with(format);
+            assert!(!out.contains("first note"), "{format:?}: {out}");
+        }
     }
 
     #[test]
