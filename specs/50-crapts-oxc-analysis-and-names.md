@@ -834,7 +834,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Match path globs and account for unused exclusions_, _Apply discovery scope to old paths_.
   Tests: Acceptance for overlapping matches, ordered unused patterns with their origins, and present or absent paths across root, ignore and repository boundaries.
 
-- [ ] **T25 - Surface discovery errors with the failing path, pattern or Git command.** Needs: T24.
+- [x] **T25 - Surface discovery errors with the failing path, pattern or Git command.** Needs: T24.
   Scenarios: _Report discovery failures_.
   Tests: Acceptance for a missing root, an outside-worktree root, a malformed glob on an empty scan and a corrupt disposable Git index.
 
