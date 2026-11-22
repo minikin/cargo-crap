@@ -684,23 +684,30 @@ fn assignment(
     Some(Site::expression(SiteKind::Binding, label, value))
 }
 
+fn object_member_target(n: &oxc_ast::ast::ObjectProperty<'_>) -> (Target, &'static str) {
+    let (scope, marker) = match n.kind {
+        PropertyKind::Get => (n.span, "get "),
+        PropertyKind::Set => (n.span, "set "),
+        PropertyKind::Init if n.method => (n.span, ""),
+        PropertyKind::Init => (n.value.span(), ""),
+    };
+    (
+        Target {
+            direct: direct_value(&n.value).span(),
+            scope,
+        },
+        marker,
+    )
+}
+
 fn member_binding(
     node: AstKind<'_>,
     source: Source<'_>,
 ) -> Option<Site> {
-    let (key, direct, scope, is_static, marker) = match node {
+    let (key, target, is_static, marker) = match node {
         AstKind::ObjectProperty(n) => {
-            let marker = match n.kind {
-                PropertyKind::Get => "get ",
-                PropertyKind::Set => "set ",
-                PropertyKind::Init => "",
-            };
-            let scope = if n.method || n.kind != PropertyKind::Init {
-                n.span
-            } else {
-                n.value.span()
-            };
-            (&n.key, direct_value(&n.value).span(), scope, false, marker)
+            let (target, marker) = object_member_target(n);
+            (&n.key, target, false, marker)
         },
         AstKind::MethodDefinition(n) => {
             let marker = match n.kind {
@@ -708,26 +715,36 @@ fn member_binding(
                 MethodDefinitionKind::Set => "set ",
                 _ => "",
             };
-            (&n.key, n.value.span, n.span, n.r#static, marker)
-        },
-        AstKind::PropertyDefinition(n) => {
-            let value = n.value.as_ref()?;
             (
                 &n.key,
-                direct_value(value).span(),
-                value.span(),
+                Target {
+                    direct: n.value.span,
+                    scope: n.span,
+                },
                 n.r#static,
-                "",
+                marker,
             )
         },
+        AstKind::PropertyDefinition(n) => (
+            &n.key,
+            Target::expression(n.value.as_ref()?),
+            n.r#static,
+            "",
+        ),
+        AstKind::AccessorProperty(n) => (
+            &n.key,
+            Target::expression(n.value.as_ref()?),
+            n.r#static,
+            "",
+        ),
         _ => return None,
     };
     let prefix = if is_static { "static " } else { "" };
     let key = member_key(key, source);
     Some(Site::binding(
         format!("{prefix}{marker}{key}"),
-        direct,
-        scope,
+        target.direct,
+        target.scope,
     ))
 }
 

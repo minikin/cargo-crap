@@ -4,14 +4,14 @@ use std::path::{Path, PathBuf};
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    ArrowFunctionExpression, Class, ClassBody, ClassElement, ClassType, Declaration,
-    ExportDeclaration, ExportDefaultDeclaration, ExportDefaultDeclarationKind, Expression,
-    Function, FunctionType, LogicalExpression, MethodDefinition, MethodDefinitionKind,
-    ObjectProperty, PropertyDefinition, PropertyKind, Statement, StaticBlock, TSClassImplements,
-    TSInterfaceDeclaration, TSType,
+    AccessorProperty, ArrowFunctionExpression, Class, ClassBody, ClassElement, ClassType,
+    Declaration, Decorator, ExportDeclaration, ExportDefaultDeclaration,
+    ExportDefaultDeclarationKind, Expression, Function, FunctionType, LogicalExpression,
+    MethodDefinition, MethodDefinitionKind, ObjectProperty, PropertyDefinition, PropertyKey,
+    PropertyKind, Statement, StaticBlock, TSClassImplements, TSInterfaceDeclaration, TSType,
 };
 use oxc_ast_visit::{Visit, walk};
-use oxc_parser::{Parser, Token, config::TokensParserConfig};
+use oxc_parser::{Kind, Parser, Token, config::TokensParserConfig};
 use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
@@ -258,6 +258,9 @@ impl<'s> Collector<'s> {
             ClassElement::PropertyDefinition(p) if !p.r#static && !p.declare => {
                 p.value.as_ref().map(GetSpan::span)
             },
+            ClassElement::AccessorProperty(p) if !p.r#static && !self.declared_accessor(p) => {
+                p.value.as_ref().map(GetSpan::span)
+            },
             _ => None,
         });
         let first = regions.next()?;
@@ -310,6 +313,41 @@ impl<'s> Collector<'s> {
             v.record_statement(span);
             v.visit_expression(value);
         });
+    }
+
+    fn declared_accessor(
+        &self,
+        property: &AccessorProperty<'_>,
+    ) -> bool {
+        // On recovery Oxc retains the initializer but drops the illegal declare modifier.
+        let start = property
+            .decorators
+            .last()
+            .map_or(property.span.start, |d| d.span.end);
+        let tokens = self.source.tokens;
+        let first = tokens.partition_point(|token| token.start() < start);
+        let key = property.key.span().start;
+        tokens[first..]
+            .iter()
+            .take_while(|token| token.start() < key)
+            .any(|token| token.kind() == Kind::Declare)
+    }
+
+    fn visit_field<'a>(
+        &mut self,
+        node: AstKind<'a>,
+        decorators: &oxc_allocator::Vec<'a, Decorator<'a>>,
+        key: &PropertyKey<'a>,
+        value: Option<&Expression<'a>>,
+        is_static: bool,
+    ) {
+        self.enter_node(node);
+        self.visit_decorators(decorators);
+        self.visit_property_key(key);
+        if let Some(value) = value {
+            self.visit_initializer(value, is_static);
+        }
+        self.leave_node(node);
     }
 
     fn record_statement(
@@ -541,14 +579,29 @@ impl<'a> Visit<'a> for Collector<'_> {
         if property.declare {
             return;
         }
-        let node = AstKind::PropertyDefinition(self.alloc(property));
-        self.enter_node(node);
-        self.visit_decorators(&property.decorators);
-        self.visit_property_key(&property.key);
-        if let Some(value) = &property.value {
-            self.visit_initializer(value, property.r#static);
+        self.visit_field(
+            AstKind::PropertyDefinition(self.alloc(property)),
+            &property.decorators,
+            &property.key,
+            property.value.as_ref(),
+            property.r#static,
+        );
+    }
+
+    fn visit_accessor_property(
+        &mut self,
+        property: &AccessorProperty<'a>,
+    ) {
+        if self.declared_accessor(property) {
+            return;
         }
-        self.leave_node(node);
+        self.visit_field(
+            AstKind::AccessorProperty(self.alloc(property)),
+            &property.decorators,
+            &property.key,
+            property.value.as_ref(),
+            property.r#static,
+        );
     }
 
     fn visit_logical_expression(

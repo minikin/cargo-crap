@@ -659,6 +659,105 @@ fn nested_classes_and_overloads_keep_their_constructor_owners() {
 }
 
 #[test]
+fn score_auto_accessor_initializers_as_fields() {
+    let source = b"class K { accessor x = f(() => 1); static accessor y = a ?? b }";
+    let file = analyze(Path::new("accessors.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    let rows: Vec<_> = file
+        .rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.cyclomatic, r.span, r.is_arrow))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("K::constructor", 1, span(1, 23, 1, 33), false),
+            ("K::x::f()", 1, span(1, 25, 1, 32), true),
+            ("K::static y", 2, span(1, 55, 1, 61), false),
+        ]
+    );
+    assert_eq!(file.rows[0].body_regions, [span(1, 23, 1, 33)]);
+    assert_eq!(file.rows[2].body_regions, [span(1, 55, 1, 61)]);
+    for (source, expected) in [
+        (
+            "class K { accessor off: number; static accessor handler = (()=>x && y)!; accessor #key = class { h(){} } }",
+            &[
+                ("K::static handler", 2),
+                ("K::constructor", 1),
+                ("K::#key::h", 1),
+            ][..],
+        ),
+        (
+            "class K { accessor x = a && b; constructor(){ ok() } static accessor [key] = make(() => 1); }",
+            &[
+                ("K::constructor", 2),
+                ("K::static (key)", 1),
+                ("K::static (key)::make()", 1),
+            ],
+        ),
+        (
+            "class K { accessor off: number; static accessor on = 1 }",
+            &[("K::static on", 1)],
+        ),
+    ] {
+        let file = analyze(
+            Path::new("forms.ts"),
+            source.as_bytes(),
+            Mode::Strict(Side::Head),
+        )
+        .unwrap();
+        let rows: Vec<_> = file
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.cyclomatic))
+            .collect();
+        assert_eq!(rows, expected, "{source}");
+    }
+}
+
+#[test]
+fn recovered_ambient_accessors_erase_only_the_declared_initializer() {
+    for field in [
+        "declare accessor x = f(()=>1)",
+        "declare static accessor y = a ?? b",
+    ] {
+        let source = format!(
+            "class C {{ {field}; accessor declare = 0; @dec(declare) static accessor kept = 1 }}"
+        );
+        let file = analyze(Path::new("ambient.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+        assert_eq!(file.status, FileStatus::Recovered);
+        assert_eq!(file.warnings.len(), 1);
+        let names: Vec<_> = file.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["C::constructor", "C::static kept"], "{source}");
+        assert_eq!(file.rows[0].body_regions.len(), 1);
+        assert_eq!(file.rows[0].span, file.rows[0].body_regions[0]);
+        let isolated = format!("class C {{ {field} }} function retained() {{}}");
+        let file = analyze(Path::new("ambient.ts"), isolated.as_bytes(), Mode::Ordinary).unwrap();
+        let names: Vec<_> = file.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["retained"], "{isolated}");
+    }
+}
+
+#[test]
+fn direct_class_valued_fields_supply_a_class_name() {
+    let source = b"class C { static A = class B { f() {} }; other = class { g() {} } }";
+    let file = analyze(Path::new("nested.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    let rows: Vec<_> = file
+        .rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.cyclomatic, r.is_arrow))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("C::static A::f", 1, false),
+            ("C::constructor", 1, false),
+            ("C::other::g", 1, false)
+        ]
+    );
+    assert_eq!(file.rows[1].body_regions, [span(1, 49, 1, 65)]);
+}
+
+#[test]
 fn locate_an_implied_constructor_across_discontiguous_initializers() {
     let source = b"class C {\n  a = p && q\n  static f = () => 9\n  handler = () => p ? 1 : 2\n  b = r ?? s\n}";
     let file = analyze(Path::new("implied.ts"), source, Mode::Strict(Side::Head)).unwrap();
