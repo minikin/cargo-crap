@@ -3,9 +3,9 @@ use std::fmt::Write as _;
 
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    Argument, AssignmentTarget, BindingPattern, Expression, JSXAttributeItem, JSXAttributeValue,
-    JSXChild, JSXElement, LogicalExpression, MemberExpression, MethodDefinitionKind, PropertyKey,
-    PropertyKind, SimpleAssignmentTarget,
+    Argument, AssignmentTarget, BindingPattern, ChainElement, Expression, JSXAttributeItem,
+    JSXAttributeValue, JSXChild, JSXElement, LogicalExpression, MemberExpression,
+    MethodDefinitionKind, PropertyKey, PropertyKind, SimpleAssignmentTarget,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{Kind, Token};
@@ -63,15 +63,15 @@ fn unquoted(value: &str) -> String {
 }
 
 fn quoted(value: JSStr<'_>) -> String {
-    delimited(value, '"', '"')
+    delimited(value, '"')
 }
 
 fn delimited(
     value: JSStr<'_>,
     open: char,
-    close: char,
 ) -> String {
     let quoted = open == '"';
+    let close = if quoted { '"' } else { ')' };
     let encoded = encode(value.chars(), quoted);
     if value.chars().nth(48).is_none() {
         return format!("{open}{encoded}{close}");
@@ -187,7 +187,7 @@ impl Source<'_> {
             },
             Expression::NumericLiteral(n) => n.value.to_js_string(),
             Expression::BigIntLiteral(n) => n.value.to_string(),
-            _ => delimited(JSStr::from(self.computed_text(expr).as_str()), '(', ')'),
+            _ => delimited(JSStr::from(self.computed_text(expr).as_str()), '('),
         }
     }
 }
@@ -275,7 +275,7 @@ fn chain_value<'b, 'a>(mut expr: &'b Expression<'a>) -> &'b Expression<'a> {
     loop {
         expr = direct_value(expr);
         if let Expression::ChainExpression(chain) = expr
-            && let oxc_ast::ast::ChainElement::TSNonNullExpression(assertion) = &chain.expression
+            && let ChainElement::TSNonNullExpression(assertion) = &chain.expression
         {
             expr = &assertion.expression;
         } else {
@@ -885,6 +885,31 @@ mod tests {
     }
 
     proptest::proptest! {
+        #[test]
+        fn delimited_names_use_code_point_lengths_and_full_content_hashes(
+            units in proptest::collection::vec(proptest::prop_oneof![
+                proptest::prelude::any::<u16>(),
+                proptest::sample::select(vec![0x22, 0x2f, 0x25, 0xd800, 0xdfff, 0x200d]),
+            ], 0..96)
+        ) {
+            let arena = &Allocator::default();
+            let mut builder = oxc_str::JSStrBuilder::new_in(&arena);
+            builder.push_utf16(&units);
+            let value = builder.into_js_str();
+            let count = char::decode_utf16(units.iter().copied()).count();
+            for (open, close, quoted) in [('"', '"', true), ('(', ')', false)] {
+                let full = encode(value.chars(), quoted);
+                let expected = if count <= 48 {
+                    format!("{open}{full}{close}")
+                } else {
+                    let digest = format!("{:x}", Sha256::digest(full.as_bytes()));
+                    let prefix = encode(value.chars().take(40), quoted);
+                    format!("{open}{prefix}{close}~{}", &digest[..8])
+                };
+                proptest::prop_assert_eq!(delimited(value, open), expected);
+            }
+        }
+
         #[test]
         fn inserting_trivia_between_key_tokens_preserves_computed_text(
             name in "v[a-zA-Z0-9]{0,8}", value in proptest::prelude::any::<u16>(),

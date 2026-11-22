@@ -575,6 +575,9 @@ proptest::proptest! {
 fn reduce_property_chains_and_label_call_roles() {
     for (source, expected) in [
         ("(obj?.ready)(()=>0)", &["obj.ready()"][..]),
+        ("a['x-y'](()=>0)", &["a.\"x-y\"()"]),
+        ("a?.[0]?.(()=>0)", &["a.0()"]),
+        ("(a?.b).c ||= () => 0", &["a.b.c"]),
         (
             r#"(obj?.[id])?.on<T>("save", () => 1)"#,
             &["obj.(id).on(\"save\")"],
@@ -702,5 +705,18 @@ fn shorten_delimited_content_in_code_points() {
     assert_eq!(
         clean_names("chain.ts", &source),
         [format!("{long}::{long}"), format!("{long}.{long}()")]
+    );
+
+    let source = format!("module '{}/' {{ function f() {{}} }}", "a".repeat(48));
+    let file = analyze(Path::new("module.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+    assert_eq!(file.status, FileStatus::Recovered);
+    assert_eq!(file.warnings.len(), 1);
+    let names: Vec<_> = file.rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, [format!("\"{a40}\"~65942819::f")]);
+
+    let source = format!("class C {{ [k + \"{}/\"]() {{}} }}", "s".repeat(44));
+    assert_eq!(
+        clean_names("computed.ts", &source),
+        [format!("C::(k+\"{})~82f8edbc", "s".repeat(37))]
     );
 }
