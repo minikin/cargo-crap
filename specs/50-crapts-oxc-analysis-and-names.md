@@ -853,6 +853,7 @@ The frozen TypeScript CLI and the Oxc front end have different syntax-error and 
 | Unclosed `partial` function | Returns `partial` plus a warning | A fatal Oxc parse has no usable tree. Skip the file with a warning in ordinary mode. |
 | JSX in `wrong.ts` or TS annotations in `wrong.js` | Retains `B` with a warning in the first, `f` without a warning in the second | Strict analysis rejects a diagnostic on either comparison side. An ordinary TypeScript scan cannot exercise this strict API. |
 | Invalid UTF-8 bytes `66 80 0A` | Decodes with replacement, returns zero rows and a binary-file warning | Reject invalid bytes with an input error so reported positions refer to the original source. |
+| `class C { static constructor(){} x = 1 }` | Emits one constructor row containing the field initializer | Oxc parses the static member as an ordinary method. Emit `C::static constructor` and charge the instance field to the implied `C::constructor`. |
 
 Spec 51 report rows omit `fingerprint`. Spec 54 uses names and paths for baseline move detection. It pairs eligible `(file, name)` entries with the stem-count guard and the path-suffix and unique-name passes. Fingerprint computation and the `fingerprint` report field arrive together in Spec 55. Its changed-function gate is the first reader. The author will settle matching and verdict rules in that spec.
 

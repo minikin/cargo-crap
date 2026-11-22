@@ -589,6 +589,12 @@ fn apply_ordinals_after_the_full_names_are_known() {
         clean_names("tags.ts", "tag`${()=>0}${()=>1}`"),
         ["tag()", "tag()#2"]
     );
+    let call = format!("it(\"{}\",()=>{{}});", "x".repeat(80));
+    let stem = format!("it(\"{}\"~d929cdee)", "x".repeat(40));
+    assert_eq!(
+        clean_names("shortened.ts", &call.repeat(3)),
+        [stem.clone(), format!("{stem}#2"), format!("{stem}#3")]
+    );
     let source = br#"class C { ["constructor"](){ if(ok)go() } x = 1 }"#;
     let file = analyze(Path::new("order.ts"), source, Mode::Strict(Side::Head)).unwrap();
     let rows: Vec<_> = file

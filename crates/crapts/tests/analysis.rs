@@ -826,19 +826,42 @@ fn direct_class_valued_fields_supply_a_class_name() {
 #[test]
 fn count_class_definition_expressions_in_the_surrounding_execution_context() {
     let class = "class K extends (a ? A : B) { @dec(b ? 1 : 2) [c ? u : v]() {} }";
+    let nested = format!("function outer() {{ {class} }}");
+    let rest =
+        "function outer(){class K { m(@dec(p ? 1 : 0) x = a ?? b, @dec(q && r) ...xs: any[]){} }}";
+    let parameter = "class K { m(@dec(p ? 1 : 0) x = a ?? b){} }";
+    let callbacks = "function outer(){class K { m(@dec(()=>a&&b) x=()=>0){} }}";
+    let declared = "function outer(){class K { @dec(p ? 1 : 2) declare [q ? x : y]: number }}";
     for (source, expected) in [
-        (format!("function outer() {{ {class} }}"), &[("outer",4), ("outer::K::(c%3Fu%3Av)",1)][..]),
-        (class.to_owned(), &[("K::(c%3Fu%3Av)",1)]),
-        ("function outer(){class K { m(@dec(p ? 1 : 0) x = a ?? b, @dec(q && r) ...xs: any[]){} }}".to_owned(),
-            &[("outer",3), ("outer::K::m",2)]),
-        ("class K { m(@dec(p ? 1 : 0) x = a ?? b){} }".to_owned(), &[("K::m",2)]),
-        ("function outer(){class K { m(@dec(()=>a&&b) x=()=>0){} }}".to_owned(),
-            &[("outer",1), ("outer::K::m",1), ("outer::K::m::dec()",2), ("outer::K::m::x",1)]),
-        ("function outer(){class K { @dec(p ? 1 : 2) declare [q ? x : y]: number }}".to_owned(),
-            &[("outer",3)]),
+        (
+            nested.as_str(),
+            &[("outer", 4), ("outer::K::(c%3Fu%3Av)", 1)][..],
+        ),
+        (class, &[("K::(c%3Fu%3Av)", 1)]),
+        (rest, &[("outer", 3), ("outer::K::m", 2)]),
+        (parameter, &[("K::m", 2)]),
+        (
+            callbacks,
+            &[
+                ("outer", 1),
+                ("outer::K::m", 1),
+                ("outer::K::m::dec()", 2),
+                ("outer::K::m::x", 1),
+            ],
+        ),
+        (declared, &[("outer", 3)]),
     ] {
-        let file = analyze(Path::new("definition.ts"), source.as_bytes(), Mode::Strict(Side::Head)).unwrap();
-        let rows: Vec<_> = file.rows.iter().map(|r| (r.name.as_str(),r.cyclomatic)).collect();
+        let file = analyze(
+            Path::new("definition.ts"),
+            source.as_bytes(),
+            Mode::Strict(Side::Head),
+        )
+        .unwrap();
+        let rows: Vec<_> = file
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.cyclomatic))
+            .collect();
         assert_eq!(rows, expected, "{source}");
     }
 }

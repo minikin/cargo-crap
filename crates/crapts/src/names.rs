@@ -17,12 +17,13 @@ use oxc_syntax::operator::AssignmentOperator;
 use sha2::{Digest, Sha256};
 
 pub(super) fn assign_ordinals<'a>(names: impl IntoIterator<Item = &'a mut String>) {
-    let mut counts = HashMap::<String, usize>::new();
+    let mut counts = HashMap::<&str, usize>::new();
     for name in names {
-        let ordinal = counts.entry(name.clone()).or_default();
-        *ordinal += 1;
-        if *ordinal > 1 {
+        if let Some(ordinal) = counts.get_mut(name.as_str()) {
+            *ordinal += 1;
             write!(name, "#{ordinal}").unwrap();
+        } else {
+            counts.insert(name, 1);
         }
     }
 }
@@ -778,30 +779,28 @@ mod tests {
     use oxc_span::SourceType;
 
     #[test]
-    fn ordinals_count_whole_stems_again_for_each_file() {
-        for _ in 0..2 {
-            let mut names = [
+    fn ordinals_count_whole_stems() {
+        let mut names = [
+            "outer",
+            "outer::fn",
+            "other::fn",
+            "outer",
+            "outer::fn",
+            "outer",
+        ]
+        .map(String::from);
+        assign_ordinals(&mut names);
+        assert_eq!(
+            names,
+            [
                 "outer",
                 "outer::fn",
                 "other::fn",
-                "outer",
-                "outer::fn",
-                "outer",
+                "outer#2",
+                "outer::fn#2",
+                "outer#3"
             ]
-            .map(String::from);
-            assign_ordinals(&mut names);
-            assert_eq!(
-                names,
-                [
-                    "outer",
-                    "outer::fn",
-                    "other::fn",
-                    "outer#2",
-                    "outer::fn#2",
-                    "outer#3"
-                ]
-            );
-        }
+        );
     }
 
     #[test]
