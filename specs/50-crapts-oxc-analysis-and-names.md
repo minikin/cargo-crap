@@ -2,7 +2,7 @@
 
 **Status:** Approved
 **Effort:** Large
-**Module:** `crates/crapts/{Cargo.toml,src/lib.rs,src/discover.rs,src/analyze.rs,src/lines.rs,src/names.rs,tests/analysis.rs,tests/names.rs,tests/properties.rs}`, `Cargo.toml`, `Cargo.lock`, `tests/workspace.rs`, `tests/fixtures/spec45-package-ids.txt`, `tests/golden/config.rs`, `tests/golden/gates.rs`, `scripts/gates/parser-guard.sh`, `scripts/gates/test.sh`, `.github/workflows/ci.yml`, `.github/dependabot.yml`
+**Module:** `crates/crapts/{Cargo.toml,src/lib.rs,src/discover.rs,src/analyze.rs,src/lines.rs,src/names.rs,tests/analysis.rs,tests/discovery.rs,tests/names.rs,tests/properties.rs}`, `Cargo.toml`, `Cargo.lock`, `tests/workspace.rs`, `tests/fixtures/spec45-package-ids.txt`, `tests/golden/config.rs`, `tests/golden/gates.rs`, `scripts/gates/parser-guard.sh`, `scripts/gates/test.sh`, `.github/workflows/ci.yml`, `.github/dependabot.yml`
 
 ## Context
 
@@ -110,7 +110,7 @@ And the unused extra patterns in order are "src/tag.md", "dist/**" and "absent/*
 
 Use case-sensitive, whole-path globset matching on `/`-separated paths, including dot-prefixed components. `*` and `?` stay within a component. A `**` component can cross directories. Character classes, brace alternatives and backslash escapes use globset syntax. A leading `!` is literal. Validate all patterns, even for an empty scan. Every extra pattern matching an otherwise eligible file counts as used, including overlapping matches. Each unused entry retains its pattern and origin for the caller.
 
-A recursive wildcard can cross ordinary directories but cannot consume a leading parent component. From `pkg`, the rule `**/gen/**` leaves `../shared/gen/a.ts` eligible. The rule `../shared/gen/**` excludes it. Apply the same rule to historical paths and to unused-pattern accounting.
+A recursive wildcard can cross ordinary directories but cannot consume a leading `..` component. A head component starting with `.*` or containing a brace group also cannot consume it. From `pkg`, the rules `**/gen/**`, `**/.*/**`, `.*/**` and `{..,x}/**` leave `../shared/gen/a.ts` eligible. The rule `../shared/gen/**` excludes it. Apply the same rule to historical paths and to unused-pattern accounting.
 
 ### Scenario: Apply discovery scope to old paths
 
@@ -123,7 +123,7 @@ And "other/old.ts", "src/cache/old.ts", "src/vendor/old.ts", "src/gone.test.ts"
   and "src/old.d.ts" are out of scope
 ```
 
-Spec 50 supplies the selection predicate and unused-pattern data. A file root matches only itself. A directory root also admits eligible former paths beneath it, subject to the same ignores, exclusions and traversal boundaries. Spec 53 presents discovery notices and Spec 54 applies the predicate to baseline rows.
+Spec 50 supplies the selection predicate and unused-pattern data. A file root matches only itself. A directory root also admits eligible former paths beneath it, subject to the same ignores, exclusions and traversal boundaries. Outside Git, an absent path beneath a directory symlink under a directory root is outside scope, just as it is in a worktree. Spec 53 presents discovery notices and Spec 54 applies the predicate to baseline rows.
 
 ### Scenario Outline: Report discovery failures
 
