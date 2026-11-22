@@ -52,7 +52,10 @@ impl ExcludePattern {
                 "{}: exclude '{pattern}' excluded no file; globs are relative to the config directory",
                 file.display()
             ),
-            GlobOrigin::Default | GlobOrigin::Flag => format!(
+            GlobOrigin::Default => format!(
+                "default exclude '{pattern}' excluded no file; globs are relative to the current directory"
+            ),
+            GlobOrigin::Flag => format!(
                 "--exclude '{pattern}' excluded no file; globs are relative to the current directory"
             ),
         }
@@ -533,7 +536,11 @@ impl Worktree {
 
     fn filesystem(cwd: &Path) -> Result<Self, InputError> {
         for dir in cwd.ancestors() {
-            if file_type(&dir.join(".git"))?.is_some_and(|kind| kind.is_dir() || kind.is_file()) {
+            let marker = dir.join(".git");
+            let kind = fs::metadata(&marker)
+                .map(|stat| Some(stat.file_type()))
+                .or_else(|error| missing_file(&marker, error))?;
+            if kind.is_some_and(|kind| kind.is_dir() || kind.is_file()) {
                 return Ok(Self {
                     root: Some(dir.to_owned()),
                     prefix: cwd
@@ -943,16 +950,59 @@ mod origin_tests {
         assert_eq!(tree.prefix, Path::new(""));
     }
 
+    #[test]
+    fn unused_builtin_rules_identify_the_default_origin() {
+        let rule = DiscoveryOptions::new(".").defaults.remove(0);
+        assert_eq!(
+            rule.unused_warning(),
+            "default exclude '**/node_modules/**' excluded no file; globs are relative to the current directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_git_directory_or_gitfile_is_a_filesystem_boundary() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("repo");
+        let nested = repo.join("pkg");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(d.path().join(".git")).unwrap();
+        for (name, dir) in [("metadata", true), ("gitfile", false)] {
+            let target = d.path().join(name);
+            if dir {
+                fs::create_dir(&target).unwrap();
+            } else {
+                fs::write(&target, "gitdir: metadata").unwrap();
+            }
+            symlink(&target, repo.join(".git")).unwrap();
+            let tree = Worktree::filesystem(&nested).unwrap();
+            assert_eq!(tree.root.as_deref(), Some(repo.as_path()));
+            assert_eq!(tree.prefix, Path::new("pkg"));
+            fs::remove_file(repo.join(".git")).unwrap();
+        }
+    }
+
     proptest! {
         #[test]
         fn parent_config_globs_rebase_across_nested_invocations(
-            dir in "[a-z]{1,6}", depth in 1usize..5, keep in any::<bool>(),
+            dir in "[a-z]{1,6}", depth in 1usize..5, leaf in "[a-z]{1,8}",
+            extension in prop::sample::select(vec!["ts","tsx"]), wildcard in any::<bool>(),
         ) {
-            let root = std::env::temp_dir().join("historical");
-            let nested = (0..depth).fold(root.join(&dir), |cwd, _| cwd.join("child"));
-            let rule = ExcludePattern { pattern: format!("{dir}/**/gen/*.ts"), origin: GlobOrigin::Config(root.join(".crapts.toml")), base_dir: root };
-            let set = compile(&nested, &[rule]).unwrap();
-            prop_assert_eq!(set.is_match(Path::new(if keep { "src/a.ts" } else { "gen/a.ts" })), !keep);
+            let root=std::env::temp_dir().join("historical");
+            let tail=vec!["child";depth].join("/");
+            let nested=root.join(&dir).join(&tail);
+            let pattern=if wildcard {format!("{dir}/**/g?n/*.{extension}")} else {format!("{dir}/{tail}/gen/{leaf}.{extension}")};
+            let config=ExcludePattern{pattern,origin:GlobOrigin::Config(root.join(".crapts.toml")),base_dir:root};
+            let flag=ExcludePattern{pattern:format!("../inbox/{leaf}.{extension}"),origin:GlobOrigin::Flag,base_dir:nested.clone()};
+            let set=compile(&nested,&[config,flag]).unwrap();
+            let file=format!("{leaf}.{extension}");
+            let outside=format!("{}gen/{file}","../".repeat(depth+2));
+            for (path,hits) in [(format!("gen/{file}"),vec![0]),(format!("../inbox/{file}"),vec![1]),(format!("src/{file}"),vec![]),(outside,vec![])] {
+                let mut actual=Vec::new();
+                set.matches_into(Path::new(&path),&mut actual);
+                prop_assert_eq!(actual,hits);
+            }
         }
     }
 }

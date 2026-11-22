@@ -121,6 +121,9 @@ fn relative_to(
     base: &Path,
     path: &Path,
 ) -> PathBuf {
+    if base.components().next() != path.components().next() {
+        return path.to_owned();
+    }
     let shared = base
         .components()
         .zip(path.components())
@@ -659,6 +662,19 @@ mod based_tests {
         }];
         allow(&mut rows, set);
         !rows.is_empty()
+    }
+
+    #[test]
+    fn paths_with_different_leading_components_keep_their_original_spelling() {
+        assert_eq!(
+            relative_to(Path::new("a/base"), Path::new("b/file")),
+            Path::new("b/file")
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            relative_to(Path::new(r"C:\base"), Path::new(r"D:\file")),
+            Path::new(r"D:\file")
+        );
     }
 
     #[test]

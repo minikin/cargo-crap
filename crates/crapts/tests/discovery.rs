@@ -1054,9 +1054,32 @@ fn explicit_broken_and_cyclic_symlink_roots_follow_metadata_rules() {
 
 #[test]
 fn file_and_flag_globs_keep_their_origins_across_a_subdirectory_run() {
+    let key = "CRAPTS_TEST_GLOB_BASES_WITHOUT_GIT";
+    if let Some(dir) = std::env::var_os(key) {
+        check_glob_bases(Path::new(&dir));
+        return;
+    }
     let dir = tempdir().unwrap();
-    let repo = dir.path();
-    git(repo, &["init", "-q"]);
+    git(dir.path(), &["init", "-q"]);
+    check_glob_bases(dir.path());
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "file_and_flag_globs_keep_their_origins_across_a_subdirectory_run",
+            "--nocapture",
+        ])
+        .env(key, dir.path())
+        .env("PATH", dir.path().join("no-git"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn check_glob_bases(repo: &Path) {
     let cwd = repo.join("packages/app");
     for file in ["gen/a.ts", "src/hot.ts", "src/edge.ts", "keep.ts"] {
         write(&cwd, file, "");
@@ -1207,5 +1230,43 @@ fn a_failed_git_prefix_lookup_after_a_successful_worktree_probe_is_an_error() {
         "{} {}",
         String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn git_probe_retains_invalid_filename_bytes_in_a_toplevel_error() {
+    use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+    let key = "CRAPTS_TEST_INVALID_GIT_PATH";
+    if let Some(dir) = std::env::var_os(key) {
+        let error = discover(&[], &DiscoveryOptions::new(dir)).unwrap_err();
+        assert!(error.path().as_os_str().as_bytes().ends_with(&[0xff]));
+        assert!(
+            error.to_string().contains("git rev-parse --show-toplevel"),
+            "{error}"
+        );
+        return;
+    }
+    let dir = tempdir().unwrap();
+    let git = dir.path().join("git");
+    let script = r#"#!/bin/sh
+printf '%s/\377\n' "$CRAPTS_TEST_INVALID_GIT_PATH"
+"#;
+    fs::write(&git, script).unwrap();
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "git_probe_retains_invalid_filename_bytes_in_a_toplevel_error",
+            "--nocapture",
+        ])
+        .env(key, dir.path())
+        .env("PATH", dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }

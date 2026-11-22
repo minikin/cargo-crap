@@ -193,6 +193,8 @@ uncovered-hints = false
             ("threshold = 15\nallow = [", "line 2, column"),
         ] {
             let error = read(source).unwrap_err();
+            assert_eq!(error.path(), Path::new("parent/.crapts.toml"));
+            assert!(error.to_string().contains("parent/.crapts.toml"));
             assert!(error.to_string().contains(detail), "{source}: {error}");
         }
         for (key, val) in [
@@ -223,6 +225,23 @@ uncovered-hints = false
         }
     }
 
+    #[test]
+    fn missing_and_sort_keys_cover_all_their_wire_spellings() {
+        for (key, value) in [
+            ("pessimistic", MissingCoveragePolicy::Pessimistic),
+            ("optimistic", MissingCoveragePolicy::Optimistic),
+            ("skip", MissingCoveragePolicy::Skip),
+        ] {
+            assert_eq!(
+                read(&format!("missing='{key}'")).unwrap().missing,
+                Some(value)
+            );
+        }
+        for (key, value) in [("crap", SortOrder::Crap), ("file", SortOrder::File)] {
+            assert_eq!(read(&format!("sort='{key}'")).unwrap().sort, Some(value));
+        }
+    }
+
     proptest! {
         #[test]
         fn finite_min_and_threshold_values_round_trip(value in any::<f64>().prop_filter("finite numeric settings", |f| f.is_finite())) {
@@ -230,6 +249,12 @@ uncovered-hints = false
             let cfg = read(&source).unwrap();
             prop_assert_eq!(cfg.min.unwrap().to_bits(), value.to_bits());
             prop_assert_eq!(cfg.threshold.unwrap().to_bits(), value.to_bits());
+            let epsilon=read(&format!("epsilon={value:e}"));
+            if value < 0.0 {
+                prop_assert!(epsilon.is_err());
+            } else {
+                prop_assert_eq!(epsilon.unwrap().epsilon.unwrap().to_bits(),value.to_bits());
+            }
         }
 
         #[test]

@@ -74,3 +74,39 @@ fn git_and_the_filesystem_can_spell_the_same_worktree_boundary_differently() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn git_free_lookup_stops_at_a_marker_and_walks_past_its_former_location() {
+    let key = "CRAPTS_TEST_CONFIG_NO_GIT";
+    if let Some(root) = std::env::var_os(key) {
+        let root = std::path::PathBuf::from(root);
+        let repo = root.join("repo");
+        let cwd = repo.join("pkg");
+        fs::create_dir_all(&cwd).unwrap();
+        let outer = root.join(".crapts.toml");
+        fs::write(&outer, "threshold=44").unwrap();
+        fs::create_dir(repo.join(".git")).unwrap();
+        assert_eq!(load(&cwd).unwrap(), (None, Config::default()));
+        fs::remove_dir(repo.join(".git")).unwrap();
+        let (path, cfg) = load(&cwd).unwrap();
+        assert_eq!(path, Some(outer.canonicalize().unwrap()));
+        assert_eq!(cfg.threshold, Some(44.));
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "git_free_lookup_stops_at_a_marker_and_walks_past_its_former_location",
+            "--nocapture",
+        ])
+        .env(key, root.path())
+        .env("PATH", root.path().join("no-git"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
