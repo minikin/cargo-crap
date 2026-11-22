@@ -6,11 +6,14 @@
 //! itself and comes back spelled as committed. Paths Git prints must be
 //! UTF-8, on every platform alike.
 
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io;
+use std::fs;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const GIT: &str = "git";
 
@@ -82,6 +85,10 @@ pub enum GitError {
         command: String,
         output: String,
     },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
 }
 
 impl fmt::Display for GitError {
@@ -113,6 +120,7 @@ impl fmt::Display for GitError {
             Self::Unexpected { command, output } => {
                 write!(f, "{command} printed unexpected output: {output:?}")
             },
+            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
         }
     }
 }
@@ -127,7 +135,21 @@ fn with_detail(
     }
 }
 
-impl std::error::Error for GitError {}
+impl std::error::Error for GitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+fn io_error(path: &Path) -> impl FnOnce(io::Error) -> GitError + '_ {
+    move |source| GitError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
+}
 
 struct Ran {
     command: String,
@@ -150,27 +172,29 @@ impl Ran {
         }
     }
 
-    fn unexpected(
-        self,
-        output: &str,
-    ) -> GitError {
-        GitError::Unexpected {
-            command: self.command,
-            output: output.to_owned(),
+    fn bytes(self) -> Result<Vec<u8>, GitError> {
+        if self.output.status.success() {
+            Ok(self.output.stdout)
+        } else {
+            Err(self.failed())
         }
     }
 
-    fn stdout(mut self) -> Result<String, GitError> {
-        if !self.output.status.success() {
-            return Err(self.failed());
-        }
-        match String::from_utf8(std::mem::take(&mut self.output.stdout)) {
-            Ok(text) => Ok(text),
-            Err(e) => {
-                let lossy = String::from_utf8_lossy(e.as_bytes()).into_owned();
-                Err(self.unexpected(&lossy))
-            },
-        }
+    fn stdout(self) -> Result<String, GitError> {
+        let command = self.command.clone();
+        String::from_utf8(self.bytes()?).map_err(|e| GitError::Unexpected {
+            command,
+            output: String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        })
+    }
+
+    /// Text output read by `parse`, whose error is the offending input.
+    fn parsed<T>(
+        self,
+        parse: impl FnOnce(&str) -> Result<T, String>,
+    ) -> Result<T, GitError> {
+        let command = self.command.clone();
+        parse(&self.stdout()?).map_err(|output| GitError::Unexpected { command, output })
     }
 
     fn line(self) -> Result<String, GitError> {
@@ -215,6 +239,13 @@ where
         .output();
     match output {
         Ok(output) => Ok(Ran { command, output }),
+        // A missing working directory fails the spawn with NotFound too.
+        Err(e) if e.kind() == io::ErrorKind::NotFound && !dir.is_dir() => {
+            Err(GitError::NotAWorktree {
+                dir: dir.to_path_buf(),
+                stderr: e.to_string(),
+            })
+        },
         Err(e) if e.kind() == io::ErrorKind::NotFound => Err(GitError::GitMissing),
         Err(e) => Err(GitError::Failed {
             command,
@@ -222,6 +253,290 @@ where
         }),
     }
 }
+
+/// How many leading bytes of a side are searched for a NUL, as Git does.
+const BINARY_PROBE: usize = 8000;
+
+/// A Git file mode as the raw diff prints it, in octal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Mode(pub u32);
+
+impl Mode {
+    pub const REGULAR: Self = Self(0o100_644);
+    pub const EXECUTABLE: Self = Self(0o100_755);
+    pub const SYMLINK: Self = Self(0o120_000);
+    pub const GITLINK: Self = Self(0o160_000);
+
+    /// A regular file, executable or not: the only kind with text to read.
+    #[must_use]
+    pub fn is_regular(self) -> bool {
+        self == Self::REGULAR || self == Self::EXECUTABLE
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChangeStatus {
+    Added,
+    Modified,
+    Renamed,
+    Deleted,
+    TypeChanged,
+}
+
+/// One side of a change. `binary` is true when the side's first 8000 bytes
+/// hold a NUL: the blob at the base for the old side, the working-tree file
+/// for the new side, whatever `.gitattributes` says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Side {
+    pub path: PathBuf,
+    pub mode: Mode,
+    pub binary: bool,
+}
+
+/// A path that differs between a base commit and the working tree.
+/// `untracked` marks a new side that is not in the index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub status: ChangeStatus,
+    pub old: Option<Side>,
+    pub new: Option<Side>,
+    pub untracked: bool,
+}
+
+impl Change {
+    fn key(&self) -> &Path {
+        let side = self.new.as_ref().or(self.old.as_ref());
+        side.map_or(Path::new(""), |s| s.path.as_path())
+    }
+}
+
+/// A zero-context hunk. A head count of 0 is a deletion point after head
+/// line `head_start`, and 0 there is the point before line 1. A base count
+/// of 0 removes no base line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Hunk {
+    pub base_start: u32,
+    pub base_count: u32,
+    pub head_start: u32,
+    pub head_count: u32,
+}
+
+/// A record of `git diff --raw -z` before its sides are read.
+#[derive(Debug, PartialEq, Eq)]
+struct RawRecord {
+    status: u8,
+    old_mode: Mode,
+    new_mode: Mode,
+    paths: Vec<String>,
+}
+
+fn parse_mode(octal: &str) -> Option<Mode> {
+    (octal.len() == 6)
+        .then(|| u32::from_str_radix(octal, 8).ok())
+        .flatten()
+        .map(Mode)
+}
+
+fn parse_raw(raw: &str) -> Result<Vec<RawRecord>, String> {
+    let mut fields = raw.split('\0');
+    let mut records = Vec::new();
+    while let Some(header) = fields.next() {
+        if header.is_empty() {
+            continue;
+        }
+        let record = parse_raw_header(header).ok_or_else(|| header.to_owned())?;
+        let wanted = if matches!(record.status, b'R' | b'C') {
+            2
+        } else {
+            1
+        };
+        let paths: Vec<String> = fields.by_ref().take(wanted).map(str::to_owned).collect();
+        if paths.len() != wanted || paths.iter().any(String::is_empty) {
+            return Err(header.to_owned());
+        }
+        records.push(RawRecord { paths, ..record });
+    }
+    Ok(records)
+}
+
+/// `:<old mode> <new mode> <old id> <new id> <status>[score]`.
+fn parse_raw_header(header: &str) -> Option<RawRecord> {
+    let mut words = header.strip_prefix(':')?.split(' ');
+    let old_mode = parse_mode(words.next()?)?;
+    let new_mode = parse_mode(words.next()?)?;
+    let status = words.nth(2)?.bytes().next()?;
+    Some(RawRecord {
+        status,
+        old_mode,
+        new_mode,
+        paths: Vec::new(),
+    })
+}
+
+fn has_nul(bytes: &[u8]) -> bool {
+    bytes.iter().take(BINARY_PROBE).any(|&b| b == 0)
+}
+
+fn parse_count(digits: &[u8]) -> Option<u32> {
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(digits).ok()?.parse().ok()
+}
+
+/// `<start>[,<count>]`, with an omitted count read as 1.
+fn parse_range(range: &[u8]) -> Option<(u32, u32)> {
+    match range.iter().position(|&b| b == b',') {
+        Some(comma) => Some((
+            parse_count(&range[..comma])?,
+            parse_count(&range[comma + 1..])?,
+        )),
+        None => Some((parse_count(range)?, 1)),
+    }
+}
+
+/// `@@ -<base range> +<head range> @@[ <heading>]`.
+fn parse_hunk_header(line: &[u8]) -> Option<Hunk> {
+    let rest = line.strip_prefix(b"@@ -")?;
+    let space = rest.iter().position(|&b| b == b' ')?;
+    let (base_start, base_count) = parse_range(&rest[..space])?;
+    let rest = rest[space..].strip_prefix(b" +")?;
+    let space = rest.iter().position(|&b| b == b' ')?;
+    let (head_start, head_count) = parse_range(&rest[..space])?;
+    rest[space..].starts_with(b" @@").then_some(Hunk {
+        base_start,
+        base_count,
+        head_start,
+        head_count,
+    })
+}
+
+/// Every hunk header of a `-U0` patch. Content lines start with `+`, `-`
+/// or a space, so a line that starts with `@@ ` is always a header.
+fn parse_hunks(patch: &[u8]) -> Result<Vec<Hunk>, String> {
+    patch
+        .split(|&b| b == b'\n')
+        .filter(|line| line.starts_with(b"@@ "))
+        .map(|line| {
+            parse_hunk_header(line).ok_or_else(|| String::from_utf8_lossy(line).into_owned())
+        })
+        .collect()
+}
+
+fn parse_unmerged(listing: &str) -> Result<Vec<PathBuf>, String> {
+    let mut paths = BTreeSet::new();
+    for entry in listing.split('\0').filter(|e| !e.is_empty()) {
+        let (_, path) = entry.split_once('\t').ok_or_else(|| entry.to_owned())?;
+        paths.insert(PathBuf::from(path));
+    }
+    Ok(paths.into_iter().collect())
+}
+
+// One function with both arms: a separate non-Unix stub would be mutated
+// and never compiled on the machines that run mutation tests.
+fn is_executable(meta: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        false
+    }
+}
+
+fn mode_of(meta: &fs::Metadata) -> Mode {
+    if meta.file_type().is_symlink() {
+        Mode::SYMLINK
+    } else if meta.is_dir() {
+        Mode::GITLINK
+    } else if is_executable(meta) {
+        Mode::EXECUTABLE
+    } else {
+        Mode::REGULAR
+    }
+}
+
+fn file_prefix(path: &Path) -> io::Result<Vec<u8>> {
+    let mut prefix = Vec::new();
+    fs::File::open(path)?
+        .take(BINARY_PROBE as u64)
+        .read_to_end(&mut prefix)?;
+    Ok(prefix)
+}
+
+/// The base side of a pair whose new side is not in the index, which only
+/// `git diff --no-index` can compare. Removed on drop.
+#[derive(Debug)]
+struct TempFile(PathBuf);
+
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+/// Names taken before giving up: another process holding this many names
+/// with our process id is a stale leftover, not a race.
+const TEMP_ATTEMPTS: usize = 100;
+
+impl TempFile {
+    fn with(bytes: &[u8]) -> io::Result<Self> {
+        Self::in_dir(&std::env::temp_dir(), bytes)
+    }
+
+    fn in_dir(
+        dir: &Path,
+        bytes: &[u8],
+    ) -> io::Result<Self> {
+        for _ in 0..TEMP_ATTEMPTS {
+            let path = dir.join(temp_name(NEXT_TEMP.fetch_add(1, Ordering::Relaxed)));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    let temp = Self(path);
+                    file.write_all(bytes)?;
+                    return Ok(temp);
+                },
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {},
+                Err(e) => return Err(e),
+            }
+        }
+        Err(io::ErrorKind::AlreadyExists.into())
+    }
+}
+
+fn temp_name(n: u64) -> String {
+    format!("cargo-crap-git-{}-{n}.base", std::process::id())
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Keep diff output independent of user configuration such as an external
+/// diff command, a textconv driver, colour or `diff.relative`.
+const OUTPUT_FLAGS: [&str; 4] = [
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-color",
+    "--no-relative",
+];
+
+/// `--text` keeps a `binary` or `-diff` attribute from hiding the hunks of
+/// a pair whose two sides are text.
+const PATCH_FLAGS: [&str; 5] = [
+    "--diff-algorithm=myers",
+    "--no-indent-heuristic",
+    "--text",
+    "-U0",
+    "--inter-hunk-context=0",
+];
+
+const RENAMES: &str = "--find-renames=50%";
 
 /// An open worktree. Every method runs Git in [`Repo::root`].
 #[derive(Clone, Debug)]
@@ -239,18 +554,12 @@ impl Repo {
         program: &'static str,
         cwd: &Path,
     ) -> Result<Self, GitError> {
-        let not_a_worktree = |stderr: String| GitError::NotAWorktree {
-            dir: cwd.to_path_buf(),
-            stderr,
-        };
-        // A missing working directory fails the spawn with NotFound, which
-        // would read as a missing git executable.
-        if !cwd.is_dir() {
-            return Err(not_a_worktree(String::new()));
-        }
         let ran = run(program, cwd, ["rev-parse", "--show-toplevel"])?;
         if !ran.output.status.success() {
-            return Err(not_a_worktree(ran.stderr()));
+            return Err(GitError::NotAWorktree {
+                dir: cwd.to_path_buf(),
+                stderr: ran.stderr(),
+            });
         }
         let root = ran.line()?;
         Ok(Self {
@@ -364,6 +673,197 @@ impl Repo {
             count: all.lines().count(),
             shallow,
         })
+    }
+
+    /// Paths with an index stage above 0. The index is read rather than the
+    /// working tree, so a resolution that is written but not staged is still
+    /// reported, which a tree-to-working-tree diff cannot detect.
+    pub fn unmerged(&self) -> Result<Vec<PathBuf>, GitError> {
+        self.run(["ls-files", "--unmerged", "-z"])?
+            .parsed(parse_unmerged)
+    }
+
+    /// Changes between `base` and the working tree, index edits and
+    /// untracked files included, sorted by path. Rename detection is on and
+    /// copy detection off.
+    pub fn changes(
+        &self,
+        base: &CommitId,
+    ) -> Result<Vec<Change>, GitError> {
+        let mut args = vec!["diff"];
+        args.extend(OUTPUT_FLAGS);
+        args.extend([RENAMES, "--raw", "-z", base.as_str(), "--"]);
+        let ran = self.run(args)?;
+        let command = ran.command.clone();
+        let mut changes = Vec::new();
+        for record in ran.parsed(parse_raw)? {
+            changes.push(self.change(base, &record, &command)?);
+        }
+        let untracked = self
+            .run(["ls-files", "--others", "--exclude-standard", "-z"])?
+            .stdout()?;
+        for path in untracked.split('\0').filter(|p| !p.is_empty()) {
+            self.add_untracked(&mut changes, PathBuf::from(path))?;
+        }
+        changes.sort_by(|a, b| a.key().cmp(b.key()));
+        Ok(changes)
+    }
+
+    fn change(
+        &self,
+        base: &CommitId,
+        record: &RawRecord,
+        command: &str,
+    ) -> Result<Change, GitError> {
+        let status = match record.status {
+            b'A' => ChangeStatus::Added,
+            b'M' => ChangeStatus::Modified,
+            b'R' => ChangeStatus::Renamed,
+            b'D' => ChangeStatus::Deleted,
+            b'T' => ChangeStatus::TypeChanged,
+            other => {
+                return Err(GitError::Unexpected {
+                    command: command.to_owned(),
+                    output: format!("{} {}", char::from(other), record.paths.join(" ")),
+                });
+            },
+        };
+        let old_path = PathBuf::from(&record.paths[0]);
+        let new_path = PathBuf::from(&record.paths[record.paths.len() - 1]);
+        let old = match status {
+            ChangeStatus::Added => None,
+            _ => Some(self.old_side(base, old_path, record.old_mode)?),
+        };
+        let new = match status {
+            ChangeStatus::Deleted => None,
+            _ => Some(self.new_side(new_path, record.new_mode)?),
+        };
+        Ok(Change {
+            status,
+            old,
+            new,
+            untracked: false,
+        })
+    }
+
+    fn old_side(
+        &self,
+        base: &CommitId,
+        path: PathBuf,
+        mode: Mode,
+    ) -> Result<Side, GitError> {
+        let binary = mode.is_regular() && has_nul(&self.blob(base, &path)?);
+        Ok(Side { path, mode, binary })
+    }
+
+    fn new_side(
+        &self,
+        path: PathBuf,
+        mode: Mode,
+    ) -> Result<Side, GitError> {
+        let file = self.root.join(&path);
+        let binary = mode.is_regular() && has_nul(&file_prefix(&file).map_err(io_error(&file))?);
+        Ok(Side { path, mode, binary })
+    }
+
+    /// An untracked regular file where the diff records a regular file as
+    /// deleted is that file taken out of the index: one modification.
+    fn add_untracked(
+        &self,
+        changes: &mut Vec<Change>,
+        path: PathBuf,
+    ) -> Result<(), GitError> {
+        let file = self.root.join(&path);
+        let meta = fs::symlink_metadata(&file).map_err(io_error(&file))?;
+        let new = self.new_side(path, mode_of(&meta))?;
+        let deleted = changes.iter_mut().find(|c| {
+            c.status == ChangeStatus::Deleted
+                && c.old
+                    .as_ref()
+                    .is_some_and(|old| old.path == new.path && old.mode.is_regular())
+        });
+        match deleted {
+            Some(change) if new.mode.is_regular() => {
+                change.status = ChangeStatus::Modified;
+                change.new = Some(new);
+                change.untracked = true;
+            },
+            _ => changes.push(Change {
+                status: ChangeStatus::Added,
+                old: None,
+                new: Some(new),
+                untracked: true,
+            }),
+        }
+        Ok(())
+    }
+
+    /// The zero-context hunks of one change. Both paths go in the pathspec,
+    /// since with the new path alone Git reports a renamed file as added. A
+    /// new side outside the index is compared with the base blob, or with
+    /// nothing when there is no old side, through `git diff --no-index`.
+    pub fn hunks(
+        &self,
+        base: &CommitId,
+        change: &Change,
+    ) -> Result<Vec<Hunk>, GitError> {
+        if change.untracked {
+            return self.untracked_hunks(base, change);
+        }
+        let mut args: Vec<&OsStr> = vec![OsStr::new("diff")];
+        args.extend(OUTPUT_FLAGS.iter().chain(&PATCH_FLAGS).map(OsStr::new));
+        args.extend([RENAMES, base.as_str(), "--"].map(OsStr::new));
+        let mut paths: Vec<&OsStr> = [&change.old, &change.new]
+            .into_iter()
+            .flatten()
+            .map(|side| side.path.as_os_str())
+            .collect();
+        paths.dedup();
+        args.extend(paths);
+        let ran = self.run(args)?;
+        let command = ran.command.clone();
+        parse_hunks(&ran.bytes()?).map_err(|output| GitError::Unexpected { command, output })
+    }
+
+    fn untracked_hunks(
+        &self,
+        base: &CommitId,
+        change: &Change,
+    ) -> Result<Vec<Hunk>, GitError> {
+        let before = match &change.old {
+            Some(old) => self.blob(base, &old.path)?,
+            None => Vec::new(),
+        };
+        let temp = TempFile::with(&before).map_err(io_error(&std::env::temp_dir()))?;
+        let after = change
+            .new
+            .as_ref()
+            .map_or(Path::new(""), |s| s.path.as_path());
+        let mut args: Vec<&OsStr> = vec![OsStr::new("diff"), OsStr::new("--no-index")];
+        args.extend(OUTPUT_FLAGS.iter().chain(&PATCH_FLAGS).map(OsStr::new));
+        args.extend([OsStr::new("--"), temp.0.as_os_str(), after.as_os_str()]);
+        let ran = self.run(args)?;
+        let command = ran.command.clone();
+        // `--no-index` exits 1 when the files differ.
+        match ran.code() {
+            Some(0) => Ok(Vec::new()),
+            Some(1) => parse_hunks(&ran.output.stdout)
+                .map_err(|output| GitError::Unexpected { command, output }),
+            _ => Err(ran.failed()),
+        }
+    }
+
+    /// The bytes Git stores for `path` at `commit`, with no filter or
+    /// textconv applied.
+    pub fn blob(
+        &self,
+        commit: &CommitId,
+        path: &Path,
+    ) -> Result<Vec<u8>, GitError> {
+        let mut object = OsString::from(format!("{commit}:"));
+        object.push(path);
+        let args: [&OsStr; 3] = [OsStr::new("cat-file"), OsStr::new("blob"), &object];
+        self.run(args)?.bytes()
     }
 }
 
@@ -573,5 +1073,266 @@ mod tests {
             "{err:?}"
         );
         assert_eq!(ran(3, b"").code(), Some(3));
+    }
+
+    #[test]
+    fn a_temp_file_skips_names_already_taken_and_is_removed_on_drop() {
+        let dir = TempDir::new().expect("temp dir");
+        let next = NEXT_TEMP.load(Ordering::Relaxed);
+        for n in next..next + 5 {
+            fs::write(dir.path().join(temp_name(n)), "taken").expect("taken");
+        }
+        let temp = TempFile::in_dir(dir.path(), b"base").expect("temp file");
+        assert_eq!(fs::read(&temp.0).expect("read"), b"base");
+        assert_eq!(
+            fs::read(dir.path().join(temp_name(next))).expect("read"),
+            b"taken"
+        );
+        let path = temp.0.clone();
+        drop(temp);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_temp_file_in_a_missing_directory_fails_at_once() {
+        let dir = TempDir::new().expect("temp dir");
+        let err = TempFile::in_dir(&dir.path().join("absent"), b"").expect_err("no dir");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn a_temp_file_gives_up_when_every_name_is_taken() {
+        let dir = TempDir::new().expect("temp dir");
+        let next = NEXT_TEMP.load(Ordering::Relaxed);
+        for n in next..next + TEMP_ATTEMPTS as u64 {
+            fs::write(dir.path().join(temp_name(n)), "").expect("taken");
+        }
+        // Other tests in this process may take names meanwhile, so only an
+        // undisturbed run reaches the limit.
+        if let Err(err) = TempFile::in_dir(dir.path(), b"") {
+            assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        }
+        assert!(TempFile::with(b"").is_ok());
+    }
+
+    fn record(
+        status: u8,
+        old: u32,
+        new: u32,
+        paths: &[&str],
+    ) -> RawRecord {
+        RawRecord {
+            status,
+            old_mode: Mode(old),
+            new_mode: Mode(new),
+            paths: paths.iter().map(|p| (*p).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn raw_records_read_their_modes_status_and_paths() {
+        let raw = ":100644 100755 aaaa 0000 M\0src/a.ts\0\
+                   :100644 100644 aaaa bbbb R080\0old.ts\0new.ts\0\
+                   :000000 120000 0000 cccc A\0link\0";
+        assert_eq!(
+            parse_raw(raw).expect("raw"),
+            [
+                record(b'M', 0o100_644, 0o100_755, &["src/a.ts"]),
+                record(b'R', 0o100_644, 0o100_644, &["old.ts", "new.ts"]),
+                record(b'A', 0, 0o120_000, &["link"]),
+            ]
+        );
+        assert_eq!(
+            parse_raw(":100644 100644 a b C075\0x\0y\0").expect("copy"),
+            [record(b'C', 0o100_644, 0o100_644, &["x", "y"])]
+        );
+        assert_eq!(parse_raw("").expect("empty"), []);
+    }
+
+    #[test]
+    fn a_malformed_raw_record_is_refused_with_its_header() {
+        for (raw, header) in [
+            (":100644 100644 a b R100\0only\0", ":100644 100644 a b R100"),
+            (":100644 100644 a b M\0", ":100644 100644 a b M"),
+            (":100644 100644 a b M", ":100644 100644 a b M"),
+            ("100644 100644 a b M\0x\0", "100644 100644 a b M"),
+            (":10064 100644 a b M\0x\0", ":10064 100644 a b M"),
+            (":100644 1006440 a b M\0x\0", ":100644 1006440 a b M"),
+            (":100648 100644 a b M\0x\0", ":100648 100644 a b M"),
+            (":100644 100644 a b\0x\0", ":100644 100644 a b"),
+            (":100644 100644 a b \0x\0", ":100644 100644 a b "),
+        ] {
+            assert_eq!(parse_raw(raw), Err(header.to_owned()), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn only_regular_modes_are_regular() {
+        assert!(Mode::REGULAR.is_regular());
+        assert!(Mode::EXECUTABLE.is_regular());
+        assert!(!Mode::SYMLINK.is_regular());
+        assert!(!Mode::GITLINK.is_regular());
+        assert!(!Mode(0o100_600).is_regular());
+    }
+
+    #[test]
+    fn a_nul_counts_only_in_the_first_8000_bytes() {
+        let mut bytes = vec![b'x'; BINARY_PROBE + 1];
+        assert!(!has_nul(&bytes));
+        bytes[BINARY_PROBE] = 0;
+        assert!(!has_nul(&bytes));
+        bytes[BINARY_PROBE - 1] = 0;
+        assert!(has_nul(&bytes));
+        assert!(has_nul(b"\0"));
+        assert!(!has_nul(b""));
+    }
+
+    #[test]
+    fn a_working_file_is_read_up_to_the_probe_length() {
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("big");
+        fs::write(&path, vec![b'x'; BINARY_PROBE * 2]).expect("write");
+        assert_eq!(file_prefix(&path).expect("read").len(), BINARY_PROBE);
+        assert!(file_prefix(&dir.path().join("absent")).is_err());
+    }
+
+    #[test]
+    fn a_directory_has_the_gitlink_mode() {
+        let dir = TempDir::new().expect("temp dir");
+        let meta = fs::symlink_metadata(dir.path()).expect("metadata");
+        assert_eq!(mode_of(&meta), Mode::GITLINK);
+    }
+
+    #[test]
+    fn hunk_headers_read_omitted_counts_as_one() {
+        let hunk = |a, b, c, d| Hunk {
+            base_start: a,
+            base_count: b,
+            head_start: c,
+            head_count: d,
+        };
+        for (line, expected) in [
+            (&b"@@ -3 +3 @@ b"[..], hunk(3, 1, 3, 1)),
+            (b"@@ -2,0 +3,2 @@", hunk(2, 0, 3, 2)),
+            (b"@@ -1,5 +0,0 @@", hunk(1, 5, 0, 0)),
+            (b"@@ -12,3 +40 @@ fn x() {", hunk(12, 3, 40, 1)),
+        ] {
+            assert_eq!(parse_hunk_header(line), Some(expected));
+        }
+    }
+
+    #[test]
+    fn malformed_hunk_headers_are_refused() {
+        for line in [
+            &b"@@ -3 +3"[..],
+            b"@@ -3 +3 @",
+            b"@@ -3 +3@@",
+            b"@@ -3 3 @@",
+            b"@@ 3 +3 @@",
+            b"@@ -3, +3 @@",
+            b"@@ -,1 +3 @@",
+            b"@@ -x +3 @@",
+            b"@@ -3 +3,y @@",
+            b"@@ -3 +-3 @@",
+            b"@@ -3 +99999999999 @@",
+            b"@@ - +3 @@",
+            b"@@ -3 +3,1,1 @@",
+        ] {
+            assert_eq!(
+                parse_hunk_header(line),
+                None,
+                "{}",
+                String::from_utf8_lossy(line)
+            );
+        }
+    }
+
+    #[test]
+    fn a_patch_yields_every_header_and_refuses_a_bad_one() {
+        let patch = b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-@@ -9 +9 @@\n+a\n@@ -4,0 +5 @@\n+b";
+        let hunks = parse_hunks(patch).expect("patch");
+        assert_eq!(
+            hunks
+                .iter()
+                .map(|h| (h.base_start, h.base_count, h.head_start, h.head_count))
+                .collect::<Vec<_>>(),
+            [(1, 1, 1, 1), (4, 0, 5, 1)]
+        );
+        assert_eq!(parse_hunks(b"@@ -1 +x @@\n"), Err("@@ -1 +x @@".to_owned()));
+    }
+
+    #[test]
+    fn unmerged_listings_give_distinct_sorted_paths() {
+        let listing = "100644 aa 1\tsrc/z.ts\x00100644 bb 2\tsrc/z.ts\x00100644 cc 3\tsrc/a b.ts\0";
+        assert_eq!(
+            parse_unmerged(listing).expect("listing"),
+            [PathBuf::from("src/a b.ts"), PathBuf::from("src/z.ts")]
+        );
+        assert_eq!(parse_unmerged("").expect("empty"), Vec::<PathBuf>::new());
+        assert_eq!(
+            parse_unmerged("100644 aa 1 x\0"),
+            Err("100644 aa 1 x".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_raw_record_outside_the_five_statuses_is_unexpected() {
+        let dir = TempDir::new().expect("temp dir");
+        let repo = outside(&dir);
+        for status in *b"UCX" {
+            let err = repo
+                .change(
+                    &sha('a'),
+                    &record(status, 0o100_644, 0o100_644, &["a", "b"]),
+                    "git diff",
+                )
+                .expect_err("not a change");
+            assert!(
+                matches!(&err, GitError::Unexpected { command, output } if command == "git diff" && *output == format!("{} a b", char::from(status))),
+                "{err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_io_error_names_its_path_and_cause() {
+        let err = io_error(Path::new("/x/y"))(io::ErrorKind::NotFound.into());
+        assert_eq!(
+            err.to_string(),
+            format!("/x/y: {}", io::Error::from(io::ErrorKind::NotFound))
+        );
+        assert!(std::error::Error::source(&err).is_some());
+        assert!(std::error::Error::source(&GitError::UnbornHead).is_none());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_generated_hunk_header_parses_to_its_four_numbers(
+            base_start in proptest::num::u32::ANY,
+            base_count in proptest::option::of(proptest::num::u32::ANY),
+            head_start in proptest::num::u32::ANY,
+            head_count in proptest::option::of(proptest::num::u32::ANY),
+            heading in proptest::option::of("[ -~]{0,40}"),
+        ) {
+            let range = |start: u32, count: Option<u32>| match count {
+                Some(count) => format!("{start},{count}"),
+                None => start.to_string(),
+            };
+            let heading = heading.map(|h| format!(" {h}")).unwrap_or_default();
+            let line = format!(
+                "@@ -{} +{} @@{heading}",
+                range(base_start, base_count),
+                range(head_start, head_count)
+            );
+            proptest::prop_assert_eq!(
+                parse_hunk_header(line.as_bytes()),
+                Some(Hunk {
+                    base_start,
+                    base_count: base_count.unwrap_or(1),
+                    head_start,
+                    head_count: head_count.unwrap_or(1),
+                })
+            );
+        }
     }
 }

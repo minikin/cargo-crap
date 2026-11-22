@@ -1160,7 +1160,7 @@ Each scenario's assertions are proved at the layer that implements them. T5 prov
   Scenarios: _The reader resolves the revision, merge base and head of a worktree_, _Criss-cross history uses Git's merge base and records the count_, _A merge base found in a shallow clone is used and marked shallow_, _The core Git reader needs no parser or Git library_.
   Tests: integration in `crates/cargo-crap-core/tests/git.rs` against temporary repositories, unit tests for output parsing, the parser-guard check, and the CI job "MSRV (Rust 1.88)" passing its default-feature and all-feature `cargo nextest run -p cargo-crap -p cargo-crap-core --all-targets` steps.
 
-- [ ] **T2 - Core Git reader: changed paths, unmerged entries, hunks and base bytes.** Needs: T1.
+- [x] **T2 - Core Git reader: changed paths, unmerged entries, hunks and base bytes.** Needs: T1.
   Parse NUL-delimited `--raw` records, list untracked files, reconcile a deletion and an untracked file at one path, classify each side's bytes, list unmerged index entries, read zero-context hunks with pinned flags and literal pathspecs, and read blobs at a commit.
   Scenarios: _The reader classifies changed paths from the raw diff and untracked files_, _The reader reports unmerged index entries whatever the working tree holds_, _Paths that contain pattern characters are read literally_, _Zero-context hunks give added lines, removed lines and deletion points_, _Hunks of a renamed file cover only its edited lines_, _The reader output ignores user Git configuration_.
   Tests: integration in `crates/cargo-crap-core/tests/git.rs`, a property test that parsing a generated hunk header returns its four numbers with omitted counts read as 1, and the same two MSRV steps as T1.
