@@ -1,17 +1,16 @@
-use super::{Effective, Format, InputError, Result, SortOrder};
+use super::{Effective, Format, InputError, Result, StdoutSink};
 use crate::attribute::{Attribution, attribute};
 use crate::coverage::{CoverageUnit, read_coverage};
 use crate::discover::{Worktree, discover_probed};
 use crate::{Discovery, DiscoveryScope, Mode, analyze};
 use cargo_crap_core::coverage::CoverageKind;
-use cargo_crap_core::entry::sort_entries;
 use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
 use cargo_crap_core::report::{self, Schemas, SourceLinks, Tool};
 use cargo_crap_core::run::{self, Analysis, RenderExtras, Scope, Settings};
 use cargo_crap_core::signals::SignalSettings;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{IsTerminal, Write};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -35,12 +34,14 @@ const TOOL: Tool = Tool {
     baseline_hint: "crapts --format json",
 };
 
-impl Scope for DiscoveryScope {
+struct ScoringScope<'a>(&'a DiscoveryScope);
+
+impl Scope for ScoringScope<'_> {
     fn keeps(
         &self,
         file: &Path,
     ) -> bool {
-        self.keeps(file).unwrap_or(false)
+        self.0.keeps(file).unwrap_or(false)
     }
 }
 
@@ -87,12 +88,10 @@ fn measure(
 
 fn analysis(
     result: Attribution,
-    scope: &DiscoveryScope,
+    scope: &dyn Scope,
 ) -> Analysis<'_> {
-    let mut entries: Vec<_> = result.rows.into_iter().map(|row| row.entry).collect();
-    sort_entries(&mut entries, SortOrder::Crap);
     Analysis {
-        entries,
+        entries: result.rows.into_iter().map(|row| row.entry).collect(),
         diagnostics: Some(result.diagnostics),
         scope,
         coverage_kind: Some(coverage_kind(result.unit)),
@@ -106,9 +105,12 @@ fn color_enabled(
     no: Option<&OsStr>,
     force: Option<&OsStr>,
 ) -> bool {
-    let disabled = no.is_some_and(|v| !v.is_empty());
-    let forced = force.is_some_and(|v| !v.is_empty() && v != "0");
-    stdout && !disabled && (terminal || forced)
+    if !stdout || no.is_some_and(|v| !v.is_empty()) {
+        return false;
+    }
+    force
+        .filter(|value| !value.is_empty())
+        .map_or(terminal, |value| value != "0")
 }
 
 fn source_links(
@@ -124,6 +126,7 @@ pub(super) fn score(
     cwd: &Path,
     worktree: Worktree,
     options: &Effective,
+    sink: StdoutSink,
     stdout: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<ExitCode> {
@@ -141,12 +144,12 @@ pub(super) fn score(
     let result = measure(cwd, options, coverage, &discovery, err)?;
     let output = options.output.value.as_deref();
     let to_stdout = output.is_none();
-    report::set_color_enabled(color_enabled(
+    let color = color_enabled(
         to_stdout,
-        std::io::stdout().is_terminal(),
+        sink.terminal,
         std::env::var_os("NO_COLOR").as_deref(),
         std::env::var_os("FORCE_COLOR").as_deref(),
-    ));
+    );
     let links = source_links(
         options.repo_url.value.as_deref(),
         options.commit_ref.value.as_deref(),
@@ -168,7 +171,11 @@ pub(super) fn score(
         summary: options.summary.value,
         show_unchanged: false,
         uncovered_hints: options.uncovered_hints.value,
-        width: report::output_width(to_stdout),
+        width: if to_stdout {
+            sink.width
+        } else {
+            report::output_width(false)
+        },
         links: links.as_ref(),
         pr_comment_marker: Some(&options.comment_marker.value),
         repo_prefix: Some(discovery.scope.repo_prefix()),
@@ -178,21 +185,25 @@ pub(super) fn score(
     };
     let mut file;
     let (out, destination): (&mut dyn Write, &Path) = if let Some(path) = output {
-        file = fs::File::create(cwd.join(path)).map_err(|e| InputError::at(path, e))?;
+        file =
+            BufWriter::new(fs::File::create(cwd.join(path)).map_err(|e| InputError::at(path, e))?);
         (&mut file, path)
     } else {
         (stdout, Path::new("stdout"))
     };
-    let report = analysis(result, &discovery.scope);
-    let verdict = run::run(
-        &TOOL,
-        &settings,
-        report,
-        None,
-        &[],
-        &RenderExtras::default(),
-        out,
-    )
+    let scope = ScoringScope(&discovery.scope);
+    let report = analysis(result, &scope);
+    let verdict = report::with_color(color, || {
+        run::run(
+            &TOOL,
+            &settings,
+            report,
+            None,
+            &[],
+            &RenderExtras::default(),
+            out,
+        )
+    })
     .map_err(|e| InputError::at(destination, format!("{e:#}")))?;
     Ok(verdict.exit_code())
 }
@@ -235,10 +246,13 @@ mod tests {
         std::fs::write(d.path().join("f.ts"), "").unwrap();
         let found = crate::discover(&[], &crate::DiscoveryOptions::new(d.path())).unwrap();
         for kept in ["f.ts", "removed.ts"] {
-            assert!(Scope::keeps(&found.scope, Path::new(kept)));
+            assert!(Scope::keeps(&ScoringScope(&found.scope), Path::new(kept)));
         }
         for rejected in ["dist/now.ts", "readme.md"] {
-            assert!(!Scope::keeps(&found.scope, Path::new(rejected)));
+            assert!(!Scope::keeps(
+                &ScoringScope(&found.scope),
+                Path::new(rejected)
+            ));
         }
     }
 
@@ -263,7 +277,7 @@ mod presentation_tests {
             (true, false, None, None, false),
             (true, false, None, Some("1"), true),
             (true, false, None, Some("0"), false),
-            (true, true, None, Some("0"), true),
+            (true, true, None, Some("0"), false),
             (true, true, Some("1"), Some("1"), false),
             (false, true, None, Some("1"), false),
             (false, false, None, None, false),

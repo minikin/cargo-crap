@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 /// A supplied boundary must be an ancestor in the same lexically normalized form as `start`.
 /// Both endpoints participate. Without a boundary the search continues to the root.
+///
+/// # Errors
+/// Returns an error for a boundary outside the ancestor chain or a failed metadata lookup.
 pub fn find_upwards(
     start: &Path,
     name: &str,

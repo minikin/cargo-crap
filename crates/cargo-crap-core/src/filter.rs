@@ -57,6 +57,9 @@ impl AllowSet {
     }
 
     /// Matching is lexical, so historical files need not exist.
+    ///
+    /// # Errors
+    /// Returns an error if the working directory cannot be resolved or a pattern is invalid.
     pub fn compile_with_bases(
         cwd: &Path,
         patterns: &[(&str, &Path)],

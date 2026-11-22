@@ -612,6 +612,7 @@ const SEEDS: &[(&str, &[&str])] = &[
             "report/types.txt",
         ],
     ),
+    ("crates/crapts", &["names.txt"]),
 ];
 
 /// The module whose properties replay `seed` in the package rooted at

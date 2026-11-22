@@ -70,6 +70,7 @@ impl DiscoveryOptions {
         compile(cwd, patterns).map(|_| ())
     }
 
+    #[must_use]
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
         let cwd = cwd.into();
         let base_dir = std::path::absolute(&cwd).unwrap_or_else(|_| PathBuf::from("."));
@@ -115,6 +116,7 @@ impl DiscoveryScope {
     }
 
     /// Rules retain their configured base even when the directory no longer exists.
+    #[must_use = "consume the iterator to inspect the exclusions for this scope"]
     pub fn exclusions(&self) -> impl Iterator<Item = &ExcludePattern> {
         self.defaults.patterns.iter().chain(&self.extras.patterns)
     }
@@ -565,7 +567,10 @@ impl Worktree {
 }
 
 fn git_line(bytes: &[u8]) -> &[u8] {
-    bytes.strip_suffix(b"\n").unwrap_or(bytes)
+    bytes
+        .strip_suffix(b"\r\n")
+        .or_else(|| bytes.strip_suffix(b"\n"))
+        .unwrap_or(bytes)
 }
 
 fn git_prefix(cwd: &Path) -> Result<PathBuf, InputError> {
@@ -583,11 +588,17 @@ fn git_prefix(cwd: &Path) -> Result<PathBuf, InputError> {
             ),
         ));
     }
-    let prefix = output
-        .stdout
-        .strip_prefix(b"true\n")
+    let prefix = prefix_record(&output.stdout)
         .ok_or_else(|| InputError::at(cwd, format!("{command}: expected a worktree prefix")))?;
-    Ok(PathBuf::from(git_name(git_line(prefix))))
+    Ok(PathBuf::from(git_name(prefix)))
+}
+
+fn prefix_record(stdout: &[u8]) -> Option<&[u8]> {
+    let record = stdout
+        .strip_prefix(b"true\n")
+        .or_else(|| stdout.strip_prefix(b"true\r\n"))?;
+    let prefix = git_line(record);
+    Some(prefix.strip_suffix(b"/").unwrap_or(prefix))
 }
 
 pub(crate) fn resolve(
@@ -990,6 +1001,26 @@ mod origin_tests {
             assert_eq!(tree.prefix, Path::new("pkg"));
             fs::remove_file(repo.join(".git")).unwrap();
         }
+    }
+
+    #[test]
+    fn git_prefix_records_match_the_filesystem_spelling() {
+        for record in [
+            b"true\npkg/app/\n".as_slice(),
+            b"true\r\npkg/app/\r\n",
+            b"true\npkg/app",
+        ] {
+            assert_eq!(prefix_record(record), Some(b"pkg/app".as_slice()));
+        }
+        assert_eq!(prefix_record(b"true\n\n"), Some(b"".as_slice()));
+        assert_eq!(prefix_record(b"false\n"), None);
+    }
+
+    #[test]
+    fn git_record_endings_preserve_the_path_bytes() {
+        assert_eq!(git_line(b"root/path\r\n"), b"root/path");
+        assert_eq!(git_line(b"root/path\n"), b"root/path");
+        assert_eq!(git_line(b"root/path"), b"root/path");
     }
 
     proptest! {

@@ -105,6 +105,8 @@ fn globs<S: Serializer>(
 #[derive(Debug, Serialize)]
 pub(super) struct Effective {
     #[serde(skip)]
+    pub config_path: Option<PathBuf>,
+    #[serde(skip)]
     pub allow_set: AllowSet,
     pub paths: Setting<Vec<PathBuf>>,
     pub coverage: Setting<Option<PathBuf>>,
@@ -163,9 +165,7 @@ impl Bases<'_> {
         patterns: Option<Vec<String>>,
     ) -> Option<Vec<ExcludePattern>> {
         let patterns = patterns?;
-        let path = self
-            .config
-            .expect("config values come from a selected file");
+        let path = self.config?;
         Some(rules(
             patterns,
             &GlobOrigin::Config(path.to_owned()),
@@ -244,10 +244,12 @@ fn repo_from_environment() -> Option<String> {
 impl Effective {
     pub(super) fn resolve(
         cwd: &Path,
-        path: Option<&Path>,
-        config: Config,
+        loaded: Option<(PathBuf, Config)>,
         args: &ArgMatches,
     ) -> Result<Self> {
+        let (config_path, config) = loaded.unzip();
+        let config = config.unwrap_or_default();
+        let path = config_path.as_deref();
         let bases = Bases { cwd, config: path };
         let defaults = bases.defaults(
             config.default_excludes,
@@ -267,6 +269,7 @@ impl Effective {
             .get_many::<PathBuf>("paths")
             .map(|paths| paths.cloned().collect());
         Ok(Self {
+            config_path,
             paths: Setting::pick(vec![PathBuf::from(".")], None, paths),
             coverage: optional(args, "coverage", None, None),
             threshold: scalar(

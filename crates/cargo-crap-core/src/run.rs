@@ -133,7 +133,7 @@ impl PreparedBaseline {
     }
 }
 
-/// Current rows discovered in the caller's scope, in descending score order.
+/// Current rows in the caller's scope. Stable tie ordering requires descending score order.
 pub struct Analysis<'a> {
     /// Scored functions before allow patterns or display limits are applied.
     pub entries: Vec<CrapEntry>,

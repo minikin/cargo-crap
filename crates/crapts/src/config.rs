@@ -29,6 +29,8 @@ pub struct Config {
 }
 
 impl Config {
+    /// # Errors
+    /// Reports malformed TOML, unknown or duplicate keys, and invalid values at `path`.
     pub fn parse(
         path: &Path,
         source: &str,
@@ -90,23 +92,26 @@ fn field_error(
     InputError::at(path, error)
 }
 
+/// # Errors
+/// Reports worktree probing, file lookup, read, and configuration errors.
 pub fn load(cwd: &Path) -> Result<(Option<PathBuf>, Config), InputError> {
     let cwd = cwd.canonicalize().map_err(|err| InputError::at(cwd, err))?;
     let worktree = Worktree::probe(&cwd)?;
-    load_at(&cwd, worktree.root.as_deref())
+    let (path, config) = load_at(&cwd, worktree.root.as_deref())?.unzip();
+    Ok((path, config.unwrap_or_default()))
 }
 
 pub(crate) fn load_at(
     cwd: &Path,
     stop: Option<&Path>,
-) -> Result<(Option<PathBuf>, Config), InputError> {
+) -> Result<Option<(PathBuf, Config)>, InputError> {
     let path = find_upwards(cwd, ".crapts.toml", stop).map_err(|err| InputError::at(cwd, err))?;
     let Some(path) = path else {
-        return Ok((None, Config::default()));
+        return Ok(None);
     };
     let source = std::fs::read_to_string(&path).map_err(|err| InputError::at(&path, err))?;
     let config = Config::parse(&path, &source)?;
-    Ok((Some(path), config))
+    Ok(Some((path, config)))
 }
 
 #[cfg(test)]

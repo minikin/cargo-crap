@@ -28,38 +28,29 @@ pub fn set_color_enabled(enabled: bool) {
 }
 
 pub(crate) fn color_enabled() -> bool {
-    color_override().unwrap_or_else(|| COLOR_ENABLED.load(Ordering::Relaxed))
+    COLOR_OVERRIDE
+        .get()
+        .unwrap_or_else(|| COLOR_ENABLED.load(Ordering::Relaxed))
 }
 
-#[cfg(not(test))]
-fn color_override() -> Option<bool> {
-    None
-}
-
-#[cfg(test)]
-fn color_override() -> Option<bool> {
-    COLOR_OVERRIDE.with(std::cell::Cell::get)
-}
-
-// `cargo test` runs every test of a crate in one process, one thread each.
-// A test that flipped `COLOR_ENABLED` would colour whatever another test
-// rendered meanwhile; an override on the test's own thread cannot.
-#[cfg(test)]
 thread_local! {
     static COLOR_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
-/// Run `f` with colour switched to `enabled` on this thread only, for a test
-/// that needs to see both renderings.
-#[cfg(test)]
-pub(crate) fn with_color<T>(
+/// Scope a colour choice to synchronous rendering on the calling thread.
+/// Nested renders and unwinding restore the caller's choice.
+pub fn with_color<T>(
     enabled: bool,
-    f: impl FnOnce() -> T,
+    render: impl FnOnce() -> T,
 ) -> T {
-    let before = COLOR_OVERRIDE.with(|o| o.replace(Some(enabled)));
-    let out = f();
-    COLOR_OVERRIDE.with(|o| o.set(before));
-    out
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            COLOR_OVERRIDE.set(self.0);
+        }
+    }
+    let _restore = Restore(COLOR_OVERRIDE.replace(Some(enabled)));
+    render()
 }
 
 /// Apply `style` to `text` only when colour is enabled, so escape codes
@@ -277,8 +268,12 @@ pub fn output_width(writes_to_stdout: bool) -> Option<usize> {
     let columns = std::env::var("COLUMNS").ok();
     available_width(
         writes_to_stdout,
-        std::io::stdout().is_terminal(),
-        comfy_table::Table::new().width(),
+        || {
+            std::io::stdout()
+                .is_terminal()
+                .then(|| comfy_table::Table::new().width())
+                .flatten()
+        },
         columns.as_deref(),
     )
 }
@@ -289,12 +284,12 @@ pub fn output_width(writes_to_stdout: bool) -> Option<usize> {
 /// Otherwise a positive `$COLUMNS` applies, else `None`.
 pub(crate) fn available_width(
     writes_to_stdout: bool,
-    stdout_is_terminal: bool,
-    terminal_width: Option<u16>,
+    terminal_width: impl FnOnce() -> Option<u16>,
     columns: Option<&str>,
 ) -> Option<usize> {
-    let terminal = terminal_width
-        .filter(|_| writes_to_stdout && stdout_is_terminal)
+    let terminal = writes_to_stdout
+        .then(terminal_width)
+        .flatten()
         .map(usize::from)
         .filter(|&width| width > 0);
     terminal.or_else(|| {
@@ -546,6 +541,17 @@ mod tests {
     }
 
     #[test]
+    fn nested_colour_scopes_restore_the_caller_after_unwinding() {
+        with_color(true, || {
+            assert!(
+                std::panic::catch_unwind(|| with_color(false, || panic!("render failed"))).is_err()
+            );
+            assert!(color_enabled());
+        });
+        assert!(!color_enabled());
+    }
+
+    #[test]
     fn cc_display_shows_integral_cc_without_a_decimal_point() {
         assert_eq!(cc_display(1.0), "1");
         assert_eq!(cc_display(3.0), "3");
@@ -770,32 +776,42 @@ mod tests {
 
     #[test]
     fn a_terminal_uses_its_own_width_over_columns() {
-        assert_eq!(available_width(true, true, Some(90), Some("40")), Some(90));
+        assert_eq!(available_width(true, || Some(90), Some("40")), Some(90));
     }
 
     #[test]
     fn a_terminal_without_a_width_falls_back_to_columns() {
-        assert_eq!(available_width(true, true, None, Some("40")), Some(40));
-        assert_eq!(available_width(true, true, Some(0), Some("40")), Some(40));
-        assert_eq!(available_width(true, true, Some(0), None), None);
-        assert_eq!(available_width(true, true, None, None), None);
+        assert_eq!(available_width(true, || None, Some("40")), Some(40));
+        assert_eq!(available_width(true, || Some(0), Some("40")), Some(40));
+        assert_eq!(available_width(true, || Some(0), None), None);
+        assert_eq!(available_width(true, || None, None), None);
     }
 
     #[test]
     fn a_report_written_elsewhere_ignores_the_terminal() {
         // `--output <file>` from a terminal: the file has no width of its own.
-        assert_eq!(available_width(false, true, Some(90), Some("40")), Some(40));
-        assert_eq!(available_width(false, true, Some(90), None), None);
+        assert_eq!(
+            available_width(
+                false,
+                || panic!("file sink probed the terminal"),
+                Some("40")
+            ),
+            Some(40)
+        );
+        assert_eq!(
+            available_width(false, || panic!("file sink probed the terminal"), None),
+            None
+        );
     }
 
     #[test]
     fn other_output_uses_a_positive_columns_or_no_limit() {
-        assert_eq!(available_width(true, false, Some(90), Some("40")), Some(40));
-        assert_eq!(available_width(true, false, None, Some(" 80 ")), Some(80));
-        assert_eq!(available_width(true, false, None, None), None);
-        assert_eq!(available_width(true, false, None, Some("0")), None);
-        assert_eq!(available_width(true, false, None, Some("-5")), None);
-        assert_eq!(available_width(true, false, None, Some("wide")), None);
+        assert_eq!(available_width(true, || None, Some("40")), Some(40));
+        assert_eq!(available_width(true, || None, Some(" 80 ")), Some(80));
+        assert_eq!(available_width(true, || None, None), None);
+        assert_eq!(available_width(true, || None, Some("0")), None);
+        assert_eq!(available_width(true, || None, Some("-5")), None);
+        assert_eq!(available_width(true, || None, Some("wide")), None);
     }
 
     #[test]

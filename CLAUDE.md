@@ -151,7 +151,7 @@ file allows by component suffix and name allows against the full emitted name.
 
 Discovery emits unused exclusions before `coverage::read_coverage` reads the
 LCOV or Istanbul input. The command then analyzes each source in ordinary mode
-and emits its first parse diagnostic. `attribute::attribute` assigns coverage
+and emits one parse warning per affected file. `attribute::attribute` assigns coverage
 to the functions and supplies the scored rows, measured unit, scope diagnostics
 and remaining warnings. `cli/scoring.rs` passes those results to the shared
 `run::run` with the crapts tool policy. The absolute JSON counts and

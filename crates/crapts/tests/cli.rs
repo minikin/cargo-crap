@@ -1,3 +1,5 @@
+mod support;
+
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
@@ -75,7 +77,12 @@ fn help_and_version_have_priority_over_scoring_and_config() {
         let o = invoke(dir.path(), &["--bogus", "--print-config", "-V", help]);
         check(&o, 0);
         assert_eq!(o.stderr.as_slice(), b"");
-        assert!(String::from_utf8_lossy(&o.stdout).contains("Usage: crapts"));
+        let help = String::from_utf8(o.stdout).unwrap();
+        assert!(help.contains("Usage: crapts"));
+        assert!(
+            help.lines()
+                .any(|line| line.trim_start().starts_with("--coverage <file>"))
+        );
     }
     let o = invoke(dir.path(), &["--bogus", "--print-config", "-V"]);
     check(&o, 0);
@@ -168,9 +175,15 @@ fn print_config_validates_the_settings_it_explains() {
         settings(dir.path(), &["--fail-changed"])["settings"]["fail_changed"],
         json!({"value":true,"origin":"flag"})
     );
+    let top = invoke(dir.path(), &["--print-config", "--top", "0"]);
+    check(&top, 2);
+    assert_eq!(top.stdout.as_slice(), b"");
+    assert_eq!(
+        top.stderr,
+        b"error: --top must be an integer of at least 1, got 0\n"
+    );
     for (args, detail) in [
         (vec!["--print-config", "--bogus"], "--bogus"),
-        (vec!["--print-config", "--top", "0"], "0"),
         (vec!["--print-config", "--all-rows", "--top", "0"], "--top"),
         (vec!["--print-config", "--allow", "{,x}"], "{,x}"),
     ] {
@@ -252,8 +265,24 @@ fn outside_git_the_walk_reaches_the_filesystem_root() {
 #[test]
 fn config_reports_type_spelling_and_syntax_errors_at_their_source() {
     let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().canonicalize().unwrap().join(".crapts.toml");
     for (source, detail) in [
         ("thresold=1", "unknown key thresold"),
+        ("fail_above=true", "unknown key fail_above"),
+        ("fail_regression=true", "unknown key fail_regression"),
+        ("fail_changed=true", "unknown key fail_changed"),
+        ("coverage='hits.data'", "unknown key coverage"),
+        ("format='json'", "unknown key format"),
+        ("output='out'", "unknown key output"),
+        ("base='HEAD'", "unknown key base"),
+        ("all-rows=true", "unknown key all-rows"),
+        ("threshold='15'", "threshold"),
+        ("fail-above=1", "fail-above"),
+        ("top=0", "got 0"),
+        ("epsilon=-1", "epsilon must be at least 0, got -1"),
+        ("sort='size'", "size"),
+        ("missing='maybe'", "maybe"),
+        ("threshold=inf", "threshold must be finite"),
         ("allow=[3]", "allow"),
         ("allow=[", "line 1, column"),
         (
@@ -261,13 +290,20 @@ fn config_reports_type_spelling_and_syntax_errors_at_their_source() {
             "duplicate uncovered-hints",
         ),
     ] {
-        fs::write(dir.path().join(".crapts.toml"), source).unwrap();
+        let (key, _) = source.split_once('=').unwrap();
+        fs::write(&path, source).unwrap();
         for args in [
             &["--print-config"][..],
             &["--coverage", "absent", "--format", "json"],
         ] {
-            rejected(dir.path(), args, detail);
-            rejected(dir.path(), args, ".crapts.toml");
+            let out = invoke(dir.path(), args);
+            check(&out, 2);
+            assert_eq!(out.stdout.as_slice(), b"");
+            let err = String::from_utf8(out.stderr).unwrap();
+            assert!(
+                err.contains(path.to_str().unwrap()) && err.contains(key) && err.contains(detail),
+                "{source}: {err}"
+            );
         }
     }
 }
@@ -312,6 +348,17 @@ fn print_config_shows_every_flag_and_env_link_fallback_without_opening_the_sink(
         "--comment-marker",
         "custom",
     ];
+    let env_only = binary(d.path())
+        .arg("--print-config")
+        .env("GITHUB_SHA", "envsha")
+        .output()
+        .unwrap();
+    check(&env_only, 0);
+    let env_config: Value = serde_json::from_slice(&env_only.stdout).unwrap();
+    assert_eq!(
+        env_config["settings"]["commit_ref"],
+        json!({"value": "envsha", "origin": "default"})
+    );
     let out = binary(d.path())
         .args(args)
         .env("GITHUB_SERVER_URL", "https://git.example")
@@ -532,6 +579,25 @@ fn json_score(
     args: &[&str],
     code: i32,
 ) -> Value {
+    validated_report(&json_output(cwd, args, code).stdout)
+}
+
+fn validated_report(bytes: &[u8]) -> Value {
+    static SCHEMA: std::sync::LazyLock<jsonschema::Validator> = std::sync::LazyLock::new(|| {
+        let schema =
+            serde_json::from_str(include_str!("../../../schemas/crapts/report-v1.json")).unwrap();
+        jsonschema::validator_for(&schema).unwrap()
+    });
+    let doc = serde_json::from_slice(bytes).unwrap();
+    SCHEMA.validate(&doc).unwrap();
+    doc
+}
+
+fn json_output(
+    cwd: &Path,
+    args: &[&str],
+    code: i32,
+) -> Output {
     let o = binary(cwd)
         .args([
             "--coverage",
@@ -545,7 +611,7 @@ fn json_score(
         .output()
         .unwrap();
     check(&o, code);
-    serde_json::from_slice(&o.stdout).unwrap()
+    o
 }
 
 fn names(doc: &Value) -> Vec<&str> {
@@ -563,13 +629,9 @@ fn an_absolute_report_identifies_the_tool_inputs_and_scores() {
     let out = score(dir.path(), &[".", "src/score.ts", "--format", "json"]);
     check(&out, 0);
     assert_eq!(out.stderr.as_slice(), b"");
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v = validated_report(&out.stdout);
     let schema: Value =
         serde_json::from_str(include_str!("../../../schemas/crapts/report-v1.json")).unwrap();
-    jsonschema::validator_for(&schema)
-        .unwrap()
-        .validate(&v)
-        .unwrap();
     assert_eq!(v["$schema"], schema["$id"]);
     assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(v["name_scheme"], 1);
@@ -626,6 +688,7 @@ fn istanbul_input_is_recognized_under_an_lcov_filename() {
     assert_eq!(v["summary"]["total"], 0);
     assert_eq!(v["summary"]["crappy"], 0);
     assert_eq!(v["entries"], json!([]));
+    assert_eq!(v["diagnostics"]["analyzed_files"], 0);
     assert_eq!(v["diagnostics"]["matched_files"], 0);
 }
 
@@ -652,6 +715,7 @@ fn only_a_strictly_greater_score_trips_an_enabled_gate() {
 fn top_chooses_the_worst_rows_before_the_requested_display_sort() {
     let d = fixture();
     let v = json_score(d.path(), &["--min", "6", "--top", "2", "--sort", "file"], 0);
+    assert_eq!(v["selection"], json!({"top": 2, "min": 6.0}));
     assert_eq!(names(&v), ["edge", "hot"]);
     for args in [vec!["src", "."], vec![".", "src"]] {
         let mut flags = vec!["--min", "6", "--top", "1", "--sort", "file"];
@@ -664,7 +728,7 @@ fn top_chooses_the_worst_rows_before_the_requested_display_sort() {
 fn all_rows_overrides_selection_without_changing_eligibility() {
     let d = fixture();
     fs::write(d.path().join(".crapts.toml"), "top=1\nallow=['edge']").unwrap();
-    let v = json_score(
+    let out = json_output(
         d.path(),
         &[
             "--min",
@@ -676,13 +740,14 @@ fn all_rows_overrides_selection_without_changing_eligibility() {
         ],
         1,
     );
+    let v = validated_report(&out.stdout);
     assert_eq!(names(&v), ["cold", "hot"]);
     assert_eq!(v["summary"]["total"], 2);
     assert_eq!(v["summary"]["crappy"], 1);
     assert!(v["selection"].is_null());
     assert_eq!(
-        v,
-        json_score(
+        out.stdout,
+        json_output(
             d.path(),
             &[
                 "--all-rows",
@@ -694,6 +759,7 @@ fn all_rows_overrides_selection_without_changing_eligibility() {
             ],
             1
         )
+        .stdout
     );
 }
 
@@ -735,6 +801,7 @@ fn missing_coverage_follows_the_selected_policy_through_the_gate() {
     fs::write(d.path().join("hits.data"), "{}").unwrap();
     for (policy, code, expected) in [("pessimistic", 1, 12.), ("optimistic", 0, 3.)] {
         let v = json_score(d.path(), &["--missing", policy, "--fail-above"], code);
+        assert_eq!(v["entries"][0]["function"], "hot");
         assert!(v["entries"][0]["coverage"].is_null());
         assert_eq!(v["entries"][0]["crap"].as_f64(), Some(expected));
         if code == 1 {
@@ -742,6 +809,8 @@ fn missing_coverage_follows_the_selected_policy_through_the_gate() {
         }
     }
     let v = json_score(d.path(), &["--missing", "skip", "--fail-above"], 0);
+    assert_eq!(v["summary"]["total"], 0);
+    assert_eq!(v["summary"]["crappy"], 0);
     assert_eq!(names(&v), Vec::<&str>::new());
     assert_eq!(v["diagnostics"]["analyzed_files"], 1);
 }
@@ -754,6 +823,18 @@ fn config_gates_apply_according_to_the_selected_mode() {
     let o = invoke(d.path(), &cli);
     check(&o, 1);
     let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["threshold"].as_f64(), Some(6.0));
+    for count in [
+        "new",
+        "moved",
+        "regressed",
+        "improved",
+        "unchanged",
+        "removed",
+        "changed_failures",
+    ] {
+        assert_eq!(v["summary"].get(count), Some(&Value::Null), "{count}");
+    }
     assert_eq!(v["summary"]["crappy"], 1);
     assert!(v.get("changed").is_none());
     assert_eq!(
@@ -914,6 +995,15 @@ fn name_allows_use_the_grammar_of_the_emitted_names() {
     )
     .unwrap();
     assert_eq!(
+        names(&json_score(dir.path(), &["--sort", "file"], 0)),
+        [
+            "Basket::add",
+            "Cart::add",
+            "Cart::add#2",
+            "Cart::add::inner"
+        ]
+    );
+    assert_eq!(
         names(&json_score(
             dir.path(),
             &["--sort", "file", "--allow", "{Cart::add,Cart::add#*}"],
@@ -925,9 +1015,10 @@ fn name_allows_use_the_grammar_of_the_emitted_names() {
         names(&json_score(dir.path(), &["--allow", "Cart::*"], 0)),
         ["Basket::add"]
     );
+    fs::create_dir(dir.path().join("empty")).unwrap();
     rejected(
         dir.path(),
-        &["--allow", "{,x}", "--coverage", "hits.data"],
+        &["empty", "--allow", "{,x}", "--coverage", "hits.data"],
         "{,x}",
     );
 }
@@ -956,7 +1047,7 @@ mod properties {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
+        #![proptest_config(ProptestConfig { cases: 24, ..support::proptest_config() })]
         #[test]
         fn the_exit_verdict_and_counts_are_invariant_under_presentation(
             decisions in prop::collection::vec(0u8..4,0..12),
@@ -1138,12 +1229,6 @@ fn the_absolute_report_schema_accepts_the_cli_signed_threshold() {
         &["--threshold=-1e1", "--min=-0.5", "--fail-above"],
         1,
     );
-    let schema: Value =
-        serde_json::from_str(include_str!("../../../schemas/crapts/report-v1.json")).unwrap();
-    jsonschema::validator_for(&schema)
-        .unwrap()
-        .validate(&doc)
-        .unwrap();
     assert_eq!(doc["threshold"].as_f64(), Some(-10.));
 }
 
@@ -1620,6 +1705,16 @@ fn terminal_text(
     vars: &[(&str, &str)],
     args: &[&str],
 ) -> String {
+    let mut command = binary(cwd);
+    command
+        .args(["--coverage", "hits.data"])
+        .args(args)
+        .envs(vars.iter().copied());
+    run_in_pty(command)
+}
+
+#[cfg(unix)]
+fn run_in_pty(mut command: Command) -> String {
     use std::{
         io::Read,
         os::fd::{FromRawFd, OwnedFd},
@@ -1632,7 +1727,7 @@ fn terminal_text(
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    // openpty initializes both descriptors on success. Neither optional output buffer is used.
+    // SAFETY: openpty initializes both descriptors on success. Neither optional output buffer is used.
     let result = unsafe {
         libc::openpty(
             &raw mut reader,
@@ -1643,16 +1738,11 @@ fn terminal_text(
         )
     };
     assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
-    // Each descriptor returned by openpty has exactly one owner here.
+    // SAFETY: Each descriptor returned by openpty has exactly one owner here.
     let (mut master, slave) =
         unsafe { (fs::File::from_raw_fd(reader), OwnedFd::from_raw_fd(writer)) };
-    let mut child = binary(cwd)
-        .args(["--coverage", "hits.data"])
-        .args(args)
-        .envs(vars.iter().copied())
-        .stdout(Stdio::from(slave))
-        .spawn()
-        .unwrap();
+    let mut child = command.stdout(Stdio::from(slave)).spawn().unwrap();
+    drop(command);
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -1761,7 +1851,7 @@ fn colour_follows_the_crapts_sink_and_environment() {
     #[cfg(unix)]
     for (vars, color) in [
         (vec![], true),
-        (vec![("FORCE_COLOR", "0")], true),
+        (vec![("FORCE_COLOR", "0")], false),
         (vec![("NO_COLOR", "1"), ("FORCE_COLOR", "1")], false),
     ] {
         assert_eq!(ansi(terminal_text(d.path(), &vars, &[])), color);
@@ -2064,21 +2154,30 @@ fn istanbul_entry_and_statement_validation_precedes_output_creation() {
             &["statement extra has no span"],
         );
     }
-    run(&entry(&map(span), "{}"), &["invalid hit count", "x"]);
+    run(
+        &entry(&map(span), "{}"),
+        &["invalid hit count", "statement x:"],
+    );
     for hits in ["-1", "0.5", "null", "true", r#""1""#, "1e400"] {
-        run(&entry(&map(span), &map(hits)), &["invalid hit count", "x"]);
+        run(
+            &entry(&map(span), &map(hits)),
+            &["invalid hit count", "statement x:"],
+        );
     }
     for bad in ["null", "[]"] {
         for target in [span, r#"{"line":2,"column":3}"#, r#"{"line":2,"column":4}"#] {
             run(
                 &entry(&map(&span.replace(target, bad)), &map("0")),
-                &["invalid span", "x"],
+                &["invalid span", "statement x:"],
             );
         }
     }
     for line in ["0", "-0", "1.5", "1e400"] {
         let span = span.replacen(r#""line":2"#, &format!(r#""line":{line}"#), 1);
-        run(&entry(&map(&span), &map("0")), &["invalid start", "x"]);
+        run(
+            &entry(&map(&span), &map("0")),
+            &["invalid start", "statement x:"],
+        );
     }
     for col in ["-1", "null", "0.5"] {
         run(
@@ -2086,7 +2185,7 @@ fn istanbul_entry_and_statement_validation_precedes_output_creation() {
                 &map(&span.replace(r#""column":3"#, &format!(r#""column":{col}"#))),
                 &map("0"),
             ),
-            &["invalid start", "x"],
+            &["invalid start", "statement x:"],
         );
     }
     for end in [
@@ -2103,7 +2202,7 @@ fn istanbul_entry_and_statement_validation_precedes_output_creation() {
                 &map(&span.replace(r#"{"line":2,"column":4}"#, end)),
                 &map("0"),
             ),
-            &["invalid end", "x"],
+            &["invalid end", "statement x:"],
         );
     }
 }
@@ -2121,6 +2220,20 @@ fn companion_checks_and_sarif_restrictions_precede_comparison_io() {
             "--show-unchanged needs --baseline",
         ),
         (vec!["--fail-changed"], "--fail-changed needs --base"),
+        (
+            vec!["--baseline", "b.json", "--fail-changed"],
+            "--fail-changed needs --base",
+        ),
+        (
+            vec![
+                "--format",
+                "sarif",
+                "--baseline",
+                "b.json",
+                "--fail-regression",
+            ],
+            "SARIF does not support --baseline",
+        ),
         (
             vec!["--format", "sarif", "--baseline", "b.json"],
             "SARIF does not support --baseline",
@@ -2303,7 +2416,7 @@ fn a_destination_failure_takes_precedence_at_the_process_boundary() {
 }
 
 proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config { cases: 12, ..proptest::test_runner::Config::default() })]
+    #![proptest_config(proptest::test_runner::Config { cases: 24, ..support::proptest_config() })]
     #[test]
     fn a_reserved_comparison_precedes_coverage_and_preserves_the_destination(
         revision in "[A-Za-z0-9]{1,16}", baseline in proptest::bool::ANY, gate in proptest::bool::ANY,
@@ -2318,4 +2431,37 @@ proptest::proptest! {
         let expected = format!("{selector} is not implemented yet");
         before_render(d.path(), &args, &[&expected]);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_injected_writer_uses_pipe_width_and_colour_when_stdout_is_a_terminal() {
+    use std::io::IsTerminal;
+    const CHILD: &str = "CRAPTS_TEST_INJECTED_SINK";
+    if let Some(cwd) = std::env::var_os(CHILD) {
+        assert!(std::io::stdout().is_terminal());
+        let args = ["--coverage", "hits.data"].map(std::ffi::OsString::from);
+        let mut output = Vec::new();
+        let mut err = Vec::new();
+        let code = crapts::cli::run(Path::new(&cwd), &args, &mut output, &mut err);
+        assert_eq!(code, std::process::ExitCode::SUCCESS);
+        assert_eq!(err.as_slice(), b"");
+        let report = String::from_utf8(output).unwrap();
+        assert!(!report.contains("\x1b["), "{report}");
+        tier(&report, 0, false);
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    measured_files(dir.path(), &[("f.ts", "f")]);
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    cmd.args([
+        "--exact",
+        "an_injected_writer_uses_pipe_width_and_colour_when_stdout_is_a_terminal",
+        "--nocapture",
+    ])
+    .env(CHILD, dir.path())
+    .env("COLUMNS", "59")
+    .env_remove("NO_COLOR")
+    .env_remove("FORCE_COLOR");
+    run_in_pty(cmd);
 }

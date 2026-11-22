@@ -80,7 +80,7 @@ const SWITCHES: &[(&str, &str)] = &[
     ("print-config", "Print effective settings and their origins"),
 ];
 
-trait Choice: PartialEq + Copy + Send + Sync + 'static {
+trait Choice: Copy + Send + Sync + 'static {
     const VALUES: &'static [(&'static str, Self)];
     fn parse(
         name: &'static str,
@@ -92,13 +92,7 @@ trait Choice: PartialEq + Copy + Send + Sync + 'static {
             .map(|&(_, item)| item)
             .ok_or_else(|| format!("unknown --{name} {value}"))
     }
-    fn label(self) -> &'static str {
-        Self::VALUES
-            .iter()
-            .find(|(_, item)| *item == self)
-            .expect("each choice has a wire spelling")
-            .0
-    }
+    fn label(self) -> &'static str;
 }
 impl Choice for Format {
     const VALUES: &'static [(&'static str, Self)] = &[
@@ -111,9 +105,26 @@ impl Choice for Format {
         ("sarif", Self::Sarif),
         ("shields", Self::Shields),
     ];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Human => "text",
+            Self::Json => "json",
+            Self::Markdown => "markdown",
+            Self::PrComment => "pr-comment",
+            Self::GitHub => "github",
+            Self::Sarif => "sarif",
+            Self::Shields => "shields",
+        }
+    }
 }
 impl Choice for SortOrder {
     const VALUES: &'static [(&'static str, Self)] = &[("crap", Self::Crap), ("file", Self::File)];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Crap => "crap",
+            Self::File => "file",
+        }
+    }
 }
 impl Choice for MissingCoveragePolicy {
     const VALUES: &'static [(&'static str, Self)] = &[
@@ -121,6 +132,13 @@ impl Choice for MissingCoveragePolicy {
         ("optimistic", Self::Optimistic),
         ("skip", Self::Skip),
     ];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pessimistic => "pessimistic",
+            Self::Optimistic => "optimistic",
+            Self::Skip => "skip",
+        }
+    }
 }
 
 fn number(
@@ -167,11 +185,21 @@ fn value_parser(name: &'static str) -> ValueParser {
 }
 
 fn command() -> Command {
-    let mut cmd=Command::new("crapts").disable_help_flag(true).disable_version_flag(true).disable_help_subcommand(true)
-        .no_binary_name(true).args_override_self(true).color(clap::ColorChoice::Never)
+    let mut cmd = Command::new("crapts")
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .disable_help_subcommand(true)
+        .no_binary_name(true)
+        .args_override_self(true)
+        .color(clap::ColorChoice::Never)
         .override_usage("crapts [paths...] --coverage <file> [options]")
         .about("Score JavaScript and TypeScript functions using cyclomatic complexity and test coverage.")
-        .arg(Arg::new("paths").value_name("paths").action(ArgAction::Append).value_parser(clap::value_parser!(PathBuf)));
+        .arg(
+            Arg::new("paths")
+                .value_name("paths")
+                .action(ArgAction::Append)
+                .value_parser(clap::value_parser!(PathBuf)),
+        );
     for &(name, label, help) in VALUES {
         cmd = cmd.arg(
             Arg::new(name)
@@ -313,7 +341,24 @@ fn normalized(args: &[OsString]) -> Result<Vec<OsString>> {
 fn parse(args: &[OsString]) -> Result<ArgMatches> {
     command()
         .try_get_matches_from(normalized(args)?)
-        .map_err(InputError::message)
+        .map_err(|error| clap_error(&error))
+}
+
+fn clap_error(error: &clap::Error) -> InputError {
+    if error.kind() == clap::error::ErrorKind::ValueValidation
+        && let Some(cause) = std::error::Error::source(error)
+    {
+        return InputError::message(cause);
+    }
+    let rendered = error.render().to_string();
+    let message = rendered.strip_prefix("error: ").unwrap_or(&rendered);
+    InputError::message(message.trim_end())
+}
+
+#[derive(Clone, Copy)]
+struct StdoutSink {
+    terminal: bool,
+    width: Option<usize>,
 }
 
 #[derive(serde::Serialize)]
@@ -363,6 +408,7 @@ fn validate_comparisons(
 fn configured(
     cwd: &Path,
     args: &[OsString],
+    sink: StdoutSink,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<ExitCode> {
@@ -370,12 +416,12 @@ fn configured(
         .canonicalize()
         .map_err(|error| InputError::at(cwd, error))?;
     let worktree = crate::discover::Worktree::probe(&cwd)?;
-    let (path, config) = config::load_at(&cwd, worktree.root.as_deref())?;
+    let config = config::load_at(&cwd, worktree.root.as_deref())?;
     let args = parse(args)?;
-    let settings = Effective::resolve(&cwd, path.as_deref(), config, &args)?;
+    let settings = Effective::resolve(&cwd, config, &args)?;
     if args.get_flag("print-config") {
         let json = serde_json::to_string_pretty(&Printed {
-            config_path: path.as_deref(),
+            config_path: settings.config_path.as_deref(),
             settings: &settings,
         })
         .map_err(InputError::message)?;
@@ -383,12 +429,13 @@ fn configured(
         return finish_stdout(out);
     }
     validate_comparisons(&args, &settings)?;
-    scoring::score(&cwd, worktree, &settings, out, err)
+    scoring::score(&cwd, worktree, &settings, sink, out, err)
 }
 
 fn execute(
     cwd: &Path,
     args: &[OsString],
+    sink: StdoutSink,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<ExitCode> {
@@ -397,7 +444,7 @@ fn execute(
         Route::Version => {
             writeln!(out, "crapts {}", env!("CARGO_PKG_VERSION")).map_err(stdout_error)?;
         },
-        Route::Run => return configured(cwd, args, out, err),
+        Route::Run => return configured(cwd, args, sink, out, err),
     }
     finish_stdout(out)
 }
@@ -409,7 +456,27 @@ pub fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitCode {
-    match execute(cwd, args, out, err) {
+    run_with_stdout(
+        cwd,
+        args,
+        out,
+        err,
+        false,
+        cargo_crap_core::report::output_width(false),
+    )
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn run_with_stdout(
+    cwd: &Path,
+    args: &[OsString],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    terminal: bool,
+    width: Option<usize>,
+) -> ExitCode {
+    match execute(cwd, args, StdoutSink { terminal, width }, out, err) {
         Ok(code) => code,
         Err(error) => {
             let _ = writeln!(err, "error: {error:#}");
@@ -431,8 +498,43 @@ mod tests {
         let config_path = cwd.join(".crapts.toml");
         let args = args.iter().map(OsString::from).collect::<Vec<_>>();
         let parsed = parse(&args).unwrap();
-        let settings = Effective::resolve(&cwd, Some(&config_path), config, &parsed).unwrap();
+        let settings = Effective::resolve(&cwd, Some((config_path, config)), &parsed).unwrap();
         serde_json::to_value(settings).unwrap()
+    }
+
+    #[test]
+    fn print_config_uses_the_canonical_label_for_every_accepted_choice() {
+        for &(spelling, _) in Format::VALUES {
+            let settings = resolved(Config::default(), &["--format", spelling]);
+            let canonical = if spelling == "human" {
+                "text"
+            } else {
+                spelling
+            };
+            assert_eq!(
+                settings["format"],
+                json!({"value": canonical, "origin": "flag"})
+            );
+        }
+        for &(spelling, _) in SortOrder::VALUES {
+            let settings = resolved(Config::default(), &["--sort", spelling]);
+            assert_eq!(settings["sort"]["value"], spelling);
+        }
+        for &(spelling, _) in MissingCoveragePolicy::VALUES {
+            let settings = resolved(Config::default(), &["--missing", spelling]);
+            assert_eq!(settings["missing"]["value"], spelling);
+        }
+    }
+
+    #[test]
+    fn clap_errors_without_a_parser_cause_use_the_rendered_message() {
+        for kind in [
+            clap::error::ErrorKind::InvalidValue,
+            clap::error::ErrorKind::ValueValidation,
+        ] {
+            let error = clap::Error::raw(kind, "invalid argument\n\n");
+            assert_eq!(clap_error(&error).to_string(), "invalid argument");
+        }
     }
 
     #[test]
@@ -479,7 +581,8 @@ mod tests {
         for key in ["default-excludes", "exclude", "allow"] {
             let config = Config::parse(&path, &format!("{key} = ['src/[']")).unwrap();
             let parsed = parse(&["--no-default-excludes".into()]).unwrap();
-            let error = Effective::resolve(d.path(), Some(&path), config, &parsed).unwrap_err();
+            let error =
+                Effective::resolve(d.path(), Some((path.clone(), config)), &parsed).unwrap_err();
             let err = format!("{error:#}");
             assert!(
                 err.contains("src/[") && err.contains(".crapts.toml"),
