@@ -790,7 +790,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Assign each class initializer to its scoring owner_, _Locate an implied constructor across discontiguous initializers_.
   Tests: Acceptance for written and implied constructors. Assert the complete named row sets and CC, ordered regions, display spans and static-block bounds.
 
-- [ ] **T17 - Handle auto-accessors and direct class-valued fields.** Needs: T16.
+- [x] **T17 - Handle auto-accessors and direct class-valued fields.** Needs: T16.
   Scenarios: _Score auto-accessor initializers as fields_, _Direct class-valued fields supply a class name_.
   Tests: Acceptance for instance and static auto-accessors, named and anonymous class expressions and their child methods.
 
