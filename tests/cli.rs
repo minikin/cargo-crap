@@ -4864,3 +4864,137 @@ fn cli_delegation_requires_a_production_call_and_its_verdict() {
         assert!(!delegates_report(&format!("{old} {valid}")), "{old}");
     }
 }
+
+#[test]
+fn cargo_crap_recognizes_the_foreign_discriminator_by_key_presence() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest.join(fixture_src());
+    let lcov = manifest.join(fixture_lcov());
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let base_out = cmd()
+        .arg("--path")
+        .arg(&src)
+        .arg("--lcov")
+        .arg(&lcov)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run");
+    assert!(base_out.status.success());
+    let original: serde_json::Value =
+        serde_json::from_slice(&base_out.stdout).expect("valid baseline JSON");
+
+    let expected_stderr = "Error: cargo-crap cannot read base.json with a top-level name_scheme. Use the tool that wrote the baseline.\n";
+    for value in [
+        serde_json::json!(1),
+        serde_json::json!(2),
+        serde_json::json!(null),
+    ] {
+        let mut foreign = original.clone();
+        foreign["name_scheme"] = value;
+        std::fs::write(
+            dir.path().join("base.json"),
+            serde_json::to_string_pretty(&foreign).expect("serialize"),
+        )
+        .expect("write");
+
+        let out = cmd()
+            .current_dir(dir.path())
+            .arg("--path")
+            .arg(&src)
+            .arg("--lcov")
+            .arg(&lcov)
+            .arg("--baseline")
+            .arg("base.json")
+            .output()
+            .expect("run");
+        assert_eq!(out.status.code(), Some(2));
+        assert_eq!(out.stdout, [] as [u8; 0]);
+        assert_eq!(
+            String::from_utf8(out.stderr).expect("utf8"),
+            expected_stderr
+        );
+    }
+
+    let mut nested = original;
+    nested["metadata"] = serde_json::json!({"name_scheme": 2});
+    std::fs::write(
+        dir.path().join("base.json"),
+        serde_json::to_string_pretty(&nested).expect("serialize"),
+    )
+    .expect("write");
+    cmd()
+        .current_dir(dir.path())
+        .arg("--path")
+        .arg(&src)
+        .arg("--lcov")
+        .arg(&lcov)
+        .arg("--baseline")
+        .arg("base.json")
+        .assert()
+        .success();
+}
+
+#[test]
+fn the_foreign_key_probe_preserves_cargo_craps_original_parse_errors() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest.join(fixture_src());
+    let lcov = manifest.join(fixture_lcov());
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let p_bare =
+        std::fs::read_to_string(manifest.join("tests/fixtures/golden/baselines/p_bare.json"))
+            .expect("read p_bare.json");
+    std::fs::write(dir.path().join("p_bare.json"), &p_bare).expect("write p_bare.json");
+
+    let snap =
+        std::fs::read_to_string(manifest.join("tests/snapshots/golden__p_baseline_bare.snap"))
+            .expect("read snap");
+    let (_, after_stderr) = snap.split_once("stderr:\n").expect("stderr header");
+    let (expected_p_bare_stderr, _) = after_stderr.split_once("<<end>>").expect("stderr end");
+
+    let p_bare_out = cmd()
+        .current_dir(dir.path())
+        .arg("--path")
+        .arg(&src)
+        .arg("--lcov")
+        .arg(&lcov)
+        .arg("--baseline")
+        .arg("p_bare.json")
+        .output()
+        .expect("run");
+    assert_eq!(p_bare_out.status.code(), Some(2));
+    assert_eq!(p_bare_out.stdout, [] as [u8; 0]);
+    assert_eq!(
+        String::from_utf8(p_bare_out.stderr).expect("utf8"),
+        expected_p_bare_stderr
+    );
+
+    let bad_raw = r#"{"name_scheme":1,"#;
+    std::fs::write(dir.path().join("bad.json"), bad_raw).expect("write bad.json");
+    let expected_cause = serde_json::from_str::<cargo_crap::report::Envelope>(bad_raw)
+        .err()
+        .expect("truncated JSON must fail")
+        .to_string();
+    let expected_bad_stderr = format!(
+        "Error: parsing baseline bad.json — must be JSON from `cargo crap --format json`\n\nCaused by:\n    {expected_cause}\n"
+    );
+
+    let bad_out = cmd()
+        .current_dir(dir.path())
+        .arg("--path")
+        .arg(&src)
+        .arg("--lcov")
+        .arg(&lcov)
+        .arg("--baseline")
+        .arg("bad.json")
+        .output()
+        .expect("run");
+    assert_eq!(bad_out.status.code(), Some(2));
+    assert_eq!(bad_out.stdout, [] as [u8; 0]);
+    assert_eq!(
+        String::from_utf8(bad_out.stderr).expect("utf8"),
+        expected_bad_stderr
+    );
+}

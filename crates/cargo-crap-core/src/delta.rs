@@ -418,6 +418,23 @@ pub fn load_baseline(
     load_baseline_with_weight(path, tool).map(|baseline| baseline.entries)
 }
 
+fn reject_foreign_name_scheme(
+    raw: &str,
+    path: &Path,
+    tool: &Tool,
+) -> Result<()> {
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(raw)
+        && map.contains_key("name_scheme")
+    {
+        bail!(
+            "{} cannot read {} with a top-level name_scheme. Use the tool that wrote the baseline.",
+            tool.name,
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// [`load_baseline`], keeping the `?` weight the baseline was recorded under
 /// so a caller can tell when the current run scores under a different one.
 pub fn load_baseline_with_weight(
@@ -426,6 +443,7 @@ pub fn load_baseline_with_weight(
 ) -> Result<Baseline> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading baseline {}", path.display()))?;
+    reject_foreign_name_scheme(&raw, path, tool)?;
     let envelope: crate::report::Envelope = serde_json::from_str(&raw).with_context(|| {
         format!(
             "parsing baseline {} — must be JSON from `{}`",
@@ -4211,6 +4229,61 @@ mod crapts_admission_tests {
             let mut doc = valid_delta_doc();
             edit(&mut doc);
             assert_rejected(doc, CoverageKind::Lines, needle);
+        }
+    }
+
+    #[test]
+    fn foreign_name_scheme_probe_rejects_top_level_key_and_preserves_parse_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Tool {
+            name: "audit",
+            ..crate::report::test_support::CARGO_CRAP_FIXTURE
+        };
+        for raw in [
+            r#"{"version":"0.9.0","name_scheme":1,"entries":[]}"#,
+            r#"{"version":"0.9.0","name_scheme":2,"entries":[]}"#,
+            r#"{"version":"0.9.0","name_scheme":null,"entries":[]}"#,
+        ] {
+            let path = dir.path().join("base.json");
+            std::fs::write(&path, raw).unwrap();
+            let expected = format!(
+                "audit cannot read {} with a top-level name_scheme. Use the tool that wrote the baseline.",
+                path.display()
+            );
+            assert_eq!(
+                load_baseline(&path, &audit).unwrap_err().to_string(),
+                expected
+            );
+            assert_eq!(
+                load_baseline_with_weight(&path, &audit)
+                    .unwrap_err()
+                    .to_string(),
+                expected
+            );
+        }
+
+        let nested = dir.path().join("nested.json");
+        std::fs::write(
+            &nested,
+            r#"{"version":"0.9.0","metadata":{"name_scheme":2},"entries":[]}"#,
+        )
+        .unwrap();
+        assert!(load_baseline(&nested, &audit).is_ok());
+        assert!(load_baseline_with_weight(&nested, &audit).is_ok());
+
+        for (name, raw) in [
+            ("bad.json", r#"{"name_scheme":1,"#),
+            ("bare.json", r#"[{"file":"a.rs"}]"#),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, raw).unwrap();
+            let direct = serde_json::from_str::<crate::report::Envelope>(raw)
+                .err()
+                .expect("invalid envelope must fail")
+                .to_string();
+            let err = load_baseline_with_weight(&path, &audit).unwrap_err();
+            assert!(err.to_string().contains(audit.baseline_hint), "{err}");
+            assert_eq!(err.root_cause().to_string(), direct);
         }
     }
 }

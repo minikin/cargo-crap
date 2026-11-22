@@ -692,7 +692,7 @@ the first byte, like a missing coverage kind.
   version mismatch skips only the regression gate_, _a skipped-regression
   notice reaches each text renderer_. Tests: acceptance, unit for the
   notice text.
-- [ ] **T7 - Refuse a foreign baseline in the cargo-crap loaders.**
+- [x] **T7 - Refuse a foreign baseline in the cargo-crap loaders.**
   Needs: T4. The top-level `name_scheme` probe in `load_baseline` and
   `load_baseline_with_weight`, falling back to the original decoder error.
   Scenarios: _cargo-crap recognizes the foreign discriminator by key
