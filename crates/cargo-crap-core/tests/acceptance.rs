@@ -170,20 +170,33 @@ mod coverage_spelling {
 
     #[test]
     fn match_whole_path_components_across_checkout_and_platform_spellings() {
-        let sources = ["src/a.ts", "vendor/src/a.ts", "oofoo/bar.ts"];
-        let cwd = files(&sources);
-        let keys = [
-            r".\src\a.ts",
-            "/ci/work/src/a.ts",
-            r"D:\ci\work\src\a.ts",
-            "foo/bar.ts",
-            "/ci/osrc/a.ts",
-            "src/A.ts",
-            "./",
-            "work/src/a.ts",
+        let cases: &[(&[&str], &str, Option<&str>)] = &[
+            (&["pkg/src/a.ts"], r".\src\a.ts", Some("pkg/src/a.ts")),
+            (
+                &["src/a.ts", "vendor/src/a.ts"],
+                "src/a.ts",
+                Some("src/a.ts"),
+            ),
+            (&["src/a.ts"], "work/src/a.ts", None),
+            (&["src/a.ts"], "/ci/work/src/a.ts", Some("src/a.ts")),
+            (
+                &["a.ts", "src/a.ts"],
+                r"D:\ci\work\src\a.ts",
+                Some("src/a.ts"),
+            ),
+            (&["src/a.ts"], "/ci/osrc/a.ts", None),
+            (&["oofoo/bar.ts"], "foo/bar.ts", None),
+            (&["src/a.ts"], "src/A.ts", None),
+            (&["src/a.ts"], "./", None),
         ];
-        let result = assign(cwd.path(), &sources, &keys);
-        assert_eq!(result.bindings, [vec![0, 1, 2], vec![], vec![]]);
+        for &(sources, key, owner) in cases {
+            let cwd = files(sources);
+            let result = assign(cwd.path(), sources, &[key]);
+            for (&source, binding) in sources.iter().zip(result.bindings) {
+                let expected: Vec<_> = (Some(source) == owner).then_some(0).into_iter().collect();
+                assert_eq!(binding, expected, "{source} with {key}");
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -246,6 +259,14 @@ mod coverage_spelling {
 
     #[test]
     fn stray_examples_sort_original_strings_before_taking_the_first_ten() {
+        let pair = StrayFiles::from_raw_spellings(&["a/b.ts", "a-b/c.ts"]);
+        assert_eq!(
+            pair.examples
+                .iter()
+                .map(|p| p.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["a-b/c.ts", "a/b.ts"]
+        );
         let mut names = vec!["a/b.ts".to_owned(), "a-b/c.ts".to_owned()];
         names.extend((0..9).rev().map(|i| format!("{i:02}.ts")));
         let refs: Vec<_> = names.iter().map(String::as_str).collect();

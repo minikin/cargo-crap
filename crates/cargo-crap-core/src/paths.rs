@@ -71,9 +71,8 @@ pub enum TiePolicy {
 /// One withdrawn group of coverage key spellings and the sources claiming it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tie {
-    /// Input indices, in report order for string keys and spelling order for native paths.
+    /// [`assign_by_key`] lists aliases in input order. [`assign`] sorts them by spelling.
     pub keys: Vec<usize>,
-    /// Input indices of the equally ranked sources.
     pub sources: Vec<usize>,
 }
 
@@ -286,7 +285,8 @@ fn portable_parts(path: &str) -> Vec<OsString> {
         .collect()
 }
 
-/// Relative report keys are lexical. Relative source paths resolve against `cwd` for real-file lookup.
+/// Relative report keys are lexical.
+/// Relative source paths resolve against `cwd` for real-file lookup.
 #[must_use]
 pub fn assign_by_key(
     cwd: &Path,
@@ -297,6 +297,7 @@ pub fn assign_by_key(
     let mut index = PathIndex::default();
     for (i, key) in keys.iter().enumerate() {
         let path = key.replace('\\', "/");
+        // A relative report key may name a different file in either working directory.
         let host_absolute = Path::new(&path).has_root();
         let real = host_absolute
             .then(|| Path::new(&path).canonicalize().ok())
@@ -432,57 +433,153 @@ mod tests {
         assert_eq!(shared.ties, []);
     }
 
+    #[test]
+    fn relative_original_keys_stay_lexical_in_both_working_directories() {
+        let cwd = tempfile::tempdir().unwrap();
+        let only_in_cwd = "spec52-cwd-only.ts";
+        std::fs::write(cwd.path().join(only_in_cwd), "").unwrap();
+        assert!(Path::new("src/lib.rs").is_file());
+        assert!(!Path::new(only_in_cwd).exists());
+        for key in ["src/lib.rs", only_in_cwd] {
+            let source = format!("somewhere/else/{key}");
+            let result = assign_by_key(cwd.path(), &[&source], &[key], TiePolicy::Unmatched);
+            assert_eq!(result.bindings, [vec![0]], "{key}");
+        }
+    }
+
+    #[test]
+    fn relative_and_foreign_aliases_have_separate_tie_groups() {
+        let sources = ["one/spec52-absent/a.ts", "two/spec52-absent/a.ts"];
+        let keys = ["spec52-absent/a.ts", "/spec52-absent/a.ts"];
+        let result = assign_by_key(Path::new("."), &sources, &keys, TiePolicy::Unmatched);
+        let mut groups: Vec<_> = result.ties.into_iter().map(|t| t.keys).collect();
+        groups.sort();
+        assert_eq!(groups, [vec![0], vec![1]]);
+        assert_eq!(result.bindings, [Vec::<usize>::new(), vec![]]);
+    }
+
+    fn spelling_inputs()
+    -> impl Strategy<Value = (Vec<String>, Vec<String>, Vec<String>, Vec<String>)> {
+        (
+            prop::collection::btree_set(0u8..6, 1..6),
+            prop::collection::btree_set((0u8..6, 0u8..9), 1..20),
+            any::<bool>(),
+        )
+            .prop_flat_map(|(dirs, labels, exact_owner)| {
+                let mut sources: Vec<_> = dirs.iter().map(|d| format!("p/{d}/a.ts")).collect();
+                if exact_owner {
+                    sources.push("a.ts".to_owned());
+                }
+                let mut keys: Vec<_> = labels
+                    .iter()
+                    .map(|(d, kind)| match kind {
+                        0 => "a.ts".to_owned(),
+                        1 => format!("{d}/a.ts"),
+                        2 => format!("/spec52-absent/p/{d}/a.ts"),
+                        3 => format!("p/{d}/a.ts"),
+                        4 => format!("p/{d}/./a.ts"),
+                        5 => format!(r"p\{d}\a.ts"),
+                        6 => format!(r"D:\spec52-absent\p\{d}\a.ts"),
+                        7 => format!("p/../{d}/a.ts"),
+                        _ => format!("/p/{d}/a.ts"),
+                    })
+                    .collect();
+                keys.sort();
+                keys.dedup();
+                (
+                    Just(sources.clone()).prop_shuffle(),
+                    Just(keys.clone()).prop_shuffle(),
+                    Just(sources).prop_shuffle(),
+                    Just(keys).prop_shuffle(),
+                )
+            })
+    }
+
+    fn translated_spellings(
+        sources: &[&str],
+        keys: &[&str],
+        assignment: &Assignment,
+    ) -> serde_json::Value {
+        use std::collections::{BTreeMap, BTreeSet};
+        let bindings: BTreeMap<_, _> = sources
+            .iter()
+            .zip(&assignment.bindings)
+            .map(|(name, group)| {
+                (
+                    name,
+                    group.iter().map(|&k| keys[k]).collect::<BTreeSet<_>>(),
+                )
+            })
+            .collect();
+        let ties: BTreeSet<_> = assignment
+            .ties
+            .iter()
+            .map(|tie| {
+                (
+                    tie.keys.iter().map(|&k| keys[k]).collect::<BTreeSet<_>>(),
+                    tie.sources
+                        .iter()
+                        .map(|&i| sources[i])
+                        .collect::<BTreeSet<_>>(),
+                )
+            })
+            .collect();
+        serde_json::json!([bindings, ties])
+    }
+
+    fn check_original_ownership(
+        sources: &[String],
+        keys: &[String],
+    ) -> serde_json::Value {
+        let src: Vec<_> = sources.iter().map(String::as_str).collect();
+        let raw: Vec<_> = keys.iter().map(String::as_str).collect();
+        let got = assign_by_key(Path::new("."), &src, &raw, TiePolicy::Unmatched);
+        let mut eligible = vec![Vec::new(); src.len()];
+        for (key, name) in raw.iter().enumerate() {
+            let unified = name.replace('\\', "/");
+            let path = unified.strip_prefix("D:").unwrap_or(&unified);
+            let parts: Vec<_> = path
+                .split('/')
+                .filter(|p| !p.is_empty() && *p != ".")
+                .collect();
+            let mut fits = Vec::new();
+            for (i, path_name) in src.iter().enumerate() {
+                let file: Vec<_> = path_name.split('/').collect();
+                if file.ends_with(&parts) || (path.starts_with('/') && parts.ends_with(&file)) {
+                    fits.push(((parts == file, parts.len().min(file.len())), i));
+                }
+            }
+            let best = fits.iter().map(|p| p.0).max();
+            fits.retain(|f| Some(f.0) == best);
+            if let [((_, score), i)] = fits[..] {
+                eligible[i].push((score, key));
+            }
+            let mut ties = got.ties.iter().filter(|tie| tie.keys.contains(&key));
+            if fits.len() > 1 {
+                let mut owners = ties.next().unwrap().sources.clone();
+                owners.sort_unstable();
+                assert_eq!(owners, fits.iter().map(|f| f.1).collect::<Vec<_>>());
+            }
+            assert!(ties.next().is_none());
+        }
+        for (group, fits) in got.bindings.iter().zip(eligible) {
+            let max = fits.iter().map(|p| p.0).max();
+            let expected: Vec<_> = fits
+                .into_iter()
+                .filter(|p| Some(p.0) == max)
+                .map(|p| p.1)
+                .collect();
+            let mut bound = group.clone();
+            bound.sort_unstable();
+            assert_eq!(bound, expected);
+        }
+        translated_spellings(&src, &raw, &got)
+    }
+
     proptest! {
         #[test]
-        fn original_keys_agree_with_exhaustive_ownership(
-            dirs in prop::collection::btree_set(0u8..6, 1..6),
-            labels in prop::collection::btree_set((0u8..6, 0u8..5), 1..15),
-            reverse_sources in any::<bool>(), reverse_keys in any::<bool>(), exact_owner in any::<bool>()
-        ) {
-            let mut sources = Vec::new();
-            if exact_owner { sources.push("a.ts".to_owned()); }
-            sources.extend(dirs.iter().map(|d| format!("p/{d}/a.ts")));
-            let mut keys: Vec<_> = labels.iter().map(|(d,kind)| match kind {
-                0 => "a.ts".to_owned(), 1 => format!("{d}/a.ts"),
-                2 => format!("/spec52-absent/p/{d}/a.ts"), 3 => format!("p/{d}/a.ts"),
-                _ => format!("p/{d}/./a.ts"),
-            }).collect();
-            keys.sort();
-            keys.dedup();
-            if reverse_sources { sources.reverse(); }
-            if reverse_keys { keys.reverse(); }
-            let src: Vec<_> = sources.iter().map(String::as_str).collect();
-            let raw: Vec<_> = keys.iter().map(String::as_str).collect();
-            let got = assign_by_key(Path::new("."), &src, &raw, TiePolicy::Unmatched);
-            let mut eligible = vec![Vec::new(); src.len()];
-            for (key, name) in raw.iter().enumerate() {
-                let parts: Vec<_> = name.split('/').filter(|p| !p.is_empty() && *p != ".").collect();
-                let mut fits = Vec::new();
-                for (i, path) in src.iter().enumerate() {
-                    let file: Vec<_> = path.split('/').collect();
-                    if file.ends_with(&parts) || (name.starts_with('/') && parts.ends_with(&file)) {
-                        fits.push(((parts == file, parts.len().min(file.len())), i));
-                    }
-                }
-                let best = fits.iter().map(|p| p.0).max();
-                fits.retain(|f| Some(f.0) == best);
-                if let [((_, score), i)] = fits[..] {
-                    eligible[i].push((score, key));
-                }
-                let mut ties = got.ties.iter().filter(|tie| tie.keys.contains(&key));
-                if fits.len() > 1 {
-                    let mut owners = ties.next().unwrap().sources.clone();
-                    owners.sort_unstable();
-                    prop_assert_eq!(owners, fits.iter().map(|f|f.1).collect::<Vec<_>>());
-                }
-                prop_assert!(ties.next().is_none());
-            }
-            for (mut bound, fits) in got.bindings.into_iter().zip(eligible) {
-                let max = fits.iter().map(|p|p.0).max();
-                let expect: Vec<_> = fits.into_iter().filter(|p|Some(p.0)==max).map(|p|p.1).collect();
-                bound.sort_unstable();
-                prop_assert_eq!(bound, expect);
-            }
+        fn original_keys_agree_with_exhaustive_ownership((sources, keys, other_sources, other_keys) in spelling_inputs()) {
+            prop_assert_eq!(check_original_ownership(&sources, &keys), check_original_ownership(&other_sources, &other_keys));
         }
     }
 
