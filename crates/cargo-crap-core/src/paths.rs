@@ -2,6 +2,7 @@
 
 use crate::entry::{ScopeDiagnostics, StrayFiles};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 /// A path with its separators unified, so a baseline written on Windows
@@ -70,9 +71,9 @@ pub enum TiePolicy {
 /// One withdrawn group of coverage key spellings and the sources claiming it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tie {
-    /// Indices into the caller's keys, sorted by spelling.
+    /// Input indices, in report order for string keys and spelling order for native paths.
     pub keys: Vec<usize>,
-    /// Indices into the caller's sources, sorted by path.
+    /// Input indices of the equally ranked sources.
     pub sources: Vec<usize>,
 }
 
@@ -120,149 +121,206 @@ impl Assignment {
     }
 }
 
-/// Group raw input indices without dropping aliases or resolving relative keys against the CWD.
 #[derive(Default)]
 struct PathIndex {
     real: HashMap<PathBuf, Vec<usize>>,
-    suffix: HashMap<PathBuf, Vec<usize>>,
+    lexical: std::collections::BTreeMap<LexicalKey, Vec<usize>>,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct LexicalKey {
+    foreign: bool,
+    parts: Vec<OsString>,
+}
+
+impl LexicalKey {
+    fn score(
+        &self,
+        source: &[OsString],
+    ) -> Option<usize> {
+        if source.ends_with(&self.parts) {
+            Some(self.parts.len())
+        } else if self.foreign && self.parts.ends_with(source) && !source.is_empty() {
+            Some(source.len())
+        } else {
+            None
+        }
+    }
+}
+
+struct Source {
+    lookup: PathBuf,
+    parts: Vec<OsString>,
 }
 
 impl PathIndex {
-    fn build(keys: &[&Path]) -> Self {
-        let mut index = Self::default();
-        for (i, path) in keys.iter().enumerate() {
-            if let Some(real) = canonical_absolute(path) {
-                index.real.entry(real).or_default().push(i);
-            } else if let Some(suffix) = suffix_key(path) {
-                index.suffix.entry(suffix).or_default().push(i);
-            }
+    fn insert(
+        &mut self,
+        i: usize,
+        real: Option<PathBuf>,
+        key: LexicalKey,
+    ) {
+        if let Some(path) = real {
+            self.real.entry(path).or_default().push(i);
+        } else if !key.parts.is_empty() {
+            self.lexical.entry(key).or_default().push(i);
         }
-        index
     }
 
-    fn real_match(
+    fn bind(
         &self,
-        source: &Path,
-    ) -> Option<&Vec<usize>> {
-        if self.real.is_empty() {
-            return None;
-        }
-        self.real.get(&source.canonicalize().ok()?)
-    }
-
-    fn assign_by_owner(
-        &self,
-        sources: &[&Path],
-        keys: &[&Path],
+        sources: &[Source],
+        policy: TiePolicy,
     ) -> Assignment {
-        let mut best = vec![None; sources.len()];
+        let mut candidates = vec![Vec::new(); sources.len()];
         let mut ties = Vec::new();
-        for (needle, group) in &self.suffix {
-            let mut owners = suffix_owners(needle, sources);
-            match owners.as_slice() {
-                [] => {},
-                &[owner] => {
-                    let length = needle.components().count();
-                    best[owner] = best[owner].max(Some((length, group)));
-                },
-                _ => {
-                    let mut spellings = group.clone();
-                    spellings.sort_by_key(|&i| keys[i].as_os_str());
-                    owners.sort_by_key(|&i| sources[i].as_os_str());
+        for (key, group) in &self.lexical {
+            let mut fits: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .filter_map(|(i, source)| {
+                    key.score(&source.parts)
+                        .map(|score| (i, (key.parts == source.parts, score)))
+                })
+                .collect();
+            if policy == TiePolicy::Unmatched {
+                let best = fits.iter().map(|&(_, rank)| rank).max();
+                fits.retain(|&(_, rank)| Some(rank) == best);
+                if fits.len() > 1 {
                     ties.push(Tie {
-                        keys: spellings,
-                        sources: owners,
+                        keys: group.clone(),
+                        sources: fits.iter().map(|&(i, _)| i).collect(),
                     });
-                },
+                    continue;
+                }
+            }
+            for (i, (_, score)) in fits {
+                candidates[i].push((score, key.foreign, group));
             }
         }
-        ties.sort_by_key(|tie| keys[tie.keys[0]].as_os_str());
         let bindings = sources
             .iter()
-            .zip(best)
-            .map(|(path, suffix)| {
-                self.real_match(path)
-                    .or_else(|| suffix.map(|(_, group)| group))
-                    .cloned()
-                    .unwrap_or_default()
+            .zip(candidates)
+            .map(|(source, fits)| {
+                if !self.real.is_empty()
+                    && let Ok(real) = source.lookup.canonicalize()
+                    && let Some(keys) = self.real.get(&real)
+                {
+                    return keys.clone();
+                }
+                best_keys(fits)
             })
             .collect();
         Assignment { bindings, ties }
     }
-
-    fn lookup(
-        &self,
-        source: &Path,
-    ) -> Option<&Vec<usize>> {
-        if let Some(group) = self.real_match(source) {
-            return Some(group);
-        }
-        self.suffix
-            .iter()
-            .filter(|(key, _)| path_has_suffix(source, key))
-            .max_by_key(|(key, _)| key.components().count())
-            .map(|(_, group)| group)
-    }
 }
 
-fn canonical_absolute(path: &Path) -> Option<PathBuf> {
-    path.is_absolute()
-        .then(|| path.canonicalize().ok())
-        .flatten()
+fn best_keys(mut fits: Vec<(usize, bool, &Vec<usize>)>) -> Vec<usize> {
+    let best = fits.iter().map(|f| f.0).max();
+    fits.retain(|f| Some(f.0) == best);
+    fits.sort_unstable_by_key(|&(_, foreign, group)| (foreign, group[0]));
+    fits.into_iter()
+        .flat_map(|(_, _, keys)| keys)
+        .copied()
+        .collect()
 }
 
-fn suffix_key(path: &Path) -> Option<PathBuf> {
-    let suffix: PathBuf = path
-        .components()
+fn native_parts(path: &Path) -> Vec<OsString> {
+    path.components()
         .filter(|c| *c != Component::CurDir)
-        .collect();
-    (!suffix.as_os_str().is_empty()).then_some(suffix)
+        .map(|c| c.as_os_str().to_owned())
+        .collect()
 }
 
-fn suffix_owners(
-    needle: &Path,
-    sources: &[&Path],
-) -> Vec<usize> {
-    let (exact, suffix): (Vec<_>, Vec<_>) = (0..sources.len())
-        .filter(|&i| path_has_suffix(sources[i], needle))
-        .partition(|&i| {
-            sources[i]
-                .components()
-                .filter(|c| *c != Component::CurDir)
-                .eq(needle.components())
-        });
-    if exact.is_empty() { suffix } else { exact }
-}
-
-/// Bind each source to canonical aliases or the longest matching component suffix.
-///
-/// Supply one entry per distinct analyzed source file. Each key index represents a raw
-/// coverage spelling, including aliases that resolve to the same file.
+/// Supply one entry per distinct source. Each key index represents an original coverage spelling.
 #[must_use]
 pub fn assign(
     sources: &[&Path],
     keys: &[&Path],
     policy: TiePolicy,
 ) -> Assignment {
-    let index = PathIndex::build(keys);
-    if policy == TiePolicy::Unmatched {
-        return index.assign_by_owner(sources, keys);
+    let mut index = PathIndex::default();
+    for (i, &path) in keys.iter().enumerate() {
+        let real = path
+            .is_absolute()
+            .then(|| path.canonicalize().ok())
+            .flatten();
+        index.insert(
+            i,
+            real,
+            LexicalKey {
+                foreign: false,
+                parts: native_parts(path),
+            },
+        );
     }
-    let bindings = sources
+    let inputs: Vec<_> = sources
         .iter()
-        .map(|path| index.lookup(path).cloned().unwrap_or_default())
+        .map(|&path| Source {
+            lookup: path.to_owned(),
+            parts: native_parts(path),
+        })
         .collect();
-    Assignment {
-        bindings,
-        ties: Vec::new(),
+    let mut result = index.bind(&inputs, policy);
+    for tie in &mut result.ties {
+        tie.keys.sort_by_key(|&i| keys[i].as_os_str());
+        tie.sources.sort_by_key(|&i| sources[i].as_os_str());
     }
+    result.ties.sort_by_key(|tie| keys[tie.keys[0]].as_os_str());
+    result
 }
 
-fn path_has_suffix(
-    haystack: &Path,
-    needle: &Path,
-) -> bool {
-    haystack.ends_with(needle)
+fn drive_absolute(path: &str) -> bool {
+    matches!(path.as_bytes(), [b'a'..=b'z' | b'A'..=b'Z', b':', b'/', ..])
+}
+
+fn portable_parts(path: &str) -> Vec<OsString> {
+    let path = if drive_absolute(path) {
+        &path[3..]
+    } else {
+        path
+    };
+    path.split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .map(OsString::from)
+        .collect()
+}
+
+/// Relative report keys are lexical. Relative source paths resolve against `cwd` for real-file lookup.
+#[must_use]
+pub fn assign_by_key(
+    cwd: &Path,
+    sources: &[&str],
+    keys: &[&str],
+    policy: TiePolicy,
+) -> Assignment {
+    let mut index = PathIndex::default();
+    for (i, key) in keys.iter().enumerate() {
+        let path = key.replace('\\', "/");
+        let host_absolute = Path::new(&path).has_root();
+        let real = host_absolute
+            .then(|| Path::new(&path).canonicalize().ok())
+            .flatten();
+        index.insert(
+            i,
+            real,
+            LexicalKey {
+                foreign: path.starts_with('/') || drive_absolute(&path),
+                parts: portable_parts(&path),
+            },
+        );
+    }
+    let inputs: Vec<_> = sources
+        .iter()
+        .map(|source| {
+            let path = source.replace('\\', "/");
+            Source {
+                lookup: cwd.join(&path),
+                parts: portable_parts(&path),
+            }
+        })
+        .collect();
+    index.bind(&inputs, policy)
 }
 
 #[cfg(test)]
@@ -271,12 +329,173 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn original_keys_match_complete_components_in_their_checkout() {
+        let cases: &[(&[&str], &str, Option<usize>)] = &[
+            (&["pkg/src/a.ts"], r".\src\a.ts", Some(0)),
+            (&["src/a.ts", "vendor/src/a.ts"], "src/a.ts", Some(0)),
+            (&["src/a.ts"], "work/src/a.ts", None),
+            (&["src/a.ts"], "/ci/work/src/a.ts", Some(0)),
+            (&["a.ts", "src/a.ts"], r"D:\ci\work\src\a.ts", Some(1)),
+            (&["src/a.ts"], r"\\ci\share\src\a.ts", Some(0)),
+            (&["src/a.ts"], "/ci/osrc/a.ts", None),
+            (&["oofoo/bar.ts"], "foo/bar.ts", None),
+            (&["src/a.ts"], "src/A.ts", None),
+            (&["src/a.ts"], "./", None),
+            (&["pkg/../src/a.ts"], "../src/a.ts", Some(0)),
+            (&["src/a.ts"], "../src/a.ts", None),
+            (&["src/a.ts"], "1:/ci/src/a.ts", None),
+            (&["src/a.ts"], "D:ci/src/a.ts", None),
+            (&["c:/src/a.ts", "src/a.ts"], "a.ts", None),
+            (&["."], "/ci/a.ts", None),
+        ];
+        for &(sources, key, owner) in cases {
+            let a = assign_by_key(Path::new("."), sources, &[key], TiePolicy::Unmatched);
+            assert_eq!(
+                a.bindings.iter().position(|b| !b.is_empty()),
+                owner,
+                "{sources:?} {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn real_keys_use_the_supplied_cwd_and_precede_lexical_groups() {
+        let cwd = tempfile::tempdir().unwrap();
+        let src = cwd.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        let real = src.join("a.ts");
+        std::fs::write(&real, "function f() {}").unwrap();
+        let key = real.to_str().unwrap().replace('/', "\\");
+        let sources = [r"src\a.ts"];
+        let bind = |keys: &[&str]| {
+            assign_by_key(cwd.path(), &sources, keys, TiePolicy::Unmatched).bindings
+        };
+        assert_eq!(
+            bind(&["a.ts", "src/a.ts", &key, real.to_str().unwrap()]),
+            [vec![2, 3]]
+        );
+        assert_eq!(
+            bind(&[
+                "a.ts",
+                "src/a.ts",
+                "src/./a.ts",
+                "/absent/src/a.ts",
+                "absent/src/a.ts"
+            ]),
+            [vec![1, 2, 3]]
+        );
+        assert_eq!(
+            bind(&[cwd.path().join("other").to_str().unwrap()]),
+            [Vec::<usize>::new()]
+        );
+        #[cfg(unix)]
+        {
+            let alias = cwd.path().join("alias.ts");
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            assert_eq!(bind(&["alias.ts", alias.to_str().unwrap()]), [vec![1]]);
+        }
+    }
+
+    #[test]
+    fn a_shared_original_key_stays_ambiguous_even_with_a_better_match() {
+        let cwd = tempfile::tempdir().unwrap();
+        let sources = ["packages/b/src/index.ts", "packages/a/src/index.ts"];
+        let file = cwd.path().join(sources[1]);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "function f() {}").unwrap();
+        for extra in [
+            "unused",
+            "a/src/index.ts",
+            sources[1],
+            file.to_str().unwrap(),
+        ] {
+            let keys = ["src/index.ts", "./src/index.ts", extra];
+            let a = assign_by_key(cwd.path(), &sources, &keys, TiePolicy::Unmatched);
+            assert_eq!(
+                a.bindings,
+                [vec![], if extra == "unused" { vec![] } else { vec![2] }]
+            );
+            assert_eq!(a.ties.len(), 1);
+            let tie = &a.ties[0];
+            let mut membership = tie.sources.clone();
+            membership.sort_unstable();
+            assert_eq!(membership, [0, 1]);
+            assert_eq!(tie.keys, [0, 1]);
+        }
+        let shared = assign_by_key(
+            cwd.path(),
+            &sources,
+            &["src/index.ts", file.to_str().unwrap()],
+            TiePolicy::PerSource,
+        );
+        assert_eq!(shared.bindings, [vec![0], vec![1]]);
+        assert_eq!(shared.ties, []);
+    }
+
+    proptest! {
+        #[test]
+        fn original_keys_agree_with_exhaustive_ownership(
+            dirs in prop::collection::btree_set(0u8..6, 1..6),
+            labels in prop::collection::btree_set((0u8..6, 0u8..5), 1..15),
+            reverse_sources in any::<bool>(), reverse_keys in any::<bool>(), exact_owner in any::<bool>()
+        ) {
+            let mut sources = Vec::new();
+            if exact_owner { sources.push("a.ts".to_owned()); }
+            sources.extend(dirs.iter().map(|d| format!("p/{d}/a.ts")));
+            let mut keys: Vec<_> = labels.iter().map(|(d,kind)| match kind {
+                0 => "a.ts".to_owned(), 1 => format!("{d}/a.ts"),
+                2 => format!("/spec52-absent/p/{d}/a.ts"), 3 => format!("p/{d}/a.ts"),
+                _ => format!("p/{d}/./a.ts"),
+            }).collect();
+            keys.sort();
+            keys.dedup();
+            if reverse_sources { sources.reverse(); }
+            if reverse_keys { keys.reverse(); }
+            let src: Vec<_> = sources.iter().map(String::as_str).collect();
+            let raw: Vec<_> = keys.iter().map(String::as_str).collect();
+            let got = assign_by_key(Path::new("."), &src, &raw, TiePolicy::Unmatched);
+            let mut eligible = vec![Vec::new(); src.len()];
+            for (key, name) in raw.iter().enumerate() {
+                let parts: Vec<_> = name.split('/').filter(|p| !p.is_empty() && *p != ".").collect();
+                let mut fits = Vec::new();
+                for (i, path) in src.iter().enumerate() {
+                    let file: Vec<_> = path.split('/').collect();
+                    if file.ends_with(&parts) || (name.starts_with('/') && parts.ends_with(&file)) {
+                        fits.push(((parts == file, parts.len().min(file.len())), i));
+                    }
+                }
+                let best = fits.iter().map(|p| p.0).max();
+                fits.retain(|f| Some(f.0) == best);
+                if let [((_, score), i)] = fits[..] {
+                    eligible[i].push((score, key));
+                }
+                let mut ties = got.ties.iter().filter(|tie| tie.keys.contains(&key));
+                if fits.len() > 1 {
+                    let mut owners = ties.next().unwrap().sources.clone();
+                    owners.sort_unstable();
+                    prop_assert_eq!(owners, fits.iter().map(|f|f.1).collect::<Vec<_>>());
+                }
+                prop_assert!(ties.next().is_none());
+            }
+            for (mut bound, fits) in got.bindings.into_iter().zip(eligible) {
+                let max = fits.iter().map(|p|p.0).max();
+                let expect: Vec<_> = fits.into_iter().filter(|p|Some(p.0)==max).map(|p|p.1).collect();
+                bound.sort_unstable();
+                prop_assert_eq!(bound, expect);
+            }
+        }
+    }
+
+    #[test]
     fn suffix_match_rejects_partial_component_matches() {
         // `oofoo.rs` should NOT match `foo.rs`: that's a byte-level
         // ends_with bug we're explicitly avoiding.
         let a = PathBuf::from("/project/src/oofoo.rs");
         let b = PathBuf::from("foo.rs");
-        assert!(!path_has_suffix(&a, &b));
+        assert_eq!(
+            assign(&[&a], &[&b], TiePolicy::PerSource).bindings,
+            [Vec::<usize>::new()]
+        );
     }
 
     #[test]
@@ -284,7 +503,7 @@ mod tests {
         let a = PathBuf::from("/project/src/foo.rs");
         let b = PathBuf::from("/project/src/foo.rs");
         assert!(
-            path_has_suffix(&a, &b),
+            assign(&[&a], &[&b], TiePolicy::PerSource).bindings == [vec![0]],
             "identical paths must match as a suffix"
         );
     }
@@ -293,7 +512,10 @@ mod tests {
     fn longer_needle_does_not_match() {
         let hay = PathBuf::from("src/foo.rs");
         let needle = PathBuf::from("/abs/project/src/foo.rs");
-        assert!(!path_has_suffix(&hay, &needle));
+        assert_eq!(
+            assign(&[&hay], &[&needle], TiePolicy::PerSource).bindings,
+            [Vec::<usize>::new()]
+        );
     }
 
     fn per_source(

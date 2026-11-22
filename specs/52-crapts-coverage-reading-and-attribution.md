@@ -584,7 +584,7 @@ And no withdrawn key contributes an observation to a source
 
 Spec 52 builds after Spec 50 rebases onto Spec 49. Every task is one jj change and runs `RUSTUP_TOOLCHAIN=1.99.0 just dev` and `RUSTUP_TOOLCHAIN=1.99.0 just dev-mutants-diff` with `INSTA_UPDATE=no`.
 
-- [ ] **T1 - Add string-key path matching and UTF-16-ordered stray examples in cargo-crap-core.**
+- [x] **T1 - Add string-key path matching and UTF-16-ordered stray examples in cargo-crap-core.**
   Add `paths::assign_by_key(cwd, sources, keys, policy)` in
   `crates/cargo-crap-core/src/paths.rs` and `StrayFiles::from_raw_spellings`
   in `crates/cargo-crap-core/src/entry.rs` (automatically re-exported through
