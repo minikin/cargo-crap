@@ -144,11 +144,11 @@ const PINNED: [(&str, &str, &[&str], &str); 16] = [
 
 #[test]
 fn hash_the_rows_own_token_sequence() {
-    // Given a declaration whose name and a nested row's tokens both sit inside its span
+    // Given
     let source = "function outer(a) { const inner = () => a; return inner }";
-    // When its fingerprint is computed
+    // When
     let rows = rows("own.ts", source);
-    // Then the name is omitted and the nested row is one <row> token
+    // Then
     let tokens = [
         "function", "(", "a", ")", "{", "const", "inner", "=", "<row>", ";", "return", "inner", "}",
     ];
@@ -166,10 +166,10 @@ fn hash_the_rows_own_token_sequence() {
 #[test]
 fn pin_token_boundaries_and_digests_for_each_scoring_unit() {
     for (source, name, tokens, digest) in PINNED {
-        // Given a separate .ts file containing <source>
-        // When the analyzer fingerprints <row>
+        // Given
+        // When
         let actual = print("unit.ts", source, name);
-        // Then its hash input is <tokens> joined with U+0000 and its SHA-256 is <digest>
+        // Then
         assert_eq!(hex_sha256(tokens.join("\0").as_bytes()), digest, "{source}");
         assert_eq!(actual, digest, "{source}");
     }
@@ -177,11 +177,11 @@ fn pin_token_boundaries_and_digests_for_each_scoring_unit() {
 
 #[test]
 fn a_utf8_bom_leaves_the_fingerprint_unchanged() {
-    // Given "function f() {}" and a copy that starts with the UTF-8 BOM
+    // Given
     let plain = print("plain.ts", "function f() {}", "f");
-    // When both files are analyzed
+    // When
     let bom = print("bom.ts", "\u{feff}function f() {}", "f");
-    // Then the fingerprints of f are equal
+    // Then
     assert_eq!(plain, bom);
 }
 
@@ -200,11 +200,11 @@ fn normalize_formatting_while_retaining_literal_content() {
         ("[x,,]", "[x,]", false),
         ("([x,,] = xs)", "([x,] = xs)", false),
     ] {
-        // Given a .tsx file containing "const f = () =>" followed by <first>
+        // Given
         let before = print("f.tsx", &format!("const f = () => {first}"), "f");
-        // When its expression changes to <second>
+        // When
         let after = print("f.tsx", &format!("const f = () => {second}"), "f");
-        // Then the fingerprints of f are <comparison>
+        // Then
         assert_eq!(before == after, equal, "{first} vs {second}");
     }
 }
@@ -215,12 +215,12 @@ fn compare_physical_line_endings_inside_tokens() {
         ("const f = () => tag`a${v} c{LF}${w}`", true),
         ("const f = () => <p>a{LF}  b</p>", false),
     ] {
-        // Given <source> in a .tsx file, with a physical LF in place of {LF}
+        // Given
         let lf = print("f.tsx", &source.replace("{LF}", "\n"), "f");
-        // When its LF is replaced by CRLF or CR
+        // When
         for ending in ["\r\n", "\r"] {
             let other = print("f.tsx", &source.replace("{LF}", ending), "f");
-            // Then the fingerprint of f is <comparison> against the LF version
+            // Then
             assert_eq!(lf == other, equal, "{source} with {ending:?}");
         }
     }
@@ -308,49 +308,46 @@ fn distinguish_edits_to_owned_code_from_edits_to_other_rows() {
         ),
     ];
     for (original, edit, check) in cases {
-        // Given a .ts file containing <original source> and a copy with <edit>
-        // When both versions are analyzed
+        // Given
+        // When
         let before = rows("edit.ts", original);
         let after = rows("edit.ts", edit);
-        // Then their rows satisfy <fingerprints>
+        // Then
         assert!(check(&before, &after), "{original} -> {edit}");
     }
 }
 
 #[test]
 fn include_a_methods_decorator_in_its_source_span_and_fingerprint() {
-    // Given a class with "@dec(1)" on line 2 and "work() {}" on line 3
+    // Given
     let source = "class C {\n  @dec(1)\n  work() {}\n}";
-    // When the method is analyzed
+    // When
     let base = rows("d.ts", source);
     let work = row(&base, "C::work");
-    // Then its span starts on line 2 and ends on line 3
+    // Then
     assert_eq!((work.span.start.line, work.span.end.line), (2, 3));
-    // And changing only the decorator argument from 1 to 2 changes the method fingerprint
     let argument = rows("d.ts", &source.replace("dec(1)", "dec(2)"));
     assert!(!same(&base, &argument, ("C::work", "C::work")));
-    // And renaming only the method from work to run preserves the fingerprint
     let renamed = rows("d.ts", &source.replace("work", "run"));
     assert!(same(&base, &renamed, ("C::work", "C::run")));
 }
 
 #[test]
 fn body_edits_preserve_a_binding_name_and_binding_edits_preserve_a_body_fingerprint() {
-    // Given three successive versions of one row
+    // Given
     let versions = [
         "const f = () => 1",
         "const f = () => 2",
         "const g = () => 2",
     ];
-    // When all three are analyzed
+    // When
     let [a, b, c] = versions.map(|source| {
         let mut rows = rows("v.ts", source);
         assert_eq!(rows.len(), 1, "{source}");
         rows.remove(0)
     });
-    // Then their names are f, f and g respectively
+    // Then
     assert_eq!([&a.name, &b.name, &c.name], ["f", "f", "g"]);
-    // And A and B have different fingerprints, while B and C have equal fingerprints
     assert_ne!(a.fingerprint, b.fingerprint);
     assert_eq!(b.fingerprint, c.fingerprint);
 }
@@ -430,4 +427,34 @@ proptest! {
         let suffix = name.strip_prefix(&root).unwrap();
         prop_assert_eq!(&renamed[pick].0, &format!("{renamed_root}{suffix}"));
     }
+}
+
+#[test]
+fn long_postfix_type_chains_fit_on_a_test_thread_stack() {
+    let count = 100_000;
+    let arrays = format!(
+        "type T = string{};\nfunction f() {{ return 1 }}",
+        "[]".repeat(count)
+    );
+    let indexed = format!(
+        "type U = A{};\nfunction f() {{ return 1 }}",
+        "['k']".repeat(count)
+    );
+    let expected = print("short.ts", "function f() { return 1 }", "f");
+    for source in [arrays, indexed] {
+        assert_eq!(print("long.ts", &source, "f"), expected);
+    }
+    let rowless = format!("type T = string{};", "[]".repeat(count));
+    assert_eq!(rows("rowless.ts", &rowless).len(), 0);
+}
+
+#[test]
+fn a_library_caller_can_build_a_row_from_a_known_digest() {
+    let template = rows("f.ts", "function f() { return 7; }").remove(0);
+    let digest: [u8; 32] = Sha256::digest(PINNED[0].2.join("\0").as_bytes()).into();
+    let built = Row {
+        fingerprint: crapts::fingerprint::Fingerprint::from(digest),
+        ..template
+    };
+    assert_eq!(built.fingerprint.to_string(), PINNED[0].3);
 }

@@ -1,10 +1,8 @@
-//! Row fingerprints: SHA-256 over a row's own normalized lexer tokens.
-
 use std::collections::HashMap;
 use std::fmt::{self, Write as _};
 
-use oxc_ast::ast::{LogicalExpression, Program, StringLiteral, TemplateElement};
-use oxc_ast_visit::Visit;
+use oxc_ast::ast::{LogicalExpression, Program, StringLiteral, TSType, TemplateElement};
+use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{Kind, Token};
 use oxc_span::Span;
 use oxc_str::JSStr;
@@ -20,6 +18,12 @@ impl Fingerprint {
 
     fn of(tokens: &[&str]) -> Self {
         Self(Sha256::digest(tokens.join("\0").as_bytes()).into())
+    }
+}
+
+impl From<[u8; 32]> for Fingerprint {
+    fn from(digest: [u8; 32]) -> Self {
+        Self(digest)
     }
 }
 
@@ -41,15 +45,14 @@ impl fmt::Debug for Fingerprint {
     }
 }
 
-/// The source a row hashes: `selected` regions in any order, minus `omitted` name sites.
+/// `selected` regions may come in any order.
 #[derive(Default)]
 pub(crate) struct Regions {
     pub selected: Vec<Span>,
     pub omitted: Vec<Span>,
 }
 
-/// One fingerprint per entry of `rows`. A row nested inside another's region
-/// is one `<row>` token there; equal regions nest by index, the later one inside.
+/// Of two equal regions, the one with the later row index is the inner row.
 pub(crate) fn compute(
     source: &str,
     tokens: &[Token],
@@ -99,7 +102,6 @@ pub(crate) fn compute(
     texts.iter().map(|tokens| Fingerprint::of(tokens)).collect()
 }
 
-/// Each surviving token's start offset and normalized text, in source order.
 /// Oxc's token list comes from the lexer alone and drops the final `Eof`, so
 /// it holds no zero-width token synthesized during recovery.
 fn normalized<'s>(
@@ -187,7 +189,6 @@ fn quoted(value: JSStr<'_>) -> String {
     json_quote(value.encode_utf16())
 }
 
-/// Decoded string and cooked template values keyed by the start of their token.
 fn literal_values(program: &Program<'_>) -> HashMap<u32, String> {
     let mut literals = Literals::default();
     literals.visit_program(program);
@@ -200,6 +201,24 @@ struct Literals {
 }
 
 impl<'a> Visit<'a> for Literals {
+    /// Oxc parses `T[][]` and `T['k']['k']` in a loop but nests one node per
+    /// suffix, so a recursive walk can exhaust the stack on valid input.
+    fn visit_ts_type(
+        &mut self,
+        mut ty: &TSType<'a>,
+    ) {
+        loop {
+            match ty {
+                TSType::TSArrayType(array) => ty = &array.element_type,
+                TSType::TSIndexedAccessType(access) => {
+                    self.visit_ts_type(&access.index_type);
+                    ty = &access.object_type;
+                },
+                _ => return walk::walk_ts_type(self, ty),
+            }
+        }
+    }
+
     fn visit_logical_expression(
         &mut self,
         root: &LogicalExpression<'a>,
@@ -306,11 +325,16 @@ mod tests {
 
     #[test]
     fn string_literals_in_type_positions_are_decoded() {
-        let single = print_of("t.ts", "function f(x: 'a') { return x }");
-        assert_eq!(
-            single,
-            print_of("t.ts", "function f(x: \"a\") { return x }")
-        );
+        for (single, double) in [
+            ("x: 'a'", "x: \"a\""),
+            ("x: 'a'[][]", "x: \"a\"[][]"),
+            ("x: T['k']['j']", "x: T[\"k\"][\"j\"]"),
+            ("x: { v: 'a' }['v'][]", "x: { v: \"a\" }[\"v\"][]"),
+        ] {
+            let source = |param: &str| format!("function f({param}) {{ return x }}");
+            let (a, b) = (source(single), source(double));
+            assert_eq!(print_of("t.ts", &a), print_of("t.ts", &b), "{single}");
+        }
     }
 
     #[test]

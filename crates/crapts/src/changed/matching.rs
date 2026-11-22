@@ -1,12 +1,10 @@
-//! Pairs the rows of changed files across the base and head sides.
-
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use crate::Row;
 use crate::fingerprint::Fingerprint;
 
-/// One changed in-scope file. An addition has no base rows and a deletion no
-/// head rows; a file pair can have either side empty too.
+/// An addition has no base rows and a deletion no head rows. Rows with one
+/// start keep the order `analyze` gives them, the outer row first.
 #[derive(Clone, Copy, Debug)]
 pub struct ChangedFile<'r> {
     pub base: &'r [Row],
@@ -86,14 +84,25 @@ pub fn classify(files: &[ChangedFile<'_>]) -> Matching {
 
 struct State<'f, 'r> {
     files: &'f [ChangedFile<'r>],
+    /// Each file's base and head indices in source order.
+    order: Vec<(Vec<usize>, Vec<usize>)>,
     head_partner: Vec<Vec<Option<(RowId, Stage)>>>,
     base_paired: Vec<Vec<bool>>,
 }
 
 impl<'f, 'r> State<'f, 'r> {
     fn new(files: &'f [ChangedFile<'r>]) -> Self {
+        let source_order = |rows: &[Row]| {
+            let mut order: Vec<usize> = (0..rows.len()).collect();
+            order.sort_by_key(|&i| rows[i].span.start);
+            order
+        };
         Self {
             files,
+            order: files
+                .iter()
+                .map(|f| (source_order(f.base), source_order(f.head)))
+                .collect(),
             head_partner: files.iter().map(|f| vec![None; f.head.len()]).collect(),
             base_paired: files.iter().map(|f| vec![false; f.base.len()]).collect(),
         }
@@ -113,22 +122,24 @@ impl<'f, 'r> State<'f, 'r> {
         &self,
         file: usize,
     ) -> impl Iterator<Item = (usize, &'r Row)> + '_ {
-        self.files[file]
-            .head
+        let rows = self.files[file].head;
+        self.order[file]
+            .1
             .iter()
-            .enumerate()
-            .filter(move |(i, _)| self.head_partner[file][*i].is_none())
+            .filter(move |&&i| self.head_partner[file][i].is_none())
+            .map(move |&i| (i, &rows[i]))
     }
 
     fn open_bases(
         &self,
         file: usize,
     ) -> impl Iterator<Item = (usize, &'r Row)> + '_ {
-        self.files[file]
-            .base
+        let rows = self.files[file].base;
+        self.order[file]
+            .0
             .iter()
-            .enumerate()
-            .filter(move |(i, _)| !self.base_paired[file][*i])
+            .filter(move |&&i| !self.base_paired[file][i])
+            .map(move |&i| (i, &rows[i]))
     }
 
     /// Stems with more than one row on either original side of `file`.
@@ -253,9 +264,24 @@ impl<'f, 'r> State<'f, 'r> {
     fn finish(self) -> Matching {
         let heads = (0..self.files.len())
             .map(|file| {
-                let open: Vec<usize> = self.open_bases(file).map(|(i, _)| i).collect();
-                (0..self.files[file].head.len())
-                    .map(|row| self.ancestry(file, row, &open))
+                let mut open: HashMap<&str, Vec<RowId>> = HashMap::new();
+                for (row, base) in self.open_bases(file) {
+                    open.entry(stem(&base.name))
+                        .or_default()
+                        .push(RowId { file, row });
+                }
+                self.files[file]
+                    .head
+                    .iter()
+                    .zip(&self.head_partner[file])
+                    .map(|(head, partner)| match *partner {
+                        Some((base, stage)) => Ancestry::Paired { base, stage },
+                        None => open
+                            .get(stem(&head.name))
+                            .map_or(Ancestry::New, |candidates| Ancestry::Ambiguous {
+                                candidates: candidates.clone(),
+                            }),
+                    })
                     .collect()
             })
             .collect();
@@ -266,29 +292,6 @@ impl<'f, 'r> State<'f, 'r> {
             })
             .collect();
         Matching { heads, removed }
-    }
-
-    fn ancestry(
-        &self,
-        file: usize,
-        row: usize,
-        open_bases: &[usize],
-    ) -> Ancestry {
-        if let Some((base, stage)) = self.head_partner[file][row] {
-            return Ancestry::Paired { base, stage };
-        }
-        let changed = self.files[file];
-        let key = stem(&changed.head[row].name);
-        let candidates: Vec<RowId> = open_bases
-            .iter()
-            .filter(|&&b| stem(&changed.base[b].name) == key)
-            .map(|&row| RowId { file, row })
-            .collect();
-        if candidates.is_empty() {
-            Ancestry::New
-        } else {
-            Ancestry::Ambiguous { candidates }
-        }
     }
 }
 
@@ -431,6 +434,36 @@ mod tests {
                 paired(0, 1, Stage::Body),
                 Ancestry::New
             ]
+        );
+    }
+
+    #[test]
+    fn rows_pair_and_list_in_source_order_whatever_the_slice_order() {
+        let base =
+            "useEffect(() => { a() })\nuseEffect(() => { a() })\nfunction f() { if (x) y() }";
+        let head = "useEffect(() => { a() })\nuseEffect(() => { a() })\nuseEffect(() => { b() })";
+        let mut files = sides(&[(base, head)]);
+        files[0].0.reverse();
+        let matching = run(&files);
+        assert_eq!(
+            matching.heads[0],
+            [
+                paired(0, 2, Stage::Body),
+                paired(0, 1, Stage::Body),
+                Ancestry::New
+            ]
+        );
+        assert_eq!(matching.removed, [RowId { file: 0, row: 0 }]);
+
+        let base = "useEffect(() => { a() })\nuseEffect(() => { b() })";
+        let mut files = sides(&[(base, "useEffect(() => { c() })")]);
+        files[0].0.reverse();
+        let matching = run(&files);
+        let candidates = vec![RowId { file: 0, row: 1 }, RowId { file: 0, row: 0 }];
+        assert_eq!(matching.heads[0], [Ancestry::Ambiguous { candidates }]);
+        assert_eq!(
+            matching.removed,
+            [RowId { file: 0, row: 1 }, RowId { file: 0, row: 0 }]
         );
     }
 

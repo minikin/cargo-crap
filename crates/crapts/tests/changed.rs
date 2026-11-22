@@ -12,7 +12,6 @@ use crapts::changed::verdict::{Change, Counts, Edits, Inputs, Judged, Verdict, e
 use crapts::{Mode, Row, Side, analyze};
 use proptest::prelude::*;
 
-/// `fn name(k)`: CC `k`, one statement per line.
 fn func(
     name: &str,
     k: usize,
@@ -25,7 +24,6 @@ fn func(
     text
 }
 
-/// A `useEffect` callback of CC `k` whose statements call `tag`.
 fn callback(
     k: usize,
     tag: &str,
@@ -332,11 +330,11 @@ fn a_staged_removal_with_a_working_tree_replacement_keeps_its_ancestry() {
             .replacen("return 2\n", "return 12\n", 1);
     assert_ne!(edited, original);
     for head in [original.clone(), edited] {
-        // Given the merge-base side and the untracked side of src/app.ts as one file pair
+        // Given the old side and the untracked new side at one path form one file pair
         let pair = Pair::new("src/app.ts", &original, &head);
-        // When the matcher classifies it
+        // When
         let matching = pair.classify();
-        // Then hot pairs by name instead of being new beside a removed base row
+        // Then
         assert_eq!(pair.partner(&matching, "hot").0, "hot");
         for name in ["edge", "cold"] {
             assert_eq!(pair.partner(&matching, name).0, name);
@@ -347,13 +345,13 @@ fn a_staged_removal_with_a_working_tree_replacement_keeps_its_ancestry() {
 
 #[test]
 fn inserting_a_sibling_callback_shifts_ordinals_without_touching_the_old_ones() {
-    // Given two callbacks at B and a working tree that inserts a new first one
+    // Given
     let base = "useEffect(() => { if (a) load() })\nuseEffect(() => { if (b) save() })\n";
     let head = format!("useEffect(() => {{ track() }})\n{base}");
     let pair = Pair::new("src/hooks.ts", base, &head);
-    // When the matcher classifies the file pair
+    // When
     let matching = pair.classify();
-    // Then the inserted callback is new and stage 1 pairs the shifted originals
+    // Then
     assert_eq!(pair.ancestry(&matching, "useEffect()"), &Ancestry::New);
     assert_eq!(
         pair.partner(&matching, "useEffect()#2"),
@@ -363,32 +361,27 @@ fn inserting_a_sibling_callback_shifts_ordinals_without_touching_the_old_ones() 
         pair.partner(&matching, "useEffect()#3"),
         ("useEffect()#2", Stage::Body)
     );
-    // And removed is empty
     assert_eq!(matching.removed, []);
 }
 
 #[test]
 fn deleting_the_first_of_two_callbacks_and_appending_another_leaves_the_new_one_ambiguous() {
-    // Given a first callback of CC 5 and a second of CC 30
+    // Given
     let base = format!("{}{}", callback(5, "first"), callback(30, "second"));
-    // And a working tree that deletes the first and appends a different one of CC 2
     let head = format!("{}{}", callback(30, "second"), callback(2, "third"));
     let pair = Pair::new("src/hooks.ts", &base, &head);
-    // When the matcher classifies the file pair
+    // When
     let matching = pair.classify();
-    // Then the appended callback is ambiguous with the deleted one as its candidate
+    // Then
     assert_eq!(
         pair.candidates(&matching, "useEffect()#2"),
         [("useEffect()", 1, 5)]
     );
-    // And the CC 30 callback, now named useEffect(), pairs with its body
     assert_eq!(
         pair.partner(&matching, "useEffect()"),
         ("useEffect()#2", Stage::Body)
     );
-    // And removed lists the CC 5 callback
     assert_eq!(pair.base_names(&matching.removed), ["useEffect()"]);
-    // And the only entry is the ambiguous callback, which passes, and the CC 30 one is not an entry
     let judged = pair.judged(&pair.uncovered(), &[]);
     let reason = "CRAP 6.0 at or below 30";
     let only = expect(
@@ -421,24 +414,21 @@ fn deleting_the_first_of_two_callbacks_and_appending_another_leaves_the_new_one_
 
 #[test]
 fn an_edited_function_with_two_same_stem_base_candidates_fails_as_ambiguous() {
-    // Given useEffect() of CC 5 and useEffect()#2 of CC 15
+    // Given
     let base = format!("{}{}", callback(5, "first"), callback(15, "second"));
-    // And a working tree that replaces both with one callback of CC 12
     let head = callback(12, "third");
     let pair = Pair::new("src/hooks.ts", &base, &head);
-    // When the matcher classifies the file pair
+    // When
     let matching = pair.classify();
-    // Then the callback is ambiguous with both base callbacks in line order
+    // Then
     assert_eq!(
         pair.candidates(&matching, "useEffect()"),
         [("useEffect()", 1, 5), ("useEffect()#2", 8, 15)]
     );
-    // And removed lists both base callbacks
     assert_eq!(
         pair.base_names(&matching.removed),
         ["useEffect()", "useEffect()#2"]
     );
-    // And the entry fails with the ambiguity reason, and counts.ambiguous and counts.fail are 1
     let judged = pair.judged(&pair.uncovered(), &[]);
     let reason = "no unique base match among 2 candidates, CRAP 156.0 above 30";
     let only = expect(
@@ -458,54 +448,50 @@ fn an_edited_function_with_two_same_stem_base_candidates_fails_as_ambiguous() {
 
 #[test]
 fn a_copy_is_new_and_the_original_keeps_its_partner() {
-    // Given a working tree that adds edgeCopy, with edge's body, after cold
+    // Given
     let base = repository();
     let head = format!("{base}\n{}", func("edgeCopy", 2));
     let pair = Pair::new("src/app.ts", &base, &head);
-    // When the matcher classifies the file pair
+    // When
     let matching = pair.classify();
-    // Then edgeCopy is new and edge keeps its partner
+    // Then
     assert_eq!(pair.ancestry(&matching, "edgeCopy"), &Ancestry::New);
     assert_eq!(pair.partner(&matching, "edge"), ("edge", Stage::Name));
-    // And removed is empty
     assert_eq!(matching.removed, []);
 }
 
 #[test]
 fn a_rename_with_an_edit_is_new_and_its_base_row_is_removed() {
-    // Given a working tree that renames edge to edgeCase and adds one branch to it
+    // Given
     let base = repository();
     let head = base.replace(&func("edge", 2), &func("edgeCase", 3));
     let pair = Pair::new("src/app.ts", &base, &head);
-    // When the matcher classifies the file pair
+    // When
     let matching = pair.classify();
-    // Then edgeCase is new
+    // Then
     assert_eq!(pair.ancestry(&matching, "edgeCase"), &Ancestry::New);
-    // And removed is edge
     assert_eq!(pair.base_names(&matching.removed), ["edge"]);
 }
 
 #[test]
 fn identical_trivial_functions_renamed_together_are_new() {
-    // Given fn one(1) and fn uno(1), whose fingerprints are equal
+    // Given
     let base = format!("{}\n{}", func("one", 1), func("uno", 1));
-    // And a working tree that renames them to first and primero
     let head = format!("{}\n{}", func("first", 1), func("primero", 1));
     let pair = Pair::new("src/t.ts", &base, &head);
     assert_eq!(pair.base[0].fingerprint, pair.base[1].fingerprint);
-    // When the matcher classifies the file pair
+    // When
     let matching = pair.classify();
-    // Then first and primero are new
+    // Then
     for name in ["first", "primero"] {
         assert_eq!(pair.ancestry(&matching, name), &Ancestry::New);
     }
-    // And removed lists one and uno
     assert_eq!(pair.base_names(&matching.removed), ["one", "uno"]);
 }
 
 #[test]
 fn a_split_keeps_the_surviving_name_and_judges_the_extracted_function_on_its_own() {
-    // Given fn big(12) and a working tree that moves five branches into a new fn part(6)
+    // Given
     let base = func("big", 12);
     let mut head = String::from("export function big(x: number) {\n  if (part(x)) return 1\n");
     for i in 7..12 {
@@ -518,13 +504,12 @@ fn a_split_keeps_the_surviving_name_and_judges_the_extracted_function_on_its_own
         pair.head.iter().map(|r| r.cyclomatic).collect::<Vec<_>>(),
         [7, 6]
     );
-    // When the matcher classifies the file pair
+    // When
     let matching = pair.classify();
-    // Then big keeps its name and part is new
+    // Then
     assert_eq!(pair.partner(&matching, "big"), ("big", Stage::Name));
     assert_eq!(pair.ancestry(&matching, "part"), &Ancestry::New);
     assert_eq!(matching.removed, []);
-    // And big is over while part fails on its own
     let judged = pair.judged(&pair.uncovered(), &[]);
     let over = "complexity did not rise (12 to 7), CRAP 56.0 above 30";
     let fail = "new function, CRAP 42.0 above 30";
@@ -549,7 +534,7 @@ fn a_split_keeps_the_surviving_name_and_judges_the_extracted_function_on_its_own
 
 #[test]
 fn a_deletion_only_hunk_inside_a_function_touches_it() {
-    // Given fn legacy(12) and a working tree that deletes one of its if lines
+    // Given
     let base = func("legacy", 12);
     let head = base.replace("  if (x === 5) return 5\n", "");
     let pair = Pair::new("src/l.ts", &base, &head);
@@ -562,9 +547,9 @@ fn a_deletion_only_hunk_inside_a_function_touches_it() {
             head_count: 0
         }]
     );
-    // When the rows are judged
+    // When
     let judged = pair.judged(&pair.uncovered(), &[]);
-    // Then legacy is modified from CC 12 to 11 and over
+    // Then
     let reason = "complexity did not rise (12 to 11), CRAP 132.0 above 30";
     let only = expect(
         "legacy",
@@ -582,14 +567,13 @@ fn a_deletion_only_hunk_inside_a_function_touches_it() {
 
 #[test]
 fn an_edit_inside_a_nested_row_touches_only_the_nested_row() {
-    // Given outer with a nested inner, each statement on its own line
+    // Given
     let base = "function outer() {\n  function inner() {\n    if (x) return 1\n    return 0\n  }\n  return inner()\n}\n";
-    // And a working tree that adds one branch to inner
     let head = base.replace("    return 0\n", "    if (y) return 2\n    return 0\n");
     let pair = Pair::new("src/n.ts", base, &head);
-    // When the rows are judged
+    // When
     let judged = pair.judged(&pair.uncovered(), &[]);
-    // Then the only entry is outer::inner, modified from CC 2 to CC 3
+    // Then
     let reason = "CRAP 12.0 at or below 30";
     let only = expect(
         "outer::inner",
@@ -606,14 +590,13 @@ fn an_edit_inside_a_nested_row_touches_only_the_nested_row() {
 
 #[test]
 fn a_new_field_initializer_touches_the_implied_constructor() {
-    // Given a class with one field initializer and a method
+    // Given
     let base = "class Cart {\n  items = []\n  add(x: number) { this.items.push(x) }\n}\n";
-    // And a working tree that inserts a field with a conditional after the items line
     let head = base.replace("  items = []\n", "  items = []\n  mode = a ? 1 : 2\n");
     let pair = Pair::new("src/c.ts", base, &head);
-    // When the rows are judged
+    // When
     let judged = pair.judged(&pair.uncovered(), &[]);
-    // Then the only entry is Cart::constructor, modified from CC 1 to CC 2
+    // Then
     let reason = "CRAP 6.0 at or below 30";
     let only = expect(
         "Cart::constructor",
@@ -648,15 +631,15 @@ fn a_decision_added_in_a_nested_methods_decorator_or_key_touches_the_enclosing_f
         Verdict::Fail,
         outer_reason,
     );
-    // Given outer(5) declaring a class whose member is a decorated method
+    // Given
     let pair = Pair::new(
         "src/d.ts",
         &outer_with_member("    @dec(x) m() {}"),
         &outer_with_member("    @dec(x ? 1 : 2) m() {}"),
     );
-    // When the rows are judged
+    // When
     let judged = pair.judged(&pair.uncovered(), &[]);
-    // Then outer is modified from CC 5 to 6 and fails, and outer::K::m is modified from 1 to 1
+    // Then
     let method = expect(
         "outer::K::m",
         "modified",
@@ -668,18 +651,17 @@ fn a_decision_added_in_a_nested_methods_decorator_or_key_touches_the_enclosing_f
         "CRAP 2.0 at or below 30",
     );
     assert_eq!(seen(&judged), [outer.clone(), method]);
-    // And outer's base and head fingerprints are equal
     assert_eq!(pair.base[0].fingerprint, pair.head[0].fingerprint);
     assert_eq!(judged.counts, counts([2, 0, 0, 2, 1, 1, 0, 0, 0, 0]));
 
-    // Given the same function whose member has a computed key instead
+    // Given
     let pair = Pair::new(
         "src/d.ts",
         &outer_with_member("    [x]() {}"),
         &outer_with_member("    [x ? 1 : 2]() {}"),
     );
     let matching = pair.classify();
-    // Then the method pairs by its unique fingerprint and is not an entry
+    // Then
     assert!(matches!(
         matching.ancestry(RowId { file: 0, row: 1 }),
         Ancestry::Paired {
@@ -694,31 +676,30 @@ fn a_decision_added_in_a_nested_methods_decorator_or_key_touches_the_enclosing_f
 
 #[test]
 fn renaming_a_class_leaves_its_unchanged_methods_out_of_the_gate() {
-    // Given class A with two identical methods and a working tree that renames the class
+    // Given
     let base = "class A {\n  m() { return 1 }\n  n() { return 1 }\n}\n";
     let head = base.replace("class A {", "class B {");
     let pair = Pair::new("src/k.ts", base, &head);
-    // When the rows are judged
+    // When
     let judged = pair.judged(&pair.uncovered(), &[]);
-    // Then changed.entries is empty and counts.touched is 0
+    // Then
     assert_eq!(seen(&judged), []);
     assert_eq!(judged.counts, Counts::default());
-    // And removed lists A::m and A::n
     let removed: Vec<_> = judged.removed.iter().map(|r| r.name.as_str()).collect();
     assert_eq!(removed, ["A::m", "A::n"]);
 }
 
 #[test]
 fn a_branch_neutral_edit_to_a_function_above_the_threshold_is_over_and_passes_the_gate() {
-    // Given fn legacy(12) and a working tree that edits two of its lines without adding a branch
+    // Given
     let base = func("legacy", 12);
     let head = base
         .replace("return 3\n", "return 33\n")
         .replace("return 4\n", "return 44\n");
     let pair = Pair::new("src/l.ts", &base, &head);
-    // When the rows are judged
+    // When
     let judged = pair.judged(&pair.uncovered(), &[]);
-    // Then legacy is over with the did-not-rise reason
+    // Then
     let reason = "complexity did not rise (12 to 12), CRAP 156.0 above 30";
     let only = expect(
         "legacy",
@@ -731,20 +712,19 @@ fn a_branch_neutral_edit_to_a_function_above_the_threshold_is_over_and_passes_th
         reason,
     );
     assert_eq!(seen(&judged), [only]);
-    // And counts.over is 1 and counts.fail is 0
     assert_eq!((judged.counts.over, judged.counts.fail), (1, 0));
 }
 
 #[test]
 fn a_complexity_increase_fails_even_when_historical_crap_may_have_fallen() {
-    // Given fn legacy(10) and a working tree that adds two branches, covered at 25%
+    // Given
     let base = func("legacy", 10);
     let head = func("legacy", 12);
     let pair = Pair::new("src/q.ts", &base, &head);
     let scores = [score(&pair.head[0], Some(25.0), 25.0)];
-    // When the rows are judged
+    // When
     let judged = pair.judged(&scores, &[]);
-    // Then legacy is modified with a CC delta of 2, coverage 25, CRAP 72.75 and fails
+    // Then
     let reason = "complexity rose from 10 to 12, CRAP 72.8 above 30";
     let only = expect(
         "legacy",
@@ -768,16 +748,16 @@ fn legacy_and_fresh() -> Pair {
 
 #[test]
 fn missing_head_coverage_follows_the_selected_policy() {
-    // Given legacy(10) gaining a branch and an appended fresh(6), with no coverage record
+    // Given
     let pair = legacy_and_fresh();
     let (pessimistic, optimistic): (Vec<_>, Vec<_>) = pair
         .head
         .iter()
         .map(|row| (score(row, None, 0.0), score(row, None, 100.0)))
         .unzip();
-    // When the rows are judged under pessimistic
+    // When
     let judged = pair.judged(&pessimistic, &[]);
-    // Then legacy and fresh are scored without coverage and fail
+    // Then
     let rose = "complexity rose from 10 to 11, CRAP 132.0 above 30";
     let fresh = "new function, CRAP 42.0 above 30";
     assert_eq!(
@@ -798,9 +778,9 @@ fn missing_head_coverage_follows_the_selected_policy() {
     );
     assert_eq!(judged.counts, counts([2, 1, 0, 1, 1, 2, 0, 0, 0, 2]));
     assert_eq!(judged.removed.len(), 0);
-    // When the rows are judged under optimistic
+    // When
     let judged = pair.judged(&optimistic, &[]);
-    // Then both pass
+    // Then
     assert_eq!(
         seen(&judged),
         [
@@ -827,9 +807,9 @@ fn missing_head_coverage_follows_the_selected_policy() {
         ]
     );
     assert_eq!(judged.counts, counts([2, 1, 0, 1, 1, 0, 0, 0, 0, 2]));
-    // When the rows are judged under skip, which writes no score
+    // When
     let judged = pair.judged(&[], &[]);
-    // Then there is no entry and both count as skipped for missing coverage
+    // Then
     assert_eq!(seen(&judged), []);
     assert_eq!(judged.counts, counts([0, 0, 0, 0, 0, 0, 0, 0, 2, 0]));
     assert_eq!(judged.removed.len(), 0);
@@ -837,19 +817,18 @@ fn missing_head_coverage_follows_the_selected_policy() {
 
 #[test]
 fn a_matched_empty_coverage_record_is_measured_zero_and_the_null_count_ignores_slicing() {
-    // Given untracked src/e.ts with heavy(6) and src/n.ts with light(2)
+    // Given
     let heavy = analyzed("src/e.ts", &func("heavy", 6), Side::Head);
     let light = analyzed("src/n.ts", &func("light", 2), Side::Head);
     let files = [
         (&[][..], heavy.as_slice(), Edits::Added),
         (&[][..], light.as_slice(), Edits::Added),
     ];
-    // And coverage that matches e.ts with no line evidence and has no record for n.ts
     let measured = score(&heavy[0], Some(0.0), 0.0);
     let scores = [measured.clone(), score(&light[0], None, 0.0)];
-    // When the rows are judged under pessimistic
+    // When
     let judged = judge_files(&files, &scores, &[]);
-    // Then heavy has coverage 0 and light coverage null
+    // Then
     let reason = "new function, CRAP 42.0 above 30";
     let heavy_entry = expect(
         "heavy",
@@ -873,20 +852,20 @@ fn a_matched_empty_coverage_record_is_measured_zero_and_the_null_count_ignores_s
     );
     assert_eq!(seen(&judged), [heavy_entry.clone(), light_entry]);
     assert_eq!(judged.counts, counts([2, 2, 0, 0, 0, 1, 0, 0, 0, 1]));
-    // When the rows are judged under skip
+    // When
     let judged = judge_files(&files, &[measured], &[]);
-    // Then only heavy is an entry and light counts as skipped
+    // Then
     assert_eq!(seen(&judged), [heavy_entry]);
     assert_eq!(judged.counts, counts([1, 1, 0, 0, 0, 1, 0, 0, 1, 0]));
 }
 
 #[test]
 fn allowed_touched_rows_are_counted_and_never_fail() {
-    // Given legacy(10) gaining a branch and an appended fresh(6)
+    // Given
     let pair = legacy_and_fresh();
-    // When the rows are judged with --allow legacy
+    // When
     let judged = pair.judged(&pair.uncovered(), &["legacy"]);
-    // Then the only entry is fresh with verdict fail
+    // Then
     let reason = "new function, CRAP 42.0 above 30";
     let only = expect(
         "fresh",
@@ -901,9 +880,9 @@ fn allowed_touched_rows_are_counted_and_never_fail() {
     assert_eq!(seen(&judged), [only]);
     assert_eq!(judged.counts, counts([1, 1, 0, 0, 0, 1, 0, 1, 0, 0]));
     assert_eq!(judged.removed.len(), 0);
-    // When --allow fresh is added
+    // When
     let judged = pair.judged(&pair.uncovered(), &["legacy", "fresh"]);
-    // Then entries are empty and counts.allowed is 2
+    // Then
     assert_eq!(seen(&judged), []);
     assert_eq!(judged.counts, counts([0, 0, 0, 0, 0, 0, 0, 2, 0, 0]));
 }
@@ -1108,8 +1087,15 @@ proptest! {
         prop_assert!(pairs <= heads);
         prop_assert_eq!(pairs + matching.removed.len(), bases);
         for id in &matching.removed {
-            prop_assert!(!used.contains(id));
+            prop_assert!(used.insert(*id), "{:?} both paired or removed twice", id);
         }
+        let every_base: std::collections::HashSet<RowId> = classified
+            .files
+            .iter()
+            .enumerate()
+            .flat_map(|(file, (base, _))| (0..base.len()).map(move |row| RowId { file, row }))
+            .collect();
+        prop_assert_eq!(used, every_base);
         prop_assert_eq!(&classified.classify(&order), &matching);
         let reversed: Vec<usize> = order.iter().rev().copied().collect();
         let back = classified.classify(&reversed);

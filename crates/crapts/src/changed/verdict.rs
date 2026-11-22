@@ -1,5 +1,3 @@
-//! Touch, verdicts, reasons and counts for the rows of changed files.
-
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
@@ -10,7 +8,6 @@ use cargo_crap_core::git::Hunk;
 use super::matching::{Ancestry, ChangedFile, Matching, RowId};
 use crate::Row;
 
-/// What the head side of a changed file added, for the touch rule.
 #[derive(Clone, Copy, Debug)]
 pub enum Edits<'h> {
     /// Every line is added: an added or untracked file.
@@ -40,7 +37,7 @@ pub struct Judgement {
     pub reason: String,
 }
 
-/// The verdict table. The threshold comparison is strict and unrounded.
+/// The threshold comparison is strict and unrounded.
 #[must_use]
 pub fn judge(
     change: ChangeClass,
@@ -143,7 +140,8 @@ pub struct Inputs<'a, 'r> {
     pub threshold: f64,
 }
 
-/// Selects the touched head rows, removes allowed and unscored ones, and judges the rest.
+/// Allow applies before the missing-coverage check, so an allowed row without
+/// a score counts as allowed.
 #[must_use]
 pub fn evaluate<'r>(inputs: &Inputs<'_, 'r>) -> Judged<'r> {
     let scores: HashMap<(&Path, &str), &CrapEntry> = inputs
