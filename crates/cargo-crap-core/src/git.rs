@@ -3,8 +3,8 @@
 //!
 //! Every command runs in the worktree root behind `--literal-pathspecs` and
 //! `core.quotePath=false`, so a path such as `src/[slug]/page.ts` names only
-//! itself and comes back spelled as committed. Paths Git prints must be
-//! UTF-8, on every platform alike.
+//! itself and comes back spelled as committed. Paths inside the worktree
+//! must be UTF-8 on every platform. The root itself need not be.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -212,12 +212,54 @@ impl Ran {
     }
 }
 
+// One function with both arms: a separate non-Unix function would be
+// mutated and never compiled on the machines that run mutation tests.
+#[cfg_attr(unix, expect(clippy::unnecessary_wraps, reason = "fallible off Unix"))]
+fn path_from_bytes(bytes: Vec<u8>) -> Result<PathBuf, Vec<u8>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        Ok(PathBuf::from(OsString::from_vec(bytes)))
+    }
+    #[cfg(not(unix))]
+    {
+        String::from_utf8(bytes)
+            .map(PathBuf::from)
+            .map_err(std::string::FromUtf8Error::into_bytes)
+    }
+}
+
 fn describe(args: &[OsString]) -> String {
     let mut command = GIT.to_owned();
     for arg in args {
         command.push(' ');
         command.push_str(&arg.to_string_lossy());
     }
+    command
+}
+
+/// Variables that would point Git at another repository, index or object
+/// store than the one under `dir`.
+const REPOSITORY_OVERRIDES: [&str; 6] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+fn command(
+    program: &str,
+    dir: &Path,
+) -> Command {
+    let mut command = Command::new(program);
+    for name in REPOSITORY_OVERRIDES {
+        command.env_remove(name);
+    }
+    command
+        .args(["--literal-pathspecs", "-c", "core.quotePath=false"])
+        .current_dir(dir);
     command
 }
 
@@ -230,13 +272,21 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    spawn(command(program, dir), dir, args)
+}
+
+fn spawn<I, S>(
+    mut git: Command,
+    dir: &Path,
+    args: I,
+) -> Result<Ran, GitError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let args: Vec<OsString> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
     let command = describe(&args);
-    let output = Command::new(program)
-        .args(["--literal-pathspecs", "-c", "core.quotePath=false"])
-        .args(&args)
-        .current_dir(dir)
-        .output();
+    let output = git.args(&args).output();
     match output {
         Ok(output) => Ok(Ran { command, output }),
         // A missing working directory fails the spawn with NotFound too.
@@ -432,8 +482,7 @@ fn parse_unmerged(listing: &str) -> Result<Vec<PathBuf>, String> {
     Ok(paths.into_iter().collect())
 }
 
-// One function with both arms: a separate non-Unix stub would be mutated
-// and never compiled on the machines that run mutation tests.
+// Both arms in one function, as in `path_from_bytes`.
 fn is_executable(meta: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -538,7 +587,6 @@ const PATCH_FLAGS: [&str; 5] = [
 
 const RENAMES: &str = "--find-renames=50%";
 
-/// An open worktree. Every method runs Git in [`Repo::root`].
 #[derive(Clone, Debug)]
 pub struct Repo {
     root: PathBuf,
@@ -554,18 +602,40 @@ impl Repo {
         program: &'static str,
         cwd: &Path,
     ) -> Result<Self, GitError> {
-        let ran = run(program, cwd, ["rev-parse", "--show-toplevel"])?;
-        if !ran.output.status.success() {
+        // Git exits 128 both outside a repository and on a broken one, so
+        // only its message tells them apart: read it untranslated.
+        let mut discover = command(program, cwd);
+        discover.env("LC_ALL", "C").env_remove("LANGUAGE");
+        let ran = spawn(discover, cwd, ["rev-parse", "--show-toplevel"])?;
+        if ran.output.status.success() {
+            let mut root = ran.bytes()?;
+            if root.last() == Some(&b'\n') {
+                root.pop();
+            }
+            return match path_from_bytes(root) {
+                Ok(root) => Ok(Self { root, program }),
+                Err(bytes) => Err(GitError::Unexpected {
+                    command: "git rev-parse --show-toplevel".to_owned(),
+                    output: String::from_utf8_lossy(&bytes).into_owned(),
+                }),
+            };
+        }
+        let stderr = ran.stderr();
+        let outside = stderr.starts_with("fatal: not a git repository");
+        // A bare repository, or a directory inside `.git`, has a Git
+        // directory but no worktree.
+        if outside
+            || run(program, cwd, ["rev-parse", "--git-dir"])?
+                .output
+                .status
+                .success()
+        {
             return Err(GitError::NotAWorktree {
                 dir: cwd.to_path_buf(),
-                stderr: ran.stderr(),
+                stderr,
             });
         }
-        let root = ran.line()?;
-        Ok(Self {
-            root: PathBuf::from(root),
-            program,
-        })
+        Err(ran.failed())
     }
 
     #[must_use]
@@ -585,7 +655,7 @@ impl Repo {
     }
 
     /// `None` when `spec` names no commit, which `rev-parse --verify -q`
-    /// reports with exit status 1 and nothing else.
+    /// reports with exit status 1.
     fn verify(
         &self,
         spec: &str,
@@ -624,7 +694,7 @@ impl Repo {
     pub fn is_dirty(&self) -> Result<bool, GitError> {
         let status = self
             .run(["status", "--porcelain=v1", "-z", "--untracked-files=normal"])?
-            .stdout()?;
+            .bytes()?;
         Ok(!status.is_empty())
     }
 
