@@ -51,7 +51,14 @@ impl GateOutcome {
     }
 
     /// Exit 1 for a tripped gate and 0 for a passing report.
-    #[must_use]
+    #[expect(
+        clippy::allow_attributes,
+        reason = "ExitCode gained must_use in Rust 1.100 so must_use_candidate fires on 1.99 only"
+    )]
+    #[allow(
+        clippy::must_use_candidate,
+        reason = "ExitCode is already must_use on Rust 1.100 and bare must_use trips double_must_use there"
+    )]
     pub fn exit_code(&self) -> ExitCode {
         ExitCode::from(u8::from(self.tripped))
     }
