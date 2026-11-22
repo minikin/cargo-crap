@@ -284,3 +284,41 @@ mod coverage_spelling {
         );
     }
 }
+
+#[test]
+fn resume_strict_lcov_counts_across_records_and_ignore_unrelated_records() {
+    use cargo_crap_core::coverage::{StrictLcovFile, read_strict_lcov};
+    let report = "TN:suite\r\nSF:./src/a.ts\r\nDA:4,0\r\nDA:4,2,sum\r\nFN:bad\r\nSF:src/b.ts\r\nDA:4,7\r\nend_of_record\r\nSF:./src/a.ts\r\nDA:4,3\r\nSF:empty.ts";
+    let files: Vec<StrictLcovFile> = read_strict_lcov(report, Path::new("cov.info")).unwrap();
+    let keys: Vec<_> = files.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, ["./src/a.ts", "src/b.ts", "empty.ts"]);
+    assert_eq!(files[0].lines[&4], 5.0);
+    assert_eq!(files[1].lines[&4], 7.0);
+    assert_eq!(files[2].lines.len(), 0);
+}
+
+#[test]
+fn strict_lcov_errors_identify_the_physical_record() {
+    use cargo_crap_core::coverage::read_strict_lcov;
+    let result = read_strict_lcov("TN:x\nDA:malformed\nSF:a.ts", Path::new("cov.info"));
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "cov.info: line 2: DA outside an SF record"
+    );
+}
+
+#[test]
+fn read_strict_lcov_at_its_numeric_boundaries() {
+    use cargo_crap_core::coverage::read_strict_lcov;
+    let report = "SF:a.ts\nDA:4294967296,1\nDA:9007199254740991,0\nDA:1,18446744073709551616";
+    let files = read_strict_lcov(report, Path::new("cov.info")).unwrap();
+    assert_eq!(
+        files[0].lines,
+        [
+            (1, 2_f64.powi(64)),
+            (4_294_967_296, 1.0),
+            (9_007_199_254_740_991, 0.0)
+        ]
+        .into()
+    );
+}

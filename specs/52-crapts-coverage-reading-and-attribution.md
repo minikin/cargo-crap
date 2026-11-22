@@ -614,7 +614,7 @@ Spec 52 builds after Spec 50 rebases onto Spec 49. Every task is one jj change a
   nonexistent absolute keys and verifying translated spellings, bindings,
   tie memberships, and zero withdrawn-key bindings against an independent
   exhaustive ownership search.
-- [ ] **T2 - Add StrictLcovFile and read_strict_lcov in cargo-crap-core.**
+- [x] **T2 - Add StrictLcovFile and read_strict_lcov in cargo-crap-core.**
   Add `StrictLcovFile` and `read_strict_lcov(text, label)` in
   `crates/cargo-crap-core/src/coverage/lcov.rs` and re-export both in
   `crates/cargo-crap-core/src/coverage/mod.rs` (and through `cargo_crap`).

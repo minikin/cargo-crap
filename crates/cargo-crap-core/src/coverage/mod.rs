@@ -16,4 +16,4 @@ impl CoverageKind {
     }
 }
 
-pub use lcov::{FileCoverage, LineRange, parse_lcov};
+pub use lcov::{FileCoverage, LineRange, StrictLcovFile, parse_lcov, read_strict_lcov};
