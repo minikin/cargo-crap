@@ -177,6 +177,11 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
     let required_helpers = ["cargo-crap-core", "globset", "serde", "serde_json", "sha2"];
     let expected: BTreeSet<_> = parser_pins.into_iter().chain(required_helpers).collect();
     assert_eq!(declared, expected, "direct dependencies of crapts");
+    let json = dependencies
+        .iter()
+        .find(|dep| dep["name"] == "serde_json")
+        .unwrap();
+    assert_eq!(json["features"], serde_json::json!(["raw_value"]));
     let sha2 = &shared["workspace"]["dependencies"]["sha2"];
     assert_eq!(sha2["version"].as_str(), Some("=0.10.9"));
     assert_eq!(sha2["default-features"].as_bool(), Some(false));

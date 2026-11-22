@@ -18,17 +18,16 @@ impl<'a> Object<'a> {
     ) -> Option<&'a RawValue> {
         self.values.get(key).copied()
     }
-
-    fn nested(
-        &self,
-        key: &str,
-    ) -> Option<Self> {
-        object(self.member(key)?)
-    }
 }
 
-fn object(raw: &RawValue) -> Option<Object<'_>> {
-    serde_json::from_str(raw.get()).ok()
+fn object<'a>(
+    raw: Option<&'a RawValue>,
+    invalid_shape: &str,
+) -> Result<Object<'a>, String> {
+    let Some(raw) = raw.filter(|raw| raw.get().starts_with('{')) else {
+        return Err(invalid_shape.to_owned());
+    };
+    serde_json::from_str(raw.get()).map_err(|error| format!("invalid JSON: {error}"))
 }
 
 struct ObjectVisitor;
@@ -104,10 +103,10 @@ fn end_point(
 fn statement(
     raw: &RawValue,
     hits: Option<&RawValue>,
-) -> Result<Statement, &'static str> {
-    let span = object(raw).ok_or("invalid span")?;
-    let start = span.nested("start").ok_or("invalid span")?;
-    let end = span.nested("end").ok_or("invalid span")?;
+) -> Result<Statement, String> {
+    let span = object(Some(raw), "invalid span")?;
+    let start = object(span.member("start"), "invalid span")?;
+    let end = object(span.member("end"), "invalid span")?;
     let start = start_point(&start).ok_or("invalid start")?;
     let end = end_point(&end, start).ok_or("invalid end")?;
     let hits = integer(hits, 0.0).ok_or("invalid hit count")?;
@@ -115,11 +114,10 @@ fn statement(
 }
 
 fn statements(raw: &RawValue) -> Result<Vec<Statement>, String> {
-    let entry = object(raw).ok_or("not an Istanbul coverage-final.json")?;
-    let spans = entry
-        .nested("statementMap")
-        .ok_or("not an Istanbul coverage-final.json")?;
-    let hits = entry.nested("s").ok_or("missing or invalid hit map s")?;
+    let invalid_entry = "not an Istanbul coverage-final.json";
+    let entry = object(Some(raw), invalid_entry)?;
+    let spans = object(entry.member("statementMap"), invalid_entry)?;
+    let hits = object(entry.member("s"), "missing or invalid hit map s")?;
     if let Some(extra) = hits
         .names
         .iter()
@@ -176,12 +174,47 @@ mod tests {
     }
 
     #[test]
+    fn invalid_unicode_keys_report_json_decoding_errors_at_any_map_depth() {
+        for text in [
+            r#"{"\ud800.ts":{"statementMap":{},"s":{}}}"#,
+            r#"{"a.ts":{"statementMap":{"\ud800":{}},"s":{}}}"#,
+            r#"{"a.ts":{"statementMap":{},"s":{"\udfff":1}}}"#,
+            r#"{"a.ts":{"statementMap":{"x":{"start":{"\ud800":0},"end":{}}},"s":{}}}"#,
+        ] {
+            let error = parse(text).unwrap_err();
+            assert_eq!(error.path(), Path::new("run.json"));
+            assert!(
+                error.to_string().contains("invalid JSON"),
+                "{text}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_visits_files_and_complete_statements_in_member_order() {
+        let span = r#"{"start":{"line":1,"column":0},"end":{"line":1,"column":null}}"#;
+        let entry =
+            format!(r#"{{"statementMap":{{"a":{span},"b":false}},"s":{{"a":null,"b":0}}}}"#);
+        let valid = r#"{"statementMap":{},"s":{}}"#;
+        for text in [
+            format!(r#"{{"ok":{valid},"src/a.ts":{entry}}}"#),
+            format!(r#"{{"src/a.ts":{entry},"ok":{valid}}}"#),
+        ] {
+            error(&text, "statement a: invalid hit count");
+        }
+        error(
+            &format!(r#"{{"src/a.ts":{valid},"src/a.ts":false}}"#),
+            "not an Istanbul coverage-final.json",
+        );
+        error(
+            &format!(r#"{{"src/a.ts":{{"statementMap":{{"a":{span},"a":null}},"s":{{"a":0}}}}}}"#),
+            "statement a: invalid span",
+        );
+    }
+
+    #[test]
     fn map_ids_pair_each_span_with_its_hits() {
-        let text = r#"{"./src/a.ts":{"path":"ignored.ts","fnMap":{},"branchMap":{},"f":{},"b":{},
-            "statementMap":{"z":{"start":{"line":1,"column":3},"end":{"line":1,"column":3}},
-                    "x":{"start":{"line":1,"column":3},"end":{"line":1,"column":null}},
-                    "m":{"start":{"line":2,"column":9},"end":{"line":3,"column":0}}},
-            "s":{"m":7,"x":1,"z":0}},"empty.ts":{"statementMap":{},"s":{}}}"#;
+        let text = include_str!("../../tests/fixtures/coverage/statements.json");
         let files = parse(text).unwrap();
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].0, "./src/a.ts");
@@ -312,7 +345,7 @@ mod tests {
                 error(&BASE.replace(field, value), detail);
             }
         }
-        let wide = r#"{"src/a.ts":{"statementMap":{"x":{"start":{"line":9007199254740993,"column":-0},"end":{"line":9007199254740994,"column":null}}},"s":{"x":1e300}}}"#;
+        let wide = include_str!("../../tests/fixtures/coverage/wide.json");
         let statement = parse(wide).unwrap()[0].1[0];
         assert_eq!(statement.start.line, 9_007_199_254_740_992.0);
         assert_eq!(statement.start.column.to_bits(), 0);

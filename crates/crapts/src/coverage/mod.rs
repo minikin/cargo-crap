@@ -45,6 +45,7 @@ impl Coverage {
     }
 
     /// Keys retain their producer spellings and traversal order, including files with no observations.
+    #[doc(hidden)]
     #[must_use]
     pub fn keys(&self) -> Vec<&str> {
         match &self.0 {
@@ -59,7 +60,7 @@ fn js_whitespace(c: char) -> bool {
 }
 
 /// # Errors
-/// The diagnostic identifies the report and the first invalid coverage entry.
+/// Reading fails on filesystem errors, unknown formats, malformed JSON, invalid statement maps or invalid LCOV records.
 pub fn read_coverage(
     cwd: &Path,
     path: &Path,

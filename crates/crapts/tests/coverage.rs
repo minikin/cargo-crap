@@ -5,9 +5,7 @@ use std::path::Path;
 fn read_istanbul_statement_ids_spans_and_hits_from_the_top_level_key() {
     let cwd = tempfile::tempdir().unwrap();
     let path = Path::new("report.data");
-    let report = r#"{"./src/a.ts":{"path":"ignored.ts","fnMap":{},"b":{},"s":{"x":7},
-        "statementMap":{"x":{"start":{"line":2,"column":9},"end":{"line":3,"column":0}}}},
-        "empty.ts":{"statementMap":{},"s":{}}}"#;
+    let report = include_str!("fixtures/coverage/statements.json");
     std::fs::write(cwd.path().join(path), report).unwrap();
     let coverage = read_coverage(cwd.path(), path).unwrap();
     assert_eq!(coverage.unit(), CoverageUnit::Statements);
@@ -50,15 +48,30 @@ fn duplicate_json_members_take_their_final_value_at_their_first_position() {
 fn istanbul_uses_binary64_integers_for_positions_and_hits() {
     let cwd = tempfile::tempdir().unwrap();
     let path = cwd.path().join("wide");
-    let report = r#"{"file":{"statementMap":{"x":{"start":{"line":9007199254740993,"column":-0},"end":{"line":9007199254740994,"column":null}}},"s":{"x":1e300}}}"#;
+    let report = include_str!("fixtures/coverage/wide.json");
     std::fs::write(&path, report).unwrap();
-    assert_eq!(read_coverage(cwd.path(), &path).unwrap().keys(), ["file"]);
+    assert_eq!(
+        read_coverage(cwd.path(), &path).unwrap().keys(),
+        ["src/a.ts"]
+    );
+    std::fs::write(&path, report.replace("1e300", "-0")).unwrap();
+    assert_eq!(
+        read_coverage(cwd.path(), &path).unwrap().unit(),
+        CoverageUnit::Statements
+    );
+    std::fs::write(&path, report.replace("9007199254740993", "-0")).unwrap();
+    assert!(
+        read_coverage(cwd.path(), &path)
+            .unwrap_err()
+            .to_string()
+            .ends_with("statement x: invalid start")
+    );
     std::fs::write(&path, report.replace("1e300", "1e400")).unwrap();
     assert!(
         read_coverage(cwd.path(), &path)
             .unwrap_err()
             .to_string()
-            .ends_with("file: statement x: invalid hit count")
+            .ends_with("src/a.ts: statement x: invalid hit count")
     );
 }
 
@@ -144,4 +157,15 @@ fn identify_an_unreadable_or_unrecognized_report() {
             "{error}"
         );
     }
+}
+
+#[test]
+fn report_labels_resolve_parent_components_from_the_callers_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let child = root.path().join("child");
+    std::fs::create_dir(&child).unwrap();
+    let target = root.path().join("r.json");
+    let error = read_coverage(&child, Path::new("../r.json")).unwrap_err();
+    assert_eq!(error.path().as_os_str(), target.as_os_str());
+    assert_eq!(error.to_string(), format!("{}: ENOENT", target.display()));
 }
