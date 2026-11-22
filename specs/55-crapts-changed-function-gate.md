@@ -1,6 +1,6 @@
 # Spec 55: crapts changed-function gate
 
-**Status:** Draft
+**Status:** Approved
 **Effort:** Large
 **Module:** In `crates/cargo-crap-core/`: `src/{lib,git}.rs`, `src/report/json.rs` and `tests/git.rs`. In `crates/crapts/`: `src/{lib,analyze,attribute,fingerprint,cli,main}.rs`, `src/changed/{mod,matching,verdict,section}.rs` and `tests/{fingerprints,changed,cli,baseline}.rs`, with shared helpers in `tests/common/mod.rs`. At the root: `schemas/crapts/{changed-v1,report-v1,delta-v1}.json`, `tests/support/schemas.rs`, `tests/crapts_policy.rs`, `CHANGELOG.md` and `CLAUDE.md`.
 **Needs:** Each task needs only the specs it uses. T1 and T2 need none. Spec 50 supplies `analyze` with `Mode::Strict(Base | Head)` and the fingerprint appendix this spec adopts (T3, T5, T6, T8). Spec 51 supplies `report::Section`, `Placement::Lead`, the `changed` slot, `summary.changed_failures`, `Settings.fail_sections` and `GateOutcome.section_failures` (T4, T7, T8). Spec 52 supplies attribution and the missing-coverage policies (T6, T8). Spec 53 supplies the CLI, config and `--comment-marker` (T4, T8 to T10). Spec 54's `--baseline` is needed only where it meets this spec: baseline admission of fingerprinted reports (T4's `--baseline` steps and pipeline step 4) and the CLI tests that combine `--base` with `--baseline` (T8's input-order rows and T9's combined scenario). Work on T1 to T3 and T5 to T7 can run in parallel with Spec 54.
