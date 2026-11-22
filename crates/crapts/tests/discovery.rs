@@ -441,7 +441,23 @@ fn absent_paths_beneath_a_directory_link_are_outside_scope() {
         let scan = discover(&[], &DiscoveryOptions::new(root)).unwrap();
         assert!(!scan.scope.keeps(Path::new("alias/old.ts")).unwrap());
         assert!(scan.scope.keeps(Path::new("real/old.ts")).unwrap());
+        let link_scan = discover(&paths(&["alias"]), &DiscoveryOptions::new(root)).unwrap();
+        assert!(!link_scan.scope.keeps(Path::new("alias/old.ts")).unwrap());
     }
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn an_explicit_walk_root_below_a_link_keeps_former_children() {
+    let dir = tempdir().unwrap();
+    let cwd = dir.path();
+    write(cwd, "real/sub/live.ts", "");
+    if !link(&cwd.join("real"), &cwd.join("alias"), true) {
+        return;
+    }
+    let scan = discover(&paths(&["alias/sub"]), &DiscoveryOptions::new(cwd)).unwrap();
+    assert_eq!(scan.files, paths(&["alias/sub/live.ts"]));
+    assert!(scan.scope.keeps(Path::new("alias/sub/old.ts")).unwrap());
 }
 
 fn without_exclusions(
@@ -697,13 +713,14 @@ fn skip_symbolic_links_to_files_and_directories() {
             files(cwd, &paths(&["link.ts", "alias"])),
             Vec::<String>::new()
         );
-        assert_eq!(files(cwd, &paths(&["alias/a.ts"])), Vec::<String>::new());
+        let expected = if use_git { vec![] } else { vec!["alias/a.ts"] };
+        assert_eq!(files(cwd, &paths(&["alias/a.ts"])), expected);
     }
 }
 
 #[cfg(any(unix, windows))]
 #[test]
-fn skip_cached_children_when_their_parent_becomes_a_symlink() {
+fn retain_a_cached_file_reached_through_a_replaced_parent() {
     let dir = tempdir().unwrap();
     let root = dir.path();
     git(root, &["init", "-q"]);
@@ -715,11 +732,155 @@ fn skip_cached_children_when_their_parent_becomes_a_symlink() {
     if !link(&root.join("target"), &root.join("src/old"), true) {
         return;
     }
+    assert_eq!(files(root, &paths(&["src"])), ["src/old/x.ts"]);
     write(root, "src/loop/x.ts", "");
     git(root, &["add", "src/loop/x.ts"]);
     fs::remove_file(root.join("src/loop/x.ts")).unwrap();
     fs::remove_dir(root.join("src/loop")).unwrap();
     let cyclic = root.join("src/loop");
     assert!(link(&cyclic, &cyclic, true));
-    assert_eq!(files(root, &paths(&["src"])), Vec::<String>::new());
+    let error = discover(&paths(&["src"]), &DiscoveryOptions::new(root)).unwrap_err();
+    assert!(error.path().ends_with("src/loop/x.ts"), "{error}");
+}
+
+#[cfg(any(unix, windows))]
+fn check_alternate_absolute_root(
+    cwd: &Path,
+    alias: &Path,
+    expected: &Path,
+) {
+    write(cwd, "src/a.ts", "");
+    let root = alias.join("src/a.ts");
+    let roots = [root.clone()];
+    let opts = DiscoveryOptions::new(cwd);
+    assert_eq!(discover(&roots, &opts).unwrap().files, [expected]);
+    git(cwd, &["init", "-q"]);
+    let error = discover(&roots, &opts).unwrap_err();
+    assert_eq!(error.path(), root);
+    assert!(
+        error.to_string().contains("outside the repository"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains(&cwd.display().to_string()),
+        "{error}"
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn an_absolute_alias_above_the_scan_boundary_keeps_its_spelling() {
+    let dir = tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    fs::create_dir_all(base.join("physical/repo")).unwrap();
+    if !link(&base.join("physical"), &base.join("alias"), true) {
+        return;
+    }
+    check_alternate_absolute_root(
+        &base.join("physical/repo"),
+        &base.join("alias/repo"),
+        Path::new("../../alias/repo/src/a.ts"),
+    );
+    let walk_dir = tempdir().unwrap();
+    let walk_base = walk_dir.path().canonicalize().unwrap();
+    fs::create_dir_all(walk_base.join("physical/repo")).unwrap();
+    assert!(link(
+        &walk_base.join("physical"),
+        &walk_base.join("alias"),
+        true
+    ));
+    write(&walk_base.join("physical/repo"), "src/a.ts", "");
+    assert_eq!(
+        files(
+            &walk_base.join("alias/repo"),
+            &[walk_base.join("physical/repo/src/a.ts")]
+        ),
+        ["../../physical/repo/src/a.ts"]
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn a_git_invocation_alias_accepts_both_spellings_of_its_physical_roots() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    git(&root, &["init", "-q"]);
+    for name in [
+        "packages/pkg/mine.ts",
+        "packages/shared/physical.ts",
+        "shared/logical.ts",
+    ] {
+        write(&root, name, "");
+    }
+    let alias = root.join("invoked");
+    if !link(&root.join("packages/pkg"), &alias, true) {
+        return;
+    }
+    for roots in [
+        vec![alias.join("mine.ts"), PathBuf::from("../shared")],
+        vec![
+            root.join("packages/pkg/mine.ts"),
+            root.join("packages/shared"),
+        ],
+    ] {
+        assert_eq!(files(&alias, &roots), ["../shared/physical.ts", "mine.ts"]);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_tmp_and_private_tmp_preserve_the_invocation_spelling() {
+    let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+    let name = dir.path().file_name().unwrap();
+    let alias = Path::new("/tmp").join(name);
+    let expected = Path::new("../../../tmp").join(name).join("src/a.ts");
+    check_alternate_absolute_root(dir.path(), &alias, &expected);
+}
+
+#[test]
+fn a_recursive_exclusion_cannot_consume_parent_directory_components() {
+    let dir = tempdir().unwrap();
+    let cwd = dir.path().join("pkg");
+    for file in [
+        "pkg/in.ts",
+        "shared/a.test.ts",
+        "shared/dist/b.ts",
+        "shared/gen/g.ts",
+        "shared/ok.ts",
+    ] {
+        write(dir.path(), file, "");
+    }
+    let roots = paths(&[".", "../shared"]);
+    for use_git in [false, true] {
+        if use_git {
+            git(dir.path(), &["init", "-q"]);
+        }
+        let mut options = DiscoveryOptions::new(&cwd);
+        options.excludes = ["**/gen/**", "**/ok.ts"].map(flag).to_vec();
+        let scan = discover(&roots, &options).unwrap();
+        assert_eq!(
+            scan.files,
+            paths(&[
+                "../shared/a.test.ts",
+                "../shared/dist/b.ts",
+                "../shared/gen/g.ts",
+                "../shared/ok.ts",
+                "in.ts"
+            ])
+        );
+        assert_eq!(scan.unused_excludes, options.excludes);
+        assert!(
+            scan.scope
+                .keeps(Path::new("../shared/old.test.ts"))
+                .unwrap()
+        );
+        options.excludes = ["../shared/gen/**", "../**/ok.ts"].map(flag).to_vec();
+        let scan = discover(&roots, &options).unwrap();
+        assert_eq!(
+            scan.files,
+            paths(&["../shared/a.test.ts", "../shared/dist/b.ts", "in.ts"])
+        );
+        assert_eq!(scan.unused_excludes, Vec::<ExcludePattern>::new());
+        assert!(!scan.scope.keeps(Path::new("../shared/gen/old.ts")).unwrap());
+    }
 }

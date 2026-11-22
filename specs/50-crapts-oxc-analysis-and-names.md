@@ -56,6 +56,10 @@ And selecting the two links as explicit roots selects zero files
 
 Run this fixture on platforms with symlink creation enabled. All other discovery fixtures also run on Windows without symlink privileges.
 
+Check the named leaf with filesystem metadata. Outside Git, an explicit `alias/a.ts` below a directory link selects the regular file with that spelling. In a worktree, an outer-index path still selects a regular file if its parent becomes a link. A link loop that prevents a leaf lookup returns an input error.
+
+Resolve roots from the invocation directory. When a physical cwd is under `/private/tmp` and the absolute argument uses `/tmp`, preserve its lexical spelling. Outside Git the display path begins with the necessary `../` components. A Git worktree rejects that absolute argument when the spelling puts it outside the repository. A symlinked invocation inside a worktree also accepts Git's physical spelling of an absolute root.
+
 ### Scenario: Select the eight source extensions case-sensitively
 
 ```gherkin
@@ -105,6 +109,8 @@ And the unused extra patterns in order are "src/tag.md", "dist/**" and "absent/*
 ```
 
 Use case-sensitive, whole-path globset matching on `/`-separated paths, including dot-prefixed components. `*` and `?` stay within a component. A `**` component can cross directories. Character classes, brace alternatives and backslash escapes use globset syntax. A leading `!` is literal. Validate all patterns, even for an empty scan. Every extra pattern matching an otherwise eligible file counts as used, including overlapping matches. Each unused entry retains its pattern and origin for the caller.
+
+A recursive wildcard can cross ordinary directories but cannot consume a leading parent component. From `pkg`, the rule `**/gen/**` leaves `../shared/gen/a.ts` eligible. The rule `../shared/gen/**` excludes it. Apply the same rule to historical paths and to unused-pattern accounting.
 
 ### Scenario: Apply discovery scope to old paths
 

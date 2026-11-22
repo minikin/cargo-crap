@@ -5,7 +5,7 @@ use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 
 use crate::InputError;
 
@@ -74,8 +74,8 @@ pub struct DiscoveryScope {
     directories: Vec<PathBuf>,
     leaves: BTreeSet<PathBuf>,
     selected: BTreeSet<OsString>,
-    defaults: GlobSet,
-    extras: GlobSet,
+    defaults: Exclusions,
+    extras: Exclusions,
 }
 
 impl DiscoveryScope {
@@ -83,7 +83,7 @@ impl DiscoveryScope {
         &self,
         path: &Path,
     ) -> Result<bool, InputError> {
-        let absolute = absolute_input(&self.invoked, &self.cwd, path)?;
+        let absolute = absolute_input(&self.invoked, &self.cwd, self.repository.as_deref(), path);
         let name = relative(&self.cwd, &absolute);
         if self.selected.contains(&name) {
             return Ok(true);
@@ -93,9 +93,7 @@ impl DiscoveryScope {
         {
             return Ok(false);
         }
-        if through_symlink(&absolute, self.repository.as_deref().unwrap_or(&self.cwd))
-            || file_type(&absolute)?.is_some()
-        {
+        if file_type(&absolute)?.is_some() {
             return Ok(false);
         }
         if self.repository.is_none() {
@@ -122,8 +120,11 @@ impl DiscoveryScope {
         &self,
         path: &Path,
     ) -> bool {
-        path.parent()
-            .is_some_and(|parent| self.directories.iter().any(|root| parent.starts_with(root)))
+        path.parent().is_some_and(|parent| {
+            self.directories
+                .iter()
+                .any(|root| parent.starts_with(root) && !through_symlink(path, root))
+        })
     }
 
     fn finish(
@@ -170,31 +171,27 @@ pub fn discover(
     roots: &[PathBuf],
     options: &DiscoveryOptions,
 ) -> Result<Discovery, InputError> {
-    let cwd = options
+    let physical = options
         .cwd
         .canonicalize()
         .map_err(|error| InputError::at(&options.cwd, error))?;
+    let invoked = std::path::absolute(&options.cwd).map_err(|e| InputError::at(&options.cwd, e))?;
+    let repository = worktree(&physical)?;
+    let cwd = if repository.is_some() {
+        physical
+    } else {
+        invoked.clone()
+    };
     let defaults = compile(&cwd, &options.defaults)?;
     let extras = compile(&cwd, &options.excludes)?;
-    let repository = worktree(&cwd)?;
-    let mut inputs = Vec::new();
-    for root in roots {
-        let absolute = absolute_input(&options.cwd, &cwd, root)?;
-        if !through_symlink(&absolute, repository.as_deref().unwrap_or(&cwd)) {
-            inputs.push(absolute);
-        }
-    }
-    if roots.is_empty() {
-        inputs.push(cwd.clone());
-    }
+    let inputs = resolve_roots(roots, &invoked, &cwd, repository.as_deref())?;
     let directories = inputs
         .iter()
-        .filter(|root| root.is_dir())
+        .filter(|root| fs::symlink_metadata(root).is_ok_and(|meta| meta.is_dir()))
         .cloned()
         .collect();
     let listing = match &repository {
-        Some(root) if !inputs.is_empty() => git_files(&cwd, root, &inputs)?,
-        Some(_) => Listing::default(),
+        Some(_) => git_files(&cwd, &inputs)?,
         None => Listing {
             files: walk_files(&cwd, inputs)?,
             ..Listing::default()
@@ -202,7 +199,7 @@ pub fn discover(
     };
     let scope = DiscoveryScope {
         cwd,
-        invoked: std::path::absolute(&options.cwd).map_err(|e| InputError::at(&options.cwd, e))?,
+        invoked,
         directories,
         repository,
         leaves: listing.leaves,
@@ -213,23 +210,130 @@ pub fn discover(
     Ok(scope.finish(listing.files, &options.excludes))
 }
 
+#[derive(Debug)]
+struct Exclusions {
+    by_parent_depth: Vec<GlobGroup>,
+}
+
+#[derive(Debug)]
+struct GlobGroup {
+    set: GlobSet,
+    indices: Vec<usize>,
+}
+
+impl Exclusions {
+    fn group<'p>(
+        &self,
+        mut path: &'p Path,
+    ) -> Option<(&GlobGroup, &'p Path)> {
+        let mut depth = 0;
+        while let Ok(rest) = path.strip_prefix("..") {
+            depth += 1;
+            path = rest;
+        }
+        self.by_parent_depth.get(depth).map(|group| (group, path))
+    }
+
+    fn is_match(
+        &self,
+        path: &Path,
+    ) -> bool {
+        self.group(path)
+            .is_some_and(|(group, rest)| group.set.is_match(rest))
+    }
+
+    fn matches_into(
+        &self,
+        path: &Path,
+        indices: &mut Vec<usize>,
+    ) {
+        indices.clear();
+        if let Some((group, rest)) = self.group(path) {
+            group.set.matches_into(rest, indices);
+            for index in indices {
+                *index = group.indices[*index];
+            }
+        }
+    }
+}
+
+fn glob(pattern: &str) -> Result<Glob, globset::Error> {
+    GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .case_insensitive(false)
+        .backslash_escape(true)
+        .build()
+}
+
+fn resolve_roots(
+    roots: &[PathBuf],
+    invoked: &Path,
+    cwd: &Path,
+    repository: Option<&Path>,
+) -> Result<Vec<PathBuf>, InputError> {
+    if roots.is_empty() {
+        return Ok(vec![cwd.to_owned()]);
+    }
+    roots
+        .iter()
+        .map(|root| {
+            let absolute = absolute_input(invoked, cwd, repository, root);
+            if let Some(repo) = repository
+                && !absolute.starts_with(repo)
+            {
+                return Err(InputError::at(
+                    root,
+                    format!("outside the repository at {}", repo.display()),
+                ));
+            }
+            Ok(absolute)
+        })
+        .collect()
+}
+
+fn parent_variants(pattern: &str) -> Vec<&str> {
+    // A globstar can match zero directories before an explicit parent, but cannot consume `..`.
+    let mut variants = vec![pattern];
+    let mut current = pattern;
+    while let Some((head, tail)) = current.trim_start_matches("**/").split_once('/') {
+        if head.starts_with('*')
+            || !glob(head).is_ok_and(|matcher| matcher.compile_matcher().is_match(".."))
+        {
+            break;
+        }
+        variants.push(tail);
+        current = tail;
+    }
+    variants
+}
+
 fn compile(
     cwd: &Path,
     patterns: &[ExcludePattern],
-) -> Result<GlobSet, InputError> {
-    let mut set = GlobSetBuilder::new();
-    for rule in patterns {
-        let glob = GlobBuilder::new(&rule.pattern)
-            .literal_separator(true)
-            .case_insensitive(false)
-            .backslash_escape(true)
-            .build()
-            .map_err(|e| {
+) -> Result<Exclusions, InputError> {
+    let mut groups: Vec<(GlobSetBuilder, Vec<usize>)> = Vec::new();
+    for (index, rule) in patterns.iter().enumerate() {
+        for (depth, variant) in parent_variants(&rule.pattern).into_iter().enumerate() {
+            let matcher = glob(variant).map_err(|e| {
                 InputError::at(cwd, format!("invalid exclusion {:?}: {e}", rule.pattern))
             })?;
-        set.add(glob);
+            if depth == groups.len() {
+                groups.push((GlobSetBuilder::new(), Vec::new()));
+            }
+            groups[depth].0.add(matcher);
+            groups[depth].1.push(index);
+        }
     }
-    set.build().map_err(|e| InputError::at(cwd, e))
+    let by_parent_depth = groups
+        .into_iter()
+        .map(|(builder, indices)| {
+            Ok(GlobGroup {
+                set: builder.build().map_err(|e| InputError::at(cwd, e))?,
+                indices,
+            })
+        })
+        .collect::<Result<_, InputError>>()?;
+    Ok(Exclusions { by_parent_depth })
 }
 
 pub(super) fn source_extension(path: &Path) -> Option<&str> {
@@ -301,7 +405,6 @@ fn resolve(
 
 fn git_files(
     cwd: &Path,
-    root: &Path,
     roots: &[PathBuf],
 ) -> Result<Listing, InputError> {
     let output = git(cwd)
@@ -328,9 +431,7 @@ fn git_files(
     for record in output.stdout.split(|&b| b == 0).filter(|p| !p.is_empty()) {
         let name = git_name(record);
         let absolute = resolve(cwd, Path::new(&name));
-        if !through_symlink(&absolute, root)
-            && file_type(&absolute)?.is_some_and(|kind| kind.is_file())
-        {
+        if file_type(&absolute)?.is_some_and(|kind| kind.is_file()) {
             listing.files.insert(name);
         } else {
             listing.leaves.insert(absolute);
@@ -367,19 +468,17 @@ fn git_allows(
 fn absolute_input(
     invoked: &Path,
     cwd: &Path,
+    repository: Option<&Path>,
     input: &Path,
-) -> Result<PathBuf, InputError> {
-    if !input.is_absolute() {
-        return Ok(resolve(cwd, input));
+) -> PathBuf {
+    let logical = resolve(invoked, input);
+    if input.is_absolute()
+        && !logical.starts_with(invoked)
+        && repository.is_some_and(|root| logical.starts_with(root))
+    {
+        return logical;
     }
-    let logical = std::path::absolute(invoked).map_err(|e| InputError::at(invoked, e))?;
-    let Some(common) = logical.ancestors().find(|dir| input.starts_with(dir)) else {
-        return Ok(input.to_owned());
-    };
-    let physical = common
-        .canonicalize()
-        .map_err(|e| InputError::at(common, e))?;
-    Ok(resolve(&physical, input.strip_prefix(common).unwrap()))
+    resolve(cwd, Path::new(&relative(invoked, &logical)))
 }
 
 fn relative(
@@ -477,7 +576,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn match_parent_components_without_consuming_them_with_globstars() {
+        let rules = [
+            "**/x.ts",
+            "../**/x.ts",
+            "../../**/x.ts",
+            "**/../**/x.ts",
+            "*/shared/x.ts",
+            "??/shared/x.ts",
+            r"\.\./shared/x.ts",
+        ]
+        .map(|p| ExcludePattern {
+            pattern: p.to_owned(),
+            origin: GlobOrigin::Flag,
+        });
+        let set = compile(Path::new("."), &rules).unwrap();
+        let mut indices = Vec::new();
+        for (path, expected) in [
+            ("shared/x.ts", &[0][..]),
+            ("../shared/x.ts", &[1, 3, 5, 6]),
+            ("../../shared/x.ts", &[2]),
+            ("../../x.ts", &[2]),
+            ("../../../shared/x.ts", &[]),
+        ] {
+            set.matches_into(Path::new(path), &mut indices);
+            assert_eq!(indices, expected, "{path}");
+            assert_eq!(set.is_match(Path::new(path)), !expected.is_empty());
+        }
+    }
+
+    #[test]
     fn source_suffixes_apply_to_the_whole_filename() {
+        assert_eq!(
+            oxc_span::VALID_EXTENSIONS,
+            ["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"]
+        );
         for (path, expected) in [
             (".ts", true),
             ("a.d.ts.js", true),
@@ -504,7 +637,7 @@ mod tests {
     fn a_root_on_another_drive_keeps_its_absolute_path() {
         let cwd = Path::new("C:/pkg");
         let file = Path::new("D:/shared/a.ts");
-        assert_eq!(absolute_input(cwd, cwd, file).unwrap(), file);
+        assert_eq!(absolute_input(cwd, cwd, None, file), file);
         assert_eq!(relative(cwd, file), file.as_os_str());
     }
 
