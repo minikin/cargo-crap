@@ -75,6 +75,14 @@ impl InputError {
         }
     }
 
+    pub(crate) fn message(message: impl fmt::Display) -> Self {
+        Self {
+            path: PathBuf::new(),
+            side: None,
+            message: message.to_string(),
+        }
+    }
+
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -98,7 +106,11 @@ impl fmt::Display for InputError {
             };
             write!(f, "{label} ")?;
         }
-        write!(f, "{}: {}", self.path.display(), self.message)
+        if self.path.as_os_str().is_empty() {
+            f.write_str(&self.message)
+        } else {
+            write!(f, "{}: {}", self.path.display(), self.message)
+        }
     }
 }
 

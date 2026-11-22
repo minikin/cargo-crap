@@ -574,7 +574,11 @@ fn an_invalid_replacement_default_names_the_pattern() {
     let mut options = DiscoveryOptions::new(dir.path());
     options.defaults = vec![flag("bad/[")];
     let error = discover(&paths(&["one.ts"]), &options).unwrap_err();
-    assert!(error.to_string().contains("bad/["), "{error}");
+    assert_eq!(error.path(), Path::new(""));
+    assert!(
+        error.to_string().starts_with("invalid glob bad/["),
+        "{error}"
+    );
 }
 
 #[test]
@@ -882,5 +886,153 @@ fn a_recursive_exclusion_cannot_consume_parent_directory_components() {
         );
         assert_eq!(scan.unused_excludes, Vec::<ExcludePattern>::new());
         assert!(!scan.scope.keeps(Path::new("../shared/gen/old.ts")).unwrap());
+    }
+}
+
+fn check_missing_root_failures() {
+    let dir = tempdir().unwrap();
+    let cwd = dir.path();
+    write(cwd, "file.ts", "");
+    write(cwd, "deleted.ts", "");
+    for use_git in [false, true] {
+        if use_git {
+            git(cwd, &["init", "-q"]);
+            git(cwd, &["add", "deleted.ts"]);
+            fs::remove_file(cwd.join("deleted.ts")).unwrap();
+        }
+        for missing in ["gone.ts", "file.ts/child.ts", "node_modules/gone.ts"] {
+            let error = discover(&paths(&[".", missing]), &DiscoveryOptions::new(cwd)).unwrap_err();
+            assert_eq!(error.path(), Path::new(missing), "git={use_git}: {error}");
+            assert_eq!(error.side(), None);
+            assert!(error.to_string().contains(missing), "{error}");
+            assert!(error.to_string().contains("path does not exist"), "{error}");
+        }
+        if use_git {
+            let error = discover(&paths(&["deleted.ts"]), &DiscoveryOptions::new(cwd)).unwrap_err();
+            assert_eq!(error.path(), Path::new("deleted.ts"));
+            assert!(error.to_string().contains("path does not exist"), "{error}");
+        }
+        let nul_root = Path::new("invalid\0path");
+        let nul_error = discover(&[nul_root.to_owned()], &DiscoveryOptions::new(cwd)).unwrap_err();
+        assert_eq!(nul_error.path(), nul_root);
+        assert!(
+            !nul_error.to_string().contains("path does not exist"),
+            "{nul_error}"
+        );
+    }
+    let absent_cwd = cwd.join("no-such-dir");
+    let cwd_error = discover(&[], &DiscoveryOptions::new(&absent_cwd)).unwrap_err();
+    assert_eq!(cwd_error.path(), absent_cwd.as_path());
+    assert!(cwd_error.to_string().contains("no-such-dir"), "{cwd_error}");
+}
+
+fn check_outside_worktree_failures() {
+    let dir = tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    let repo = base.join("repo");
+    let app = repo.join("app");
+    write(&repo, "app/a.ts", "");
+    write(&base, "other/b.ts", "");
+    write(&base, "repo-other/c.ts", "");
+    git(&repo, &["init", "-q"]);
+    let repo_text = repo.display().to_string();
+    for (cwd, arg) in [
+        (&repo, PathBuf::from("../other")),
+        (&repo, PathBuf::from("../absent-other")),
+        (&app, PathBuf::from("../..")),
+        (&app, PathBuf::from("../../repo-other/c.ts")),
+        (&app, base.join("repo-other/c.ts")),
+    ] {
+        let error = discover(std::slice::from_ref(&arg), &DiscoveryOptions::new(cwd)).unwrap_err();
+        assert_eq!(error.path(), arg.as_path());
+        assert_eq!(error.side(), None);
+        let text = error.to_string();
+        assert!(text.contains(&arg.display().to_string()), "{text}");
+        assert!(text.contains(&repo_text), "{text}");
+        assert!(text.contains("outside the repository"), "{text}");
+    }
+}
+
+fn check_malformed_glob_failures() {
+    let dir = tempdir().unwrap();
+    let cwd = dir.path();
+    let cwd_text = cwd.canonicalize().unwrap().display().to_string();
+    for use_git in [false, true] {
+        if use_git {
+            git(cwd, &["init", "-q"]);
+        }
+        let mut opts = DiscoveryOptions::new(cwd);
+        opts.excludes = vec![flag("src/[")];
+        let error = discover(&[], &opts).unwrap_err();
+        assert_eq!(error.path(), Path::new(""));
+        assert_eq!(error.side(), None);
+        let text = error.to_string();
+        assert!(text.starts_with("invalid glob src/["), "{text}");
+        assert!(!text.contains(&cwd_text), "{text}");
+
+        let before_missing = discover(&paths(&["missing-dir"]), &opts).unwrap_err();
+        assert!(
+            before_missing.to_string().starts_with("invalid glob src/["),
+            "{before_missing}"
+        );
+
+        let config_path = PathBuf::from("crapts.toml");
+        opts.excludes = vec![ExcludePattern {
+            pattern: "src/[".to_owned(),
+            origin: GlobOrigin::Config(config_path.clone()),
+        }];
+        let config_error = discover(&[], &opts).unwrap_err();
+        assert_eq!(config_error.path(), config_path.as_path());
+        assert!(
+            config_error
+                .to_string()
+                .starts_with("crapts.toml: invalid glob src/["),
+            "{config_error}"
+        );
+    }
+}
+
+fn check_corrupt_index_failures() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    write(root, "src/a.ts", "");
+    write(root, ".git/index", "corrupt index bytes");
+    for roots in [Vec::new(), paths(&["src"])] {
+        let error = discover(&roots, &DiscoveryOptions::new(root)).unwrap_err();
+        assert_eq!(error.side(), None);
+        assert!(error.to_string().contains("git ls-files"), "{error}");
+    }
+}
+
+#[test]
+fn report_discovery_failures() {
+    check_missing_root_failures();
+    check_outside_worktree_failures();
+    check_malformed_glob_failures();
+    check_corrupt_index_failures();
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn explicit_broken_and_cyclic_symlink_roots_follow_metadata_rules() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    if !link(&root.join("missing.ts"), &root.join("dangling.ts"), false) {
+        return;
+    }
+    let cyclic = root.join("loop");
+    assert!(link(&cyclic, &cyclic, true));
+    for use_git in [false, true] {
+        if use_git {
+            git(root, &["init", "-q"]);
+        }
+        assert_eq!(files(root, &paths(&["dangling.ts"])), Vec::<String>::new());
+        let error = discover(&paths(&["loop/x.ts"]), &DiscoveryOptions::new(root)).unwrap_err();
+        assert_eq!(error.path(), Path::new("loop/x.ts"));
+        assert!(
+            !error.to_string().contains("path does not exist"),
+            "{error}"
+        );
     }
 }

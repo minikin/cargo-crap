@@ -182,14 +182,15 @@ pub fn discover(
     } else {
         invoked.clone()
     };
-    let defaults = compile(&cwd, &options.defaults)?;
-    let extras = compile(&cwd, &options.excludes)?;
-    let inputs = resolve_roots(roots, &invoked, &cwd, repository.as_deref())?;
-    let directories = inputs
+    let defaults = compile(&options.defaults)?;
+    let extras = compile(&options.excludes)?;
+    let resolved = resolve_roots(roots, &invoked, &cwd, repository.as_deref())?;
+    let directories = resolved
         .iter()
-        .filter(|root| fs::symlink_metadata(root).is_ok_and(|meta| meta.is_dir()))
-        .cloned()
+        .filter(|root| root.is_dir)
+        .map(|root| root.absolute.clone())
         .collect();
+    let inputs: Vec<_> = resolved.into_iter().map(|root| root.absolute).collect();
     let listing = match &repository {
         Some(_) => git_files(&cwd, &inputs)?,
         None => Listing {
@@ -265,14 +266,22 @@ fn glob(pattern: &str) -> Result<Glob, globset::Error> {
         .build()
 }
 
+struct Root {
+    absolute: PathBuf,
+    is_dir: bool,
+}
+
 fn resolve_roots(
     roots: &[PathBuf],
     invoked: &Path,
     cwd: &Path,
     repository: Option<&Path>,
-) -> Result<Vec<PathBuf>, InputError> {
+) -> Result<Vec<Root>, InputError> {
     if roots.is_empty() {
-        return Ok(vec![cwd.to_owned()]);
+        return Ok(vec![Root {
+            absolute: cwd.to_owned(),
+            is_dir: true,
+        }]);
     }
     roots
         .iter()
@@ -286,7 +295,12 @@ fn resolve_roots(
                     format!("outside the repository at {}", repo.display()),
                 ));
             }
-            Ok(absolute)
+            let kind = file_type_at(root, &absolute)?
+                .ok_or_else(|| InputError::at(root, "path does not exist"))?;
+            Ok(Root {
+                absolute,
+                is_dir: kind.is_dir(),
+            })
         })
         .collect()
 }
@@ -307,16 +321,22 @@ fn parent_variants(pattern: &str) -> Vec<&str> {
     variants
 }
 
-fn compile(
-    cwd: &Path,
-    patterns: &[ExcludePattern],
-) -> Result<Exclusions, InputError> {
+fn glob_error(
+    rule: &ExcludePattern,
+    error: &globset::Error,
+) -> InputError {
+    let message = format!("invalid glob {}: {error}", rule.pattern);
+    match &rule.origin {
+        GlobOrigin::Config(path) => InputError::at(path, message),
+        GlobOrigin::Default | GlobOrigin::Flag => InputError::message(message),
+    }
+}
+
+fn compile(patterns: &[ExcludePattern]) -> Result<Exclusions, InputError> {
     let mut groups: Vec<(GlobSetBuilder, Vec<usize>)> = Vec::new();
     for (index, rule) in patterns.iter().enumerate() {
         for (depth, variant) in parent_variants(&rule.pattern).into_iter().enumerate() {
-            let matcher = glob(variant).map_err(|e| {
-                InputError::at(cwd, format!("invalid exclusion {:?}: {e}", rule.pattern))
-            })?;
+            let matcher = glob(variant).map_err(|error| glob_error(rule, &error))?;
             if depth == groups.len() {
                 groups.push((GlobSetBuilder::new(), Vec::new()));
             }
@@ -328,7 +348,9 @@ fn compile(
         .into_iter()
         .map(|(builder, indices)| {
             Ok(GlobGroup {
-                set: builder.build().map_err(|e| InputError::at(cwd, e))?,
+                set: builder
+                    .build()
+                    .map_err(|error| InputError::message(format!("invalid glob set: {error}")))?,
                 indices,
             })
         })
@@ -555,9 +577,16 @@ fn git_name(bytes: &[u8]) -> OsString {
 }
 
 fn file_type(path: &Path) -> Result<Option<fs::FileType>, InputError> {
+    file_type_at(path, path)
+}
+
+fn file_type_at(
+    reported: &Path,
+    path: &Path,
+) -> Result<Option<fs::FileType>, InputError> {
     fs::symlink_metadata(path)
         .map(|stat| Some(stat.file_type()))
-        .or_else(|error| missing_file(path, error))
+        .or_else(|error| missing_file(reported, error))
 }
 
 fn missing_file(
@@ -590,7 +619,7 @@ mod tests {
             pattern: p.to_owned(),
             origin: GlobOrigin::Flag,
         });
-        let set = compile(Path::new("."), &rules).unwrap();
+        let set = compile(&rules).unwrap();
         let mut indices = Vec::new();
         for (path, expected) in [
             ("shared/x.ts", &[0][..]),
@@ -648,5 +677,43 @@ mod tests {
         assert_eq!(error.path(), path);
         assert_eq!(error.side(), None);
         assert!(error.to_string().contains("unreadable.ts"));
+    }
+
+    #[test]
+    fn invalid_glob_errors_preserve_pattern_and_config_origin() {
+        let flag_rule = ExcludePattern {
+            pattern: "src/[".to_owned(),
+            origin: GlobOrigin::Flag,
+        };
+        let flag_err = compile(&[flag_rule]).unwrap_err();
+        assert_eq!(flag_err.path(), Path::new(""));
+        assert!(
+            flag_err.to_string().starts_with("invalid glob src/["),
+            "{flag_err}"
+        );
+
+        let default_rule = ExcludePattern {
+            pattern: "src/{".to_owned(),
+            origin: GlobOrigin::Default,
+        };
+        let default_err = compile(&[default_rule]).unwrap_err();
+        assert_eq!(default_err.path(), Path::new(""));
+        assert!(
+            default_err.to_string().starts_with("invalid glob src/{"),
+            "{default_err}"
+        );
+
+        let config_rule = ExcludePattern {
+            pattern: "../[".to_owned(),
+            origin: GlobOrigin::Config(PathBuf::from("sub/crapts.toml")),
+        };
+        let config_err = compile(&[config_rule]).unwrap_err();
+        assert_eq!(config_err.path(), Path::new("sub/crapts.toml"));
+        assert!(
+            config_err
+                .to_string()
+                .starts_with("sub/crapts.toml: invalid glob ../["),
+            "{config_err}"
+        );
     }
 }
