@@ -62,6 +62,108 @@ impl DiscoveryOptions {
 #[derive(Debug)]
 pub struct Discovery {
     pub files: Vec<PathBuf>,
+    pub scope: DiscoveryScope,
+    pub unused_excludes: Vec<ExcludePattern>,
+}
+
+#[derive(Debug)]
+pub struct DiscoveryScope {
+    cwd: PathBuf,
+    invoked: PathBuf,
+    repository: Option<PathBuf>,
+    directories: Vec<PathBuf>,
+    leaves: BTreeSet<PathBuf>,
+    selected: BTreeSet<OsString>,
+    defaults: GlobSet,
+    extras: GlobSet,
+}
+
+impl DiscoveryScope {
+    pub fn keeps(
+        &self,
+        path: &Path,
+    ) -> Result<bool, InputError> {
+        let absolute = absolute_input(&self.invoked, &self.cwd, path)?;
+        let name = relative(&self.cwd, &absolute);
+        if self.selected.contains(&name) {
+            return Ok(true);
+        }
+        let local = Path::new(&name);
+        if !self.eligible(local) || self.extras.is_match(local) || !self.below_directory(&absolute)
+        {
+            return Ok(false);
+        }
+        if through_symlink(&absolute, self.repository.as_deref().unwrap_or(&self.cwd))
+            || file_type(&absolute)?.is_some()
+        {
+            return Ok(false);
+        }
+        if self.repository.is_none() {
+            return Ok(!local.iter().any(pruned));
+        }
+        if absolute
+            .ancestors()
+            .skip(1)
+            .any(|parent| self.leaves.contains(parent))
+        {
+            return Ok(false);
+        }
+        git_allows(&self.cwd, &name)
+    }
+
+    fn eligible(
+        &self,
+        path: &Path,
+    ) -> bool {
+        source_extension(path).is_some() && !self.defaults.is_match(path)
+    }
+
+    fn below_directory(
+        &self,
+        path: &Path,
+    ) -> bool {
+        path.parent()
+            .is_some_and(|parent| self.directories.iter().any(|root| parent.starts_with(root)))
+    }
+
+    fn finish(
+        mut self,
+        names: BTreeSet<OsString>,
+        patterns: &[ExcludePattern],
+    ) -> Discovery {
+        let mut used = vec![false; patterns.len()];
+        let mut matches = Vec::new();
+        for name in names {
+            let path = Path::new(&name);
+            if self.eligible(path) {
+                self.extras.matches_into(path, &mut matches);
+                if matches.is_empty() {
+                    self.selected.insert(name);
+                }
+                for &index in &matches {
+                    used[index] = true;
+                }
+            }
+        }
+        let mut files: Vec<_> = self.selected.iter().map(PathBuf::from).collect();
+        files.sort_by_cached_key(|file| file.to_string_lossy().encode_utf16().collect::<Vec<_>>());
+        let unused_excludes = patterns
+            .iter()
+            .zip(used)
+            .filter_map(|(rule, used)| if used { None } else { Some(rule.clone()) })
+            .collect();
+        Discovery {
+            files,
+            scope: self,
+            unused_excludes,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Listing {
+    files: BTreeSet<OsString>,
+    leaves: BTreeSet<PathBuf>,
 }
 
 pub fn discover(
@@ -85,20 +187,30 @@ pub fn discover(
     if roots.is_empty() {
         inputs.push(cwd.clone());
     }
-    let names = match repository {
-        Some(root) if !inputs.is_empty() => git_files(&cwd, &root, &inputs)?,
-        Some(_) => BTreeSet::new(),
-        None => walk_files(&cwd, inputs)?,
-    };
-    let mut files: Vec<_> = names
-        .into_iter()
-        .map(PathBuf::from)
-        .filter(|file| {
-            source_extension(file).is_some() && !defaults.is_match(file) && !extras.is_match(file)
-        })
+    let directories = inputs
+        .iter()
+        .filter(|root| root.is_dir())
+        .cloned()
         .collect();
-    files.sort_by_cached_key(|file| file.to_string_lossy().encode_utf16().collect::<Vec<_>>());
-    Ok(Discovery { files })
+    let listing = match &repository {
+        Some(root) if !inputs.is_empty() => git_files(&cwd, root, &inputs)?,
+        Some(_) => Listing::default(),
+        None => Listing {
+            files: walk_files(&cwd, inputs)?,
+            ..Listing::default()
+        },
+    };
+    let scope = DiscoveryScope {
+        cwd,
+        invoked: std::path::absolute(&options.cwd).map_err(|e| InputError::at(&options.cwd, e))?,
+        directories,
+        repository,
+        leaves: listing.leaves,
+        selected: BTreeSet::new(),
+        defaults,
+        extras,
+    };
+    Ok(scope.finish(listing.files, &options.excludes))
 }
 
 fn compile(
@@ -191,7 +303,7 @@ fn git_files(
     cwd: &Path,
     root: &Path,
     roots: &[PathBuf],
-) -> Result<BTreeSet<OsString>, InputError> {
+) -> Result<Listing, InputError> {
     let output = git(cwd)
         .args([
             "--literal-pathspecs",
@@ -212,15 +324,44 @@ fn git_files(
             format!("git ls-files: {}", message.trim_end()),
         ));
     }
-    let mut files = BTreeSet::new();
+    let mut listing = Listing::default();
     for record in output.stdout.split(|&b| b == 0).filter(|p| !p.is_empty()) {
         let name = git_name(record);
         let absolute = resolve(cwd, Path::new(&name));
-        if !through_symlink(&absolute, root) && regular_file(&absolute)? {
-            files.insert(name);
+        if !through_symlink(&absolute, root)
+            && file_type(&absolute)?.is_some_and(|kind| kind.is_file())
+        {
+            listing.files.insert(name);
+        } else {
+            listing.leaves.insert(absolute);
         }
     }
-    Ok(files)
+    Ok(listing)
+}
+
+fn git_allows(
+    cwd: &Path,
+    name: &OsStr,
+) -> Result<bool, InputError> {
+    let mut literal = OsString::from("./");
+    literal.push(name);
+    let output = git(cwd)
+        .args(["check-ignore", "-q", "--"])
+        .arg(literal)
+        .output()
+        .map_err(|e| InputError::at(Path::new(name), format!("git check-ignore: {e}")))?;
+    match output.status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(InputError::at(
+            Path::new(name),
+            format!(
+                "git check-ignore ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim_end()
+            ),
+        )),
+    }
 }
 
 fn absolute_input(
@@ -314,18 +455,18 @@ fn git_name(bytes: &[u8]) -> OsString {
     }
 }
 
-fn regular_file(path: &Path) -> Result<bool, InputError> {
+fn file_type(path: &Path) -> Result<Option<fs::FileType>, InputError> {
     fs::symlink_metadata(path)
-        .map(|stat| stat.is_file())
+        .map(|stat| Some(stat.file_type()))
         .or_else(|error| missing_file(path, error))
 }
 
 fn missing_file(
     path: &Path,
     error: std::io::Error,
-) -> Result<bool, InputError> {
+) -> Result<Option<fs::FileType>, InputError> {
     if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) {
-        Ok(false)
+        Ok(None)
     } else {
         Err(InputError::at(path, error))
     }

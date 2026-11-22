@@ -246,6 +246,204 @@ fn walking_fixture(root: &Path) {
     }
 }
 
+#[test]
+fn match_path_globs_and_account_for_unused_exclusions() {
+    let dir = tempdir().unwrap();
+    let cwd = dir.path();
+    for name in [
+        "src/.gen/a.ts",
+        "src/A.ts",
+        "pkg/src/.gen/b.ts",
+        "src/tag.md",
+        "dist/a.ts",
+    ] {
+        write(cwd, name, "");
+    }
+    let mut opts = DiscoveryOptions::new(cwd);
+    opts.defaults = vec![flag("dist/**")];
+    opts.excludes = [
+        "src/*/[ab].{ts,js}",
+        "**/.gen/a.ts",
+        "src/?.ts",
+        "src/tag.md",
+        "dist/**",
+        "absent/**",
+    ]
+    .map(flag)
+    .to_vec();
+    opts.excludes[3].origin = GlobOrigin::Config(PathBuf::from("report.toml"));
+    opts.excludes.push(ExcludePattern {
+        pattern: "absent/**".to_owned(),
+        origin: GlobOrigin::Default,
+    });
+    for use_git in [false, true] {
+        if use_git {
+            git(cwd, &["init", "-q"]);
+        }
+        let scan = discover(&[], &opts).unwrap();
+        assert_eq!(scan.files, paths(&["pkg/src/.gen/b.ts"]));
+        assert_eq!(scan.unused_excludes, opts.excludes[3..]);
+    }
+}
+
+#[test]
+fn path_globs_are_anchored_literal_and_case_sensitive() {
+    let dir = tempdir().unwrap();
+    let cwd = dir.path();
+    for file in [
+        "!direct.ts",
+        "direct.ts",
+        "a[1].ts",
+        "a1.ts",
+        "src/B.ts",
+        "src/a.ts",
+        "pkg/src/a.ts",
+        "src/nested/a.ts",
+    ] {
+        write(cwd, file, "");
+    }
+    let mut opts = DiscoveryOptions::new(cwd);
+    opts.excludes = [
+        "!direct.ts",
+        r"a\[1\].ts",
+        "src/[a].ts",
+        "src/?.ts",
+        "src/*.ts",
+        "src/*.js",
+    ]
+    .map(flag)
+    .to_vec();
+    let scan = discover(&[], &opts).unwrap();
+    assert_eq!(
+        scan.files,
+        paths(&["a1.ts", "direct.ts", "pkg/src/a.ts", "src/nested/a.ts"])
+    );
+    assert_eq!(scan.unused_excludes, [flag("src/*.js")]);
+    opts.excludes = vec![flag("src/b.ts")];
+    assert!(
+        discover(&[], &opts)
+            .unwrap()
+            .files
+            .contains(&PathBuf::from("src/B.ts"))
+    );
+    opts.excludes = vec![flag("src?a.ts")];
+    let question = discover(&[], &opts).unwrap();
+    assert!(question.files.contains(&PathBuf::from("src/a.ts")));
+    assert_eq!(question.unused_excludes, [flag("src?a.ts")]);
+}
+
+#[test]
+fn apply_discovery_scope_to_current_and_old_git_paths() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    for file in [
+        "src/live.ts",
+        "src/cache/current.ts",
+        "src/tracked.ts",
+        "src/vendor/v.ts",
+        "src/sub/v.ts",
+        "src/gen/a.ts",
+        "other/live.ts",
+    ] {
+        write(root, file, "");
+    }
+    git(root, &["add", "src/tracked.ts"]);
+    fs::remove_file(root.join("src/tracked.ts")).unwrap();
+    write(root, ".gitignore", "src/cache/**\nsrc/tracked.ts\n");
+    git(&root.join("src/vendor"), &["init", "-q"]);
+    git(
+        root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,1234567890123456789012345678901234567890,src/sub",
+        ],
+    );
+    let mut opts = DiscoveryOptions::new(root);
+    opts.excludes.push(flag("src/gen/**"));
+    let result = discover(&paths(&["src"]), &opts).unwrap();
+    for (path, kept) in [
+        ("src/live.ts", true),
+        ("src/old.ts", true),
+        ("src/tracked.ts", true),
+        ("src/cache/current.ts", false),
+        ("src/cache/old.ts", false),
+        ("src/vendor/old.ts", false),
+        ("src/sub/old.ts", false),
+        ("src/gen/old.ts", false),
+        ("src/gone.test.ts", false),
+        ("src/old.d.ts", false),
+        ("other/old.ts", false),
+        ("src2/old.ts", false),
+        ("other/live.ts", false),
+        ("src/live.md", false),
+    ] {
+        assert_eq!(result.scope.keeps(Path::new(path)).unwrap(), kept, "{path}");
+    }
+    assert!(result.scope.keeps(&root.join("src/old.ts")).unwrap());
+    let file = discover(&paths(&["src/live.ts"]), &opts).unwrap();
+    assert!(file.scope.keeps(Path::new("src/live.ts")).unwrap());
+    assert!(!file.scope.keeps(Path::new("src/old.ts")).unwrap());
+    assert!(!file.scope.keeps(Path::new("src/live.ts/child.ts")).unwrap());
+}
+
+#[test]
+fn filesystem_scope_keeps_historical_siblings_and_prunes_walk_boundaries() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write(root, "pkg/main.ts", "");
+    write(root, "shared/a.ts", "");
+    let mut opts = DiscoveryOptions::new(root.join("pkg"));
+    opts.defaults.clear();
+    let result = discover(&paths(&[".", "../shared"]), &opts).unwrap();
+    for (path, kept) in [
+        ("../shared/gone.ts", true),
+        ("./old.ts", true),
+        ("../other/old.ts", false),
+        ("node_modules/old.ts", false),
+        ("../shared/.git/old.ts", false),
+        ("../shared/x.d.mts", false),
+    ] {
+        assert_eq!(result.scope.keeps(Path::new(path)).unwrap(), kept, "{path}");
+    }
+    write(root, "pkg/born-after.ts", "");
+    assert!(!result.scope.keeps(Path::new("born-after.ts")).unwrap());
+}
+
+#[test]
+fn an_ignore_check_failure_retains_the_candidate_and_command() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    write(root, "src/a.ts", "");
+    let scan = discover(&paths(&["src"]), &DiscoveryOptions::new(root)).unwrap();
+    write(root, ".git/index", "broken index");
+    let error = scan.scope.keeps(Path::new("src/old.ts")).unwrap_err();
+    assert_eq!(error.path(), Path::new("src/old.ts"));
+    assert!(error.to_string().contains("git check-ignore"), "{error}");
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn absent_paths_beneath_a_directory_link_are_outside_scope() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write(root, "real/live.ts", "");
+    if !link(&root.join("real"), &root.join("alias"), true) {
+        return;
+    }
+    for use_git in [false, true] {
+        if use_git {
+            git(root, &["init", "-q"]);
+        }
+        let scan = discover(&[], &DiscoveryOptions::new(root)).unwrap();
+        assert!(!scan.scope.keeps(Path::new("alias/old.ts")).unwrap());
+        assert!(scan.scope.keeps(Path::new("real/old.ts")).unwrap());
+    }
+}
+
 fn without_exclusions(
     cwd: &Path,
     roots: &[PathBuf],
