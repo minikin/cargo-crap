@@ -79,7 +79,7 @@ pub struct Analysis<'a> {
     pub scope: &'a dyn Scope,
     /// The measured coverage unit, which the crapts envelope requires.
     pub coverage_kind: Option<CoverageKind>,
-    /// Caller notices in report order.
+    /// Emitted before any baseline notice, in caller order.
     pub notices: &'a [String],
 }
 
@@ -221,8 +221,6 @@ pub fn run(
     })
 }
 
-/// Compares the whole eligible population, then writes the shown rows.
-/// Returns the full comparison's regression and gating signal counts.
 fn write_delta(
     settings: &Settings<'_>,
     eligible: &[CrapEntry],

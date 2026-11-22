@@ -1,6 +1,5 @@
 pub mod lcov;
 
-/// The unit a coverage percentage counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoverageKind {
     Statements,

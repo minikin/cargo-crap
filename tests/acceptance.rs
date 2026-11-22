@@ -10348,9 +10348,39 @@ fn cargo_crap_keeps_its_recorded_reports() {
             assert_eq!(doc["$schema"], schema);
         }
     }
-    // And the alternate brand with cargo-crap policy keeps its marker and baseline hint
-    for (_, _, output) in spec46_marker_reports(&SECOND_TOOL) {
-        assert!(output.starts_with(SECOND_TOOL.comment_marker), "{output}");
+    // And the alternate brand with cargo-crap policy keeps its URLs, marker and baseline hint
+    let sarif_settings = cargo_crap::run::Settings {
+        format: cargo_crap::report::Format::Sarif,
+        ..settings
+    };
+    let (sarif_bytes, _) = pipeline_report(
+        &SECOND_TOOL,
+        &sarif_settings,
+        &scope,
+        vec![current.clone()],
+        None,
+    );
+    let sarif: serde_json::Value = serde_json::from_slice(&sarif_bytes).unwrap();
+    let driver = &sarif["runs"][0]["tool"]["driver"];
+    assert_eq!(driver["version"], SECOND_TOOL.version);
+    assert_eq!(driver["informationUri"], SECOND_TOOL.info_uri);
+    assert_eq!(driver["rules"][0]["helpUri"], SECOND_TOOL.info_uri);
+    for format in [
+        cargo_crap::report::Format::Markdown,
+        cargo_crap::report::Format::PrComment,
+    ] {
+        let fmt_settings = cargo_crap::run::Settings { format, ..settings };
+        for base in [None, Some(&baseline)] {
+            let (out, _) = pipeline_report(
+                &SECOND_TOOL,
+                &fmt_settings,
+                &scope,
+                vec![current.clone()],
+                base,
+            );
+            let text = String::from_utf8(out).unwrap();
+            assert!(text.starts_with(SECOND_TOOL.comment_marker), "{text}");
+        }
     }
     let dir = tempfile::tempdir().unwrap();
     let malformed = dir.path().join("base.json");

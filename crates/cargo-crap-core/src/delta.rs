@@ -737,7 +737,6 @@ pub(crate) fn compare(
     }
 }
 
-/// A name without its terminal `#` ordinal: `hook()#2` has stem `hook()`.
 fn stem(name: &str) -> &str {
     match name.rsplit_once('#') {
         Some((head, digits))
@@ -750,7 +749,7 @@ fn stem(name: &str) -> &str {
 }
 
 fn rounded_delta(d: f64) -> f64 {
-    (d * 1e6).round() / 1e6
+    (d * 1e6).round() / 1e6 + 0.0
 }
 
 /// A row that is not open was withheld by the stem guard or already paired.
@@ -835,8 +834,6 @@ impl<'a> FullNamePairing<'a> {
         groups
     }
 
-    /// Pairs equal names whose files are each other's unique longest
-    /// common path suffix.
     fn pair_by_suffix(&mut self) {
         let at = |rows: &'a [CrapEntry], group: Vec<usize>| -> Vec<(usize, &'a Path)> {
             group
@@ -896,8 +893,6 @@ impl<'a> FullNamePairing<'a> {
     }
 }
 
-/// A pair across files records the baseline path, and an unchanged score
-/// there reads as a move.
 fn full_name_entry(
     current: &CrapEntry,
     baseline: Option<&CrapEntry>,
@@ -2436,6 +2431,9 @@ mod full_name_tests {
         ] {
             assert_eq!(rounded_delta(d), expected, "{d}");
         }
+        let tiny_neg = rounded_delta(-0.000_000_4);
+        assert_eq!(tiny_neg, 0.0);
+        assert!(tiny_neg.is_sign_positive());
     }
 
     fn row(
@@ -2453,10 +2451,16 @@ mod full_name_tests {
         }
     }
 
-    const FILES: [&str; 4] = ["a.ts", "src/a.ts", "b/a.ts", "c.ts"];
+    const FILES: [&str; 6] = [
+        "a.ts",
+        "src/a.ts",
+        "b/a.ts",
+        "c.ts",
+        "old/a/x.ts",
+        "new/a/x.ts",
+    ];
     const NAMES: [&str; 5] = ["f", "g", "h()", "h()#2", "h()#3"];
 
-    /// Rows with unique (file, full name) keys drawn from shared basenames and repeated stems.
     fn rows() -> impl Strategy<Value = Vec<CrapEntry>> {
         proptest::collection::vec((0..FILES.len(), 0..NAMES.len(), 1u32..40), 0..12).prop_map(
             |picks| {
@@ -2507,6 +2511,7 @@ mod full_name_tests {
         #[test]
         fn comparing_rows_with_themselves_leaves_every_row_unchanged(rows in rows()) {
             let report = compare(&rows, &rows, DEFAULT_EPSILON, PairPolicy::FileFunction);
+            prop_assert_eq!(report.entries.len(), rows.len());
             prop_assert!(report.removed.is_empty());
             for e in &report.entries {
                 prop_assert_eq!(e.status, DeltaStatus::Unchanged);

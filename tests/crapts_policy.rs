@@ -70,7 +70,6 @@ fn row(
     }
 }
 
-/// The caller's knobs, each at the crapts fixture default unless a case sets it.
 struct Knobs {
     tool: Tool,
     epsilon: f64,
@@ -125,7 +124,6 @@ impl Report {
     }
 }
 
-/// A JSON delta of `head` against `baseline` with only fail-regression enabled.
 fn compare(
     knobs: &Knobs,
     head: Vec<CrapEntry>,
@@ -499,7 +497,7 @@ fn scope_and_allows_apply_before_pairing() {
     };
     let head = vec![
         row("src/d.ts", "run", 1, 10.0),
-        row("src/b.ts", "skip", 1, 10.0),
+        row("src/b.ts", "skip", 1, 40.0),
     ];
     // When the caller compares those populations
     let report = compare(&knobs, head, baseline);
@@ -512,4 +510,6 @@ fn scope_and_allows_apply_before_pairing() {
         vec![("src/c.ts".to_owned(), "gone".to_owned(), 10.0)]
     );
     assert_eq!(report.json["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(report.outcome.crappy, 0);
+    assert_eq!(report.outcome.regressed, 0);
 }
