@@ -89,7 +89,7 @@ pub fn judge(
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Counts {
     pub touched: usize,
     pub new: usize,

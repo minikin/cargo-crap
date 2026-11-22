@@ -1,16 +1,30 @@
+mod common;
 mod support;
 
 use std::fmt::Write as _;
 use std::path::Path;
 
-use cargo_crap_core::entry::CrapEntry;
+use cargo_crap_core::coverage::CoverageKind;
+use cargo_crap_core::delta::{DEFAULT_EPSILON, load_crapts_baseline};
+use cargo_crap_core::entry::SortOrder;
+use cargo_crap_core::entry::{CrapEntry, ScopeDiagnostics, StrayFiles};
 use cargo_crap_core::filter::AllowSet;
-use cargo_crap_core::git::Hunk;
+use cargo_crap_core::git::{CommitId, Hunk, MergeBase};
+use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+use cargo_crap_core::report::{Format, Placement, Schemas, Section, Tool};
+use cargo_crap_core::run::{
+    self, Analysis, BaselineFilter, PreparedBaseline, RenderExtras, Scope, Settings,
+};
 use cargo_crap_core::score::crap;
+use cargo_crap_core::signals::SignalSettings;
 use crapts::changed::matching::{Ancestry, ChangedFile, Matching, RowId, Stage, classify};
+use crapts::changed::section::{ChangedSection, Comparison, SkipReason, Skipped};
 use crapts::changed::verdict::{Change, Counts, Edits, Inputs, Judged, Verdict, evaluate};
 use crapts::{Mode, Row, Side, analyze};
 use proptest::prelude::*;
+use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
+use serde_json::value::RawValue;
+use serde_json::{Value, json};
 
 fn func(
     name: &str,
@@ -1117,5 +1131,525 @@ proptest! {
         let mut original = matching.removed.clone();
         original.sort();
         prop_assert_eq!(removed, original);
+    }
+}
+
+fn commit(digit: char) -> CommitId {
+    CommitId::parse(&digit.to_string().repeat(40)).unwrap()
+}
+
+fn comparison() -> Comparison {
+    Comparison {
+        rev: "main".to_owned(),
+        commit: commit('b'),
+        merge_base: MergeBase {
+            commit: commit('a'),
+            count: 1,
+            shallow: false,
+        },
+        head: commit('c'),
+        dirty: true,
+    }
+}
+
+/// The changed object of "The changed object records the comparison and every touched row".
+fn recorded_raw() -> String {
+    let base = format!("{}\n{}", func("legacy", 10), func("gone", 3));
+    let head = format!("{}\n{}", func("legacy", 11), func("fresh", 2));
+    let pair = Pair::new("src/app.ts", &base, &head);
+    let judged = pair.judged(&pair.uncovered(), &[]);
+    let skipped = [Skipped {
+        path: "src/dist/x.ts".to_owned(),
+        reason: SkipReason::Excluded,
+    }];
+    let section = ChangedSection::new(&comparison(), &judged, &skipped, 30.0);
+    section.json().get().to_owned()
+}
+
+fn recorded() -> Value {
+    serde_json::from_str(&recorded_raw()).unwrap()
+}
+
+/// An object's members in written order: `Value` sorts its keys.
+struct Members(Vec<(String, Box<RawValue>)>);
+
+impl<'de> Deserialize<'de> for Members {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> Visitor<'de> for Visit {
+            type Value = Members;
+
+            fn expecting(
+                &self,
+                f: &mut std::fmt::Formatter<'_>,
+            ) -> std::fmt::Result {
+                f.write_str("an object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Members, A::Error> {
+                let mut members = Vec::new();
+                while let Some(member) = map.next_entry()? {
+                    members.push(member);
+                }
+                Ok(Members(members))
+            }
+        }
+        deserializer.deserialize_map(Visit)
+    }
+}
+
+fn keys(raw: &str) -> Vec<String> {
+    let Members(members) = serde_json::from_str(raw).unwrap();
+    members.into_iter().map(|(key, _)| key).collect()
+}
+
+fn member(
+    raw: &str,
+    key: &str,
+) -> String {
+    let Members(members) = serde_json::from_str(raw).unwrap();
+    let (_, value) = members.into_iter().find(|(k, _)| k == key).unwrap();
+    value.get().to_owned()
+}
+
+fn element(
+    raw: &str,
+    index: usize,
+) -> String {
+    let items: Vec<Box<RawValue>> = serde_json::from_str(raw).unwrap();
+    items[index].get().to_owned()
+}
+
+#[test]
+fn changed_v1_rejects_a_malformed_changed_object() {
+    let schema = common::compile("schemas/crapts/changed-v1.json");
+    // Given
+    let valid = recorded();
+    assert!(schema.is_valid(&valid), "{valid:#}");
+    let cases: [(&str, Option<Value>, &str); 11] = [
+        ("/entries/0/base_cyclomatic", None, "/entries/0"),
+        (
+            "/entries/1/candidates",
+            Some(json!([{"function": "f", "line": 1, "cyclomatic": 1}])),
+            "/entries/1",
+        ),
+        ("/entries/1/change", Some(json!("ambiguous")), "/entries/1"),
+        (
+            "/entries/0/change",
+            Some(json!("renamed")),
+            "/entries/0/change",
+        ),
+        (
+            "/entries/1/verdict",
+            Some(json!("warn")),
+            "/entries/1/verdict",
+        ),
+        (
+            "/skipped/0/reason",
+            Some(json!("generated")),
+            "/skipped/0/reason",
+        ),
+        (
+            "/base/merge_base",
+            Some(json!("a".repeat(39))),
+            "/base/merge_base",
+        ),
+        ("/counts/extra", Some(json!(0)), "/counts"),
+        ("/counts/coverage_null", None, "/counts"),
+        ("/name_scheme", Some(json!(2)), "/name_scheme"),
+        (
+            "/base/merge_base_count",
+            Some(json!(0)),
+            "/base/merge_base_count",
+        ),
+    ];
+    for (pointer, value, location) in cases {
+        // When
+        let mut changed = valid.clone();
+        let (parent, key) = pointer.rsplit_once('/').unwrap();
+        let object = changed
+            .pointer_mut(parent)
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        match value {
+            Some(value) => drop(object.insert(key.to_owned(), value)),
+            None => drop(object.remove(key)),
+        }
+        // Then
+        let paths: Vec<String> = schema
+            .iter_errors(&changed)
+            .map(|error| error.instance_path().as_str().to_owned())
+            .collect();
+        assert!(
+            paths.iter().any(|path| path == location),
+            "{location}: {paths:?}"
+        );
+    }
+}
+
+#[test]
+fn the_changed_object_is_written_in_schema_order() {
+    let raw = recorded_raw();
+    let changed = recorded();
+    assert_eq!(
+        keys(&raw),
+        [
+            "$schema",
+            "version",
+            "name_scheme",
+            "threshold",
+            "base",
+            "head",
+            "entries",
+            "removed",
+            "skipped",
+            "counts"
+        ]
+    );
+    assert_eq!(
+        changed["$schema"],
+        "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/changed-v1.json"
+    );
+    assert_eq!(changed["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(changed["name_scheme"], 1);
+    assert_eq!(changed["threshold"].as_f64(), Some(30.0));
+    let (a, b, c) = ("a".repeat(40), "b".repeat(40), "c".repeat(40));
+    assert_eq!(
+        changed["base"],
+        json!({"rev": "main", "commit": b, "merge_base": a, "merge_base_count": 1, "shallow": false})
+    );
+    assert_eq!(
+        keys(&member(&raw, "base")),
+        ["rev", "commit", "merge_base", "merge_base_count", "shallow"]
+    );
+    assert_eq!(changed["head"], json!({"commit": c, "dirty": true}));
+}
+
+#[test]
+fn the_changed_object_records_each_entry_in_schema_order() {
+    let raw = recorded_raw();
+    let changed = recorded();
+    let entries = member(&raw, "entries");
+    let legacy = &changed["entries"][0];
+    assert_eq!(
+        keys(&element(&entries, 0)),
+        [
+            "file",
+            "function",
+            "line",
+            "end_line",
+            "cyclomatic",
+            "coverage",
+            "crap",
+            "change",
+            "base_line",
+            "base_cyclomatic",
+            "cyclomatic_delta",
+            "verdict",
+            "reason"
+        ]
+    );
+    assert_eq!(
+        (
+            &legacy["file"],
+            &legacy["function"],
+            &legacy["line"],
+            &legacy["end_line"]
+        ),
+        (
+            &json!("src/app.ts"),
+            &json!("legacy"),
+            &json!(1),
+            &json!(13)
+        )
+    );
+    assert_eq!(
+        (
+            &legacy["cyclomatic"],
+            &legacy["base_cyclomatic"],
+            &legacy["cyclomatic_delta"]
+        ),
+        (&json!(11), &json!(10), &json!(1))
+    );
+    assert_eq!(
+        (&legacy["change"], &legacy["verdict"]),
+        (&json!("modified"), &json!("fail"))
+    );
+    assert_eq!(
+        legacy["reason"],
+        "complexity rose from 10 to 11, CRAP 132.0 above 30"
+    );
+    assert_eq!(legacy["coverage"].as_f64(), Some(0.0));
+    assert_eq!(legacy["crap"].as_f64(), Some(132.0));
+}
+
+#[test]
+fn the_changed_object_records_new_entries_removals_skips_and_counts() {
+    let raw = recorded_raw();
+    let changed = recorded();
+    let entries = member(&raw, "entries");
+    let fresh = &changed["entries"][1];
+    assert_eq!(
+        keys(&element(&entries, 1)),
+        [
+            "file",
+            "function",
+            "line",
+            "end_line",
+            "cyclomatic",
+            "coverage",
+            "crap",
+            "change",
+            "verdict",
+            "reason"
+        ]
+    );
+    assert_eq!(
+        (&fresh["function"], &fresh["change"]),
+        (&json!("fresh"), &json!("new"))
+    );
+    assert_eq!(
+        (&fresh["verdict"], &fresh["reason"]),
+        (&json!("pass"), &json!("CRAP 6.0 at or below 30"))
+    );
+    assert_eq!(
+        changed["removed"],
+        json!([{"file": "src/app.ts", "function": "gone", "base_line": 14, "base_cyclomatic": 3}])
+    );
+    assert_eq!(
+        changed["skipped"],
+        json!([{"path": "src/dist/x.ts", "reason": "excluded"}])
+    );
+    assert_eq!(
+        changed["counts"],
+        json!({"touched": 2, "new": 1, "ambiguous": 0, "modified": 1, "worse": 1, "fail": 1, "over": 0,
+               "allowed": 0, "missing_skipped": 0, "coverage_null": 0})
+    );
+    assert_eq!(
+        keys(&member(&raw, "counts")),
+        [
+            "touched",
+            "new",
+            "ambiguous",
+            "modified",
+            "worse",
+            "fail",
+            "over",
+            "allowed",
+            "missing_skipped",
+            "coverage_null"
+        ]
+    );
+}
+
+#[test]
+fn a_moved_or_ambiguous_entry_names_its_base_file_or_candidates() {
+    let schema = common::compile("schemas/crapts/changed-v1.json");
+    let outer = |argument: &str| {
+        format!(
+            "function outer(x) {{\n  class K {{\n    @dec({argument}) m() {{}}\n  }}\n  return 0\n}}\n"
+        )
+    };
+    let base = analyzed("src/old.ts", &outer("x"), Side::Base);
+    let head = analyzed("src/new.ts", &outer("x ? 1 : 2"), Side::Head);
+    let hooks_base = analyzed(
+        "src/h.ts",
+        &format!("{}{}", callback(5, "a"), callback(15, "b")),
+        Side::Base,
+    );
+    let hooks_head = analyzed("src/h.ts", &callback(12, "c"), Side::Head);
+    let files = [
+        (base.as_slice(), &[][..], Edits::Hunks(&[])),
+        (&[][..], head.as_slice(), Edits::Added),
+        (hooks_base.as_slice(), hooks_head.as_slice(), Edits::Added),
+    ];
+    let scores: Vec<_> = head
+        .iter()
+        .chain(&hooks_head)
+        .map(|row| score(row, Some(0.0), 0.0))
+        .collect();
+    let judged = judge_files(&files, &scores, &[]);
+    let skipped = [
+        Skipped {
+            path: "src/z.ts".to_owned(),
+            reason: SkipReason::Symlink,
+        },
+        Skipped {
+            path: "src/a.ts".to_owned(),
+            reason: SkipReason::OutsidePath,
+        },
+    ];
+    let section = ChangedSection::new(&comparison(), &judged, &skipped, 30.0);
+    let changed: Value = serde_json::from_str(section.json().get()).unwrap();
+    assert!(schema.is_valid(&changed), "{changed:#}");
+    let hook = &changed["entries"][0];
+    assert_eq!(hook["change"], "ambiguous");
+    assert_eq!(
+        hook["candidates"],
+        json!([{"function": "useEffect()", "line": 1, "cyclomatic": 5},
+               {"function": "useEffect()#2", "line": 8, "cyclomatic": 15}])
+    );
+    let moved = &changed["entries"][1];
+    assert_eq!(moved["function"], "outer");
+    assert_eq!(
+        (&moved["file"], &moved["base_file"]),
+        (&json!("src/new.ts"), &json!("src/old.ts"))
+    );
+    assert_eq!(moved["base_line"], 1);
+    assert_eq!(
+        (
+            &moved["base_cyclomatic"],
+            &moved["cyclomatic"],
+            &moved["cyclomatic_delta"]
+        ),
+        (&json!(1), &json!(2), &json!(1))
+    );
+    assert_eq!(
+        changed["skipped"][0],
+        json!({"path": "src/a.ts", "reason": "outside-path"})
+    );
+    assert_eq!(changed["skipped"][1]["reason"], "symlink");
+    assert_eq!(section.failures(), Some(1));
+    assert_eq!(section.json_key(), "changed");
+    assert_eq!(section.placement(), Placement::Lead);
+}
+
+const CRAPTS: Tool = Tool {
+    policy: Policy {
+        envelope: EnvelopeKind::CraptsV1,
+        pairing: PairPolicy::FileFunction,
+        fail_above_counts: Population::All,
+        summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
+        tie_order: TieOrder::FileFunctionLine,
+    },
+    name: "crapts",
+    version: env!("CARGO_PKG_VERSION"),
+    info_uri: "https://example.test/crapts",
+    schemas: Schemas {
+        report: "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v1.json",
+        delta: "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/delta-v1.json",
+    },
+    comment_marker: "<!-- crapts-report -->",
+    baseline_hint: "crapts --format json",
+};
+
+struct Everything;
+
+impl Scope for Everything {
+    fn keeps(
+        &self,
+        _: &Path,
+    ) -> bool {
+        true
+    }
+}
+
+fn report(
+    baseline: Option<&PreparedBaseline>,
+    sections: &[&dyn Section],
+) -> Value {
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = Settings {
+        allow: &allow,
+        min: None,
+        top: None,
+        sort: SortOrder::Crap,
+        threshold: 30.0,
+        epsilon: DEFAULT_EPSILON,
+        signals: &signals,
+        fail_above: false,
+        fail_regression: false,
+        format: Format::Json,
+        summary: false,
+        show_unchanged: false,
+        uncovered_hints: false,
+        width: None,
+        links: None,
+        cwd: Path::new(""),
+        workspace_root: None,
+        fail_sections: false,
+    };
+    let row = CrapEntry {
+        file: "src/app.ts".into(),
+        function: "legacy".to_owned(),
+        line: 1,
+        cyclomatic: 11.0,
+        coverage: Some(0.0),
+        crap: 132.0,
+        ..CrapEntry::default()
+    };
+    let mut out = Vec::new();
+    run::run(
+        &CRAPTS,
+        &settings,
+        Analysis {
+            entries: vec![row],
+            diagnostics: Some(ScopeDiagnostics {
+                analyzed_files: 0,
+                lcov_files: 0,
+                matched_files: 0,
+                source_only: StrayFiles::from_raw_spellings(&[]),
+                lcov_only: StrayFiles::from_raw_spellings(&[]),
+            }),
+            scope: &Everything,
+            coverage_kind: Some(CoverageKind::Lines),
+            notices: &[],
+        },
+        baseline,
+        sections,
+        &RenderExtras::default(),
+        &mut out,
+    )
+    .unwrap();
+    serde_json::from_slice(&out).unwrap()
+}
+
+#[test]
+fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
+    // Given
+    let report_schema = common::compile("schemas/crapts/report-v1.json");
+    let delta_schema = common::compile("schemas/crapts/delta-v1.json");
+    let base = format!("{}\n{}", func("legacy", 10), func("gone", 3));
+    let head = format!("{}\n{}", func("legacy", 11), func("fresh", 2));
+    let pair = Pair::new("src/app.ts", &base, &head);
+    let judged = pair.judged(&pair.uncovered(), &[]);
+    let section = ChangedSection::new(&comparison(), &judged, &[], 30.0);
+    let dir = tempfile::tempdir().unwrap();
+    let saved = dir.path().join("base.json");
+    std::fs::write(&saved, report(None, &[]).to_string()).unwrap();
+    let loaded = load_crapts_baseline(&saved, &CRAPTS, CoverageKind::Lines).unwrap();
+    let allow = AllowSet::compile(&[]).unwrap();
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+    for (baseline, schema) in [(None, &report_schema), (Some(&prepared), &delta_schema)] {
+        // When
+        let mut with = report(baseline, &[&section]);
+        let without = report(baseline, &[]);
+        // Then
+        assert!(schema.is_valid(&with), "{with:#}");
+        assert!(schema.is_valid(&without), "{without:#}");
+        assert!(without.get("changed").is_none());
+        with["changed"].as_object_mut().unwrap().remove("counts");
+        assert!(!schema.is_valid(&with));
+    }
+}
+
+#[test]
+fn the_section_reports_the_fail_count_as_its_failures() {
+    for fail in [0, 2] {
+        let judged = Judged {
+            entries: Vec::new(),
+            removed: Vec::new(),
+            counts: Counts {
+                fail,
+                ..Counts::default()
+            },
+        };
+        let section = ChangedSection::new(&comparison(), &judged, &[], 30.0);
+        assert_eq!(section.failures(), Some(fail));
     }
 }

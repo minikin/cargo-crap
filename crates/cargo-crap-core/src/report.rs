@@ -57,7 +57,7 @@ pub(crate) use json::{
     reject_cargo_crap_json_sections, render_crapts_delta_json, render_crapts_json,
 };
 pub use links::SourceLinks;
-pub use section::{Placement, Section};
+pub use section::{Placement, Section, WriteResult};
 pub(crate) use summary::render_delta_summary_lines;
 pub use summary::{render_delta_counts, render_delta_summary, render_summary};
 pub use tool::{Schemas, Tool};

@@ -71,8 +71,8 @@
       "description": "Eligible baseline functions absent from the current run."
     },
     "changed": {
-      "type": "object",
-      "description": "Optional changed-function section payload."
+      "$ref": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/changed-v1.json",
+      "description": "Optional changed-function section, present with --base."
     },
     "diagnostics": {
       "$ref": "#/definitions/ScopeDiagnostics",
