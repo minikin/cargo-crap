@@ -6,11 +6,12 @@ use crate::{Discovery, DiscoveryScope, Mode, analyze};
 use cargo_crap_core::coverage::CoverageKind;
 use cargo_crap_core::entry::sort_entries;
 use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
-use cargo_crap_core::report::{Schemas, Tool};
+use cargo_crap_core::report::{self, Schemas, SourceLinks, Tool};
 use cargo_crap_core::run::{self, Analysis, RenderExtras, Scope, Settings};
 use cargo_crap_core::signals::SignalSettings;
+use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -99,6 +100,26 @@ fn analysis(
     }
 }
 
+fn color_enabled(
+    stdout: bool,
+    terminal: bool,
+    no: Option<&OsStr>,
+    force: Option<&OsStr>,
+) -> bool {
+    let disabled = no.is_some_and(|v| !v.is_empty());
+    let forced = force.is_some_and(|v| !v.is_empty() && v != "0");
+    stdout && !disabled && (terminal || forced)
+}
+
+fn source_links(
+    url: Option<&str>,
+    reference: Option<&str>,
+) -> Option<SourceLinks> {
+    let url = url.filter(|s| !s.is_empty())?;
+    let reference = reference.filter(|s| !s.is_empty())?;
+    Some(SourceLinks::new(url.to_owned(), reference.to_owned()))
+}
+
 pub(super) fn score(
     cwd: &Path,
     worktree: Worktree,
@@ -118,6 +139,18 @@ pub(super) fn score(
         worktree,
     )?;
     let result = measure(cwd, options, coverage, &discovery, err)?;
+    let output = options.output.value.as_deref();
+    let to_stdout = output.is_none();
+    report::set_color_enabled(color_enabled(
+        to_stdout,
+        std::io::stdout().is_terminal(),
+        std::env::var_os("NO_COLOR").as_deref(),
+        std::env::var_os("FORCE_COLOR").as_deref(),
+    ));
+    let links = source_links(
+        options.repo_url.value.as_deref(),
+        options.commit_ref.value.as_deref(),
+    );
     let settings = Settings {
         allow: &options.allow_set,
         min: options.min.value,
@@ -135,15 +168,14 @@ pub(super) fn score(
         summary: options.summary.value,
         show_unchanged: false,
         uncovered_hints: options.uncovered_hints.value,
-        width: None,
-        links: None,
-        pr_comment_marker: None,
-        repo_prefix: None,
+        width: report::output_width(to_stdout),
+        links: links.as_ref(),
+        pr_comment_marker: Some(&options.comment_marker.value),
+        repo_prefix: Some(discovery.scope.repo_prefix()),
         cwd,
         workspace_root: None,
         fail_sections: false,
     };
-    let output = options.output.value.as_deref();
     let mut file;
     let (out, destination): (&mut dyn Write, &Path) = if let Some(path) = output {
         file = fs::File::create(cwd.join(path)).map_err(|e| InputError::at(path, e))?;
@@ -217,6 +249,56 @@ mod tests {
             (CoverageUnit::Statements, CoverageKind::Statements),
         ] {
             assert_eq!(coverage_kind(unit), kind);
+        }
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    #[test]
+    fn explicit_colour_uses_the_stdout_sink_and_honours_no_color_first() {
+        for (stdout, terminal, no, force, expected) in [
+            (true, true, None, None, true),
+            (true, false, None, None, false),
+            (true, false, None, Some("1"), true),
+            (true, false, None, Some("0"), false),
+            (true, true, None, Some("0"), true),
+            (true, true, Some("1"), Some("1"), false),
+            (false, true, None, Some("1"), false),
+            (false, false, None, None, false),
+            (true, true, Some(""), None, true),
+            (true, false, None, Some(""), false),
+        ] {
+            assert_eq!(
+                color_enabled(stdout, terminal, no.map(OsStr::new), force.map(OsStr::new)),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn only_complete_link_pairs_enable_markdown_links() {
+        for (url, reference, expected) in [
+            (None, None, false),
+            (Some("https://example.test/r"), None, false),
+            (Some(""), Some("abc"), false),
+            (Some("url"), Some(""), false),
+            (None, Some("abc"), false),
+            (Some("https://example.test/r"), Some("abc"), true),
+        ] {
+            assert_eq!(source_links(url, reference).is_some(), expected);
+        }
+    }
+    proptest::proptest! {
+        #[test]
+        fn a_marker_occupies_exactly_one_nonempty_line(value in ".{0,32}", suffix in ".{0,16}") {
+            let expected = !value.is_empty() && !value.contains(['\r', '\n']);
+            proptest::prop_assert_eq!(super::super::marker(&value).is_ok(), expected);
+            for separator in ['\r', '\n'] {
+                let invalid = format!("{value}{separator}{suffix}");
+                proptest::prop_assert!(super::super::marker(&invalid).is_err());
+            }
         }
     }
 }

@@ -1146,3 +1146,646 @@ fn the_absolute_report_schema_accepts_the_cli_signed_threshold() {
         .unwrap();
     assert_eq!(doc["threshold"].as_f64(), Some(-10.));
 }
+
+fn rendered(
+    cwd: &Path,
+    format: &str,
+    extra: &[&str],
+    code: i32,
+) -> String {
+    let mut args = vec!["--format", format, "--fail-above"];
+    args.extend_from_slice(extra);
+    let out = score(cwd, &args);
+    check(&out, code);
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+const MARKER: &str = "<!-- crapts-report -->";
+
+#[test]
+fn each_format_produces_a_usable_absolute_report() {
+    let d = fixture();
+    let run = |format| rendered(d.path(), format, &[], 1);
+    let text = run("text");
+    assert!(text.ends_with("\u{2717} 1/3 function(s) exceed CRAP threshold 6.\n"));
+    assert_eq!(text, run("human"));
+    assert_eq!(text.as_bytes(), score(d.path(), &["--fail-above"]).stdout);
+    let md = run("markdown");
+    let pr = run("pr-comment");
+    assert_eq!(md.lines().next(), Some(MARKER));
+    assert_eq!(pr.lines().next(), Some(MARKER));
+    for name in ["hot", "edge", "cold"] {
+        assert!(text.contains(name));
+        assert!(md.contains(name));
+    }
+    assert!(
+        pr.contains("hot")
+            && pr.contains("3 function(s) analyzed")
+            && !pr.contains("cold")
+            && !pr.contains("edge")
+    );
+    assert_eq!(
+        names(&serde_json::from_str(&run("json")).unwrap()),
+        ["hot", "edge", "cold"]
+    );
+    let github = run("github");
+    assert_eq!(github.lines().count(), 1);
+    assert!(github.starts_with("::warning "));
+    assert!(
+        github.contains("file=src/score.ts") && github.contains("line=1") && github.contains("hot")
+    );
+    let sarif: Value = serde_json::from_str(&run("sarif")).unwrap();
+    assert_eq!(sarif["version"], "2.1.0");
+    let log = &sarif["runs"][0];
+    assert_eq!(log["tool"]["driver"]["name"], "crapts");
+    assert_eq!(log["results"].as_array().unwrap().len(), 1);
+    let result = &log["results"][0];
+    assert_eq!(result["ruleId"], "crap/high-score");
+    assert_eq!(result["level"], "warning");
+    let loc = &result["locations"][0]["physicalLocation"];
+    assert_eq!(loc["artifactLocation"]["uri"], "src/score.ts");
+    assert_eq!(loc["region"]["startLine"], 1);
+    let badge: Value = serde_json::from_str(&run("shields")).unwrap();
+    assert_eq!(
+        badge,
+        json!({"schemaVersion":1,"label":"CRAP > 6","message":"1 crappy","color":"yellow"})
+    );
+}
+
+#[test]
+fn a_passing_run_has_no_findings_in_any_format() {
+    let d = fixture();
+    let run = |f| rendered(d.path(), f, &["--threshold", "12"], 0);
+    assert!(
+        run("text").ends_with("\u{2713} 3 function(s) analyzed; none exceed CRAP threshold 12.\n")
+    );
+    for format in ["markdown", "pr-comment"] {
+        assert_eq!(run(format).lines().next(), Some(MARKER));
+    }
+    let doc: Value = serde_json::from_str(&run("json")).unwrap();
+    assert_eq!(doc["summary"]["crappy"], 0);
+    assert_eq!(run("github"), "");
+    let v: Value = serde_json::from_str(&run("sarif")).unwrap();
+    assert_eq!(v["runs"][0]["tool"]["driver"]["name"], "crapts");
+    assert_eq!(v["runs"][0]["results"], json!([]));
+    let badge: Value = serde_json::from_str(&run("shields")).unwrap();
+    assert_eq!(badge["color"], "brightgreen");
+    assert_eq!(badge["message"], "passing");
+}
+
+fn many_functions(
+    dir: &Path,
+    decisions: &[usize],
+) {
+    use std::fmt::Write;
+    let mut text = String::new();
+    let mut lcov = String::from("SF:many.ts\n");
+    for (i, &n) in decisions.iter().enumerate() {
+        writeln!(
+            text,
+            "function row{i:02}(x: boolean) {{ {}return 0; }}",
+            "if(x) return 1; ".repeat(n)
+        )
+        .unwrap();
+        writeln!(lcov, "DA:{},0", i + 1).unwrap();
+    }
+    source(dir, "many.ts", &text);
+    fs::write(dir.join("hits.data"), lcov + "end_of_record\n").unwrap();
+}
+
+#[test]
+fn the_badge_changes_colour_at_six_findings() {
+    let d = tempfile::tempdir().unwrap();
+    for (n, color) in [(1, "yellow"), (5, "yellow"), (6, "red")] {
+        many_functions(d.path(), &vec![2; n]);
+        let badge: Value = serde_json::from_str(&rendered(d.path(), "shields", &[], 1)).unwrap();
+        assert_eq!(badge["label"], "CRAP > 6");
+        assert_eq!(badge["color"], color);
+        assert_eq!(badge["message"], format!("{n} crappy"));
+    }
+}
+
+#[test]
+fn an_empty_display_slice_still_runs_the_gate_on_every_eligible_row() {
+    let d = fixture();
+    let run = |f| rendered(d.path(), f, &["--min", "13"], 1);
+    assert_eq!(run("text"), "No functions found.\n");
+    assert_eq!(run("github"), "");
+    let sarif: Value = serde_json::from_str(&run("sarif")).unwrap();
+    assert_eq!(sarif["runs"][0]["results"], json!([]));
+    assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "crapts");
+    assert_eq!(
+        serde_json::from_str::<Value>(&run("shields")).unwrap(),
+        json!({"schemaVersion":1,"color":"brightgreen","label":"CRAP > 6","message":"passing"})
+    );
+}
+
+#[test]
+fn the_human_renderer_reports_the_population_it_receives() {
+    let d = fixture();
+    assert!(
+        rendered(d.path(), "text", &["--top", "1"], 1)
+            .ends_with("\u{2717} 1/1 function(s) exceed CRAP threshold 6.\n")
+    );
+    fs::create_dir(d.path().join("empty")).unwrap();
+    fs::write(d.path().join("hits.data"), "{}").unwrap();
+    assert_eq!(
+        rendered(d.path(), "text", &["empty"], 0),
+        "No functions found.\n"
+    );
+}
+
+#[test]
+fn summary_respects_the_format_and_the_selected_rows() {
+    let d = fixture();
+    for f in ["text", "markdown", "pr-comment"] {
+        let full = rendered(d.path(), f, &["--summary"], 1);
+        let empty = rendered(d.path(), f, &["--summary", "--min", "13"], 1);
+        assert!(
+            full.contains("Analyzed: 3")
+                && full.contains("Crappy: 1")
+                && full.contains("Worst: hot (CRAP 12.0)"),
+            "{full}"
+        );
+        assert!(
+            empty.contains("Analyzed: 0")
+                && empty.contains("Crappy: 0")
+                && !empty.contains("Worst"),
+            "{empty}"
+        );
+        let by_file = rendered(d.path(), f, &["--summary", "--sort", "file"], 1);
+        assert!(by_file.contains("Worst: cold (CRAP 1.0)"), "{by_file}");
+        if f != "text" {
+            assert_eq!(full.lines().next(), Some(MARKER));
+            assert_eq!(empty.lines().next(), Some(MARKER));
+        }
+    }
+    for f in ["json", "github", "sarif", "shields"] {
+        assert_eq!(
+            rendered(d.path(), f, &["--summary", "--min", "13"], 1),
+            rendered(d.path(), f, &["--min", "13"], 1)
+        );
+    }
+}
+
+fn link_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+    let d = tempfile::tempdir().unwrap();
+    let cwd = d.path().join("packages/app");
+    source(
+        &cwd,
+        "src/score #1.ts",
+        "function hot(a,b) { if(a) return 1; if(b) return 2; return 0; }",
+    );
+    fs::write(
+        cwd.join("hits.data"),
+        "SF:src/score #1.ts\nDA:1,0\nend_of_record\n",
+    )
+    .unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    (d, cwd)
+}
+
+fn link_output(
+    cwd: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> String {
+    let out = binary(cwd)
+        .args(["--coverage", "hits.data", "--threshold", "6"])
+        .args(args)
+        .envs(env.iter().copied())
+        .output()
+        .unwrap();
+    check(&out, 0);
+    assert_eq!(out.stderr.as_slice(), b"");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+const GITHUB_ENV: [(&str, &str); 3] = [
+    ("GITHUB_SERVER_URL", "https://github.com"),
+    ("GITHUB_REPOSITORY", "org/repo"),
+    ("GITHUB_SHA", "envsha"),
+];
+
+#[test]
+fn pr_comment_markers_and_links_belong_to_the_invocation() {
+    let (_d, cwd) = link_fixture();
+    let marker = "<!-- local -->";
+    let mut args = vec![
+        "--format",
+        "pr-comment",
+        "--commit-ref",
+        "abc",
+        "--comment-marker",
+        marker,
+    ];
+    let full = link_output(&cwd, &args, &GITHUB_ENV);
+    assert_eq!(
+        full.matches("https://github.com/org/repo/blob/abc/packages/app/src/score%20%231.ts#L1")
+            .count(),
+        2
+    );
+    args.push("--summary");
+    let summary = link_output(&cwd, &args, &GITHUB_ENV);
+    for report in [full, summary] {
+        assert_eq!(report.lines().next(), Some(marker));
+        assert_eq!(report.matches(marker).count(), 1);
+    }
+    assert_eq!(
+        link_output(&cwd, &["--format", "pr-comment"], &[])
+            .lines()
+            .next(),
+        Some(MARKER)
+    );
+}
+
+#[test]
+fn repository_paths_are_projected_only_for_link_and_annotation_destinations() {
+    let (_d, cwd) = link_fixture();
+    let url = "https://github.com/org/repo/blob/envsha/packages/app/src/score%20%231.ts#L1";
+    let md = link_output(
+        &cwd,
+        &["--format", "markdown", "--comment-marker", "local"],
+        &GITHUB_ENV,
+    );
+    assert_eq!(md.matches(url).count(), 2);
+    assert_eq!(md.lines().next(), Some(MARKER));
+    let gh = link_output(&cwd, &["--format", "github"], &GITHUB_ENV);
+    assert!(gh.contains("file=packages/app/src/score #1.ts") && gh.contains("line=1"));
+    let sarif: Value =
+        serde_json::from_str(&link_output(&cwd, &["--format", "sarif"], &GITHUB_ENV)).unwrap();
+    let loc = &sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"];
+    assert_eq!(
+        loc["artifactLocation"]["uri"],
+        "packages/app/src/score #1.ts"
+    );
+    assert_eq!(loc["region"]["startLine"], 1);
+    assert_eq!(
+        json_score(&cwd, &[], 0)["entries"][0]["file"],
+        "src/score #1.ts"
+    );
+    for f in ["markdown", "pr-comment"] {
+        for pair in [["--repo-url", "https://host"], ["--commit-ref", "abc"]] {
+            let report = link_output(&cwd, &["--format", f, pair[0], pair[1]], &[]);
+            assert!(!report.contains("]("));
+            assert!(report.contains("hot"));
+        }
+    }
+}
+
+#[test]
+fn worktree_boundaries_and_report_paths_when_git_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    let cwd = repo.join("packages/app");
+    measured_files(&cwd, &[("src/hot.ts", "hot")]);
+    fs::write(dir.path().join(".crapts.toml"), "threshold=99").unwrap();
+    fs::create_dir(repo.join(".git")).unwrap();
+    let run = |args: &[&str]| {
+        let out = binary(&cwd)
+            .env("PATH", dir.path().join("no-git"))
+            .args(args)
+            .output()
+            .unwrap();
+        check(&out, 0);
+        String::from_utf8(out.stdout).unwrap()
+    };
+    for gitfile in [false, true] {
+        if gitfile {
+            fs::remove_dir(repo.join(".git")).unwrap();
+            fs::write(repo.join(".git"), "gitdir: ../gitdir\n").unwrap();
+        }
+        let config: Value = serde_json::from_str(&run(&["--print-config"])).unwrap();
+        assert!(config["config_path"].is_null());
+        assert_eq!(config["settings"]["threshold"]["value"].as_f64(), Some(30.));
+        let md = run(&[
+            "--coverage",
+            "hits.data",
+            "--format",
+            "markdown",
+            "--repo-url",
+            "https://example.org/r",
+            "--commit-ref",
+            "abc",
+        ]);
+        assert!(md.contains("https://example.org/r/blob/abc/packages/app/src/hot.ts#L1"));
+        let v: Value =
+            serde_json::from_str(&run(&["--coverage", "hits.data", "--format", "json"])).unwrap();
+        assert_eq!(v["entries"][0]["file"], "src/hot.ts");
+    }
+}
+
+#[test]
+fn workflow_commands_escape_properties_and_already_encoded_names() {
+    let d = tempfile::tempdir().unwrap();
+    let cwd = d.path().join("packages/app");
+    source(
+        &cwd,
+        "src/a,b.ts",
+        "class C { 'a/b'(a,b) { if(a) return 1; if(b) return 2; return 0; } }",
+    );
+    fs::write(
+        cwd.join("hits.data"),
+        "SF:src/a,b.ts\nDA:1,0\nend_of_record",
+    )
+    .unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let out = rendered(&cwd, "github", &[], 1);
+    assert!(
+        out.contains("file=packages/app/src/a%2Cb.ts") && out.contains("a%252Fb"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_pr_comment_caps_the_absolute_findings_table_at_25_rows() {
+    let d = tempfile::tempdir().unwrap();
+    let mut counts = vec![2; 27];
+    counts.push(0);
+    many_functions(d.path(), &counts);
+    let pr = rendered(d.path(), "pr-comment", &["--comment-marker", "mine"], 1);
+    assert_eq!(pr.lines().next(), Some("mine"));
+    assert_eq!(pr.matches("row").count(), 25);
+    assert!(!pr.contains("row27"));
+    assert!(pr.contains("and 2 more") && pr.contains("28 function(s) analyzed"));
+}
+
+#[test]
+fn a_marker_occupies_exactly_one_nonempty_line() {
+    let d = fixture();
+    for value in ["", "a\rb", "a\nb"] {
+        rejected(
+            d.path(),
+            &[
+                "--coverage",
+                "hits.data",
+                "--fail-above",
+                "--format",
+                "pr-comment",
+                "--comment-marker",
+                value,
+            ],
+            "--comment-marker",
+        );
+    }
+}
+
+#[test]
+fn uncovered_cells_show_three_ranges_and_the_number_omitted() {
+    use std::fmt::Write;
+    let d = tempfile::tempdir().unwrap();
+    source(
+        d.path(),
+        "f.ts",
+        &format!("function f() {{\n{}return;\n}}", "work();\n".repeat(9)),
+    );
+    let mut lcov = String::from("SF:f.ts\n");
+    for line in 1..=11 {
+        writeln!(lcov, "DA:{line},{}", line % 2).unwrap();
+    }
+    fs::write(d.path().join("hits.data"), lcov + "end_of_record\n").unwrap();
+    fs::write(d.path().join(".crapts.toml"), "uncovered_hints=true").unwrap();
+    for f in ["text", "markdown", "pr-comment"] {
+        let out = rendered(d.path(), f, &["--threshold", "0"], 1);
+        assert!(out.contains("2, 4, 6") && out.contains("+2 more"), "{out}");
+    }
+}
+
+#[test]
+fn the_default_text_cap_applies_only_to_an_unsliced_report() {
+    let d = tempfile::tempdir().unwrap();
+    many_functions(d.path(), &(0..13).collect::<Vec<_>>());
+    let args = ["--threshold", "160"];
+    let text = rendered(d.path(), "text", &args, 1);
+    assert!(text.contains("2 more below threshold"));
+    assert!(
+        !text.contains("row00")
+            && !text.contains("row01")
+            && text.contains("row02")
+            && text.contains("row12")
+    );
+    for f in ["markdown", "text"] {
+        let extra = if f == "text" {
+            vec!["--threshold", "160", "--min", "0"]
+        } else {
+            args.to_vec()
+        };
+        let full = rendered(d.path(), f, &extra, 1);
+        assert_eq!(full.matches("row").count(), 13);
+    }
+    let restored = ["--threshold", "160", "--min", "0", "--all-rows"];
+    assert_eq!(text, rendered(d.path(), "text", &restored, 1));
+    let doc = json_score(d.path(), &restored, 0);
+    assert_eq!(names(&doc).len(), 13);
+    assert!(doc["selection"].is_null());
+}
+
+fn plain_text(
+    cwd: &Path,
+    vars: &[(&str, &str)],
+    args: &[&str],
+) -> String {
+    let out = binary(cwd)
+        .args(["--coverage", "hits.data"])
+        .args(args)
+        .envs(vars.iter().copied())
+        .output()
+        .unwrap();
+    check(&out, 0);
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[cfg(unix)]
+fn terminal_text(
+    cwd: &Path,
+    vars: &[(&str, &str)],
+    args: &[&str],
+) -> String {
+    use std::{
+        io::Read,
+        os::fd::{FromRawFd, OwnedFd},
+        process::Stdio,
+    };
+    let (mut reader, mut writer) = (-1, -1);
+    let mut size = libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // openpty initializes both descriptors on success. Neither optional output buffer is used.
+    let result = unsafe {
+        libc::openpty(
+            &raw mut reader,
+            &raw mut writer,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut size,
+        )
+    };
+    assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+    // Each descriptor returned by openpty has exactly one owner here.
+    let (mut master, slave) =
+        unsafe { (fs::File::from_raw_fd(reader), OwnedFd::from_raw_fd(writer)) };
+    let mut child = binary(cwd)
+        .args(["--coverage", "hits.data"])
+        .args(args)
+        .envs(vars.iter().copied())
+        .stdout(Stdio::from(slave))
+        .spawn()
+        .unwrap();
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match master.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+            Err(error) => panic!("{error}"),
+        }
+    }
+    assert!(child.wait().unwrap().success());
+    String::from_utf8(bytes).unwrap()
+}
+
+fn tier(
+    text: &str,
+    blocks: usize,
+    cc: bool,
+) {
+    let longest = text
+        .split(|c| c != '\u{2588}')
+        .map(|run| run.chars().count())
+        .max()
+        .unwrap();
+    assert_eq!(longest, blocks, "{text}");
+    assert_eq!(text.contains(" CC "), cc, "{text}");
+    assert!(text.contains("100.0%"), "{text}");
+}
+
+#[test]
+fn the_text_width_selects_visible_columns() {
+    let d = tempfile::tempdir().unwrap();
+    measured_files(d.path(), &[("f.ts", "f")]);
+    for (width, blocks, cc) in [
+        ("100", 10, true),
+        ("80", 5, true),
+        ("60", 0, true),
+        ("59", 0, false),
+    ] {
+        tier(
+            &plain_text(d.path(), &[("COLUMNS", width)], &[]),
+            blocks,
+            cc,
+        );
+    }
+    #[cfg(unix)]
+    {
+        tier(
+            &terminal_text(d.path(), &[("COLUMNS", "59"), ("NO_COLOR", "1")], &[]),
+            5,
+            true,
+        );
+        terminal_text(d.path(), &[("COLUMNS", "59")], &["--output", "out.txt"]);
+        tier(
+            &fs::read_to_string(d.path().join("out.txt")).unwrap(),
+            0,
+            false,
+        );
+    }
+}
+
+#[test]
+fn unicode_cells_are_cut_to_exact_display_columns() {
+    use unicode_width::UnicodeWidthStr;
+    let d = tempfile::tempdir().unwrap();
+    measured_files(
+        d.path(),
+        &[(
+            "deep/folder/\u{1f44d}.ts",
+            "\u{6f22}\u{5b57}e\u{301}abcdefghijklmnop",
+        )],
+    );
+    let table = plain_text(d.path(), &[("COLUMNS", "48"), ("NO_COLOR", "1")], &[]);
+    assert!(
+        table.contains("\u{6f22}\u{5b57}e\u{301}abcd\u{2026}")
+            && table.contains("\u{2026}/\u{1f44d}.ts:1"),
+        "{table}"
+    );
+    let lines = table
+        .lines()
+        .filter(|line| matches!(line.chars().next(), Some('\u{2500}'..='\u{257f}')))
+        .collect::<Vec<_>>();
+    assert!(lines.len() >= 4);
+    for line in lines {
+        assert_eq!(line.width(), 48, "{line}");
+    }
+}
+
+#[test]
+fn colour_follows_the_crapts_sink_and_environment() {
+    let d = fixture();
+    let ansi = |s: String| s.contains("\x1b[");
+    for (vars, color) in [
+        (vec![], false),
+        (vec![("FORCE_COLOR", "1")], true),
+        (vec![("FORCE_COLOR", "0")], false),
+        (vec![("NO_COLOR", "1"), ("FORCE_COLOR", "1")], false),
+    ] {
+        assert_eq!(ansi(plain_text(d.path(), &vars, &[])), color);
+    }
+    assert_eq!(
+        plain_text(d.path(), &[("FORCE_COLOR", "1")], &["--output", "out.txt"]),
+        ""
+    );
+    assert!(!ansi(fs::read_to_string(d.path().join("out.txt")).unwrap()));
+    #[cfg(unix)]
+    for (vars, color) in [
+        (vec![], true),
+        (vec![("FORCE_COLOR", "0")], true),
+        (vec![("NO_COLOR", "1"), ("FORCE_COLOR", "1")], false),
+    ] {
+        assert_eq!(ansi(terminal_text(d.path(), &vars, &[])), color);
+    }
+}
+
+#[test]
+fn github_link_defaults_need_nonempty_environment_components() {
+    let (_repo, cwd) = link_fixture();
+    for (server, repository, reference) in [
+        ("", "owner/repo", "abc"),
+        ("https://host", "", "abc"),
+        ("https://host", "owner/repo", ""),
+    ] {
+        let env = [
+            ("GITHUB_SERVER_URL", server),
+            ("GITHUB_REPOSITORY", repository),
+            ("GITHUB_SHA", reference),
+        ];
+        let report = link_output(&cwd, &["--format", "markdown"], &env);
+        assert!(!report.contains("]("), "{report}");
+    }
+    for flag in ["--repo-url=", "--commit-ref="] {
+        let report = link_output(&cwd, &["--format", "pr-comment", flag], &GITHUB_ENV);
+        assert!(!report.contains("]("), "{report}");
+    }
+}

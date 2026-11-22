@@ -443,6 +443,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "toml",
+ "unicode-width",
 ]
 
 [[package]]

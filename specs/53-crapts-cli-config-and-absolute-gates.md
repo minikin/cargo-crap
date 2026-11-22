@@ -858,7 +858,7 @@ Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.
   binary cross-checks) for verdict/count invariance under presentation and
   `--all-rows` equivalence across ties/limits, and CLI acceptance tests
   validating outputs against `schemas/crapts/report-v1.json`.
-- [ ] **T8 - Support all output formats, width/Unicode/colour, links and PR comment rules.**
+- [x] **T8 - Support all output formats, width/Unicode/colour, links and PR comment rules.**
   Needs: T7. Wire all 7 `--format` values (`text`/`human`, `json`,
   `markdown`, `pr-comment`, `github`, `sarif`, `shields`), `--summary`,
   `uncovered-hints`, sink/env colour detection (`NO_COLOR`, `FORCE_COLOR`,

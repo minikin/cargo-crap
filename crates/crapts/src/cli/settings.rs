@@ -231,9 +231,13 @@ fn validate_allow(
     })
 }
 
+fn github_value(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|s| !s.is_empty())
+}
+
 fn repo_from_environment() -> Option<String> {
-    let server = std::env::var("GITHUB_SERVER_URL").ok()?;
-    let repo = std::env::var("GITHUB_REPOSITORY").ok()?;
+    let server = github_value("GITHUB_SERVER_URL")?;
+    let repo = github_value("GITHUB_REPOSITORY")?;
     Some(format!("{}/{repo}", server.trim_end_matches('/')))
 }
 
@@ -300,7 +304,7 @@ impl Effective {
             format: scalar(args, "format", Format::Human, None),
             output: optional(args, "output", None, None),
             repo_url: optional(args, "repo-url", None, repo_from_environment()),
-            commit_ref: optional(args, "commit-ref", None, std::env::var("GITHUB_SHA").ok()),
+            commit_ref: optional(args, "commit-ref", None, github_value("GITHUB_SHA")),
             comment_marker: scalar(
                 args,
                 "comment-marker",

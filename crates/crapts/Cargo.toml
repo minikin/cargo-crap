@@ -35,6 +35,7 @@ libc.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true
+unicode-width.workspace = true
 proptest.workspace = true
 regex-syntax.workspace = true
 tempfile.workspace = true
