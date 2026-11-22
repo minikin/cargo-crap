@@ -1165,7 +1165,7 @@ Each scenario's assertions are proved at the layer that implements them. T5 prov
   Scenarios: _The reader classifies changed paths from the raw diff and untracked files_, _The reader reports unmerged index entries whatever the working tree holds_, _Paths that contain pattern characters are read literally_, _Zero-context hunks give added lines, removed lines and deletion points_, _Hunks of a renamed file cover only its edited lines_, _The reader output ignores user Git configuration_.
   Tests: integration in `crates/cargo-crap-core/tests/git.rs`, a property test that parsing a generated hunk header returns its four numbers with omitted counts read as 1, and the same two MSRV steps as T1.
 
-- [ ] **T3 - Row fingerprints.**
+- [x] **T3 - Row fingerprints.**
   Add `crates/crapts/src/fingerprint.rs`, compute one fingerprint per row from the analyzer's lexer tokens and add the field to `crapts::Row`.
   Scenarios: _Hash the row's own token sequence_, _Pin token boundaries and digests for each scoring unit_, _A UTF-8 BOM leaves the fingerprint unchanged_, _Normalize formatting while retaining literal content_, _Compare physical line endings inside tokens_, _Distinguish edits to owned code from edits to other rows_, _Include a method's decorator in its source span and fingerprint_, _Body edits preserve a binding name and binding edits preserve a body fingerprint_, _Name and fingerprint stability under irrelevant edits_.
   Tests: acceptance and the stability property in `crates/crapts/tests/fingerprints.rs`.
