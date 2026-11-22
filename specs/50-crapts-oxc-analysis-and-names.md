@@ -820,7 +820,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Walk regular files outside a Git worktree_, _Skip symbolic links to files and directories_.
   Tests: Acceptance in temporary directories with and without Git, including explicit symlink roots and a scan with Git absent from PATH.
 
-- [ ] **T23 - Filter directory and file roots by suffix and exclusion.** Needs: T22.
+- [x] **T23 - Filter directory and file roots by suffix and exclusion.** Needs: T22.
   Scenarios: _Select the eight source extensions case-sensitively_, _Apply default and caller-supplied exclusions_, _Explicit file roots use the same filters as directory roots_.
   Tests: Unit tests for the suffix and declaration-file rules. Acceptance for default, replacement and appended exclusions on directory roots and named files.
 
