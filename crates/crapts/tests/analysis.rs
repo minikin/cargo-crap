@@ -715,6 +715,62 @@ fn score_auto_accessor_initializers_as_fields() {
 }
 
 #[test]
+fn field_decorators_and_decorated_ambient_keys_execute_at_definition() {
+    for (source, status, expected) in [
+        (
+            "function o() { class C { @dec(a ? 1 : 2) x = 1; @dec(() => 1) static y = b ?? c } }",
+            FileStatus::Clean,
+            &[
+                ("o", 2),
+                ("o::C::constructor", 1),
+                ("o::C::dec()", 1),
+                ("o::C::static y", 2),
+            ][..],
+        ),
+        (
+            "class C { @dec(() => 1) declare x: number }",
+            FileStatus::Clean,
+            &[("C::dec()", 1)],
+        ),
+        (
+            "class C { @dec(()=>1) declare [key(()=>2)]: number }",
+            FileStatus::Clean,
+            &[("C::dec()", 1), ("C::key()", 1)],
+        ),
+        (
+            "class C { @dec(()=>1) declare accessor x = f(()=>2) }",
+            FileStatus::Recovered,
+            &[("C::dec()", 1)],
+        ),
+    ] {
+        let file = analyze(Path::new("fields.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+        assert_eq!(file.status, status, "{source}");
+        assert_eq!(
+            file.warnings.len(),
+            usize::from(status == FileStatus::Recovered)
+        );
+        let rows: Vec<_> = file
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.cyclomatic))
+            .collect();
+        assert_eq!(rows, expected, "{source}");
+    }
+}
+
+#[test]
+fn recovered_static_block_starts_at_its_own_brace() {
+    let source = b"class C { @d(class X { static {} }) static /* { */ { if(p)go() } }";
+    let file = analyze(Path::new("block.ts"), source, Mode::Ordinary).unwrap();
+    assert_eq!(file.status, FileStatus::Recovered);
+    let [block] = file.rows.as_slice() else {
+        panic!("{:?}", file.rows)
+    };
+    assert_eq!(block.span, span(1, 51, 1, 64));
+    assert_eq!(block.body_regions, [block.span]);
+}
+
+#[test]
 fn recovered_ambient_accessors_erase_only_the_declared_initializer() {
     for field in [
         "declare accessor x = f(()=>1)",
@@ -734,6 +790,16 @@ fn recovered_ambient_accessors_erase_only_the_declared_initializer() {
         let file = analyze(Path::new("ambient.ts"), isolated.as_bytes(), Mode::Ordinary).unwrap();
         let names: Vec<_> = file.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["retained"], "{isolated}");
+        for side in [Side::Base, Side::Head] {
+            let error = analyze(
+                Path::new("ambient.ts"),
+                isolated.as_bytes(),
+                Mode::Strict(side),
+            )
+            .unwrap_err();
+            assert_eq!(error.side(), Some(side));
+            assert_eq!(error.path(), Path::new("ambient.ts"));
+        }
     }
 }
 
@@ -884,6 +950,32 @@ fn locate_an_implied_constructor_across_discontiguous_initializers() {
 }
 
 proptest::proptest! {
+    #[test]
+    fn class_rows_and_constructor_regions_follow_source_order(
+        kinds in proptest::collection::vec(0..5u8, 0..20),
+        written in proptest::prelude::any::<bool>(),
+        position in 0usize..21,
+        line_break in proptest::sample::select(vec![" ", "\n", "\r\n"]),
+    ) {
+        let mut members: Vec<_> = kinds.iter().enumerate().map(|(i, k)| match k {
+            0 => format!("f{i} = p && q;"),
+            1 => format!("f{i} = () => 0;"),
+            2 => format!("accessor f{i} = 0;"),
+            3 => format!("static f{i} = f(() => 0);"),
+            _ => format!("m{i}() {{}}"),
+        }).collect();
+        if written {
+            members.insert(position.min(members.len()), "constructor() { work() }".into());
+        }
+        let source = format!("class C {{ {} }}", members.join(line_break));
+        let file = analyze(Path::new("order.ts"), source.as_bytes(), Mode::Strict(Side::Head)).unwrap();
+        proptest::prop_assert!(file.rows.windows(2).all(|pair| pair[0].span.start <= pair[1].span.start));
+        let expected = kinds.iter().filter(|k| **k < 3).count() + usize::from(written);
+        let regions = file.rows.iter().find(|r| r.name == "C::constructor").map_or(&[][..], |r| r.body_regions.as_slice());
+        proptest::prop_assert_eq!(regions.len(), expected);
+        proptest::prop_assert!(regions.windows(2).all(|pair| pair[0].end <= pair[1].start));
+    }
+
     #[test]
     fn statement_lines_are_sorted_and_distinct(kinds in proptest::collection::vec(0..4u8, 0..48)) {
         let mut source = String::from("function f(){\n");

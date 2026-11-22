@@ -503,8 +503,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         block: &StaticBlock<'a>,
     ) {
-        // Oxc includes the modifiers in the block span. The token before
-        // its first statement (or closing brace) is the opening brace.
+        // Oxc includes the modifiers and any recovered decorators in the block span.
         let inside = block
             .body
             .first()

@@ -330,6 +330,8 @@ And if the class stands at file scope, the method still has CC 1 and the file ge
 
 Each decision belongs to the row executing that expression. A callback inside the expression owns its own body. Decorators on a method remain part of its source span.
 
+A decorated `declare` field or auto-accessor evaluates its decorators and computed key in the surrounding context. Its initializer contributes no row, region or decision. An undecorated declared field contributes none of those definition expressions.
+
 ### Scenario: Direct class-valued fields supply a class name
 
 ```gherkin
@@ -845,6 +847,7 @@ The frozen TypeScript CLI and the Oxc front end have different syntax-error and 
 | Input | TypeScript ordinary scan | Required Rust behavior and reason |
 |---|---|---|
 | Explicit `declare module` with a function body | Zero rows, no parse warning | Zero rows. Ordinary analysis returns the first Oxc diagnostic. Strict analysis returns the side and path because Oxc diagnoses the ambient implementation. |
+| `class C { declare accessor x = f(()=>1) }` | Zero rows, no parse warning | Zero rows. Ordinary analysis reports one warning and `Recovered` because Oxc diagnoses the modifier combination. Strict analysis returns an input error naming the side and path. |
 | String module without `declare` containing an implementation | Named row, no parse warning | Ordinary analysis names the retained row and returns the first diagnostic if Oxc reports one. |
 | `const x; let [a];` before `kept` | `kept`, no parse warning | Oxc recovers the tree and diagnoses the declarations. Ordinary analysis returns `kept` plus one warning. |
 | Unclosed `partial` function | Returns `partial` plus a warning | A fatal Oxc parse has no usable tree. Skip the file with a warning in ordinary mode. |
