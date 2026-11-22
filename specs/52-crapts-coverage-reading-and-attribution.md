@@ -652,7 +652,7 @@ Spec 52 builds after Spec 50 rebases onto Spec 49. Every task is one jj change a
   methods/initializers verifying `name` and `is_arrow`. Acceptance tests in
   `tests/workspace.rs` validating `cargo metadata --locked` edges and parser
   isolation across `cargo-crap-core`, `cargo-crap`, and `crapts`.
-- [ ] **T4 - Implement Istanbul JSON parsing and validation in crapts::coverage.**
+- [x] **T4 - Implement Istanbul JSON parsing and validation in crapts::coverage.**
   Needs: T3. Create `crates/crapts/src/coverage/istanbul.rs` and
   `crates/crapts/src/coverage/mod.rs` and expose `pub mod coverage` from
   `crates/crapts/src/lib.rs`. Define `Coverage`, `CoverageUnit`, and
