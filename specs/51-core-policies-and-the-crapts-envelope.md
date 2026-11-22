@@ -719,7 +719,7 @@ the first byte, like a missing coverage kind.
   format_, _CargoCrapV1 renders caller-supplied text sections_, _a section
   or writer error takes precedence over any positive count_. Tests:
   acceptance, unit for placement order.
-- [ ] **T10 - Record the API change.** Needs: T9. The CHANGELOG entry from
+- [x] **T10 - Record the API change.** Needs: T9. The CHANGELOG entry from
   the implementation notes and the pipeline and baseline-loader description
   in `CLAUDE.md`. Scenarios: none. Tests: `tests/docs.rs` where it checks
   either file.
