@@ -6,13 +6,13 @@
 //! itself and comes back spelled as committed. Paths inside the worktree
 //! must be UTF-8 on every platform. The root itself need not be.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const GIT: &str = "git";
@@ -188,7 +188,6 @@ impl Ran {
         })
     }
 
-    /// Text output read by `parse`, whose error is the offending input.
     fn parsed<T>(
         self,
         parse: impl FnOnce(&str) -> Result<T, String>,
@@ -257,6 +256,8 @@ fn command(
     for name in REPOSITORY_OVERRIDES {
         command.env_remove(name);
     }
+    // `GIT_DIFF_OPTS=--unified=<n>` would override `-U0`.
+    command.env_remove("GIT_DIFF_OPTS");
     command
         .args(["--literal-pathspecs", "-c", "core.quotePath=false"])
         .current_dir(dir);
@@ -286,21 +287,45 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
     let command = describe(&args);
-    let output = git.args(&args).output();
-    match output {
+    match git.args(&args).output() {
         Ok(output) => Ok(Ran { command, output }),
-        // A missing working directory fails the spawn with NotFound too.
-        Err(e) if e.kind() == io::ErrorKind::NotFound && !dir.is_dir() => {
-            Err(GitError::NotAWorktree {
-                dir: dir.to_path_buf(),
-                stderr: e.to_string(),
-            })
-        },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(GitError::GitMissing),
-        Err(e) => Err(GitError::Failed {
+        Err(e) => Err(spawn_error(&e, dir, command)),
+    }
+}
+
+fn spawn_error(
+    e: &io::Error,
+    dir: &Path,
+    command: String,
+) -> GitError {
+    let missing = matches!(
+        e.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    );
+    // A working directory that is missing or a file fails the spawn as if
+    // the executable were.
+    if missing && !dir.is_dir() {
+        GitError::NotAWorktree {
+            dir: dir.to_path_buf(),
+            stderr: e.to_string(),
+        }
+    } else if e.kind() == io::ErrorKind::NotFound {
+        GitError::GitMissing
+    } else {
+        GitError::Failed {
             command,
             stderr: e.to_string(),
-        }),
+        }
+    }
+}
+
+/// Kills and reaps a child whose output was read only in part.
+struct Reaped(Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -371,7 +396,6 @@ pub struct Hunk {
     pub head_count: u32,
 }
 
-/// A record of `git diff --raw -z` before its sides are read.
 #[derive(Debug, PartialEq, Eq)]
 struct RawRecord {
     status: u8,
@@ -381,7 +405,8 @@ struct RawRecord {
 }
 
 fn parse_mode(octal: &str) -> Option<Mode> {
-    (octal.len() == 6)
+    let digits = octal.len() == 6 && octal.bytes().all(|b| matches!(b, b'0'..=b'7'));
+    digits
         .then(|| u32::from_str_radix(octal, 8).ok())
         .flatten()
         .map(Mode)
@@ -453,7 +478,8 @@ fn parse_hunk_header(line: &[u8]) -> Option<Hunk> {
     let rest = rest[space..].strip_prefix(b" +")?;
     let space = rest.iter().position(|&b| b == b' ')?;
     let (head_start, head_count) = parse_range(&rest[..space])?;
-    rest[space..].starts_with(b" @@").then_some(Hunk {
+    let after = rest[space..].strip_prefix(b" @@")?;
+    (after.is_empty() || after.starts_with(b" ")).then_some(Hunk {
         base_start,
         base_count,
         head_start,
@@ -482,12 +508,12 @@ fn parse_unmerged(listing: &str) -> Result<Vec<PathBuf>, String> {
     Ok(paths.into_iter().collect())
 }
 
-// Both arms in one function, as in `path_from_bytes`.
+/// Git records a regular file as executable by its owner execute bit.
 fn is_executable(meta: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
+        meta.permissions().mode() & 0o100 != 0
     }
     #[cfg(not(unix))]
     {
@@ -529,23 +555,29 @@ const TEMP_ATTEMPTS: usize = 100;
 
 impl TempFile {
     fn with(bytes: &[u8]) -> io::Result<Self> {
-        Self::in_dir(&std::env::temp_dir(), bytes)
+        Self::in_dir(&std::env::temp_dir(), &NEXT_TEMP, bytes)
     }
 
     fn in_dir(
         dir: &Path,
+        next: &AtomicU64,
         bytes: &[u8],
     ) -> io::Result<Self> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // The base blob may be private source in a shared temp directory.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         for _ in 0..TEMP_ATTEMPTS {
-            let path = dir.join(temp_name(NEXT_TEMP.fetch_add(1, Ordering::Relaxed)));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
+            let path = dir.join(temp_name(next.fetch_add(1, Ordering::Relaxed)));
+            match options.open(&path) {
                 Ok(mut file) => {
                     let temp = Self(path);
-                    file.write_all(bytes)?;
+                    let wrote = file.write_all(bytes);
+                    // Closed before a failed write drops `temp`: Windows
+                    // cannot remove a file that is still open.
+                    drop(file);
+                    wrote?;
                     return Ok(temp);
                 },
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {},
@@ -554,6 +586,29 @@ impl TempFile {
         }
         Err(io::ErrorKind::AlreadyExists.into())
     }
+}
+
+/// `git merge-base --all` lists at least the base `git merge-base` found.
+fn best_ancestors(
+    command: String,
+    all: String,
+) -> Result<usize, GitError> {
+    match all.lines().count() {
+        0 => Err(GitError::Unexpected {
+            command,
+            output: all,
+        }),
+        count => Ok(count),
+    }
+}
+
+fn blob_args(
+    commit: &CommitId,
+    path: &Path,
+) -> [OsString; 3] {
+    let mut object = OsString::from(format!("{commit}:"));
+    object.push(path);
+    [OsString::from("cat-file"), OsString::from("blob"), object]
 }
 
 fn temp_name(n: u64) -> String {
@@ -566,8 +621,7 @@ impl Drop for TempFile {
     }
 }
 
-/// Keep diff output independent of user configuration such as an external
-/// diff command, a textconv driver, colour or `diff.relative`.
+/// Keep diff output independent of user configuration.
 const OUTPUT_FLAGS: [&str; 4] = [
     "--no-ext-diff",
     "--no-textconv",
@@ -608,6 +662,7 @@ impl Repo {
         discover.env("LC_ALL", "C").env_remove("LANGUAGE");
         let ran = spawn(discover, cwd, ["rev-parse", "--show-toplevel"])?;
         if ran.output.status.success() {
+            let command = ran.command.clone();
             let mut root = ran.bytes()?;
             if root.last() == Some(&b'\n') {
                 root.pop();
@@ -615,13 +670,17 @@ impl Repo {
             return match path_from_bytes(root) {
                 Ok(root) => Ok(Self { root, program }),
                 Err(bytes) => Err(GitError::Unexpected {
-                    command: "git rev-parse --show-toplevel".to_owned(),
+                    command,
                     output: String::from_utf8_lossy(&bytes).into_owned(),
                 }),
             };
         }
         let stderr = ran.stderr();
-        let outside = stderr.starts_with("fatal: not a git repository");
+        // Older Git reports a broken `.git` pointer as "fatal: not a git
+        // repository: <path>", which is a failure, not an outside directory.
+        let outside = stderr
+            .lines()
+            .any(|line| line.starts_with("fatal: not a git repository (or any"));
         // A bare repository, or a directory inside `.git`, has a Git
         // directory but no worktree.
         if outside
@@ -735,12 +794,11 @@ impl Repo {
             _ => return Err(ran.failed()),
         }
         let commit = ran.commit()?;
-        let all = self
-            .run(["merge-base", "--all", rev.as_str(), head.as_str()])?
-            .stdout()?;
+        let ran = self.run(["merge-base", "--all", rev.as_str(), head.as_str()])?;
+        let command = ran.command.clone();
         Ok(MergeBase {
             commit,
-            count: all.lines().count(),
+            count: best_ancestors(command, ran.stdout()?)?,
             shallow,
         })
     }
@@ -769,11 +827,22 @@ impl Repo {
         for record in ran.parsed(parse_raw)? {
             changes.push(self.change(base, &record, &command)?);
         }
+        let mut deleted: HashMap<PathBuf, usize> = changes
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.status == ChangeStatus::Deleted)
+            .filter_map(|(i, c)| c.old.as_ref().map(|old| (old, i)))
+            .filter(|(old, _)| old.mode.is_regular())
+            .map(|(old, i)| (old.path.clone(), i))
+            .collect();
         let untracked = self
             .run(["ls-files", "--others", "--exclude-standard", "-z"])?
             .stdout()?;
+        // An untracked nested repository is listed as `dir/`, and the diff
+        // names a tracked one without the slash.
         for path in untracked.split('\0').filter(|p| !p.is_empty()) {
-            self.add_untracked(&mut changes, PathBuf::from(path))?;
+            let path = PathBuf::from(path.trim_end_matches('/'));
+            self.add_untracked(&mut changes, &mut deleted, path)?;
         }
         changes.sort_by(|a, b| a.key().cmp(b.key()));
         Ok(changes)
@@ -822,7 +891,7 @@ impl Repo {
         path: PathBuf,
         mode: Mode,
     ) -> Result<Side, GitError> {
-        let binary = mode.is_regular() && has_nul(&self.blob(base, &path)?);
+        let binary = mode.is_regular() && has_nul(&self.blob_prefix(base, &path)?);
         Ok(Side { path, mode, binary })
     }
 
@@ -841,24 +910,25 @@ impl Repo {
     fn add_untracked(
         &self,
         changes: &mut Vec<Change>,
+        deleted: &mut HashMap<PathBuf, usize>,
         path: PathBuf,
     ) -> Result<(), GitError> {
         let file = self.root.join(&path);
         let meta = fs::symlink_metadata(&file).map_err(io_error(&file))?;
         let new = self.new_side(path, mode_of(&meta))?;
-        let deleted = changes.iter_mut().find(|c| {
-            c.status == ChangeStatus::Deleted
-                && c.old
-                    .as_ref()
-                    .is_some_and(|old| old.path == new.path && old.mode.is_regular())
-        });
-        match deleted {
-            Some(change) if new.mode.is_regular() => {
+        let reconciled = if new.mode.is_regular() {
+            deleted.remove(&new.path)
+        } else {
+            None
+        };
+        match reconciled {
+            Some(i) => {
+                let change = &mut changes[i];
                 change.status = ChangeStatus::Modified;
                 change.new = Some(new);
                 change.untracked = true;
             },
-            _ => changes.push(Change {
+            None => changes.push(Change {
                 status: ChangeStatus::Added,
                 old: None,
                 new: Some(new),
@@ -877,18 +947,22 @@ impl Repo {
         base: &CommitId,
         change: &Change,
     ) -> Result<Vec<Hunk>, GitError> {
-        if change.untracked {
-            return self.untracked_hunks(base, change);
-        }
-        let mut args: Vec<&OsStr> = vec![OsStr::new("diff")];
-        args.extend(OUTPUT_FLAGS.iter().chain(&PATCH_FLAGS).map(OsStr::new));
-        args.extend([RENAMES, base.as_str(), "--"].map(OsStr::new));
         let mut paths: Vec<&OsStr> = [&change.old, &change.new]
             .into_iter()
             .flatten()
             .map(|side| side.path.as_os_str())
             .collect();
+        // With no pathspec the diff would cover the whole repository.
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        if change.untracked {
+            return self.untracked_hunks(base, change);
+        }
         paths.dedup();
+        let mut args: Vec<&OsStr> = vec![OsStr::new("diff")];
+        args.extend(OUTPUT_FLAGS.iter().chain(&PATCH_FLAGS).map(OsStr::new));
+        args.extend([RENAMES, base.as_str(), "--"].map(OsStr::new));
         args.extend(paths);
         let ran = self.run(args)?;
         let command = ran.command.clone();
@@ -900,24 +974,27 @@ impl Repo {
         base: &CommitId,
         change: &Change,
     ) -> Result<Vec<Hunk>, GitError> {
+        let Some(new) = &change.new else {
+            return Ok(Vec::new());
+        };
         let before = match &change.old {
             Some(old) => self.blob(base, &old.path)?,
             None => Vec::new(),
         };
         let temp = TempFile::with(&before).map_err(io_error(&std::env::temp_dir()))?;
-        let after = change
-            .new
-            .as_ref()
-            .map_or(Path::new(""), |s| s.path.as_path());
+        // Absolute, so a file named `-` is never read as standard input.
+        let after = self.root.join(&new.path);
         let mut args: Vec<&OsStr> = vec![OsStr::new("diff"), OsStr::new("--no-index")];
         args.extend(OUTPUT_FLAGS.iter().chain(&PATCH_FLAGS).map(OsStr::new));
         args.extend([OsStr::new("--"), temp.0.as_os_str(), after.as_os_str()]);
         let ran = self.run(args)?;
         let command = ran.command.clone();
-        // `--no-index` exits 1 when the files differ.
+        // `--no-index` exits 1 when the files differ, and also when it cannot
+        // read one, which leaves stdout empty and says why on stderr.
+        let unreadable = ran.output.stdout.is_empty() && !ran.output.stderr.is_empty();
         match ran.code() {
             Some(0) => Ok(Vec::new()),
-            Some(1) => parse_hunks(&ran.output.stdout)
+            Some(1) if !unreadable => parse_hunks(&ran.output.stdout)
                 .map_err(|output| GitError::Unexpected { command, output }),
             _ => Err(ran.failed()),
         }
@@ -930,10 +1007,50 @@ impl Repo {
         commit: &CommitId,
         path: &Path,
     ) -> Result<Vec<u8>, GitError> {
-        let mut object = OsString::from(format!("{commit}:"));
-        object.push(path);
-        let args: [&OsStr; 3] = [OsStr::new("cat-file"), OsStr::new("blob"), &object];
-        self.run(args)?.bytes()
+        self.run(blob_args(commit, path))?.bytes()
+    }
+
+    /// The first [`BINARY_PROBE`] bytes of a blob, read without holding the
+    /// rest in memory.
+    fn blob_prefix(
+        &self,
+        commit: &CommitId,
+        path: &Path,
+    ) -> Result<Vec<u8>, GitError> {
+        let args = blob_args(commit, path);
+        let command = describe(&args);
+        let mut git = self::command(self.program, &self.root);
+        git.args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = Reaped(
+            git.spawn()
+                .map_err(|e| spawn_error(&e, &self.root, command.clone()))?,
+        );
+        let read_error = |e: io::Error| GitError::Failed {
+            command: command.clone(),
+            stderr: e.to_string(),
+        };
+        let mut prefix = Vec::new();
+        if let Some(stdout) = child.0.stdout.take() {
+            stdout
+                .take(BINARY_PROBE as u64)
+                .read_to_end(&mut prefix)
+                .map_err(read_error)?;
+        }
+        if !prefix.is_empty() {
+            return Ok(prefix);
+        }
+        let mut stderr = String::new();
+        if let Some(mut pipe) = child.0.stderr.take() {
+            pipe.read_to_string(&mut stderr).map_err(read_error)?;
+        }
+        if child.0.wait().map_err(read_error)?.success() {
+            Ok(prefix)
+        } else {
+            Err(GitError::Failed { command, stderr })
+        }
     }
 }
 
@@ -1006,7 +1123,7 @@ mod tests {
                 panic!("expected Failed, got {err:?}");
             };
             assert!(command.starts_with("git "), "{command}");
-            assert!(stderr.contains("not a git repository"), "{stderr}");
+            assert_ne!(stderr.trim(), "");
             assert_eq!(
                 err.to_string(),
                 format!("{command} failed: {}", stderr.trim())
@@ -1148,14 +1265,15 @@ mod tests {
     #[test]
     fn a_temp_file_skips_names_already_taken_and_is_removed_on_drop() {
         let dir = TempDir::new().expect("temp dir");
-        let next = NEXT_TEMP.load(Ordering::Relaxed);
-        for n in next..next + 5 {
+        for n in 0..5 {
             fs::write(dir.path().join(temp_name(n)), "taken").expect("taken");
         }
-        let temp = TempFile::in_dir(dir.path(), b"base").expect("temp file");
+        let next = AtomicU64::new(0);
+        let temp = TempFile::in_dir(dir.path(), &next, b"base").expect("temp file");
+        assert_eq!(temp.0, dir.path().join(temp_name(5)));
         assert_eq!(fs::read(&temp.0).expect("read"), b"base");
         assert_eq!(
-            fs::read(dir.path().join(temp_name(next))).expect("read"),
+            fs::read(dir.path().join(temp_name(0))).expect("read"),
             b"taken"
         );
         let path = temp.0.clone();
@@ -1163,26 +1281,147 @@ mod tests {
         assert!(!path.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_temp_file_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().expect("temp dir");
+        let temp = TempFile::in_dir(dir.path(), &AtomicU64::new(0), b"base").expect("temp file");
+        let mode = fs::metadata(&temp.0)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
     #[test]
     fn a_temp_file_in_a_missing_directory_fails_at_once() {
         let dir = TempDir::new().expect("temp dir");
-        let err = TempFile::in_dir(&dir.path().join("absent"), b"").expect_err("no dir");
+        let next = AtomicU64::new(0);
+        let err = TempFile::in_dir(&dir.path().join("absent"), &next, b"").expect_err("no dir");
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert_eq!(next.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn a_temp_file_gives_up_when_every_name_is_taken() {
         let dir = TempDir::new().expect("temp dir");
-        let next = NEXT_TEMP.load(Ordering::Relaxed);
-        for n in next..next + TEMP_ATTEMPTS as u64 {
+        for n in 0..TEMP_ATTEMPTS as u64 {
             fs::write(dir.path().join(temp_name(n)), "").expect("taken");
         }
-        // Other tests in this process may take names meanwhile, so only an
-        // undisturbed run reaches the limit.
-        if let Err(err) = TempFile::in_dir(dir.path(), b"") {
-            assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
-        }
+        let next = AtomicU64::new(0);
+        let err = TempFile::in_dir(dir.path(), &next, b"").expect_err("exhausted");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(next.load(Ordering::Relaxed), TEMP_ATTEMPTS as u64);
         assert!(TempFile::with(b"").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reaped_child_is_gone_once_dropped() {
+        let child = Command::new("sleep").arg("30").spawn().expect("sleep");
+        let pid = child.id().to_string();
+        drop(Reaped(child));
+        let alive = Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(Stdio::null())
+            .status()
+            .expect("kill -0");
+        assert!(!alive.success());
+    }
+
+    #[test]
+    fn merge_base_all_must_list_a_commit() {
+        assert_eq!(
+            best_ancestors("git m".to_owned(), "a\nb\n".to_owned()).expect("two"),
+            2
+        );
+        let err = best_ancestors("git m".to_owned(), String::new()).expect_err("none");
+        assert!(
+            matches!(&err, GitError::Unexpected { command, output } if command == "git m" && output.is_empty()),
+            "{err:?}"
+        );
+    }
+
+    fn committed(files: &[(&str, &[u8])]) -> (TempDir, Repo, CommitId) {
+        let dir = TempDir::new().expect("temp dir");
+        let empty = dir.path().join("empty.gitconfig");
+        fs::write(&empty, "").expect("config");
+        let root = dir.path().join("repo");
+        fs::create_dir(&root).expect("repo dir");
+        for (path, bytes) in files {
+            fs::write(root.join(path), bytes).expect("file");
+        }
+        for args in [
+            &["init", "-q"][..],
+            &["add", "-A"],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "B",
+            ],
+        ] {
+            let status = Command::new(GIT)
+                .args(args)
+                .current_dir(&root)
+                .env("GIT_CONFIG_GLOBAL", &empty)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        }
+        let repo = Repo::open(&root).expect("open");
+        let head = repo.head().expect("head");
+        (dir, repo, head)
+    }
+
+    #[test]
+    fn a_blob_prefix_holds_at_most_the_probe_length() {
+        let big = vec![b'x'; BINARY_PROBE * 3];
+        let (_dir, repo, head) = committed(&[("big", &big), ("empty", b""), ("small", b"ab")]);
+        assert_eq!(
+            repo.blob_prefix(&head, Path::new("big"))
+                .expect("big")
+                .len(),
+            BINARY_PROBE
+        );
+        assert_eq!(
+            repo.blob_prefix(&head, Path::new("small")).expect("small"),
+            b"ab"
+        );
+        assert_eq!(
+            repo.blob_prefix(&head, Path::new("empty")).expect("empty"),
+            b""
+        );
+        let err = repo
+            .blob_prefix(&head, Path::new("absent"))
+            .expect_err("absent");
+        let GitError::Failed { command, stderr } = &err else {
+            panic!("expected Failed, got {err:?}");
+        };
+        assert!(command.starts_with("git cat-file blob "), "{command}");
+        assert!(command.ends_with(":absent"), "{command}");
+        assert_ne!(stderr.trim(), "");
+    }
+
+    #[test]
+    fn a_change_with_no_side_has_no_hunks() {
+        let (_dir, repo, head) = committed(&[("a", b"a\n")]);
+        fs::write(repo.root().join("a"), "b\n").expect("edit");
+        for untracked in [false, true] {
+            let change = Change {
+                status: ChangeStatus::Modified,
+                old: None,
+                new: None,
+                untracked,
+            };
+            assert_eq!(repo.hunks(&head, &change).expect("hunks"), []);
+        }
     }
 
     fn record(
@@ -1231,6 +1470,7 @@ mod tests {
             (":100648 100644 a b M\0x\0", ":100648 100644 a b M"),
             (":100644 100644 a b\0x\0", ":100644 100644 a b"),
             (":100644 100644 a b \0x\0", ":100644 100644 a b "),
+            (":+10644 100644 a b M\0x\0", ":+10644 100644 a b M"),
         ] {
             assert_eq!(parse_raw(raw), Err(header.to_owned()), "{raw:?}");
         }
@@ -1307,6 +1547,8 @@ mod tests {
             b"@@ -3 +99999999999 @@",
             b"@@ - +3 @@",
             b"@@ -3 +3,1,1 @@",
+            b"@@ -1 +1 @@garbage",
+            b"@@ -1 +1 @@@",
         ] {
             assert_eq!(
                 parse_hunk_header(line),

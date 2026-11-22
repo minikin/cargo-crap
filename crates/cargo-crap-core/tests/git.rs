@@ -36,8 +36,6 @@ macro_rules! isolate {
     };
 }
 
-/// True in the child. In the parent, runs `test` in a child with `env` set
-/// and fails when that child does not run it and pass.
 fn isolated(
     test: &str,
     env: &[(&str, OsString)],
@@ -415,6 +413,8 @@ fn ambient_git_variables_cannot_point_the_reader_at_another_repository() {
     if std::env::var_os(ISOLATED).is_none() {
         let other = Fixture::standard();
         other.commit("only in the other repository");
+        other.write("foreign.txt", "staged only here\n");
+        other.git(&["add", "foreign.txt"]);
         other.write("dirty.txt", "dirty\n");
         let git_dir = other.root().join(".git");
         let env = [
@@ -1283,4 +1283,180 @@ fn the_reader_output_ignores_user_git_configuration() {
     side(changes[0].new.as_ref(), path);
     assert_eq!(hunks[0], [(2, 0, 3, 1), (4, 0, 6, 1), (5, 0, 8, 1)]);
     assert_eq!(blobs[0], b"alpha\n    beta\ngamma\n\ndelta\n");
+}
+
+#[test]
+fn ambient_diff_options_cannot_widen_zero_context_hunks() {
+    let widened = [("GIT_DIFF_OPTS", OsString::from("--unified=9"))];
+    if std::env::var_os(ISOLATED).is_none() {
+        isolated(test_name!(), &widened);
+        return;
+    }
+    assert!(std::env::var_os("GIT_DIFF_OPTS").is_some());
+    let (fixture, repo, base) = five();
+    fixture.write("src/five.ts", "a\nb\nC\nd\ne\n");
+    fixture.write("src/other.ts", "x\n");
+    fixture.commit("other");
+    fixture.git(&["rm", "-q", "--cached", "src/other.ts"]);
+    fixture.write("src/five.ts", "a\nb\nC\nd\ne\n");
+    let changes = repo.changes(&base).expect("changes");
+    let tracked = only(&changes, &["src/five.ts"]);
+    assert_eq!(
+        quad(&repo.hunks(&base, tracked).expect("hunks")),
+        [(3, 1, 3, 1)]
+    );
+    let added = only(&changes, &["src/other.ts"]);
+    assert!(added.untracked);
+    assert_eq!(
+        quad(&repo.hunks(&base, added).expect("hunks")),
+        [(0, 0, 1, 1)]
+    );
+}
+
+fn own_temp_files() -> usize {
+    let prefix = format!("cargo-crap-git-{}-", std::process::id());
+    fs::read_dir(std::env::temp_dir())
+        .expect("temp dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .count()
+}
+
+#[test]
+fn a_reconciled_file_that_vanished_is_a_failed_comparison() {
+    isolate!();
+    let (fixture, repo, base) = five();
+    fixture.git(&["rm", "-q", "--cached", "src/five.ts"]);
+    let changes = repo.changes(&base).expect("changes");
+    let reconciled = only(&changes, &["src/five.ts"]);
+    fs::remove_file(fixture.root().join("src/five.ts")).expect("remove");
+
+    let err = repo.hunks(&base, reconciled).expect_err("vanished");
+
+    let GitError::Failed { command, stderr } = &err else {
+        panic!("expected Failed, got {err:?}");
+    };
+    assert!(command.contains("--no-index"), "{command}");
+    assert_ne!(stderr.trim(), "");
+    assert_eq!(own_temp_files(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reconciled_file_whose_mode_alone_changed_has_no_hunks() {
+    isolate!();
+    let (fixture, repo, base) = five();
+    fixture.git(&["rm", "-q", "--cached", "src/five.ts"]);
+    make_executable(&fixture.root().join("src/five.ts"));
+    let changes = repo.changes(&base).expect("changes");
+    let reconciled = only(&changes, &["src/five.ts"]);
+    assert_eq!(quad(&repo.hunks(&base, reconciled).expect("hunks")), []);
+    assert_eq!(own_temp_files(), 0);
+}
+
+#[test]
+fn a_reconciled_root_file_named_dash_is_not_read_as_standard_input() {
+    isolate!();
+    let fixture = Fixture::new();
+    fixture.git(&["init", "-q", "-b", "main"]);
+    fixture.git(&["config", "core.autocrlf", "false"]);
+    fixture.write("-", five_lines());
+    fixture.commit("B");
+    fixture.git(&["rm", "-q", "--cached", "--", "-"]);
+    fixture.write("-", "a\nb\nC\nd\ne\n");
+    let repo = Repo::open(&fixture.root()).expect("open");
+    let base = repo.head().expect("head");
+    let changes = repo.changes(&base).expect("changes");
+    let dash = only(&changes, &["-"]);
+    assert!(dash.untracked);
+    assert_eq!(
+        quad(&repo.hunks(&base, dash).expect("hunks")),
+        [(3, 1, 3, 1)]
+    );
+}
+
+#[test]
+fn a_diff_attribute_does_not_hide_the_hunks_of_two_text_sides() {
+    isolate!();
+    let (fixture, _, _) = five();
+    fixture.write(".gitattributes", "*.ts -diff\n");
+    fixture.commit("binary diff attribute");
+    let repo = Repo::open(&fixture.root()).expect("open");
+    let base = repo.head().expect("head");
+    fixture.write("src/five.ts", "a\nb\nc\nD\ne\n");
+    let changes = repo.changes(&base).expect("changes");
+    let pair = only(&changes, &["src/five.ts"]);
+    assert_eq!(
+        quad(&repo.hunks(&base, pair).expect("hunks")),
+        [(4, 1, 4, 1)]
+    );
+}
+
+#[test]
+fn a_regular_file_is_not_a_worktree() {
+    isolate!();
+    let fixture = Fixture::standard();
+    let err = Repo::open(&fixture.root().join("src/app.ts")).expect_err("a file");
+    assert!(matches!(err, GitError::NotAWorktree { .. }), "{err:?}");
+}
+
+#[test]
+fn a_linked_worktree_whose_git_directory_is_gone_is_a_failure() {
+    isolate!();
+    let fixture = Fixture::standard();
+    let linked = fixture.dir.path().join("linked");
+    fixture.git(&[
+        "worktree",
+        "add",
+        "-q",
+        linked.to_str().expect("utf-8 temp path"),
+    ]);
+    fs::remove_dir_all(fixture.root().join(".git/worktrees/linked")).expect("remove");
+    let err = Repo::open(&linked).expect_err("broken pointer");
+    let GitError::Failed { command, stderr } = &err else {
+        panic!("expected Failed, got {err:?}");
+    };
+    assert_eq!(command, "git rev-parse --show-toplevel");
+    assert_ne!(stderr.trim(), "");
+}
+
+#[test]
+fn an_untracked_nested_repository_is_named_without_a_trailing_slash() {
+    isolate!();
+    let (fixture, repo, base) = changes_fixture();
+    let nested = fixture.root().join("vendor");
+    fs::create_dir(&nested).expect("nested dir");
+    fixture.git_in(&nested, &["init", "-q"]);
+    fixture.git_in(&nested, &["commit", "-q", "--allow-empty", "-m", "N"]);
+    let changes = repo.changes(&base).expect("changes");
+    let change = only(&changes, &["vendor"]);
+    assert_eq!(change.status, ChangeStatus::Added);
+    let new = side(change.new.as_ref(), "vendor");
+    assert_eq!(new.mode, Mode::GITLINK);
+    assert!(!new.binary);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_untracked_mode_follows_the_owner_execute_bit_as_git_does() {
+    use std::os::unix::fs::PermissionsExt;
+    isolate!();
+    let (fixture, repo, base) = changes_fixture();
+    for (name, bits) in [("src/g.ts", 0o654), ("src/u.ts", 0o744)] {
+        fixture.write(name, "x\n");
+        fs::set_permissions(fixture.root().join(name), fs::Permissions::from_mode(bits))
+            .expect("chmod");
+    }
+    let changes = repo.changes(&base).expect("changes");
+    fixture.git(&["add", "src/g.ts", "src/u.ts"]);
+    for name in ["src/g.ts", "src/u.ts"] {
+        let staged = fixture.git(&["ls-files", "-s", "--", name]);
+        let staged =
+            u32::from_str_radix(staged.split(' ').next().expect("mode"), 8).expect("octal");
+        assert_eq!(
+            side(only(&changes, &[name]).new.as_ref(), name).mode,
+            Mode(staged),
+            "{name}"
+        );
+    }
 }
