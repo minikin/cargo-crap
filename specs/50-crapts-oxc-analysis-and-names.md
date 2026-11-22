@@ -808,7 +808,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Name stability under edits that preserve naming sites_, _Generated names can be used literally_.
   Tests: Property tests through the analyzer and the anchored glob matcher. A file move, trivia edit or nested body edit preserving naming sites and stem order preserves the chosen name. A supplying identifier rename changes it. Equal stems number in source order, segments split intact and each emitted glob matches exactly its own row.
 
-- [ ] **T21 - Discover Git paths relative to literal input roots.** Needs: T1.
+- [x] **T21 - Discover Git paths relative to literal input roots.** Needs: T1.
   Scenarios: _Discover the ordinary Git file set_, _Resolve input roots and preserve path spelling_.
   Tests: Acceptance in disposable Git worktrees for tracked, deleted, ignored and untracked files, embedded repositories, gitlinks, absolute roots, overlapping roots and exact sorted path spelling.
 
