@@ -657,7 +657,6 @@ fn scope_and_allows_apply_before_pairing() {
 
 #[test]
 fn ties_are_settled_before_top_and_display_order() {
-    // Given descending scores z.ts::high=50, b.ts::third=40, a.ts::z=40, a.ts::a=40 and 0.ts::low=1 in that order
     let rows = || {
         vec![
             row("z.ts", "high", 1, 50.0),
@@ -689,9 +688,6 @@ fn ties_are_settled_before_top_and_display_order() {
         ("a.ts".to_owned(), "a".to_owned(), 1),
         ("z.ts".to_owned(), "high".to_owned(), 1),
     ];
-    // When the caller requests min 40 and top 2, first by CRAP and then by file
-    // Then CRAP order shows z.ts::high then a.ts::a, and file order shows a.ts::a then z.ts::high
-    // And the same two identities win in absolute and delta mode
     assert_eq!(absolute(&crap_knobs, rows()).identities(), expected_crap);
     assert_eq!(absolute(&file_knobs, rows()).identities(), expected_file);
     assert_eq!(
@@ -723,7 +719,6 @@ fn ties_are_settled_before_top_and_display_order() {
 
 #[test]
 fn equal_score_selection_is_independent_of_the_order_of_tied_input_rows() {
-    // Given eligible rows in score order with a tied group cut by top, including same file and function on different lines
     let tied = [
         row("b.ts", "f", 1, 40.0),
         row("a.ts", "f", 9, 40.0),
@@ -743,8 +738,6 @@ fn equal_score_selection_is_independent_of_the_order_of_tied_input_rows() {
         sort: SortOrder::Crap,
         ..Knobs::default()
     };
-    // When a caller permutes the tied rows and compares the selections with TieOrder::FileFunctionLine
-    // Then each selection equals the prefix of an independent ordering by descending score then ascending normalized file, function and line
     for perm in perms {
         assert_eq!(absolute(&knobs, perm.clone()).identities(), expected);
         assert_eq!(compare(&knobs, perm, vec![]).identities(), expected);
@@ -870,7 +863,6 @@ fn the_closed_schemas_reject_malformed_wire_values() {
     let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
     let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
 
-    // Given a valid populated absolute and delta report
     let abs_orig = handwritten_absolute();
     let delta_orig = handwritten_delta();
     assert!(abs_schema.is_valid(&abs_orig));
@@ -902,10 +894,8 @@ fn the_closed_schemas_reject_malformed_wire_values() {
         }),
     ];
     for &(label, edit) in abs_edits {
-        // When an independent schema validator checks a copy after <edit>
         let mut copy = abs_orig.clone();
         edit(&mut copy);
-        // Then it rejects that copy and accepts the original
         assert!(
             !abs_schema.is_valid(&copy),
             "absolute should reject: {label}"
@@ -1011,15 +1001,12 @@ fn a_foreign_or_sliced_baseline_fails_admission() {
         ),
     ];
 
-    // Given an otherwise complete lines baseline named base.json and a current lines run
     for (label, content, needles) in cases {
         let path = dir.path().join("base.json");
         std::fs::write(&path, content).unwrap();
-        // When the caller loads base.json with <change>
         let err = load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines)
             .expect_err(&format!("expected admission failure: {label}"));
         let msg = format!("{err:#}");
-        // Then load_crapts_baseline returns Err naming base.json and <diagnostic>
         for needle in needles {
             assert!(
                 msg.contains(needle),
@@ -1029,13 +1016,38 @@ fn a_foreign_or_sliced_baseline_fails_admission() {
     }
 }
 
-#[test]
-fn admission_also_checks_the_structure_of_a_complete_baseline() {
+fn assert_schema_and_loader_reject(cases: &[(&str, bool, &str, DocEdit)]) {
     let dir = tempfile::tempdir().unwrap();
     let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
     let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+    for &(label, is_delta, defective_field, edit) in cases {
+        let orig = if is_delta {
+            handwritten_delta()
+        } else {
+            handwritten_absolute()
+        };
+        let schema = if is_delta { &delta_schema } else { &abs_schema };
+        let mut copy = orig.clone();
+        edit(&mut copy);
+        let orig_path = write_json(&dir, "orig.json", &orig);
+        let copy_path = write_json(&dir, "copy.json", &copy);
+        assert!(schema.is_valid(&orig), "{label}: original must validate");
+        assert!(!schema.is_valid(&copy), "{label}: copy must fail schema");
+        assert!(
+            load_crapts_baseline(&orig_path, &CRAPTS, CoverageKind::Lines).is_ok(),
+            "{label}: original must load"
+        );
+        let err = load_crapts_baseline(&copy_path, &CRAPTS, CoverageKind::Lines)
+            .expect_err(&format!("{label}: copy must fail loader"));
+        let msg = format!("{err:#}");
+        assert!(msg.contains("copy.json"), "{label}: {msg}");
+        assert!(msg.contains(defective_field), "{label}: {msg}");
+    }
+}
 
-    let cases: &[(&str, bool, &str, DocEdit)] = &[
+#[test]
+fn admission_also_checks_the_structure_of_a_complete_baseline() {
+    assert_schema_and_loader_reject(&[
         ("removing diagnostics", false, "diagnostics", |d| {
             d.as_object_mut().unwrap().remove("diagnostics");
         }),
@@ -1090,36 +1102,103 @@ fn admission_also_checks_the_structure_of_a_complete_baseline() {
                 d["entries"][0]["status"] = json!("unknown");
             },
         ),
-    ];
+    ]);
+}
 
-    for &(label, is_delta, defective_field, edit) in cases {
-        // Given a complete compatible <shape> report and a copy with <edit>
-        let orig = if is_delta {
-            handwritten_delta()
-        } else {
-            handwritten_absolute()
-        };
-        let schema = if is_delta { &delta_schema } else { &abs_schema };
-        let mut copy = orig.clone();
-        edit(&mut copy);
+#[test]
+fn admission_rejects_null_optionals_positional_arrays_and_drive_paths() {
+    assert_schema_and_loader_reject(&[
+        (
+            "setting fingerprint to null in absolute",
+            false,
+            "fingerprint",
+            |d| {
+                d["entries"][0]["fingerprint"] = json!(null);
+            },
+        ),
+        (
+            "setting fingerprint to null in delta",
+            true,
+            "fingerprint",
+            |d| {
+                d["entries"][0]["fingerprint"] = json!(null);
+            },
+        ),
+        (
+            "setting changed to null in absolute",
+            false,
+            "changed",
+            |d| {
+                d["changed"] = json!(null);
+            },
+        ),
+        ("setting changed to null in delta", true, "changed", |d| {
+            d["changed"] = json!(null);
+        }),
+        (
+            "setting previous_file to null on new row",
+            true,
+            "previous_file",
+            |d| {
+                d["entries"][1]["previous_file"] = json!(null);
+            },
+        ),
+        ("positional stray-file array", false, "source_only", |d| {
+            d["diagnostics"]["source_only"] = json!([0, []]);
+        }),
+        (
+            "positional regression_gate array",
+            true,
+            "regression_gate",
+            |d| {
+                d["regression_gate"] = json!([false, "0.2.0", "0.2.3"]);
+            },
+        ),
+        ("positional current row array", false, "entries[0]", |d| {
+            d["entries"][0] = json!(["src/a.ts", "run", 4, 2, 50.0, 20.0, null, null]);
+        }),
+        ("Windows drive path in absolute", false, "file", |d| {
+            d["entries"][0]["file"] = json!("C:/src/a.ts");
+        }),
+        ("Windows drive path in delta", true, "file", |d| {
+            d["entries"][0]["file"] = json!("C:/src/a.ts");
+        }),
+    ]);
+}
 
-        let orig_path = write_json(&dir, "orig.json", &orig);
-        let copy_path = write_json(&dir, "copy.json", &copy);
+#[test]
+fn admission_matches_schema_on_wide_integers_and_schema_uri() {
+    let dir = tempfile::tempdir().unwrap();
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
 
-        // When the offline schema validator and the public baseline reader each inspect both files
-        // Then each accepts the original and rejects the copy
-        assert!(schema.is_valid(&orig), "{label}: original must validate");
-        assert!(!schema.is_valid(&copy), "{label}: copy must fail schema");
+    for (name, mut doc, schema) in [
+        ("abs", handwritten_absolute(), &abs_schema),
+        ("delta", handwritten_delta(), &delta_schema),
+    ] {
+        doc["entries"][0]["cyclomatic"] = json!(4_294_967_296_u64);
+        doc["summary"]["total"] = json!(18_014_398_509_481_984.0);
+        doc["entries"][0]["file"] = json!("src/a.ts");
+        assert!(schema.is_valid(&doc), "{name} wide integers must validate");
+        let path = write_json(&dir, &format!("{name}-wide.json"), &doc);
         assert!(
-            load_crapts_baseline(&orig_path, &CRAPTS, CoverageKind::Lines).is_ok(),
-            "{label}: original must load"
+            load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines).is_ok(),
+            "{name} wide integers must load"
         );
-        let err = load_crapts_baseline(&copy_path, &CRAPTS, CoverageKind::Lines)
-            .expect_err(&format!("{label}: copy must fail loader"));
-        // And the reader's error names the file and the defective field
-        let msg = format!("{err:#}");
-        assert!(msg.contains("copy.json"), "{label}: {msg}");
-        assert!(msg.contains(defective_field), "{label}: {msg}");
+
+        let mut omitted_schema = doc.clone();
+        omitted_schema.as_object_mut().unwrap().remove("$schema");
+        assert!(schema.is_valid(&omitted_schema));
+        let omitted_path = write_json(&dir, &format!("{name}-no-schema.json"), &omitted_schema);
+        assert!(load_crapts_baseline(&omitted_path, &CRAPTS, CoverageKind::Lines).is_ok());
+
+        let mut bad_uri = doc;
+        bad_uri["$schema"] = json!("not a uri");
+        let bad_uri_path = write_json(&dir, &format!("{name}-bad-uri.json"), &bad_uri);
+        let err = load_crapts_baseline(&bad_uri_path, &CRAPTS, CoverageKind::Lines)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("$schema"), "{err}");
     }
 }
 
@@ -1129,7 +1208,6 @@ fn both_schemas_and_the_baseline_reader_enforce_semver() {
     let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
     let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
 
-    // Given otherwise compatible unsliced absolute and delta reports at version "0.2.3-rc.1+build.7"
     let mut abs_orig = handwritten_absolute();
     abs_orig["version"] = json!("0.2.3-rc.1+build.7");
     let mut delta_orig = handwritten_delta();
@@ -1146,25 +1224,86 @@ fn both_schemas_and_the_baseline_reader_enforce_semver() {
             "{name} original must load"
         );
 
-        // When the caller replaces the top-level version with "<version>" in a copy of each
         for bad_version in ["0.2", "0.02.3", "0.2.3-"] {
             let mut copy = orig.clone();
             copy["version"] = json!(bad_version);
             let copy_path = write_json(&dir, &format!("{name}-bad.json"), &copy);
-            // Then each offline schema validator and the public loader reject its copy
             assert!(
                 !schema.is_valid(&copy),
                 "{name} schema must reject {bad_version}"
             );
             let err = load_crapts_baseline(&copy_path, &CRAPTS, CoverageKind::Lines)
                 .expect_err(&format!("{name} loader must reject {bad_version}"));
-            // And the loader error names the file, version and the offending string
             let msg = format!("{err:#}");
             assert!(msg.contains(&format!("{name}-bad.json")), "{msg}");
             assert!(msg.contains("version"), "{msg}");
             assert!(msg.contains(bad_version), "{msg}");
         }
     }
+
+    let valid_path = write_json(&dir, "valid.json", &abs_orig);
+    let malformed_tool = Tool {
+        version: "0.2.invalid",
+        ..CRAPTS
+    };
+    let err = load_crapts_baseline(&valid_path, &malformed_tool, CoverageKind::Lines)
+        .expect_err("malformed tool version must fail")
+        .to_string();
+    assert!(err.contains("0.2.invalid"), "{err}");
+
+    let same_minor_tool = Tool {
+        version: "0.2.9",
+        ..CRAPTS
+    };
+    let loaded = load_crapts_baseline(&valid_path, &same_minor_tool, CoverageKind::Lines).unwrap();
+    let allow = AllowSet::compile(&[]).unwrap();
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+    assert_eq!(prepared.notice(), None);
+    let signals = SignalSettings::default();
+    let settings = Settings {
+        allow: &allow,
+        min: None,
+        top: None,
+        sort: SortOrder::Crap,
+        threshold: 30.0,
+        epsilon: DEFAULT_EPSILON,
+        signals: &signals,
+        fail_above: false,
+        fail_regression: false,
+        format: Format::Json,
+        summary: false,
+        show_unchanged: false,
+        uncovered_hints: false,
+        width: None,
+        links: None,
+        cwd: Path::new(""),
+        workspace_root: None,
+        fail_sections: false,
+    };
+    let mut out = Vec::new();
+    run::run(
+        &same_minor_tool,
+        &settings,
+        Analysis {
+            entries: vec![row("src/a.ts", "run", 4, 20.0)],
+            diagnostics: Some(zero_diagnostics()),
+            scope: &Everything,
+            coverage_kind: Some(CoverageKind::Lines),
+            notices: &[],
+        },
+        Some(&prepared),
+        &[],
+        &RenderExtras::default(),
+        &mut out,
+    )
+    .unwrap();
+    let doc: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        doc["regression_gate"]["baseline_version"],
+        "0.2.3-rc.1+build.7"
+    );
+    assert_eq!(doc["regression_gate"]["version"], "0.2.9");
+    assert_eq!(doc["regression_gate"]["skipped"], false);
 }
 
 #[test]

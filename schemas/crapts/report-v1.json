@@ -130,6 +130,7 @@
         "file": {
           "type": "string",
           "pattern": "^([^./\\\\]|\\.[^/\\\\])[^\\\\]*$",
+          "not": { "pattern": "^[A-Za-z]:" },
           "description": "Cwd-relative, slash-separated source file path with no leading ./."
         },
         "function": {

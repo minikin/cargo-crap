@@ -451,6 +451,7 @@ pub fn load_baseline_with_weight(
 pub struct CraptsBaseline {
     pub(crate) entries: Vec<CrapEntry>,
     pub(crate) baseline_version: String,
+    pub(crate) regression_gate_skipped: bool,
     pub(crate) notice: Option<String>,
 }
 
@@ -484,6 +485,13 @@ fn parse_crapts_baseline(
         bail!("baseline {}: expected a JSON object", path.display());
     };
     check_name_scheme(obj, path, tool)?;
+    if !is_valid_semver(tool.version) {
+        bail!(
+            "tool {} has invalid version {:?} (expected valid SemVer)",
+            tool.name,
+            tool.version
+        );
+    }
     check_coverage_kind(obj, path, current_kind)?;
     check_selection(obj, path)?;
     let baseline_version = check_semver_field(obj.get("version"), path, "version")?;
@@ -493,7 +501,8 @@ fn parse_crapts_baseline(
     } else {
         parse_crapts_absolute_doc(path, value)?
     };
-    let notice = (!same_major_minor(&baseline_version, tool.version)).then(|| {
+    let regression_gate_skipped = !same_major_minor(&baseline_version, tool.version);
+    let notice = regression_gate_skipped.then(|| {
         format!(
             "regression gate skipped: baseline from {} {}, running {} {}. Refresh the baseline.",
             tool.name, baseline_version, tool.name, tool.version
@@ -502,6 +511,7 @@ fn parse_crapts_baseline(
     Ok(CraptsBaseline {
         entries,
         baseline_version,
+        regression_gate_skipped,
         notice,
     })
 }
@@ -571,22 +581,58 @@ pub(crate) fn same_major_minor(
     major_minor(a) == major_minor(b)
 }
 
-fn draft07_int(v: &serde_json::Value) -> Option<u64> {
+fn is_draft07_nonneg_int(v: &serde_json::Value) -> bool {
+    v.as_f64().is_some_and(|f| f >= 0.0 && f.fract() == 0.0)
+}
+
+fn draft07_pos_u64(v: &serde_json::Value) -> Option<u64> {
     if let Some(n) = v.as_u64() {
-        return Some(n);
+        return (n >= 1).then_some(n);
     }
     let f = v.as_f64()?;
-    let in_range = (0.0..=9_007_199_254_740_992.0).contains(&f);
+    let exact = (1.0..=9_007_199_254_740_992.0).contains(&f) && f.fract() == 0.0;
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "range and fract checks guarantee an exact non-negative integer"
+        reason = "range and fract checks guarantee an exact positive integer"
     )]
-    (in_range && f.fract() == 0.0).then_some(f as u64)
+    exact.then_some(f as u64)
+}
+
+fn is_drive_rooted(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn is_valid_crapts_path(s: &str) -> bool {
-    !s.is_empty() && s != "." && !s.starts_with('/') && !s.starts_with("./") && !s.contains('\\')
+    !s.is_empty()
+        && s != "."
+        && !s.starts_with('/')
+        && !s.starts_with("./")
+        && !s.contains('\\')
+        && !is_drive_rooted(s)
+}
+
+fn is_valid_uri(s: &str) -> bool {
+    let Some((scheme, rest)) = s.split_once(':') else {
+        return false;
+    };
+    let valid_scheme = scheme
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphabetic)
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'));
+    valid_scheme
+        && !rest.is_empty()
+        && rest.bytes().all(|b| {
+            b.is_ascii_graphic()
+                && !matches!(
+                    b,
+                    b'<' | b'>' | b'"' | b'{' | b'}' | b'|' | b'\\' | b'^' | b'`'
+                )
+        })
 }
 
 fn is_valid_fingerprint(s: &str) -> bool {
@@ -601,7 +647,7 @@ fn check_name_scheme(
     tool: &Tool,
 ) -> Result<()> {
     match obj.get("name_scheme") {
-        Some(v) if draft07_int(v) == Some(1) => Ok(()),
+        Some(v) if v.as_f64() == Some(1.0) => Ok(()),
         Some(other) => bail!(
             "baseline {} has unsupported name_scheme {other} (expected 1). Refresh the baseline with `{}`",
             path.display(),
@@ -677,10 +723,35 @@ fn check_semver_field(
     Ok(version.to_owned())
 }
 
+// Preserves presence so explicit JSON null stays Some(Value::Null) rather than None.
+fn present_value<'de, D>(
+    deserializer: D
+) -> std::result::Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
+}
+
+fn decode_object<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+    path: &Path,
+    label: &str,
+) -> Result<T> {
+    if !value.is_object() {
+        bail!(
+            "baseline {}: invalid {label} (expected a JSON object)",
+            path.display()
+        );
+    }
+    serde_json::from_value(value)
+        .with_context(|| format!("baseline {}: invalid {label}", path.display()))
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsAbsolute {
-    #[serde(rename = "$schema", default)]
+    #[serde(rename = "$schema", default, deserialize_with = "present_value")]
     schema: Option<serde_json::Value>,
     version: serde_json::Value,
     name_scheme: serde_json::Value,
@@ -690,7 +761,7 @@ struct RawCraptsAbsolute {
     notices: serde_json::Value,
     summary: serde_json::Value,
     entries: serde_json::Value,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_value")]
     changed: Option<serde_json::Value>,
     diagnostics: serde_json::Value,
 }
@@ -698,7 +769,7 @@ struct RawCraptsAbsolute {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsDelta {
-    #[serde(rename = "$schema", default)]
+    #[serde(rename = "$schema", default, deserialize_with = "present_value")]
     schema: Option<serde_json::Value>,
     version: serde_json::Value,
     name_scheme: serde_json::Value,
@@ -710,7 +781,7 @@ struct RawCraptsDelta {
     summary: serde_json::Value,
     entries: serde_json::Value,
     removed: serde_json::Value,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_value")]
     changed: Option<serde_json::Value>,
     diagnostics: serde_json::Value,
 }
@@ -778,9 +849,9 @@ struct RawCraptsEntry {
     cyclomatic: serde_json::Value,
     coverage: serde_json::Value,
     crap: serde_json::Value,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_value")]
     uncovered: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_value")]
     fingerprint: Option<serde_json::Value>,
 }
 
@@ -793,16 +864,16 @@ struct RawCraptsDeltaEntry {
     cyclomatic: serde_json::Value,
     coverage: serde_json::Value,
     crap: serde_json::Value,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_value")]
     uncovered: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_value")]
     fingerprint: Option<serde_json::Value>,
     baseline_crap: serde_json::Value,
     delta: serde_json::Value,
     status: serde_json::Value,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_value")]
     previous_file: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_value")]
     reasons: Option<serde_json::Value>,
 }
 
@@ -834,13 +905,13 @@ enum RawReasonAction {
 struct RawCraptsReason {
     signal: RawReasonSignal,
     value: serde_json::Value,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_value")]
     baseline: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_value")]
     limit: Option<serde_json::Value>,
     gating: bool,
     action: RawReasonAction,
-    spans: Vec<RawLineRange>,
+    spans: serde_json::Value,
 }
 
 struct CommonOuter {
@@ -914,7 +985,7 @@ fn validate_common_outer(
     is_delta: bool,
 ) -> Result<()> {
     if let Some(schema) = outer.schema
-        && !schema.is_string()
+        && !schema.as_str().is_some_and(is_valid_uri)
     {
         bail!("baseline {}: invalid $schema", path.display());
     }
@@ -934,8 +1005,7 @@ fn validate_crapts_diagnostics(
     path: &Path,
     v: serde_json::Value,
 ) -> Result<()> {
-    let d: RawCraptsDiagnostics = serde_json::from_value(v)
-        .with_context(|| format!("baseline {}: invalid diagnostics", path.display()))?;
+    let d: RawCraptsDiagnostics = decode_object(v, path, "diagnostics")?;
     require_nonneg_int(&d.analyzed_files, path, "diagnostics.analyzed_files")?;
     require_nonneg_int(&d.coverage_files, path, "diagnostics.coverage_files")?;
     require_nonneg_int(&d.matched_files, path, "diagnostics.matched_files")?;
@@ -948,8 +1018,7 @@ fn validate_crapts_stray(
     field: &str,
     v: serde_json::Value,
 ) -> Result<()> {
-    let s: RawCraptsStray = serde_json::from_value(v)
-        .with_context(|| format!("baseline {}: invalid {field}", path.display()))?;
+    let s: RawCraptsStray = decode_object(v, path, field)?;
     require_nonneg_int(&s.count, path, field)?;
     let examples: Vec<String> = serde_json::from_value(s.examples)
         .with_context(|| format!("baseline {}: invalid {field}.examples", path.display()))?;
@@ -967,8 +1036,7 @@ fn validate_crapts_summary(
     v: serde_json::Value,
     is_delta: bool,
 ) -> Result<()> {
-    let s: RawCraptsSummary = serde_json::from_value(v)
-        .with_context(|| format!("baseline {}: invalid summary", path.display()))?;
+    let s: RawCraptsSummary = decode_object(v, path, "summary")?;
     require_nonneg_int(&s.total, path, "summary.total")?;
     require_nonneg_int(&s.crappy, path, "summary.crappy")?;
     if !s.changed_failures.is_null() {
@@ -998,8 +1066,7 @@ fn validate_regression_gate(
     path: &Path,
     v: serde_json::Value,
 ) -> Result<()> {
-    let g: RawRegressionGate = serde_json::from_value(v)
-        .with_context(|| format!("baseline {}: invalid regression_gate", path.display()))?;
+    let g: RawRegressionGate = decode_object(v, path, "regression_gate")?;
     if !g.skipped.is_boolean() {
         bail!(
             "baseline {}: invalid regression_gate.skipped",
@@ -1019,9 +1086,14 @@ fn validate_removed(
     path: &Path,
     v: serde_json::Value,
 ) -> Result<()> {
-    let items: Vec<RawCraptsRemoved> = serde_json::from_value(v)
-        .with_context(|| format!("baseline {}: invalid removed", path.display()))?;
-    for item in items {
+    let serde_json::Value::Array(items) = v else {
+        bail!(
+            "baseline {}: invalid removed (expected an array)",
+            path.display()
+        );
+    };
+    for raw in items {
+        let item: RawCraptsRemoved = decode_object(raw, path, "removed")?;
         if item.file.as_str().is_none_or(str::is_empty) {
             bail!("baseline {}: invalid removed.file", path.display());
         }
@@ -1051,9 +1123,7 @@ fn parse_crapts_entries(
             if is_delta {
                 parse_crapts_delta_row(path, i, item)
             } else {
-                let raw: RawCraptsEntry = serde_json::from_value(item).with_context(|| {
-                    format!("baseline {}: invalid entries[{i}]", path.display())
-                })?;
+                let raw: RawCraptsEntry = decode_object(item, path, &format!("entries[{i}]"))?;
                 parse_entry_core(path, i, raw)
             }
         })
@@ -1065,8 +1135,7 @@ fn parse_crapts_delta_row(
     index: usize,
     item: serde_json::Value,
 ) -> Result<CrapEntry> {
-    let raw: RawCraptsDeltaEntry = serde_json::from_value(item)
-        .with_context(|| format!("baseline {}: invalid entries[{index}]", path.display()))?;
+    let raw: RawCraptsDeltaEntry = decode_object(item, path, &format!("entries[{index}]"))?;
     validate_delta_row(path, index, &raw)?;
     if let Some(reasons) = raw.reasons {
         validate_reasons(path, index, reasons)?;
@@ -1146,13 +1215,15 @@ fn validate_reasons(
     index: usize,
     v: serde_json::Value,
 ) -> Result<()> {
-    let reasons: Vec<RawCraptsReason> = serde_json::from_value(v).with_context(|| {
-        format!(
+    let serde_json::Value::Array(items) = v else {
+        bail!(
             "baseline {}: invalid entries[{index}].reasons",
             path.display()
-        )
-    })?;
-    for r in reasons {
+        );
+    };
+    let label = format!("entries[{index}].reasons");
+    for raw in items {
+        let r: RawCraptsReason = decode_object(raw, path, &label)?;
         let _ = (r.signal, r.gating, r.action);
         ensure_finite_min(&r.value, 0.0, path, "reasons.value")?;
         if let Some(b) = &r.baseline {
@@ -1161,8 +1232,12 @@ fn validate_reasons(
         if let Some(limit) = &r.limit {
             require_nonneg_int(limit, path, "reasons.limit")?;
         }
-        for span in &r.spans {
-            parse_line_range(path, "reasons.spans", span)?;
+        let serde_json::Value::Array(spans) = r.spans else {
+            bail!("baseline {}: invalid reasons.spans", path.display());
+        };
+        for span in spans {
+            let parsed: RawLineRange = decode_object(span, path, "reasons.spans")?;
+            parse_line_range(path, "reasons.spans", &parsed)?;
         }
     }
     Ok(())
@@ -1191,7 +1266,7 @@ fn parse_entry_core(
             )
         })?;
     let line = require_pos_usize(&raw.line, path, "line")?;
-    let cyclomatic = f64::from(require_pos_u32(&raw.cyclomatic, path, "cyclomatic")?);
+    let cyclomatic = require_pos_int_f64(&raw.cyclomatic, path, "cyclomatic")?;
     let coverage = parse_coverage(path, index, &raw.coverage)?;
     let crap = ensure_finite_min(&raw.crap, 1.0, path, "crap")?;
     let uncovered = parse_uncovered(path, index, raw.uncovered)?;
@@ -1236,21 +1311,25 @@ fn parse_uncovered(
     let Some(v) = raw else {
         return Ok(Vec::new());
     };
-    let ranges: Vec<RawLineRange> = serde_json::from_value(v).with_context(|| {
-        format!(
+    let serde_json::Value::Array(items) = v else {
+        bail!(
             "baseline {}: invalid entries[{index}].uncovered",
             path.display()
-        )
-    })?;
-    if ranges.is_empty() {
+        );
+    };
+    if items.is_empty() {
         bail!(
             "baseline {}: entries[{index}].uncovered must not be empty",
             path.display()
         );
     }
-    ranges
-        .iter()
-        .map(|r| parse_line_range(path, "uncovered", r))
+    let label = format!("entries[{index}].uncovered");
+    items
+        .into_iter()
+        .map(|item| {
+            let range: RawLineRange = decode_object(item, path, &label)?;
+            parse_line_range(path, "uncovered", &range)
+        })
         .collect()
 }
 
@@ -1289,8 +1368,21 @@ fn require_nonneg_int(
     v: &serde_json::Value,
     path: &Path,
     field: &str,
-) -> Result<u64> {
-    draft07_int(v).ok_or_else(|| anyhow::anyhow!("baseline {}: invalid {field}", path.display()))
+) -> Result<()> {
+    if !is_draft07_nonneg_int(v) {
+        bail!("baseline {}: invalid {field}", path.display());
+    }
+    Ok(())
+}
+
+fn require_pos_int_f64(
+    v: &serde_json::Value,
+    path: &Path,
+    field: &str,
+) -> Result<f64> {
+    v.as_f64()
+        .filter(|&f| f >= 1.0 && f.fract() == 0.0)
+        .ok_or_else(|| anyhow::anyhow!("baseline {}: invalid {field}", path.display()))
 }
 
 fn require_pos_usize(
@@ -1298,10 +1390,8 @@ fn require_pos_usize(
     path: &Path,
     field: &str,
 ) -> Result<usize> {
-    let n = require_nonneg_int(v, path, field)?;
-    usize::try_from(n)
-        .ok()
-        .filter(|&x| x >= 1)
+    draft07_pos_u64(v)
+        .and_then(|n| usize::try_from(n).ok())
         .ok_or_else(|| anyhow::anyhow!("baseline {}: invalid {field}", path.display()))
 }
 
@@ -1310,10 +1400,8 @@ fn require_pos_u32(
     path: &Path,
     field: &str,
 ) -> Result<u32> {
-    let n = require_nonneg_int(v, path, field)?;
-    u32::try_from(n)
-        .ok()
-        .filter(|&x| x >= 1)
+    draft07_pos_u64(v)
+        .and_then(|n| u32::try_from(n).ok())
         .ok_or_else(|| anyhow::anyhow!("baseline {}: invalid {field}", path.display()))
 }
 
@@ -3682,21 +3770,57 @@ mod crapts_admission_tests {
 
     #[test]
     fn primitive_validators_check_boundaries() {
-        assert_eq!(draft07_int(&json!(0)), Some(0));
-        assert_eq!(draft07_int(&json!(2)), Some(2));
-        assert_eq!(draft07_int(&json!(0.0)), Some(0));
-        assert_eq!(draft07_int(&json!(2.0)), Some(2));
-        assert_eq!(draft07_int(&json!(-1)), None);
-        assert_eq!(draft07_int(&json!(-1.0)), None);
-        assert_eq!(draft07_int(&json!(2.5)), None);
-        assert_eq!(draft07_int(&json!(1e20)), None);
-        assert_eq!(draft07_int(&json!("2")), None);
+        assert!(is_draft07_nonneg_int(&json!(0)));
+        assert!(is_draft07_nonneg_int(&json!(2)));
+        assert!(is_draft07_nonneg_int(&json!(0.0)));
+        assert!(is_draft07_nonneg_int(&json!(2.0)));
+        assert!(is_draft07_nonneg_int(&json!(4_294_967_296_u64)));
+        assert!(is_draft07_nonneg_int(&json!(18_014_398_509_481_984.0)));
+        assert!(!is_draft07_nonneg_int(&json!(-1)));
+        assert!(!is_draft07_nonneg_int(&json!(-1.0)));
+        assert!(!is_draft07_nonneg_int(&json!(2.5)));
+        assert!(!is_draft07_nonneg_int(&json!("2")));
 
-        for ok in ["a.ts", "src/a.ts", ".env.ts", "a"] {
+        assert_eq!(draft07_pos_u64(&json!(1)), Some(1));
+        assert_eq!(draft07_pos_u64(&json!(2.0)), Some(2));
+        assert_eq!(draft07_pos_u64(&json!(0)), None);
+        assert_eq!(draft07_pos_u64(&json!(0.0)), None);
+        assert_eq!(draft07_pos_u64(&json!(1.5)), None);
+        assert_eq!(draft07_pos_u64(&json!(1e20)), None);
+        assert_eq!(draft07_pos_u64(&json!("1")), None);
+
+        for ok in ["a.ts", "src/a.ts", ".env.ts", "a", "0:x.ts"] {
             assert!(is_valid_crapts_path(ok), "{ok}");
         }
-        for bad in ["", ".", "/a.ts", "./a.ts", "src\\a.ts"] {
+        for bad in [
+            "",
+            ".",
+            "/a.ts",
+            "./a.ts",
+            "src\\a.ts",
+            "C:/src/a.ts",
+            "c:src/a.ts",
+            "Z:",
+        ] {
             assert!(!is_valid_crapts_path(bad), "{bad}");
+        }
+
+        for ok in [
+            "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v1.json",
+            "custom+v1.0-a:foo/bar",
+        ] {
+            assert!(is_valid_uri(ok), "{ok}");
+        }
+        for bad in [
+            "not a uri",
+            ":missing-scheme",
+            "1bad://example.test",
+            "ht_tp://example.test",
+            "http:",
+            "http://bad uri",
+            "http://bad<uri",
+        ] {
+            assert!(!is_valid_uri(bad), "{bad}");
         }
 
         assert!(is_valid_fingerprint(&"0123456789abcdef".repeat(4)));
@@ -3714,26 +3838,28 @@ mod crapts_admission_tests {
     }
 
     #[test]
-    fn load_crapts_baseline_admits_valid_docs_and_emits_notice_only_on_minor_change() {
+    fn load_crapts_baseline_admits_valid_docs_and_preserves_version_metadata() {
         let dir = tempfile::tempdir().unwrap();
+        let mut abs_doc = valid_absolute_doc();
+        abs_doc["version"] = json!("0.2.3-rc.1+build.7");
+        abs_doc["summary"]["total"] = json!(18_014_398_509_481_984.0);
+        abs_doc["entries"][0]["cyclomatic"] = json!(4_294_967_296_u64);
         let abs_path = dir.path().join("abs.json");
-        std::fs::write(
-            &abs_path,
-            serde_json::to_string(&valid_absolute_doc()).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(&abs_path, serde_json::to_string(&abs_doc).unwrap()).unwrap();
         let tool_same = Tool {
             version: "0.2.9",
             ..SECOND_TOOL
         };
         let loaded = load_crapts_baseline(&abs_path, &tool_same, CoverageKind::Lines).unwrap();
         assert_eq!(loaded.entries.len(), 1);
-        assert_eq!(loaded.entries[0].cyclomatic, 2.0);
+        assert_eq!(loaded.entries[0].cyclomatic, 4_294_967_296.0);
         assert_eq!(loaded.entries[0].uncovered, LineRange::list(&[(8, 9)]));
         assert_eq!(
             loaded.entries[0].fingerprint.as_deref(),
             Some("a".repeat(64).as_str())
         );
+        assert_eq!(loaded.baseline_version, "0.2.3-rc.1+build.7");
+        assert!(!loaded.regression_gate_skipped);
         assert!(loaded.notice.is_none());
 
         let tool_next = Tool {
@@ -3743,12 +3869,37 @@ mod crapts_admission_tests {
         };
         let loaded_cross =
             load_crapts_baseline(&abs_path, &tool_next, CoverageKind::Lines).unwrap();
+        assert!(loaded_cross.regression_gate_skipped);
         assert_eq!(
             loaded_cross.notice.as_deref(),
             Some(
-                "regression gate skipped: baseline from crapts 0.2.3, running crapts 0.3.0. Refresh the baseline."
+                "regression gate skipped: baseline from crapts 0.2.3-rc.1+build.7, running crapts 0.3.0. Refresh the baseline."
             )
         );
+
+        let tool_bad = Tool {
+            version: "0.2.invalid",
+            ..SECOND_TOOL
+        };
+        let bad_tool_err = load_crapts_baseline(&abs_path, &tool_bad, CoverageKind::Lines)
+            .unwrap_err()
+            .to_string();
+        assert!(bad_tool_err.contains("0.2.invalid"), "{bad_tool_err}");
+
+        let mut bad_scheme = valid_absolute_doc();
+        bad_scheme["name_scheme"] = json!(2);
+        let scheme_path = dir.path().join("scheme.json");
+        std::fs::write(&scheme_path, serde_json::to_string(&bad_scheme).unwrap()).unwrap();
+        let scheme_first = load_crapts_baseline(&scheme_path, &tool_bad, CoverageKind::Lines)
+            .unwrap_err()
+            .to_string();
+        assert!(scheme_first.contains("name_scheme"), "{scheme_first}");
+
+        let mut no_schema = valid_absolute_doc();
+        no_schema.as_object_mut().unwrap().remove("$schema");
+        let no_schema_path = dir.path().join("no-schema.json");
+        std::fs::write(&no_schema_path, serde_json::to_string(&no_schema).unwrap()).unwrap();
+        assert!(load_crapts_baseline(&no_schema_path, &tool_same, CoverageKind::Lines).is_ok());
 
         let delta_path = dir.path().join("delta.json");
         std::fs::write(
@@ -3848,9 +3999,33 @@ mod crapts_admission_tests {
     fn load_crapts_baseline_rejects_defective_absolute_fields() {
         let abs_cases: &[(&str, DocEdit)] = &[
             ("$schema", |d| d["$schema"] = json!(123)),
+            ("$schema", |d| d["$schema"] = json!(null)),
+            ("$schema", |d| d["$schema"] = json!("not a uri")),
             ("threshold", |d| d["threshold"] = json!(-1)),
             ("notices", |d| d["notices"] = json!([1])),
             ("changed", |d| d["changed"] = json!([])),
+            ("changed", |d| d["changed"] = json!(null)),
+            ("diagnostics", |d| {
+                d["diagnostics"] =
+                    json!([1, 1, 1, {"count": 0, "examples": []}, {"count": 0, "examples": []}]);
+            }),
+            ("diagnostics.source_only", |d| {
+                d["diagnostics"]["source_only"] = json!([0, []]);
+            }),
+            ("summary", |d| {
+                d["summary"] = json!([1, 0, null, null, null, null, null, null, null]);
+            }),
+            ("entries[0]", |d| {
+                d["entries"][0] = json!(["src/a.ts", "run", 7, 2, 50.0, 2.5, null, null]);
+            }),
+            ("uncovered", |d| d["entries"][0]["uncovered"] = json!(null)),
+            ("uncovered", |d| {
+                d["entries"][0]["uncovered"] = json!([[8, 9]]);
+            }),
+            ("fingerprint", |d| {
+                d["entries"][0]["fingerprint"] = json!(null);
+            }),
+            ("file", |d| d["entries"][0]["file"] = json!("C:/src/a.ts")),
             ("diagnostics.analyzed_files", |d| {
                 d["diagnostics"]["analyzed_files"] = json!(-1);
             }),
@@ -3923,6 +4098,9 @@ mod crapts_admission_tests {
     #[test]
     fn load_crapts_baseline_rejects_defective_delta_fields() {
         let delta_cases: &[(&str, DocEdit)] = &[
+            ("regression_gate", |d| {
+                d["regression_gate"] = json!([false, "0.2.0", "0.2.3"]);
+            }),
             ("regression_gate.skipped", |d| {
                 d["regression_gate"]["skipped"] = json!("no");
             }),
@@ -3931,6 +4109,10 @@ mod crapts_admission_tests {
             }),
             ("regression_gate.version", |d| {
                 d["regression_gate"]["version"] = json!("0.2");
+            }),
+            ("removed", |d| d["removed"] = json!("bad")),
+            ("removed", |d| {
+                d["removed"][0] = json!(["old/gone.ts", "gone", 5.0]);
             }),
             ("removed.file", |d| d["removed"][0]["file"] = json!("")),
             ("removed.function", |d| {
@@ -3942,6 +4124,23 @@ mod crapts_admission_tests {
             ("summary.improved", |d| {
                 d["summary"]["improved"] = json!(null);
             }),
+            ("entries[0]", |d| {
+                d["entries"][0] = json!([
+                    "src/a.ts",
+                    "run",
+                    7,
+                    2,
+                    null,
+                    20.0,
+                    null,
+                    null,
+                    10.0,
+                    10.0,
+                    "regressed",
+                    null,
+                    null
+                ]);
+            }),
             ("status", |d| d["entries"][0]["status"] = json!(1)),
             ("status", |d| d["entries"][0]["status"] = json!("unknown")),
             ("baseline_crap", |d| {
@@ -3951,6 +4150,9 @@ mod crapts_admission_tests {
             ("previous_file", |d| {
                 d["entries"][0]["previous_file"] = json!("");
             }),
+            ("previous_file", |d| {
+                d["entries"][0]["previous_file"] = json!(null);
+            }),
             ("baseline_crap", |d| {
                 d["entries"][1]["baseline_crap"] = json!(2.0);
             }),
@@ -3958,14 +4160,45 @@ mod crapts_admission_tests {
             ("previous_file", |d| {
                 d["entries"][1]["previous_file"] = json!("old.ts");
             }),
+            ("previous_file", |d| {
+                d["entries"][1]["previous_file"] = json!(null);
+            }),
+        ];
+        for &(needle, edit) in delta_cases {
+            let mut doc = valid_delta_doc();
+            edit(&mut doc);
+            assert_rejected(doc, CoverageKind::Lines, needle);
+        }
+    }
+
+    #[test]
+    fn load_crapts_baseline_rejects_defective_delta_reasons() {
+        let reason_cases: &[(&str, DocEdit)] = &[
+            ("reasons", |d| d["entries"][0]["reasons"] = json!(null)),
+            ("reasons", |d| {
+                d["entries"][0]["reasons"][0] =
+                    json!(["lines", 40, 20, 30, true, "split-function", []]);
+            }),
             ("reasons.value", |d| {
                 d["entries"][0]["reasons"][0]["value"] = json!(-1);
             }),
             ("reasons.baseline", |d| {
                 d["entries"][0]["reasons"][0]["baseline"] = json!(-1);
             }),
+            ("reasons.baseline", |d| {
+                d["entries"][0]["reasons"][0]["baseline"] = json!(null);
+            }),
             ("reasons.limit", |d| {
                 d["entries"][0]["reasons"][0]["limit"] = json!(-1);
+            }),
+            ("reasons.limit", |d| {
+                d["entries"][0]["reasons"][0]["limit"] = json!(null);
+            }),
+            ("reasons.spans", |d| {
+                d["entries"][0]["reasons"][0]["spans"] = json!("bad");
+            }),
+            ("reasons.spans", |d| {
+                d["entries"][0]["reasons"][0]["spans"] = json!([[1, 2]]);
             }),
             ("reasons.spans", |d| {
                 d["entries"][0]["reasons"][0]["spans"] = json!([{"start": 0, "end": 1}]);
@@ -3974,7 +4207,7 @@ mod crapts_admission_tests {
                 d["entries"][0]["reasons"][0]["signal"] = json!("bogus");
             }),
         ];
-        for &(needle, edit) in delta_cases {
+        for &(needle, edit) in reason_cases {
             let mut doc = valid_delta_doc();
             edit(&mut doc);
             assert_rejected(doc, CoverageKind::Lines, needle);

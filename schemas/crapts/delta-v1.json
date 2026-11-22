@@ -160,7 +160,8 @@
       "properties": {
         "file": {
           "type": "string",
-          "pattern": "^([^./\\\\]|\\.[^/\\\\])[^\\\\]*$"
+          "pattern": "^([^./\\\\]|\\.[^/\\\\])[^\\\\]*$",
+          "not": { "pattern": "^[A-Za-z]:" }
         },
         "function": { "type": "string", "minLength": 1 },
         "line": { "type": "integer", "minimum": 1 },

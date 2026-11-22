@@ -131,18 +131,23 @@ fn slice_of_with_ties(
     top: Option<usize>,
     tie_order: TieOrder,
 ) -> Vec<CrapEntry> {
-    let mut qualifying: Vec<CrapEntry> = entries
+    let qualifying = entries
         .iter()
-        .filter(|e| min.is_none_or(|cutoff| e.crap >= cutoff))
-        .cloned()
-        .collect();
-    if tie_order == TieOrder::FileFunctionLine {
-        sort_entries_with_ties(&mut qualifying, SortOrder::Crap, tie_order);
+        .filter(|e| min.is_none_or(|cutoff| e.crap >= cutoff));
+    match tie_order {
+        TieOrder::Stable => qualifying
+            .take(top.unwrap_or(usize::MAX))
+            .cloned()
+            .collect(),
+        TieOrder::FileFunctionLine => {
+            let mut refs: Vec<&CrapEntry> = qualifying.collect();
+            refs.sort_by(|a, b| crate::entry::compare_crap_desc(a, b, tie_order));
+            if let Some(limit) = top {
+                refs.truncate(limit);
+            }
+            refs.into_iter().cloned().collect()
+        },
     }
-    if let Some(limit) = top {
-        qualifying.truncate(limit);
-    }
-    qualifying
 }
 
 #[cfg(test)]

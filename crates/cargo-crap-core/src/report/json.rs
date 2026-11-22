@@ -659,6 +659,7 @@ pub(crate) fn render_crapts_delta_json(
     report: &DeltaReport,
     counts: &DeltaCounts,
     baseline_version: &str,
+    regression_gate_skipped: bool,
     ctx: &CraptsJsonContext<'_>,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -684,7 +685,7 @@ pub(crate) fn render_crapts_delta_json(
         threshold: ctx.threshold,
         selection: ctx.selection,
         regression_gate: RegressionGate {
-            skipped: !crate::delta::same_major_minor(baseline_version, ctx.tool.version),
+            skipped: regression_gate_skipped,
             baseline_version,
             version: ctx.tool.version,
         },
@@ -1397,7 +1398,7 @@ mod tests {
         );
         let counts = report.counts();
         let mut delta_buf = Vec::new();
-        render_crapts_delta_json(&report, &counts, "0.1.9", &ctx, &mut delta_buf).unwrap();
+        render_crapts_delta_json(&report, &counts, "0.1.9", true, &ctx, &mut delta_buf).unwrap();
         let delta_raw = String::from_utf8(delta_buf).unwrap();
         assert_eq!(
             top_level_keys(&delta_raw),
@@ -1424,7 +1425,7 @@ mod tests {
         assert_eq!(delta_doc["entries"][0]["previous_file"], "old/f.ts");
 
         let mut same_buf = Vec::new();
-        render_crapts_delta_json(&report, &counts, "0.2.0", &ctx, &mut same_buf).unwrap();
+        render_crapts_delta_json(&report, &counts, "0.2.0", false, &ctx, &mut same_buf).unwrap();
         let same_doc: serde_json::Value = serde_json::from_slice(&same_buf).unwrap();
         assert_eq!(same_doc["regression_gate"]["skipped"], false);
     }

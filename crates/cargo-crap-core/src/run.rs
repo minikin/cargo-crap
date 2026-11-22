@@ -61,8 +61,7 @@ impl<'a> BaselineFilter<'a> {
         }
         PreparedBaseline {
             baseline,
-            baseline_version: None,
-            notice: None,
+            crapts: None,
         }
     }
 
@@ -78,8 +77,11 @@ impl<'a> BaselineFilter<'a> {
                 try_weight: DEFAULT_TRY_WEIGHT,
                 duplicate_groups: None,
             },
-            baseline_version: Some(baseline.baseline_version),
-            notice: baseline.notice,
+            crapts: Some(CraptsPreparedMeta {
+                baseline_version: baseline.baseline_version,
+                regression_gate_skipped: baseline.regression_gate_skipped,
+                notice: baseline.notice,
+            }),
         }
     }
 
@@ -93,10 +95,16 @@ impl<'a> BaselineFilter<'a> {
 }
 
 #[derive(Debug)]
+struct CraptsPreparedMeta {
+    baseline_version: String,
+    regression_gate_skipped: bool,
+    notice: Option<String>,
+}
+
+#[derive(Debug)]
 pub struct PreparedBaseline {
     baseline: Baseline,
-    baseline_version: Option<String>,
-    notice: Option<String>,
+    crapts: Option<CraptsPreparedMeta>,
 }
 
 impl PreparedBaseline {
@@ -107,11 +115,19 @@ impl PreparedBaseline {
 
     #[must_use]
     pub fn notice(&self) -> Option<&str> {
-        self.notice.as_deref()
+        self.crapts.as_ref().and_then(|meta| meta.notice.as_deref())
     }
 
     pub(crate) fn baseline_version(&self) -> Option<&str> {
-        self.baseline_version.as_deref()
+        self.crapts
+            .as_ref()
+            .map(|meta| meta.baseline_version.as_str())
+    }
+
+    pub(crate) fn regression_gate_skipped(&self) -> bool {
+        self.crapts
+            .as_ref()
+            .is_some_and(|meta| meta.regression_gate_skipped)
     }
 }
 
@@ -285,9 +301,7 @@ pub fn run(
     };
     report::render_duplicates(&options, out).context("writing duplicate report")?;
     out.flush().context("flushing output")?;
-    let regression_skipped = baseline
-        .and_then(PreparedBaseline::baseline_version)
-        .is_some_and(|v| !crate::delta::same_major_minor(v, tool.version));
+    let regression_skipped = baseline.is_some_and(PreparedBaseline::regression_gate_skipped);
     let section_failures = sections.iter().filter_map(|s| s.failures()).sum();
     Ok(GateOutcome {
         section_failures,
@@ -408,7 +422,14 @@ fn write_crapts_json(
     })?;
     let (delta, counts, gating_signals) =
         compute_prepared_delta(settings, eligible, shown, baseline, tool);
-    report::render_crapts_delta_json(&delta, &counts, baseline_version, &ctx, out)?;
+    report::render_crapts_delta_json(
+        &delta,
+        &counts,
+        baseline_version,
+        baseline.regression_gate_skipped(),
+        &ctx,
+        out,
+    )?;
     Ok((counts.regressed, gating_signals))
 }
 
@@ -761,9 +782,16 @@ mod tests {
             duplicate_groups: None,
         });
         let prepared_crapts = filter.prepare_crapts(CraptsBaseline {
-            entries: rows,
+            entries: rows.clone(),
             baseline_version: "0.1.9".into(),
+            regression_gate_skipped: true,
             notice: Some("skip note".into()),
+        });
+        let prepared_same_minor = filter.prepare_crapts(CraptsBaseline {
+            entries: rows,
+            baseline_version: "0.2.3-rc.1+build.7".into(),
+            regression_gate_skipped: false,
+            notice: None,
         });
         let names = |p: &PreparedBaseline| -> Vec<String> {
             p.as_baseline()
@@ -778,8 +806,16 @@ mod tests {
         assert!(prepared_crapts.as_baseline().duplicate_groups.is_none());
         assert_eq!(prepared_plain.notice(), None);
         assert_eq!(prepared_plain.baseline_version(), None);
+        assert!(!prepared_plain.regression_gate_skipped());
         assert_eq!(prepared_crapts.notice(), Some("skip note"));
         assert_eq!(prepared_crapts.baseline_version(), Some("0.1.9"));
+        assert!(prepared_crapts.regression_gate_skipped());
+        assert_eq!(prepared_same_minor.notice(), None);
+        assert_eq!(
+            prepared_same_minor.baseline_version(),
+            Some("0.2.3-rc.1+build.7")
+        );
+        assert!(!prepared_same_minor.regression_gate_skipped());
     }
 
     fn crapts_test_tool() -> Tool {
@@ -879,6 +915,7 @@ mod tests {
         let cross_base = BaselineFilter::new(&AllFiles, &allow).prepare_crapts(CraptsBaseline {
             entries: Vec::new(),
             baseline_version: "0.1.9".into(),
+            regression_gate_skipped: true,
             notice: Some("baseline notice".into()),
         });
         let caller_notices = ["caller notice".to_owned()];
