@@ -1,6 +1,6 @@
 # Spec 58: crapts GitHub Action
 
-**Status:** Draft
+**Status:** Approved
 
 **Effort:** Large
 
