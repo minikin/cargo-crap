@@ -758,6 +758,93 @@ fn direct_class_valued_fields_supply_a_class_name() {
 }
 
 #[test]
+fn count_class_definition_expressions_in_the_surrounding_execution_context() {
+    let class = "class K extends (a ? A : B) { @dec(b ? 1 : 2) [c ? u : v]() {} }";
+    for (source, expected) in [
+        (format!("function outer() {{ {class} }}"), &[("outer",4), ("outer::K::(c%3Fu%3Av)",1)][..]),
+        (class.to_owned(), &[("K::(c%3Fu%3Av)",1)]),
+        ("function outer(){class K { m(@dec(p ? 1 : 0) x = a ?? b, @dec(q && r) ...xs: any[]){} }}".to_owned(),
+            &[("outer",3), ("outer::K::m",2)]),
+        ("class K { m(@dec(p ? 1 : 0) x = a ?? b){} }".to_owned(), &[("K::m",2)]),
+        ("function outer(){class K { m(@dec(()=>a&&b) x=()=>0){} }}".to_owned(),
+            &[("outer",1), ("outer::K::m",1), ("outer::K::m::dec()",2), ("outer::K::m::x",1)]),
+        ("function outer(){class K { @dec(p ? 1 : 2) declare [q ? x : y]: number }}".to_owned(),
+            &[("outer",3)]),
+    ] {
+        let file = analyze(Path::new("definition.ts"), source.as_bytes(), Mode::Strict(Side::Head)).unwrap();
+        let rows: Vec<_> = file.rows.iter().map(|r| (r.name.as_str(),r.cyclomatic)).collect();
+        assert_eq!(rows, expected, "{source}");
+    }
+}
+
+#[test]
+fn retain_only_decorators_and_keys_that_execute() {
+    use FileStatus::{Clean, Recovered};
+    for (source, status, expected) in [
+        (
+            "function f(){abstract class K { abstract [p ? x : y](): void; abstract [pick(()=>0)](): void }}",
+            Clean,
+            &[("f", 1)][..],
+        ),
+        (
+            "function f(){ class K { @ignored(()=>0) m():void; @kept(()=>1) m(){} }}",
+            Recovered,
+            &[("f", 1), ("f::K::m", 1), ("f::K::m::kept()", 1)],
+        ),
+        (
+            "function f(){ const g = <T,>(@d(p && q) x:T) => x; }",
+            Recovered,
+            &[("f", 2), ("f::g", 1)],
+        ),
+        (
+            "function f(){class K { m(@d(class X { n(@d(a&&b) z = c??d){} }) x, @d(e && f) y){} }}",
+            Clean,
+            &[("f", 3), ("f::K::m", 1), ("f::K::m::d()::X::n", 2)],
+        ),
+    ] {
+        let file = analyze(
+            Path::new("definition.tsx"),
+            source.as_bytes(),
+            Mode::Ordinary,
+        )
+        .unwrap();
+        assert_eq!(file.status, status, "{source}");
+        let rows: Vec<_> = file
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.cyclomatic))
+            .collect();
+        assert_eq!(rows, expected, "{source}");
+    }
+}
+
+#[test]
+fn decorated_ambient_accessors_evaluate_only_the_definition() {
+    let source = b"function f(){ class K { @dec(p && q) declare accessor [a ? x : y] = b ? run(()=>0) : z } }";
+    let file = analyze(Path::new("ambient.ts"), source, Mode::Ordinary).unwrap();
+    assert_eq!(file.status, FileStatus::Recovered);
+    assert_eq!(file.warnings.len(), 1);
+    let rows: Vec<_> = file
+        .rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.cyclomatic))
+        .collect();
+    assert_eq!(rows, [("f", 3)]);
+}
+
+#[test]
+fn include_a_methods_decorator_in_its_source_span() {
+    let source = b"class K {\n  @dec(1)\n  work() {}\n}";
+    let file = analyze(Path::new("decorator.ts"), source, Mode::Strict(Side::Head)).unwrap();
+    let [row] = file.rows.as_slice() else {
+        panic!("{:?}", file.rows)
+    };
+    assert_eq!(row.name, "K::work");
+    assert_eq!(row.span, span(2, 2, 3, 11));
+    assert_eq!(row.body_regions, [span(3, 9, 3, 11)]);
+}
+
+#[test]
 fn locate_an_implied_constructor_across_discontiguous_initializers() {
     let source = b"class C {\n  a = p && q\n  static f = () => 9\n  handler = () => p ? 1 : 2\n  b = r ?? s\n}";
     let file = analyze(Path::new("implied.ts"), source, Mode::Strict(Side::Head)).unwrap();

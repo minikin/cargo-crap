@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -166,6 +167,8 @@ struct Collector<'s> {
     names: Names,
     method: Option<(Span, u32)>,
     constructor: Option<Constructor>,
+    // Parameter decorators run at definition time while their callbacks retain the method's name.
+    parameter_decorator_owners: HashMap<u32, Option<usize>>,
 }
 
 #[derive(Clone, Copy)]
@@ -202,6 +205,7 @@ impl<'s> Collector<'s> {
             names: Names::default(),
             method: None,
             constructor: None,
+            parameter_decorator_owners: HashMap::new(),
         }
     }
 
@@ -350,6 +354,30 @@ impl<'s> Collector<'s> {
         self.leave_node(node);
     }
 
+    fn visit_declared_field<'a>(
+        &mut self,
+        decorators: &oxc_allocator::Vec<'a, Decorator<'a>>,
+        key: &PropertyKey<'a>,
+    ) {
+        if !decorators.is_empty() {
+            self.visit_decorators(decorators);
+            self.visit_property_key(key);
+        }
+    }
+
+    fn remember_parameter_decorators(
+        &mut self,
+        params: &oxc_ast::ast::FormalParameters<'_>,
+    ) {
+        let decorators = params
+            .items
+            .iter()
+            .map(|p| &p.decorators)
+            .chain(params.rest.iter().map(|p| &p.decorators));
+        self.parameter_decorator_owners
+            .extend(decorators.flatten().map(|d| (d.span.start, self.owner)));
+    }
+
     fn record_statement(
         &mut self,
         span: Span,
@@ -448,6 +476,19 @@ pub(super) fn visit_logical_operands<'a>(
 }
 
 impl<'a> Visit<'a> for Collector<'_> {
+    fn visit_decorator(
+        &mut self,
+        decorator: &Decorator<'a>,
+    ) {
+        let owner = self
+            .parameter_decorator_owners
+            .remove(&decorator.span.start)
+            .unwrap_or(self.owner);
+        let previous = std::mem::replace(&mut self.owner, owner);
+        walk::walk_decorator(self, decorator);
+        self.owner = previous;
+    }
+
     fn visit_class_body(
         &mut self,
         body: &ClassBody<'a>,
@@ -486,6 +527,9 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         method: &MethodDefinition<'a>,
     ) {
+        if method.value.body.is_none() {
+            return;
+        }
         self.with_method(method.value.span, method.span.start, |v| {
             walk::walk_method_definition(v, method);
         });
@@ -577,6 +621,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         property: &PropertyDefinition<'a>,
     ) {
         if property.declare {
+            self.visit_declared_field(&property.decorators, &property.key);
             return;
         }
         self.visit_field(
@@ -593,6 +638,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         property: &AccessorProperty<'a>,
     ) {
         if self.declared_accessor(property) {
+            self.visit_declared_field(&property.decorators, &property.key);
             return;
         }
         self.visit_field(
@@ -642,6 +688,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         flags: ScopeFlags,
     ) {
         if let Some(body) = &function.body {
+            self.remember_parameter_decorators(&function.params);
             let unit = if function.r#type == FunctionType::FunctionDeclaration {
                 Unit::FunctionDeclaration
             } else {
@@ -668,6 +715,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         arrow: &ArrowFunctionExpression<'a>,
     ) {
+        self.remember_parameter_decorators(&arrow.params);
         let name = self
             .names
             .resolve(arrow.span, None, Unit::FunctionExpression);
