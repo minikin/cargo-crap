@@ -82,7 +82,7 @@ fn check(
 }
 
 #[test]
-fn nested_callback_separates_parent_and_child_in_both_formats() {
+fn the_six_line_nested_callback_separates_parent_coverage_from_callback_coverage() {
     let files = [
         analysis("nested.ts", NESTED),
         analysis("types.ts", "type T = string"),
@@ -126,7 +126,7 @@ fn nested_callback_separates_parent_and_child_in_both_formats() {
 }
 
 #[test]
-fn utf16_body_boundaries_are_half_open_and_ignore_statement_ends() {
+fn attribute_istanbul_starts_at_utf_16_body_boundaries() {
     let files = [analysis(
         "a.ts",
         "function f() { '\u{1f600}!'; const g = () => 1; }",
@@ -147,7 +147,7 @@ fn utf16_body_boundaries_are_half_open_and_ignore_statement_ends() {
 }
 
 #[test]
-fn constructor_receives_disjoint_regions_around_its_written_body() {
+fn a_constructor_owns_separate_initializers_around_its_written_body() {
     let files = [analysis(
         "c.ts",
         include_str!("../../tests/fixtures/attribution/constructor.ts"),
@@ -176,7 +176,7 @@ fn constructor_receives_disjoint_regions_around_its_written_body() {
 }
 
 #[test]
-fn uncovered_ranges_use_only_the_owners_instrumented_start_lines() {
+fn mixed_lines_and_gaps_produce_inclusive_uncovered_ranges_per_owner() {
     let files = [analysis(
         "f.ts",
         include_str!("../../tests/fixtures/attribution/gaps.ts"),
@@ -258,7 +258,7 @@ fn line_starts(
 }
 
 #[test]
-fn line_shaped_warnings_distinguish_empty_arrows_and_assigned_misses() {
+fn warn_about_line_shaped_istanbul_statements_once_across_the_run() {
     let five = arrow_file("a.ts", &[ARROW; 5]);
     let body = five.rows.last().unwrap().body_regions[0].start.column;
     let evaluate = |files: &[FileAnalysis], points: &[(u32, u32, u32)]| {
@@ -274,6 +274,8 @@ fn line_shaped_warnings_distinguish_empty_arrows_and_assigned_misses() {
     let five = [five];
     assert_eq!(evaluate(&five, &line_starts(5, 0)), [WARNING]);
     assert_eq!(evaluate(&five, &line_starts(5, body)), Vec::<String>::new());
+    let blocks = [arrow_file("a.ts", &["items.map(() => { work(); })"; 5])];
+    assert_eq!(evaluate(&blocks, &line_starts(5, 0)), [WARNING]);
     let mut with_miss = line_starts(5, 0);
     with_miss.insert(0, (5, body, 0));
     assert_eq!(evaluate(&five, &with_miss), Vec::<String>::new());
@@ -353,32 +355,59 @@ fn producer_warning_follows_ties_and_overlap_and_aggregates_across_files() {
     );
 }
 
+fn arrow_body() -> impl Strategy<Value = String> {
+    Just("{ work(); }".to_owned()).prop_recursive(3, 12, 3, |child| {
+        prop::collection::vec(child, 0..=3).prop_map(|siblings| {
+            let mut body = String::from("{ work(); ");
+            for (i, sibling) in siblings.iter().enumerate() {
+                write!(body, "const g{i} = ()=> {sibling}; after(); ").unwrap();
+            }
+            body.push('}');
+            body
+        })
+    })
+}
+
 proptest! {
     #[test]
-    fn generated_nested_and_disjoint_bodies_conserve_owned_observations(
-        depths in prop::collection::vec(0..5usize,1..5),
-        labels in prop::collection::vec((any::<bool>(),any::<u32>()),1..20),
-        extras in prop::collection::vec((1..7u32,0..180u32),0..12)
+    fn generated_nested_bodies_assign_each_istanbul_observation_to_one_owner(
+        bodies in prop::collection::vec(arrow_body(), 1..=3),
+        before in 1..=3usize,
+        after in 1..=3usize,
+        newlines in prop::collection::vec(any::<bool>(), 1..=32),
+        labels in prop::collection::vec((any::<bool>(), any::<u32>()), 1..20),
+        extras in prop::collection::vec((1..120u32, 0..180u32), 0..12),
     ) {
-        check_generated_ownership(&depths, &labels, extras);
+        let mut source = String::new();
+        for (i, body) in bodies.iter().enumerate() {
+            write!(source, "function f{i}() {body} ").unwrap();
+        }
+        source.push_str("class C { ");
+        for i in 0..before + after {
+            if i == before {
+                source.push_str("constructor() { init(); } ");
+            }
+            write!(source, "field{i} = ()=> work(); ").unwrap();
+        }
+        source.push('}');
+        let mut layout = String::new();
+        for (token, &newline) in source.split_ascii_whitespace().zip(newlines.iter().cycle()) {
+            layout.push_str(token);
+            layout.push(if newline { '\n' } else { ' ' });
+        }
+        let file = analysis("a.ts", &layout);
+        prop_assert_eq!(file.status, crate::FileStatus::Clean);
+        let constructor = file.rows.iter().find(|row| row.name == "C::constructor").unwrap();
+        prop_assert_eq!(constructor.body_regions.len(), before + 1 + after);
+        check_generated_ownership(&[file], &labels, extras);
     }
 }
 
 fn check_generated_ownership(
-    depths: &[usize],
+    files: &[FileAnalysis],
     labels: &[(bool, u32)],
     extras: Vec<(u32, u32)>,
 ) {
-    let mut source = String::new();
-    for (i, &depth) in depths.iter().enumerate() {
-        write!(source, "function f{i}() {{ work(); ").unwrap();
-        for level in 0..depth {
-            write!(source, "const g{level} = () => {{ work(); ").unwrap();
-        }
-        source.push_str(&"}; after(); ".repeat(depth));
-        source.push_str("}\n");
-    }
-    let files = [analysis("a.ts", &source)];
     let regions: Vec<_> = files[0]
         .rows
         .iter()
@@ -390,7 +419,7 @@ fn check_generated_ownership(
         positions.extend([
             (span.start.line, span.start.column),
             (span.end.line, span.end.column),
-            (span.end.line, span.end.column - 1),
+            (span.end.line, span.end.column.saturating_sub(1)),
         ]);
     }
     positions.extend(extras);
@@ -399,11 +428,16 @@ fn check_generated_ownership(
     for (i, (line, column)) in positions.into_iter().enumerate() {
         let pos = Position { line, column };
         let (hit, priority) = labels[i % labels.len()];
-        if let Some(&(_, owner)) = regions
+        let containing: Vec<_> = regions
             .iter()
+            .copied()
             .filter(|(span, _)| span.start <= pos && pos < span.end)
-            .min_by_key(|(span, _)| span.end.column - span.start.column)
-        {
+            .collect();
+        if let Some(&(_, owner)) = containing.iter().find(|(candidate, _)| {
+            containing
+                .iter()
+                .all(|(span, _)| span.start <= candidate.start && candidate.end <= span.end)
+        }) {
             expected[owner].0 += usize::from(hit);
             expected[owner].1 += 1;
         }
@@ -415,7 +449,7 @@ fn check_generated_ownership(
     for order in [observations, shuffled] {
         let points: Vec<_> = order.into_iter().map(|(_, p)| p).collect();
         let result = run(
-            &files,
+            files,
             &json!({"a.ts":starts(&points)}).to_string(),
             MissingCoveragePolicy::Skip,
         );

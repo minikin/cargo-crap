@@ -25,7 +25,7 @@ pub struct Attribution {
 }
 
 struct FileRows<'a> {
-    name: Cow<'a, str>,
+    path: &'a Path,
     rows: Vec<&'a Row>,
 }
 
@@ -33,11 +33,11 @@ fn group_rows(analyses: &[FileAnalysis]) -> Vec<FileRows<'_>> {
     let mut files = Vec::new();
     let mut indices = HashMap::new();
     for row in analyses.iter().flat_map(|a| &a.rows) {
-        let name = row.file.to_string_lossy();
-        let i = *indices.entry(name.clone()).or_insert_with(|| {
+        let path = row.file.as_path();
+        let i = *indices.entry(path).or_insert_with(|| {
             let i = files.len();
             files.push(FileRows {
-                name,
+                path,
                 rows: Vec::new(),
             });
             i
@@ -339,7 +339,11 @@ pub fn attribute(
     missing: MissingCoveragePolicy,
 ) -> Attribution {
     let files = group_rows(analyses);
-    let sources: Vec<_> = files.iter().map(|file| file.name.as_ref()).collect();
+    let names: Vec<_> = files
+        .iter()
+        .map(|file| file.path.to_string_lossy())
+        .collect();
+    let sources: Vec<_> = names.iter().map(AsRef::as_ref).collect();
     let keys = coverage.keys();
     let assignment = paths::assign_by_key(cwd, &sources, &keys, TiePolicy::Unmatched);
     let diagnostics = diagnostics(&assignment, &sources, &keys);
@@ -441,6 +445,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["f", "g"]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn distinct_non_utf8_paths_with_the_same_display_name_keep_separate_groups() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let paths =
+            [b"src/\xff.ts", b"src/\xfe.ts"].map(|bytes| Path::new(OsStr::from_bytes(bytes)));
+        let analyses =
+            paths.map(|path| analyze(path, b"function f() { return 1; }", Mode::Ordinary).unwrap());
+        let data = Coverage(CoverageData::Lines(
+            read_strict_lcov("SF:src/\u{fffd}.ts\nDA:1,1", Path::new("cov")).unwrap(),
+        ));
+        let result = attribute(
+            Path::new("."),
+            &analyses,
+            &data,
+            MissingCoveragePolicy::Pessimistic,
+        );
+        assert_eq!(result.diagnostics.analyzed_files, 2);
+        assert_eq!(result.diagnostics.matched_files, 0);
+        assert_eq!(result.diagnostics.lcov_only.count, 1);
+        assert_eq!(result.rows.len(), 2);
+        for (row, path) in result.rows.iter().zip(paths) {
+            assert_eq!(row.entry.file, path);
+            assert_eq!((row.entry.coverage, row.total), (None, 0));
+        }
     }
 
     #[test]
