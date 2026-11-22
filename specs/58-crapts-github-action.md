@@ -4,9 +4,9 @@
 
 **Effort:** Large
 
-**Module:** `actions/crapts/action.yml`, `scripts/action/crapts/`, `.github/workflows/action.yml`, `.github/workflows/release-crapts.yml` and the version pin in `scripts/release/prep-crapts.sh`
+**Module:** `actions/crapts/action.yml` and `scripts/action/crapts/` (composite and helpers), `.github/workflows/action.yml` and `tests/golden/gates.rs` (candidate jobs and path tests), `.github/workflows/ci.yml` (add `actions/crapts/action.yml` to the `rust` filter), root `Cargo.toml` (exclude `actions/` and `scripts/action/crapts/`) and `tests/workspace.rs` (package listing and pin equality), `scripts/release/prep-crapts.sh` and `scripts/release/check-tag.sh` (prep and preflight pin checks), `.github/workflows/release-crapts.yml` and `scripts/release/test.sh` (add `needs: crapts-action-smoke` to Spec 57's promotion graph and its contract test), and `scripts/release/move-tag.sh` (move the crapts tag).
 
-**Needs:** Spec 55 (changed-function gate) and Spec 57 (npm packages and release workflow). A saved or generated score baseline uses Spec 54.
+**Needs:** Spec 55 (changed-function gate) and Spec 57 (npm packages and release workflow). A saved or generated score baseline uses Spec 54. Before building, re-check Spec 58 against approved Spec 55, including S09's verdicts, counts and notice.
 
 ## Problem and goal
 
@@ -18,14 +18,14 @@ The reviewer gets the report before a failing gate ends the step. A mixed Rust a
 
 | Input | Default | Meaning |
 |---|---|---|
-| `version` | Exact version in `npm/crapts/package.json` at the Action revision | Registry version to install. An explicit `latest` resolves once to an exact version. |
+| `version` | Literal default in `actions/crapts/action.yml` | `tests/workspace.rs` and `scripts/release/check-tag.sh crapts` require equality with `npm/crapts/package.json`. An explicit `latest` resolves once to an exact version. |
 | `package` | Empty | Local wrapper tarball (.tgz). Takes precedence over `version`. |
 | `working-directory` | `.` | Project directory. Relative file inputs and coverage commands start here. |
-| `args` | Empty | Extra crapts arguments, split as quoted shell words without evaluation or glob expansion. |
+| `args` | Empty | Extra crapts arguments, split as quoted shell words without evaluation or glob expansion. S06 lists the Action-owned flags rejected here. |
 | `coverage` | Empty | Existing head Istanbul JSON or LCOV file. |
-| `coverage-command` | Empty | Project command that writes fresh coverage. Also enables a base coverage run when a base exists and no baseline was supplied. |
+| `coverage-command` | Empty | Bash command that writes fresh coverage. Also enables a base coverage run when a base exists and no baseline was supplied. |
 | `coverage-file` | `coverage/coverage-final.json` | Output expected from the coverage command in each tree. |
-| `install-command` | Empty | Project dependency setup immediately before each coverage command. |
+| `install-command` | Empty | Bash command for project dependency setup immediately before each coverage command. |
 | `baseline` | Empty | Complete crapts JSON report for score comparison on any event. Replaces generating a baseline at the base commit. |
 | `base` | PR base SHA, empty on push | Git revision for the changed-function comparison. An explicitly empty input disables it. |
 | `fail-regression` | `true` | Add `--fail-regression` when a score baseline is available. |
@@ -33,7 +33,7 @@ The reviewer gets the report before a failing gate ends the step. A mixed Rust a
 | `fail-above` | `false` | Add `--fail-above` for the absolute threshold gate. |
 | `comment` | `true` | Post or update the report on a PR. |
 | `comment-marker` | `<!-- crapts-report -->` | Nonempty, single-line identifier at the start of the PR report. |
-| `github-token` | `github.token` | Token for the PR comment API. |
+| `github-token` | `${{ github.token }}` | Token for the PR comment API. |
 
 | Public output | Value for a completed report, including a gate failure |
 |---|---|
@@ -66,10 +66,10 @@ When the caller supplies <input>
 Then the Action selects <source> with lifecycle scripts disabled and verifies "crapts <expected>"
 
 Examples:
-| input                                       | source                                     | expected    |
-| version 0.1.2                               | @minikin/crapts@0.1.2                      | 0.1.2       |
-| version latest resolving to 1.0.1           | @minikin/crapts@1.0.1                      | 1.0.1       |
-| package "packs/test build.tgz", version 9.9.9 | local tarball, version from its manifest | 0.2.0-rc.1  |
+| input                                         | source                                   | expected   |
+| version 0.1.2                                 | @minikin/crapts@0.1.2                    | 0.1.2      |
+| version latest resolving to 1.0.1             | @minikin/crapts@1.0.1                    | 1.0.1      |
+| package "packs/test build.tgz", version 9.9.9 | local tarball, version from its manifest | 0.2.0-rc.1 |
 ```
 
 ### Scenario Outline: S03 Reject an unusable install before scoring
@@ -80,10 +80,10 @@ When the Action prepares the scoring tool
 Then it exits 2 before project commands or scoring and the diagnostic names <detail>
 
 Examples:
-| install condition                                     | detail                                      |
-| Node 22 on the Action runner                          | actions/setup-node and node-version 24      |
-| package names a missing file "packs/missing.tgz"       | package and packs/missing.tgz               |
-| installed binary reports 0.1.1 for a requested 0.1.2   | expected 0.1.2 and actual 0.1.1             |
+| install condition                                    | detail                                 |
+| Node 22 on the Action runner                         | actions/setup-node and node-version 24 |
+| package names a missing file "packs/missing.tgz"     | package and packs/missing.tgz          |
+| installed binary reports 0.1.1 for a requested 0.1.2 | expected 0.1.2 and actual 0.1.1        |
 ```
 
 ### Scenario: S04 Use existing head coverage without running project commands
@@ -91,8 +91,8 @@ Examples:
 ```gherkin
 Given working-directory is "packages/shop" and coverage names the existing "hits.info" there
 And both project commands are configured to record a call and fail
-When a push with no base scores a fully covered function of complexity 2
-Then the run passes, the Markdown report shows its score of 2 and neither command was called
+When the Action prepares head coverage on a push without a base
+Then crapts renders the fully covered CC 2 function at score 2 from the prepared file, and neither command was called
 ```
 
 ### Scenario: S05 Generate fresh coverage in the project directory
@@ -101,10 +101,10 @@ Then the run passes, the Markdown report shows its score of 2 and neither comman
 Given coverage is empty and coverage-file names "out/head.json" containing stale results
 When a push runs the configured install-command followed by coverage-command
 Then the project records those two calls in order in its working-directory
-And the coverage command sees no previous output file and the report uses the Istanbul data it writes
+And the coverage command sees no previous output file and the prepared head coverage matches the Istanbul data it writes
 ```
 
-### Scenario Outline: S06 Diagnose invalid inputs and missing head coverage
+### Scenario Outline: S06 Reject invalid Action inputs
 
 ```gherkin
 Given <condition>
@@ -112,14 +112,19 @@ When the Action tries to score the project
 Then it exits 2 and names <detail> before publishing any counts or posting a comment
 
 Examples:
-| condition                                             | detail                                  |
-| coverage and coverage-command are both empty           | coverage and coverage-command           |
-| coverage is missing.info, even with a command supplied | coverage and missing.info               |
-| coverage-command exits 7 at the head                   | the head coverage command and status 7  |
-| coverage-command succeeds without writing out/new.json | coverage-file and out/new.json          |
-| fail-changed is "yes"                                  | fail-changed, yes and true or false     |
-| args ends in an unmatched quote                        | args and its quotes                     |
-| comment-marker is empty or contains a CR or LF         | comment-marker and one nonempty line    |
+| condition                             | detail                               |
+| fail-changed is "yes"                 | fail-changed, yes and true or false  |
+| args ends in an unmatched quote       | args and its quotes                  |
+| args contains --format=json           | args and --format                    |
+| args contains --output other.md       | args and --output                    |
+| args contains --base other            | args and --base                      |
+| args contains --baseline=other.json   | args and --baseline                  |
+| args contains --comment-marker custom | args and --comment-marker            |
+| args contains --commit-ref=main       | args and --commit-ref                |
+| args contains --all-rows              | args and --all-rows                  |
+| comment-marker is empty               | comment-marker and one nonempty line |
+| comment-marker contains a CR          | comment-marker and one nonempty line |
+| comment-marker contains an LF         | comment-marker and one nonempty line |
 ```
 
 ### Scenario Outline: S07 Deepen only until Git finds a merge base
@@ -127,43 +132,53 @@ Examples:
 ```gherkin
 Given a fixture remote with a common ancestor of base B and the checked-out HEAD
 When the Action gets <checkout> and compares with B
-Then git merge-base B HEAD succeeds, the changed count equals that from a full clone, and <fetches>
+Then git merge-base B HEAD matches the full clone, crapts finds the same changed count in both trees, and the recorded fetch list is exactly <fetches>
 
 Examples:
-| checkout                                                  | fetches                                          |
-| depth-1 PR merge result, B missing                        | fetch B and stop as soon as an ancestor is found |
-| depth-1 PR head, B and head diverge 300 commits ago       | deepen by 50, 200 and 1000, then stop            |
-| depth-1 PR head, ancestor beyond all three deepen steps   | the final unshallow fetch makes it reachable     |
-| full history with B already available                     | no fetch is needed                               |
+| checkout                                                                      | fetches                                    |
+| depth-1 PR merge result, parent B missing                                     | fetch B at depth 1, deepen by 50           |
+| depth-1 PR head, B present at depth 1, ancestor 300 commits back on each tip  | deepen by 50, 200 and 1000                 |
+| depth-1 PR head, B present at depth 1, ancestor 1300 commits back on each tip | deepen by 50, 200 and 1000, then unshallow |
+| full history with B already available                                         | empty                                      |
 ```
 
-### Scenario: S08 Unrelated histories cannot produce a passing diff
+### Scenario Outline: S08 Stop before project commands when Git cannot resolve the comparison
 
 ```gherkin
-Given a depth-1 checkout and a fetchable base B on a disjoint history
-When the Action exhausts deepening and the final unshallow fetch
-Then it exits 2 with "no merge base between B and HEAD after unshallowing: the base is not in this repository's history", substituting B's revision
-And it runs no coverage commands and publishes no comparison or comment
+Given a depth-1 checkout requesting revision B and <condition>
+When the Action tries to establish a merge base
+Then it exits 2 and reports <diagnostic>, substituting B's requested revision
+And it runs neither project command and publishes no comparison or comment
+
+Examples:
+| condition                                                    | diagnostic                                                                                        |
+| B is fetchable on a disjoint history even after unshallowing | no merge base between B and HEAD after unshallowing: the base is not in this repository's history |
+| B is a SHA absent from origin                                | the unresolved revision B and origin                                                              |
+| the remote rejects the first deepen fetch                    | the failed fetch and revision B                                                                   |
 ```
 
 ### Scenario Outline: S09 Gate on changed functions with head coverage alone
 
+Decision 8 (Option A, Q1 to Q3) defines these fixtures. An edit fails when CC rises and the head score exceeds the threshold. Ambiguous ancestry above the threshold also fails. For an unmeasured function, the missing-coverage policy determines whether it is scored or skipped.
+
 ```gherkin
 Given a PR with a Git base, supplied head coverage, no score baseline and no coverage-command
-When its only touched function has <change> at threshold 30
+When its only touched function has <change> at threshold 30 with missing policy <policy>
 Then changed is "<failures>", regressed is empty and the final gate exits <code>
+And the changed section counts <skipped> missing-skipped functions and <null> scored functions with null coverage
 And a notice says "no base coverage and no baseline: only the diff gate ran"
 
 Examples:
-| change                                                | failures | code |
-| new function with CC 12 and 0% coverage, CRAP 156     | 1        | 1    |
-| new function with CC 5 and 0% coverage, CRAP 30       | 0        | 0    |
-| edited body, CC rises from 10 to 12, head CRAP 72.75  | 1        | 1    |
-| edited body, CC stays at 12, head CRAP 156            | 0        | 0    |
-| ambiguous base ancestry and head CRAP 156            | 1        | 1    |
+| change                                               | policy      | failures | skipped | null | code |
+| new function with CC 12 and 0% coverage, CRAP 156    | default     | 1        | 0       | 0    | 1    |
+| new function with CC 5 and 0% coverage, CRAP 30      | default     | 0        | 0       | 0    | 0    |
+| edited body, CC rises from 10 to 12, head CRAP 72.75 | default     | 1        | 0       | 0    | 1    |
+| edited body, CC stays at 12, head CRAP 156           | default     | 0        | 0       | 0    | 0    |
+| ambiguous base ancestry and measured head CRAP 156   | default     | 1        | 0       | 0    | 1    |
+| new CC 12 function with no measurement               | pessimistic | 1        | 0       | 1    | 1    |
+| new CC 12 function with no measurement               | optimistic  | 0        | 0       | 1    | 0    |
+| new CC 12 function with no measurement               | skip        | 0        | 1       | 0    | 0    |
 ```
-
-The changed section uses Spec 55's missing-coverage policy. With one new CC 12 function and no measurements for it, pessimistic yields one failure, optimistic yields zero and skip yields zero with one missing-skipped function. Check the section's missing-coverage counts as well as the Action output.
 
 ### Scenario: S10 A saved baseline and a Git base answer different questions on one PR
 
@@ -185,23 +200,29 @@ Then regressed is "1", changed is empty, crappy is "0" and the run exits <code>
 And the Markdown report <notice> and there is no comment request
 
 Examples:
-| writer | code | notice                                                                             |
-| 0.1.0  | 1    | shows the score regression                                                          |
+| writer | code | notice                                                                                |
+| 0.1.0  | 1    | shows the score regression                                                            |
 | 0.0.9  | 0    | opens after the marker with the skipped regression-gate notice naming 0.0.9 and 0.1.0 |
 ```
 
-### Scenario: S12 Generate a complete baseline without disturbing head coverage
+### Scenario Outline: S12 Generate a complete baseline under the effective head config
 
 ```gherkin
-Given a PR deletes tests for a CC 8 function, taking its score from 8 to 72
-And coverage and coverage-file both point to "coverage/coverage-final.json" and the two commits have different lockfiles
-When the Action uses the supplied head file and generates coverage at the specified base commit
-Then install-command and coverage-command run only in the detached base worktree using the base lockfile
-And the baseline uses head scoring settings, includes all eligible base rows and has null selection even with top set to 1
-And regressed is "1", changed is "0" and the original head coverage still records the drop
-```
+Given fee, steady and probe live in separate files, and the PR changes the lockfile and deletes tests for fee (CC 8, score 8 to 72) while steady (CC 2) and probe (CC 1) stay fully covered
+And the base config excludes fee, the head has <config>, and args sets top to 1
+When baseline is empty, coverage-file is "coverage/coverage-final.json" and coverage is <head input>
+Then install-command followed by coverage-command runs in <trees>, using each tree's own lockfile and the detached worktree at the specified base commit
+And the base invocation uses the head scoring args with --format json --all-rows and no comparison or gate flags
+And its JSON has null selection and exactly <base rows>, and the prepared head coverage still scores fee at 72
+And comparing those files with the CLI at the PR head and its Git base yields summary.regressed 1 and summary.changed_failures 0
 
-Use a second eligible function below the display cutoff and a base-only config that would exclude the regressing function. Repeat with an untracked head config and with no head config. Both comparisons must use the settings the head actually sees. With the `coverage` input empty, both trees run the project commands, each with its own lockfile, and produce the same counts. After success or failure the base worktree is gone. The base run preserves the head checkout's commit, tracked edits, untracked files and installed dependencies.
+Examples:
+| config                           | head input                   | trees          | base rows             |
+| tracked config excluding probe   | coverage/coverage-final.json | base only      | fee and steady        |
+| untracked config excluding probe | coverage/coverage-final.json | base only      | fee and steady        |
+| no head config                   | coverage/coverage-final.json | base only      | fee, steady and probe |
+| no head config                   | empty                        | head then base | fee, steady and probe |
+```
 
 ### Scenario Outline: S13 A broken base coverage run reports its cause
 
@@ -211,11 +232,11 @@ When <operation> fails in the base worktree
 Then the Action exits 2, names B and <detail>, and does not publish a diff-only result
 
 Examples:
-| operation                    | detail                                        |
-| install-command exits 5      | the install command and status 5              |
-| coverage-command exits 7     | the coverage command and status 7             |
-| coverage-command writes nothing | the command and the missing coverage-file  |
-| crapts cannot read coverage  | the base crapts run and status 2              |
+| operation                       | detail                                    |
+| install-command exits 5         | the install command and status 5          |
+| coverage-command exits 7        | the coverage command and status 7         |
+| coverage-command writes nothing | the command and the missing coverage-file |
+| crapts cannot read coverage     | the base crapts run and status 2          |
 ```
 
 ### Scenario: S14 Score a directory first added in the PR
@@ -230,7 +251,8 @@ And regressed is empty, changed is "1" and the gate exits 1
 ### Scenario: S15 Display filters never hide a gate failure from the outputs
 
 ```gherkin
-Given any valid top or min display limit on the S10 fixture, including top 1 or min 200
+Given a PR with a saved baseline, a Git base, one CC 8 function dropping from full coverage to 0% and two new uncovered CC 6 functions
+And the caller sets any valid top or min display limit, including top 1 or min 200
 When the Action renders the report and executes its single head JSON gate run
 Then the JSON invocation includes --all-rows, selection is null and all three eligible functions appear in the gate JSON
 And the four public outputs are "3", "1", "2" and a readable PR Markdown path, even when the display hides every row
@@ -239,18 +261,19 @@ And the four public outputs are "3", "1", "2" and a readable PR Markdown path, e
 ### Scenario Outline: S16 Gate switches control the exit independently of the counts
 
 ```gherkin
-Given a same-version comparison with crappy "1", regressed "1", changed "0" and <config>
+Given <comparison> with <config>
 When the caller sets <inputs>
-Then those three counts are retained and the final exit is <code>
+Then the head JSON invocation carries exactly <gate flags> among the gate switches
+And the crappy, regressed and changed outputs are <counts> and the final exit is <code>
 
 Examples:
-| config                       | inputs                                          | code |
-| defaults                     | fail-regression false                           | 0    |
-| defaults                     | fail-regression false and fail-above true       | 1    |
-| fail-above true              | fail-regression false and fail-above false      | 1    |
+| comparison                                                  | config          | inputs                                     | gate flags                           | counts      | code |
+| same-version baseline and Git base, one coverage regression | defaults        | all defaults                               | --fail-regression and --fail-changed | 1, 1, 0     | 1    |
+| same-version baseline and Git base, one coverage regression | defaults        | fail-regression false                      | --fail-changed                       | 1, 1, 0     | 0    |
+| same-version baseline and Git base, one coverage regression | defaults        | fail-regression false and fail-above true  | --fail-changed and --fail-above      | 1, 1, 0     | 1    |
+| same-version baseline and Git base, one coverage regression | fail-above true | fail-regression false and fail-above false | --fail-changed                       | 1, 1, 0     | 1    |
+| Git base only, new uncovered CC 12 function                 | defaults        | fail-changed false                         | none                                 | 1, empty, 1 | 0    |
 ```
-
-Also run S09's new CC 12 case with `fail-changed` false. It passes and reports `changed` as `1`. An input set to false omits the corresponding CLI flag. The CLI still applies gates enabled in the effective project config.
 
 ### Scenario: S17 Publish outputs and comment before returning a gate failure
 
@@ -274,36 +297,41 @@ And no comment is posted and no counts are published
 ### Scenario Outline: S19 Link reports to source and bound the job summary
 
 ```gherkin
-Given a completed run under "packages/shop" and <event>
+Given a completed run under "packages/shop" on <event> with comment set to <comment>
 When the rendered report plus its settings block is <bytes> UTF-8 bytes
-Then report names a readable Markdown file linking src/fee.ts under "packages/shop/src/fee.ts" at <revision>
-And the job summary contains <summary>
+Then report names a readable <format> file linking src/fee.ts under "packages/shop/src/fee.ts" at <revision>
+And the settings from --print-config with the scoring arguments identify the config path, threshold, gate flags, allow and exclude settings
+And the job summary contains <summary> and the local comment API records <requests>
 
 Examples:
-| event               | bytes     | revision    | summary                                   |
-| push                | 999999    | GITHUB_SHA  | the report and effective settings         |
-| PR merge checkout   | 999999    | PR head SHA | the PR report and effective settings      |
-| push                | 1000000   | GITHUB_SHA  | a single line pointing to the report output |
+| event             | comment | bytes   | format     | revision    | summary                                | requests            |
+| push              | true    | 999999  | markdown   | GITHUB_SHA  | report and effective settings          | no calls            |
+| PR merge checkout | true    | 999999  | pr-comment | PR head SHA | report and effective settings          | one comment created |
+| PR merge checkout | false   | 4096    | pr-comment | PR head SHA | report and effective settings          | no calls            |
+| push              | true    | 1000000 | markdown   | GITHUB_SHA  | one line pointing to the report output | no calls            |
 ```
 
-The settings block identifies the config path, threshold, gate flags, allow and exclude settings from `--print-config` with the scoring arguments. A push renders `markdown`. A PR renders `pr-comment`, including when `comment` is false. A push or a PR with commenting disabled makes no comment API calls.
-
-### Scenario: S20 Update the matching comment on any page
+### Scenario Outline: S20 Match the whole first line and post the renderer's bounded body
 
 ```gherkin
-Given any valid marker and 150 PR comments, with a marker-prefix collision on page one and the marker alone on the first line of comment 120
-When the Action reruns with new results
-Then only comment 120 is updated and its body starts with exactly one copy of the marker
-And the number of comments stays 150
-```
+Given 150 PR comments, one marker-prefix collision and one later-line quotation on page one, and <match>
+When the renderer receives --comment-marker with <marker> for <report>
+Then the API records <write> and the store contains <total> comments
+And the posted body equals the rendered file byte for byte, with exactly one opening marker line and at most 65536 UTF-16 code units including that line
 
-Repeat with a 60-character custom marker and a large report at the comment size boundary. The posted body fits 65,536 UTF-16 code units including the marker. A marker quoted later in a comment does not match.
+Examples:
+| match                                         | marker                     | report                                            | write              | total |
+| comment 120 starts with the exact marker line | default marker             | a short report                                    | update ID 120 only | 150   |
+| comment 120 starts with the exact marker line | 60-character custom marker | a report at the 65536-unit boundary               | update ID 120 only | 150   |
+| comment 120 starts with the exact marker line | 60-character custom marker | a report exceeding the budget by a surrogate pair | update ID 120 only | 150   |
+| no exact first-line match                     | default marker             | a short report                                    | create one comment | 151   |
+```
 
 ### Scenario: S21 Both Actions report on the same fixture PR
 
 ```gherkin
-Given one fixture PR changes a Rust crate and a TypeScript project and has no report comments
-When minikin/cargo-crap@v1 and minikin/cargo-crap/actions/crapts@crapts-v1 run on that PR with their default markers
+Given minikin/cargo-crap PR 42 exists only in the local API stub, changes a Rust crate and a TypeScript project, and has no report comments
+When the candidate Actions ./ and ./actions/crapts run on that fixture PR with their default markers
 Then the PR has exactly two report comments with different IDs
 And one starts with "<!-- cargo-crap-report -->" and names the Rust function, and the other starts with "<!-- crapts-report -->" and names the TypeScript function
 When both run again on that PR with new scores
@@ -334,77 +362,177 @@ When the comment API returns HTTP 500
 Then the comment step fails with the API error and the workflow reports failure
 ```
 
-### Scenario: S24 Preserve the root Action and its CI coverage
+### Scenario Outline: S24 Schedule the candidate tests and preserve root Action and package checks
 
 ```gherkin
-Given the root Action contract from Spec 39 and the test and lint jobs inherited from Spec 57
-When the Action workflow runs with the new crapts scenarios
-Then every existing root Action job still runs against its original scenario and passes
-And both shell unit suites, ShellCheck for both sets of helpers and the pinned actionlint -ignore SC2016 invocation pass
-And tests/golden/config.rs and tests/golden/gates.rs pass with their existing assertions
+Given the only changed path is <path>
+When tests/golden/gates.rs checks the workflow filters for <events> and CI runs the selected jobs
+Then the Action workflow's <filter> matches the change, the candidate jobs and all Spec 39 root Action jobs are scheduled, and <ci check>
+And the candidate depth-1 PR jobs on ubuntu-latest, macos-latest and windows-latest each compare a Git base using coverage-command
+And the jobs pass the original root scenarios, both shell suites, ShellCheck for both sets of helpers and pinned actionlint -ignore SC2016 on all six Spec 57 workflows including demo.yml
+And tests/golden/config.rs and tests/golden/gates.rs retain their existing assertions
+And root Cargo.toml excludes actions/ and scripts/action/crapts/, and tests/workspace.rs rejects either prefix in the cargo-crap package listing
+
+Examples:
+| path                                 | filter                               | events              | ci check                                                               |
+| actions/crapts/action.yml            | actions/crapts/**                    | PR and push to main | ci.yml's rust filter selects the workspace tests for a pin-only change |
+| scripts/action/crapts/test.sh        | scripts/action/crapts/**             | PR and push to main | both shell suites are selected                                         |
+| npm/crapts/package.json              | npm/crapts/**                        | PR and push to main | ci.yml's rust filter selects the workspace tests                       |
+| crates/crapts/Cargo.toml             | crates/crapts/**                     | PR and push to main | the candidate uses the changed crapts crate                            |
+| .github/workflows/release-crapts.yml | .github/workflows/release-crapts.yml | PR and push to main | the lint job checks the changed workflow                               |
+| crates/cargo-crap-core/src/lib.rs    | crates/**                            | PR                  | the candidate builds against the changed core                          |
 ```
 
-Run a path-filter case changing only `actions/crapts/action.yml` and one changing only a crapts helper. Both schedule the new tests on PRs and pushes to main. A PR editing only `crates/cargo-crap-core/` still triggers the Action workflow. Include the npm wrapper and release workflow inputs that the new jobs consume. Retain Spec 57's lint coverage of all six workflow files, including `demo.yml`.
-
-### Scenario: S25 Release prep keeps the Action pin in step with the package
+### Scenario Outline: S25 Keep the nested Action pin in sync through release prep and preflight
 
 ```gherkin
-Given the version in the nested Action, npm wrapper and crapts manifest is 0.1.0
-When release prep selects 0.2.0-rc.1 and subsequently 0.2.0
-Then each successful prep sets the nested Action's default version to the exact new package version
-And the root Action keeps its cargo-crap version through both preps
+Given the nested pin, npm wrapper and crapts crate start at 0.1.0, with a nonempty Unreleased changelog unless specified
+When the release fixture has <setup> and runs <operation>
+Then the result is <result> and actions/crapts/action.yml has <pin result>
+And root action.yml is byte-identical to its original
+
+Examples:
+| setup                                        | operation                            | result                                          | pin result                              |
+| original files                               | prep 0.2.0-rc.1                      | exit 0                                          | literal 0.2.0-rc.1 matching the wrapper |
+| successful prep of 0.2.0-rc.1                | prep 0.2.0                           | exit 0                                          | literal 0.2.0 matching the wrapper      |
+| original files                               | prep without arguments               | exit 2                                          | original bytes                          |
+| original files                               | prep crapts-v0.2.0                   | exit 2                                          | original bytes                          |
+| original files                               | prep v0.2.0                          | exit 2                                          | original bytes                          |
+| original files                               | prep 01.2.3                          | exit 2                                          | original bytes                          |
+| original files                               | prep 0.1.0-rc..1                     | exit 2                                          | original bytes                          |
+| original files                               | prep 0.1.0-rc.01                     | exit 2                                          | original bytes                          |
+| original files                               | prep 0.2.0 dated 03/02/2031          | exit 2                                          | original bytes                          |
+| original files                               | prep 0.1.0                           | exit 1                                          | original bytes                          |
+| empty Unreleased                             | prep 0.2.0                           | exit 1                                          | original bytes                          |
+| original files                               | tests/workspace.rs version-sync test | pass                                            | original bytes                          |
+| only the nested pin set to installable 0.0.9 | tests/workspace.rs version-sync test | failure naming the pin mismatch                 | the same stale pin                      |
+| original files                               | check-tag.sh crapts crapts-v0.1.0    | exit 0                                          | original bytes                          |
+| only the nested pin set to installable 0.0.9 | check-tag.sh crapts crapts-v0.1.0    | exit 1 naming the nested pin before publication | the same stale pin                      |
 ```
 
-Spec 57's rejected prep inputs leave the nested Action byte-identical too. A fixture with a stale nested pin must fail the version-sync check even if a previous release with that version can still score the fixture.
-
-### Scenario: S26 Smoke the tagged Action with the published package on three systems
+### Scenario Outline: S26 Smoke the tagged Action on a push and a shallow PR on each system
 
 ```gherkin
-Given Spec 57 preflight validated a version tag V and npm-smoke passed for its published npm packages
-When crapts-action-smoke runs the nested Action from V's checkout on ubuntu-latest, macos-latest and windows-latest
-Then each leg uses the default pin with package and version omitted and reports "crapts <version from V>"
-And on each runner a TypeScript push fixture yields the expected function in report, crappy "0", regressed and changed empty, and exit 0
+Given Spec 57 preflight validated tag V, npm-smoke passed for its published packages, and actions/setup-node installed node-version 24 on <runner>
+When crapts-action-smoke runs the nested Action from V's checkout with package and version omitted
+Then the next step resolves the installed launcher on PATH and its --version output is "crapts " followed by V's stripped package version
+And a push fixture for a fully covered CC 2 function reports that function, crappy "0", regressed and changed empty, and exit 0
+When a depth-1 PR head drops fee's coverage from 100% to 0% at CC 8 and adds one uncovered CC 6 function
+And coverage and baseline are empty and the Action compares the Git base using Bash install-command and coverage-command with a quoted script path containing spaces in each tree
+Then both command traces identify the correct tree and lockfile, regressed is "1", changed is "1", and the fixture observes gate exit 1
+And the base worktree is gone from disk and Git's worktree list, and HEAD is still the original PR commit
+
+Examples:
+| runner         |
+| ubuntu-latest  |
+| macos-latest   |
+| windows-latest |
 ```
 
 ### Scenario Outline: S27 Only an eligible release with passing smokes moves the crapts tag
 
 ```gherkin
-Given a test remote records both moving tag targets and <ref> points at commit C
-When the release workflow evaluates the ref and its required smoke results are <result>
-Then crapts-v1 has <target> and v1 retains its recorded target
+Given a test remote and registry record the prior targets of crapts-v1, v1 and each npm latest dist-tag
+When the release workflow evaluates <ref> at C with <result>
+Then crapts-v1 points to <target>, npm latest for the wrapper and all six platform packages points to <npm latest>, and v1 retains its recorded target
 
 Examples:
-| ref                  | result                    | target                                    |
-| crapts-v0.1.0        | all green                 | C                                         |
-| crapts-v1.4.2        | all green                 | C                                         |
-| crapts-v1.4.2-rc.1   | all green                 | its prior target                          |
-| crapts-v2.0.0        | all green                 | its prior target                          |
-| crapts-v1.4.2        | Windows Action smoke fails | its prior target                         |
-| crapts-v1.4.2        | npm-smoke fails           | its prior target                          |
-| crapts-v1            | no version workflow starts | its prior target                         |
+| ref                | result                                        | target           | npm latest       |
+| crapts-v0.1.0      | all green                                     | C                | 0.1.0            |
+| crapts-v1.4.2      | all green                                     | C                | 1.4.2            |
+| crapts-v1.4.2-rc.1 | all green including crapts-action-smoke       | its prior target | its prior target |
+| crapts-v2.0.0      | all green including crapts-action-smoke       | its prior target | 2.0.0            |
+| crapts-v1.4.2      | Windows Action smoke fails                    | its prior target | its prior target |
+| crapts-v1.4.2      | npm-smoke fails                               | its prior target | its prior target |
+| crapts-v1.4.2      | npm-smoke passes, crapts-action-smoke skipped | its prior target | its prior target |
+| crapts-v0.1.5      | all green after promoting 0.2.0               | C                | 0.1.5            |
+| crapts-v1          | no version workflow starts                    | its prior target | its prior target |
 ```
+
+### Scenario Outline: S28 Remove the base worktree and preserve the head checkout
+
+```gherkin
+Given a PR supplies head coverage and records its HEAD, tracked edits, untracked files and installed dependency contents before baseline generation
+When the base coverage command <outcome>
+Then the base worktree directory is absent and git worktree list contains only the original worktrees
+And the head commit and the recorded file contents match their originals
+
+Examples:
+| outcome                                                       |
+| writes valid coverage                                         |
+| exits 7 after creating an untracked file in the base worktree |
+```
+
+### Scenario Outline: S29 Diagnose missing head coverage and failed generation
+
+```gherkin
+Given <condition>
+When the Action prepares head coverage
+Then it exits 2, names <detail>, and publishes no counts or comment
+
+Examples:
+| condition                                              | detail                                 |
+| coverage and coverage-command are both empty           | coverage and coverage-command          |
+| coverage is missing.info, even with a command supplied | coverage and missing.info              |
+| coverage-command exits 7 at the head                   | the head coverage command and status 7 |
+| coverage-command succeeds without writing out/new.json | coverage-file and out/new.json         |
+```
+
+### Scenario: S30 Preserve quoted arguments without shell evaluation
+
+```gherkin
+Given args contains '"two words" "*.ts" ""' in a directory with matching TypeScript files
+When the Action passes the extra arguments to a recording executable
+Then it receives three extra arguments in order, the literal "two words", the literal "*.ts" and a zero-length string
+```
+
+### Scenario: S31 Recognize any valid marker only as the complete first line
+
+```gherkin
+Given any valid single-line marker M, one comment starting with M alone on line one, another with an extra character on that line, and a third quoting M only on line two
+When the matcher selects a comment for M
+Then it selects only the first comment
+```
+
+### Scenario Outline: S32 Select the supplied baseline without a base coverage run
+
+```gherkin
+Given <event> supplies complete saved.json and head coverage, with a coverage-command that records every call
+When the Action prepares the comparison inputs
+Then the selected baseline has the bytes of saved.json, the command log is empty and no base worktree was created
+
+Examples:
+| event                 |
+| a PR with a Git base  |
+| a push without a base |
+```
+
+### One-time checks on the implementation
+
+After the first stable promotion of `crapts-v1`, run a mixed-language PR in a consumer fixture repository with `contents: read` and `pull-requests: write`. Invoke `minikin/cargo-crap@v1` and `minikin/cargo-crap/actions/crapts@crapts-v1` by those literal refs. Check each comment's first-line marker, function name and score. Rerun with changed scores and verify both original IDs update. Use the default markers where no self-score workflow posts. On a repository where self-score posts, give the root Action its own marker such as `<!-- cargo-crap-demo -->`. Record the release run ID, consumer PR and fixture run IDs with the two comment IDs.
 
 ## Tasks
 
-- [ ] **T1 - Define the composite interface and verify package selection.** Scenarios: S01, S02, S03, S06. Tests: manifest checks and shell unit tests in `scripts/action/crapts/test.sh`, plus registry and tarball install fixtures.
-- [ ] **T2 - Resolve head coverage and Git history.** Needs: T1. Scenarios: S04, S05, S06, S07, S08. Tests: command-recording fixtures and shallow clones from a temporary Git remote.
-- [ ] **T3 - Select and produce score baselines.** Needs: T2. Scenarios: S10, S11, S12, S13, S14, S18. Tests: two-revision fixture acceptance tests with supplied files, separate lockfiles, config skew and failing commands.
-- [ ] **T4 - Render reports and publish gate results.** Needs: T3. Scenarios: S09, S10, S11, S15, S16, S17, S18, S19. Tests: real CLI score and output assertions, display-limit property cases and summary byte-boundary tests.
-- [ ] **T5 - Deliver PR comments and exercise both Actions.** Needs: T4. Scenarios: S17, S19, S20, S21, S22, S23. Tests: composite workflow scenarios using a shared fixture PR, a paginated comment API and recorded request bodies, IDs and outcomes.
-- [ ] **T6 - Run the scenario suite alongside the root Action jobs.** Needs: T5. Scenarios: S01 through S24. Tests: `.github/workflows/action.yml` fixture jobs, shell suites, ShellCheck, actionlint and both named golden test modules.
-- [ ] **T7 - Carry the npm pin through release prep.** Needs: T1. Scenario: S25. Tests: Spec 57 release prep fixtures and a manifest comparison covering both version pins.
-- [ ] **T8 - Smoke the released Action and promote its own tag.** Needs: T6, T7. Scenarios: S21, S26, S27. Tests: release workflow graph and tag cases against a temporary remote, three-OS published-package smokes and the public-ref fixture after first promotion.
+- [ ] **T1 - Define the composite interface and verify package selection.** Scenarios: S01, S02, S03, S06, S30. Test manifest defaults, argument validation and splitting in `scripts/action/crapts/test.sh`, and exercise registry and tarball installs.
+- [ ] **T2 - Resolve head coverage and Git history.** Needs: T1. Scenarios: S04, S05, S07, S08, S29. Check the prepared coverage file with the CLI and compare the fetch log and merge base against a full clone of the fixture.
+- [ ] **T3 - Select and produce score baselines.** Needs: T2. Scenarios: S12, S13, S28, S32. Exercise baseline preparation directly. Inspect its files, command arguments, lockfiles and worktree state on success and failure.
+- [ ] **T4 - Render reports and publish gate results.** Needs: T3. Scenarios: S09, S11, S14, S15, S16, S18. Check real CLI results, the readable report, config gates, display limits and the four Action outputs.
+- [ ] **T5 - Deliver PR comments and exercise both Actions.** Needs: T4. Scenarios: S10, S17, S19, S20, S21, S22, S23, S31. Run the candidate fixtures against the local API. Check request order, bodies, IDs, summary size and final status. Exercise the any-valid-marker property in `scripts/action/crapts/test.sh`.
+- [ ] **T6 - Wire the candidate suite into CI and preserve root package coverage.** Needs: T5. Scenario: S24. In `.github/workflows/action.yml`, run `actions/setup-node` with `node-version: 24` before each candidate Action job's fixtures (the Node 22 rejection uses an isolated override). Run the three-OS matrix with locally packaged candidate binaries. Check both shell suites, ShellCheck, six-workflow actionlint, the two golden test modules and the `tests/workspace.rs` package listing.
+- [ ] **T7 - Carry the npm pin through release prep and preflight.** Needs: T1. Scenario: S25. Extend the Spec 57 prep and tag fixtures in `scripts/release/test.sh` and the version-sync assertion in `tests/workspace.rs`. The nested Action manifest is the one additional file prep may edit relative to Spec 57.
+- [ ] **T8 - Smoke each tagged Action and test both promotions.** Needs: T6, T7. Scenarios: S26, S27. In `scripts/release/test.sh`, extend the Spec 57 workflow-contract test to require the additive `needs: crapts-action-smoke` edge on `promote-npm`, plus the tag job's prerequisites, permissions and eligibility. Exercise `scripts/release/move-tag.sh` against a temporary Git remote and check all seven npm dist-tags in a fixture registry. Before release, run the tagged-checkout smoke fixtures on all three systems against exact-version packages published to the fixture registry.
 
 ## Implementation Notes
 
 - Resolve helpers under `scripts/action/crapts/` relative to the nested Action's own `GITHUB_ACTION_PATH`. A downstream project's checkout need not contain these scripts. Use a per-invocation temporary directory for reports and coverage copies so a second invocation in the job cannot overwrite the first report. Export a runner-native executable path on Windows.
 - Use the Action runner's Node 24 or later and npm to install the wrapper and read JSON. The runner prerequisite applies to this composite. Spec 57 defines the standalone npm wrapper's engine range. For local tarball tests, make the matching exact-version platform package available from the fixture registry, using the candidate native binary. This exercises the wrapper's real optional dependency before either package has been published.
-- Pass Action inputs as environment values. Only the two explicitly configured project commands are shell programs. Test quoted paths with spaces, literal wildcards and trailing empty arguments in `args`. The candidate workflow runs on `pull_request` with read-only permissions and uses a dummy comment token and local API. Honor `CRAPTS_TEST_API_URL` and `CRAPTS_TEST_PR_NUMBER` only in the owning repository `minikin/cargo-crap`. Consumer jobs use the event's PR number and GitHub API URL. A same-repository consumer fixture PR grants `contents: read` and `pull-requests: write` for S21.
+- Pass Action inputs as environment values. Run `install-command` and `coverage-command` in Bash on every runner, including Windows. The candidate workflow uses read-only permissions, a dummy token and the local API on PRs and pushes to main. In S21 point both Actions' API and PR-number test inputs at the same stub store. Honor `CRAPTS_TEST_API_URL` and `CRAPTS_TEST_PR_NUMBER` only in the owning repository `minikin/cargo-crap`. Consumer jobs use the event's PR number and GitHub API URL.
 - Resolve a missing base from origin, then check `git merge-base` before head or base coverage runs. While the clone is shallow, deepen both relevant histories by 50, 200 and 1000, then unshallow if needed. Check after every fetch and stop at the first common ancestor. Exercise the actual PR head or merge ref as well as the base in the depth-1 fixtures. Diagnose an unresolvable base or a failed fetch with the revision and exit 2. The CLI consumes the merge base for changed functions. A generated score baseline uses the specified base commit.
-- Preserve head coverage before preparing the base. In the detached worktree, use the base project's dependencies with the effective head config at the equivalent path, clearing any config visible only at the base. Discard stale command output before generation in each tree. Render the base as complete JSON with `--all-rows`. Use the resulting file as `--baseline` alongside `--base` for both head reports. An explicit baseline bypasses base generation on every event.
+- Preserve head coverage before preparing the base. In the detached worktree, use the base project's dependencies with the effective head config at the equivalent path, clearing any config visible only at the base. Discard stale command output before generation in each tree. The base run receives only the scoring arguments and the controls for complete JSON output (`--format json --all-rows`). Omit `--base`, `--baseline` and every `--fail-*` flag from that invocation. Use the resulting file as `--baseline` alongside `--base` for both head reports. An explicit baseline bypasses base generation on every event.
 - Obtain settings, render the human-readable report, then collect counts and status in one `--format json --all-rows` head invocation. A valid exit-1 report from any scoring pass, including the base, can be consumed. Propagate a CLI error immediately. Read the three summary fields by name. Write outputs and summary, finish the comment attempt, then return the saved gate status. The `report` output points to the rendered file throughout.
-- CI exercises the candidate by invoking `./` and `./actions/crapts` on the same mixed-language PR fixture and comment store. Compare request IDs and bodies across reruns. Once the public moving tag exists, the consumer fixture uses the two literal public references from S21. This keeps first promotion testable with the candidate and also checks what downstream workflows resolve.
-- Extend Spec 57's `release-crapts.yml` after `npm-smoke`. Give `crapts-action-smoke` read access. Both promotions follow successful npm and three-OS Action smokes. Give `move-crapts-v1` job-scoped `contents: write` and read `major`, `is_prerelease` and `version` from `preflight`, which validates the version after stripping `crapts-v`. Only a stable major 0 or 1 can move `refs/tags/crapts-v1` to the release commit. Exercise a failed and a skipped prerequisite. Spec 57 retains its npm version eligibility, including npm `latest` for stable major 2.
+- Pass `--comment-marker` to the PR renderer. It budgets the whole body, including the marker, in UTF-16 code units. The comment step posts that file verbatim without prepending a second marker.
+- Extend `cargo_crap_s_published_package_holds_no_core_and_no_gate_script` in `tests/workspace.rs` to reject both new Action prefixes alongside its existing exclusions.
+- In `release-crapts.yml`, run `crapts-action-smoke` with `contents: read` after `npm-smoke` on every stable release and prerelease, including RCs. Both promotions require successful npm and three-OS Action smokes and read the validated version, major and prerelease status directly from `preflight`. Keep Spec 57's existing prerequisites and add `crapts-action-smoke` to the direct needs of `promote-npm`. Every stable version, including major 2, promotes npm `latest`. Only `move-crapts-v1` has the additional major 0/1 restriction. Give that job scoped `contents: write`. Like root `move-v1`, it sets its moving tag to the eligible release commit even when a later release is a patch on an older line.
 
 ### Non-goals
 
