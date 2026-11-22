@@ -1432,6 +1432,7 @@ fn an_untracked_nested_repository_is_named_without_a_trailing_slash() {
     let change = only(&changes, &["vendor"]);
     assert_eq!(change.status, ChangeStatus::Added);
     let new = side(change.new.as_ref(), "vendor");
+    assert_eq!(new.path.as_os_str(), std::ffi::OsStr::new("vendor"));
     assert_eq!(new.mode, Mode::GITLINK);
     assert!(!new.binary);
 }

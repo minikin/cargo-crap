@@ -602,6 +602,47 @@ fn best_ancestors(
     }
 }
 
+/// At most [`BINARY_PROBE`] bytes of a child's stdout. A short read is
+/// trusted only when the child then exits successfully.
+fn read_prefix(
+    child: Child,
+    command: String,
+) -> Result<Vec<u8>, GitError> {
+    let mut child = Reaped(child);
+    let stdout = child.0.stdout.take();
+    let stderr = child.0.stderr.take();
+    let mut prefix = Vec::new();
+    let (read, diagnostic) = std::thread::scope(|scope| {
+        // Drained beside stdout: a child that fills the stderr pipe first
+        // would otherwise block before writing the blob.
+        let drain = scope.spawn(move || {
+            let mut text = Vec::new();
+            if let Some(mut pipe) = stderr {
+                let _ = pipe.read_to_end(&mut text);
+            }
+            text
+        });
+        let read = stdout.map_or(Ok(0), |out| {
+            out.take(BINARY_PROBE as u64).read_to_end(&mut prefix)
+        });
+        // A child still running after the cap keeps stderr open.
+        if !matches!(read, Ok(n) if n < BINARY_PROBE) {
+            let _ = child.0.kill();
+        }
+        (read, drain.join().unwrap_or_default())
+    });
+    let failed = |stderr: String| GitError::Failed { command, stderr };
+    match read {
+        Err(e) => Err(failed(e.to_string())),
+        Ok(BINARY_PROBE) => Ok(prefix),
+        Ok(_) => match child.0.wait() {
+            Ok(status) if status.success() => Ok(prefix),
+            Ok(_) => Err(failed(String::from_utf8_lossy(&diagnostic).into_owned())),
+            Err(e) => Err(failed(e.to_string())),
+        },
+    }
+}
+
 fn blob_args(
     commit: &CommitId,
     path: &Path,
@@ -1024,33 +1065,10 @@ impl Repo {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = Reaped(
-            git.spawn()
-                .map_err(|e| spawn_error(&e, &self.root, command.clone()))?,
-        );
-        let read_error = |e: io::Error| GitError::Failed {
-            command: command.clone(),
-            stderr: e.to_string(),
-        };
-        let mut prefix = Vec::new();
-        if let Some(stdout) = child.0.stdout.take() {
-            stdout
-                .take(BINARY_PROBE as u64)
-                .read_to_end(&mut prefix)
-                .map_err(read_error)?;
-        }
-        if !prefix.is_empty() {
-            return Ok(prefix);
-        }
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.0.stderr.take() {
-            pipe.read_to_string(&mut stderr).map_err(read_error)?;
-        }
-        if child.0.wait().map_err(read_error)?.success() {
-            Ok(prefix)
-        } else {
-            Err(GitError::Failed { command, stderr })
-        }
+        let child = git
+            .spawn()
+            .map_err(|e| spawn_error(&e, &self.root, command.clone()))?;
+        read_prefix(child, command)
     }
 }
 
@@ -1366,7 +1384,11 @@ mod tests {
                 "B",
             ],
         ] {
-            let status = Command::new(GIT)
+            let mut git = Command::new(GIT);
+            for name in REPOSITORY_OVERRIDES {
+                git.env_remove(name);
+            }
+            let status = git
                 .args(args)
                 .current_dir(&root)
                 .env("GIT_CONFIG_GLOBAL", &empty)
@@ -1407,6 +1429,48 @@ mod tests {
         assert!(command.starts_with("git cat-file blob "), "{command}");
         assert!(command.ends_with(":absent"), "{command}");
         assert_ne!(stderr.trim(), "");
+    }
+
+    #[cfg(unix)]
+    fn shell(script: &str) -> Child {
+        Command::new("sh")
+            .args(["-c", script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("sh")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prefix_is_read_while_the_child_fills_stderr_first() {
+        let child = shell("head -c 200000 /dev/zero >&2; printf blob");
+        assert_eq!(
+            read_prefix(child, "probe".to_owned()).expect("blob"),
+            b"blob"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_short_prefix_from_a_failing_child_is_a_failure() {
+        let child = shell("printf part; echo boom >&2; exit 3");
+        let err = read_prefix(child, "probe".to_owned()).expect_err("exit 3");
+        assert!(
+            matches!(&err, GitError::Failed { command, stderr } if command == "probe" && stderr == "boom\n"),
+            "{err:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_full_prefix_stops_a_child_that_keeps_running() {
+        let started = std::time::Instant::now();
+        let child = shell("head -c 9000 /dev/zero; exec sleep 5");
+        let prefix = read_prefix(child, "probe".to_owned()).expect("prefix");
+        assert_eq!(prefix.len(), BINARY_PROBE);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 
     #[test]
