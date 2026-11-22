@@ -794,7 +794,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Score auto-accessor initializers as fields_, _Direct class-valued fields supply a class name_.
   Tests: Acceptance for instance and static auto-accessors, named and anonymous class expressions and their child methods.
 
-- [ ] **T18 - Attribute class definition expressions and locate decorated methods.** Needs: T17.
+- [x] **T18 - Attribute class definition expressions and locate decorated methods.** Needs: T17.
   Scenarios: _Count class definition expressions in the surrounding execution context_, _Include a method's decorator in its source span_.
   Tests: Acceptance for heritage, decorator and key decisions at file scope and inside a function. Check that the method span starts at its decorator.
 
