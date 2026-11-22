@@ -275,6 +275,7 @@ fn match_path_globs_and_account_for_unused_exclusions() {
     opts.excludes.push(ExcludePattern {
         pattern: "absent/**".to_owned(),
         origin: GlobOrigin::Default,
+        base_dir: PathBuf::from("."),
     });
     for use_git in [false, true] {
         if use_git {
@@ -473,6 +474,7 @@ fn flag(pattern: &str) -> ExcludePattern {
     ExcludePattern {
         pattern: pattern.to_owned(),
         origin: GlobOrigin::Flag,
+        base_dir: PathBuf::from("."),
     }
 }
 
@@ -992,6 +994,7 @@ fn check_malformed_glob_failures() {
         opts.excludes = vec![ExcludePattern {
             pattern: "src/[".to_owned(),
             origin: GlobOrigin::Config(config_path.clone()),
+            base_dir: PathBuf::from("."),
         }];
         let config_error = discover(&[], &opts).unwrap_err();
         assert_eq!(config_error.path(), config_path.as_path());
@@ -1047,4 +1050,162 @@ fn explicit_broken_and_cyclic_symlink_roots_follow_metadata_rules() {
             "{error}"
         );
     }
+}
+
+#[test]
+fn file_and_flag_globs_keep_their_origins_across_a_subdirectory_run() {
+    let dir = tempdir().unwrap();
+    let repo = dir.path();
+    git(repo, &["init", "-q"]);
+    let cwd = repo.join("packages/app");
+    for file in ["gen/a.ts", "src/hot.ts", "src/edge.ts", "keep.ts"] {
+        write(&cwd, file, "");
+    }
+    let config = repo.join(".crapts.toml");
+    let rule = |pattern: &str, origin, base_dir| ExcludePattern {
+        pattern: pattern.to_owned(),
+        origin,
+        base_dir,
+    };
+    let mut options = DiscoveryOptions::new(&cwd);
+    options.defaults = vec![rule(
+        "pack*/app/gen/**",
+        GlobOrigin::Config(config.clone()),
+        repo.join("missing/.."),
+    )];
+    let old = rule(
+        "pack*/app/old/**",
+        GlobOrigin::Config(config.clone()),
+        repo.to_owned(),
+    );
+    let flag = rule("old/**", GlobOrigin::Flag, cwd.clone());
+    options.excludes = vec![
+        rule("src/hot.ts", GlobOrigin::Flag, cwd.clone()),
+        old.clone(),
+        rule(
+            "pack*/app/src/edge.ts",
+            GlobOrigin::Config(config.clone()),
+            repo.to_owned(),
+        ),
+        flag.clone(),
+    ];
+    let found = discover(&[], &options).unwrap();
+    assert_eq!(found.scope.repo_prefix(), Path::new("packages/app"));
+    assert_eq!(found.files, paths(&["keep.ts"]));
+    assert_eq!(found.unused_excludes, [old.clone(), flag.clone()]);
+    assert_eq!(
+        found.scope.exclusions().collect::<Vec<_>>(),
+        options
+            .defaults
+            .iter()
+            .chain(&options.excludes)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        old.unused_warning(),
+        format!(
+            "{}: exclude 'pack*/app/old/**' excluded no file; globs are relative to the config directory",
+            config.display()
+        )
+    );
+    assert_eq!(
+        flag.unused_warning(),
+        "--exclude 'old/**' excluded no file; globs are relative to the current directory"
+    );
+    assert!(!found.scope.keeps(Path::new("gen/missing.ts")).unwrap());
+    assert!(!found.scope.keeps(Path::new("old/missing.ts")).unwrap());
+    assert!(found.scope.keeps(Path::new("other/missing.ts")).unwrap());
+}
+#[test]
+fn git_free_discovery_uses_the_nearest_worktree_boundary() {
+    let key = "CRAPTS_TEST_MARKER_BOUNDARY";
+    if let Some(repo) = std::env::var_os(key) {
+        let cwd = PathBuf::from(repo).join("pkg");
+        let opts = DiscoveryOptions::new(&cwd);
+        let found = discover(&[], &opts).unwrap();
+        assert_eq!(found.files, paths(&["visible.ts"]));
+        assert_eq!(found.scope.repo_prefix(), Path::new("pkg"));
+        assert!(
+            !found
+                .scope
+                .keeps(Path::new("node_modules/hidden.ts"))
+                .unwrap()
+        );
+        let err = discover(&paths(&["../../outside.ts"]), &opts)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("../../outside.ts") && err.contains("outside the repository"),
+            "{err}"
+        );
+        return;
+    }
+    let dir = tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    write(&repo, "pkg/visible.ts", "");
+    write(&repo, "pkg/node_modules/hidden.ts", "");
+    write(dir.path(), "outside.ts", "");
+    let marker = repo.join(".git");
+    fs::create_dir(&marker).unwrap();
+    for gitfile in [false, true] {
+        if gitfile {
+            fs::remove_dir(&marker).unwrap();
+            fs::write(&marker, "gitdir: ../metadata").unwrap();
+        }
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "git_free_discovery_uses_the_nearest_worktree_boundary",
+                "--nocapture",
+            ])
+            .env(key, &repo)
+            .env("PATH", dir.path().join("no-git"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_git_prefix_lookup_after_a_successful_worktree_probe_is_an_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let key = "CRAPTS_TEST_FAIL_PREFIX";
+    if let Some(cwd) = std::env::var_os(key) {
+        let err = discover(&[], &DiscoveryOptions::new(cwd))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("git rev-parse")
+                && err.contains("prefix")
+                && err.contains("cannot read prefix"),
+            "{err}"
+        );
+        return;
+    }
+    let dir = tempdir().unwrap();
+    let git = dir.path().join("git");
+    fs::write(&git,"#!/bin/sh\ncase \"$*\" in\n'rev-parse --show-toplevel') pwd ;;\n'rev-parse --is-inside-work-tree --show-prefix') echo 'cannot read prefix' >&2; exit 9 ;;\n*) exit 1 ;;\nesac\n").unwrap();
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+    let o = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_failed_git_prefix_lookup_after_a_successful_worktree_probe_is_an_error",
+            "--nocapture",
+        ])
+        .env(key, dir.path())
+        .env("PATH", dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        o.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
 }

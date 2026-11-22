@@ -765,7 +765,7 @@ Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.
   `oxc_` nor `syn ` in `cargo-crap-core`, and no `syn ` in `crapts`.
   Scenarios: none. Tests: unit/integration checks in `tests/workspace.rs`
   and `bash scripts/gates/parser-guard.sh` plus `bash scripts/gates/test.sh`.
-- [ ] **T4 - Extend crapts discovery with glob origins, bases and Git-free fallback.**
+- [x] **T4 - Extend crapts discovery with glob origins, bases and Git-free fallback.**
   Needs: T3. Update `crapts::discover` in `crates/crapts/src/discover.rs` so
   default and extra exclusions take
   `ExcludePattern { pattern, origin, base_dir }` with
