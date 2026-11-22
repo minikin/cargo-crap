@@ -226,8 +226,17 @@ pub fn discover(
         .cwd
         .canonicalize()
         .map_err(|error| InputError::at(&options.cwd, error))?;
-    let invoked = std::path::absolute(&options.cwd).map_err(|e| InputError::at(&options.cwd, e))?;
     let worktree = Worktree::probe(&physical)?;
+    discover_probed(roots, options, physical, worktree)
+}
+
+pub(crate) fn discover_probed(
+    roots: &[PathBuf],
+    options: &DiscoveryOptions,
+    physical: PathBuf,
+    worktree: Worktree,
+) -> Result<Discovery, InputError> {
+    let invoked = std::path::absolute(&options.cwd).map_err(|e| InputError::at(&options.cwd, e))?;
     let cwd = if worktree.root.is_some() {
         physical
     } else {

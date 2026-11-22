@@ -104,6 +104,8 @@ fn globs<S: Serializer>(
 
 #[derive(Debug, Serialize)]
 pub(super) struct Effective {
+    #[serde(skip)]
+    pub allow_set: AllowSet,
     pub paths: Setting<Vec<PathBuf>>,
     pub coverage: Setting<Option<PathBuf>>,
     pub threshold: Setting<f64>,
@@ -219,15 +221,14 @@ fn validate_allow(
     cwd: &Path,
     path: Option<&Path>,
     rules: &[ExcludePattern],
-) -> Result<()> {
-    if let Err(error) = compile_allow(cwd, rules) {
+) -> Result<AllowSet> {
+    compile_allow(cwd, rules).or_else(|error| {
         if let Some(path) = path {
             let count = rules.partition_point(|rule| matches!(rule.origin, GlobOrigin::Config(_)));
             compile_allow(cwd, &rules[..count]).map_err(|error| InputError::at(path, error))?;
         }
-        return Err(error);
-    }
-    Ok(())
+        Err(error)
+    })
 }
 
 fn repo_from_environment() -> Option<String> {
@@ -251,7 +252,7 @@ impl Effective {
         let exclude = bases.list(args, "exclude", config.exclude);
         DiscoveryOptions::validate(cwd, &exclude.value)?;
         let allow = bases.list(args, "allow", config.allow);
-        validate_allow(cwd, path, &allow.value)?;
+        let allow_set = validate_allow(cwd, path, &allow.value)?;
         let mut min = optional(args, "min", config.min, None);
         let mut top = optional(args, "top", config.top, None);
         if args.get_flag("all-rows") {
@@ -288,6 +289,7 @@ impl Effective {
                 MissingCoveragePolicy::Pessimistic,
                 config.missing,
             ),
+            allow_set,
             allow,
             exclude,
             default_excludes: defaults,

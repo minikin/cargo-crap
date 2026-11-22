@@ -93,8 +93,14 @@ fn field_error(
 pub fn load(cwd: &Path) -> Result<(Option<PathBuf>, Config), InputError> {
     let cwd = cwd.canonicalize().map_err(|err| InputError::at(cwd, err))?;
     let worktree = Worktree::probe(&cwd)?;
-    let path = find_upwards(&cwd, ".crapts.toml", worktree.root.as_deref())
-        .map_err(|err| InputError::at(&cwd, err))?;
+    load_at(&cwd, worktree.root.as_deref())
+}
+
+pub(crate) fn load_at(
+    cwd: &Path,
+    stop: Option<&Path>,
+) -> Result<(Option<PathBuf>, Config), InputError> {
+    let path = find_upwards(cwd, ".crapts.toml", stop).map_err(|err| InputError::at(cwd, err))?;
     let Some(path) = path else {
         return Ok((None, Config::default()));
     };

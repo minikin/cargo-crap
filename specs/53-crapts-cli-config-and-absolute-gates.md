@@ -826,7 +826,7 @@ Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.
   `--all-rows` origin preservation, and acceptance tests in
   `crates/crapts/tests/{cli,docs}.rs` covering the 9 owned scenarios and
   public option/config-key inventory parity.
-- [ ] **T7 - Wire the absolute scoring pipeline, selection and gate invariants.**
+- [x] **T7 - Wire the absolute scoring pipeline, selection and gate invariants.**
   Needs: T2, T6. Connect the full scoring path in
   `crates/crapts/src/{lib,main}.rs`: `discover` -> `coverage::read_coverage`
   -> ordinary `FileAnalysis` in discovery order -> `attribute::attribute` ->

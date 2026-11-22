@@ -1234,7 +1234,8 @@ fn validate_common_outer(
     {
         bail!("baseline {}: invalid $schema", path.display());
     }
-    ensure_finite_min(&outer.threshold, 0.0, path, "threshold")?;
+    let minimum_threshold = if is_delta { 0.0 } else { f64::MIN };
+    ensure_finite_min(&outer.threshold, minimum_threshold, path, "threshold")?;
     let _: Vec<String> = serde_json::from_str(outer.notices.get())
         .with_context(|| format!("baseline {}: invalid notices", path.display()))?;
     if let Some(changed) = outer.changed
@@ -4170,6 +4171,7 @@ mod crapts_admission_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut abs_doc = valid_absolute_doc();
         abs_doc["version"] = json!("0.2.3-rc.1+build.7");
+        abs_doc["threshold"] = json!(-10);
         abs_doc["summary"]["total"] = json!(18_014_398_509_481_984.0);
         abs_doc["entries"][0]["cyclomatic"] = json!(4_294_967_296_u64);
         let abs_path = dir.path().join("abs.json");
@@ -4330,7 +4332,7 @@ mod crapts_admission_tests {
             ("$schema", |d| d["$schema"] = json!(123)),
             ("$schema", |d| d["$schema"] = json!(null)),
             ("$schema", |d| d["$schema"] = json!("not a uri")),
-            ("threshold", |d| d["threshold"] = json!(-1)),
+            ("threshold", |d| d["threshold"] = json!("low")),
             ("notices", |d| d["notices"] = json!([1])),
             ("changed", |d| d["changed"] = json!([])),
             ("changed", |d| d["changed"] = json!(null)),
@@ -4428,6 +4430,7 @@ mod crapts_admission_tests {
     #[test]
     fn load_crapts_baseline_rejects_defective_delta_fields() {
         let delta_cases: &[(&str, DocEdit)] = &[
+            ("threshold", |d| d["threshold"] = json!(-1)),
             ("regression_gate", |d| {
                 d["regression_gate"] = json!([false, "0.2.0", "0.2.3"]);
             }),

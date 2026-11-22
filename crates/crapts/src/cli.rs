@@ -10,6 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod scoring;
 mod settings;
 use settings::Effective;
 
@@ -334,12 +335,14 @@ fn configured(
     cwd: &Path,
     args: &[OsString],
     out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> Result<ExitCode> {
-    let (path, config) = config::load(cwd)?;
-    let args = parse(args)?;
     let cwd = cwd
         .canonicalize()
         .map_err(|error| InputError::at(cwd, error))?;
+    let worktree = crate::discover::Worktree::probe(&cwd)?;
+    let (path, config) = config::load_at(&cwd, worktree.root.as_deref())?;
+    let args = parse(args)?;
     let settings = Effective::resolve(&cwd, path.as_deref(), config, &args)?;
     if args.get_flag("print-config") {
         let json = serde_json::to_string_pretty(&Printed {
@@ -350,28 +353,24 @@ fn configured(
         writeln!(out, "{json}").map_err(stdout_error)?;
         return finish_stdout(out);
     }
-    settings
-        .coverage
-        .value
-        .as_ref()
-        .ok_or_else(|| InputError::message("--coverage <file> is required"))?;
-    crate::discover(&settings.paths.value, &settings.discovery(&cwd))?;
-    Err(InputError::message(
-        "absolute scoring is not implemented yet",
-    ))
+    if args.get_flag("fail-changed") && settings.base.value.is_none() {
+        return Err(InputError::message("--fail-changed needs --base"));
+    }
+    scoring::score(&cwd, worktree, &settings, out, err)
 }
 
 fn execute(
     cwd: &Path,
     args: &[OsString],
     out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> Result<ExitCode> {
     match priority(args) {
         Route::Help => write!(out, "{}", command().render_long_help()).map_err(stdout_error)?,
         Route::Version => {
             writeln!(out, "crapts {}", env!("CARGO_PKG_VERSION")).map_err(stdout_error)?;
         },
-        Route::Run => return configured(cwd, args, out),
+        Route::Run => return configured(cwd, args, out, err),
     }
     finish_stdout(out)
 }
@@ -383,7 +382,7 @@ pub fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitCode {
-    match execute(cwd, args, out) {
+    match execute(cwd, args, out, err) {
         Ok(code) => code,
         Err(error) => {
             let _ = writeln!(err, "error: {error:#}");
