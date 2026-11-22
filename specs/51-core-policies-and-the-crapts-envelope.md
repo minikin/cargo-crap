@@ -625,7 +625,7 @@ delta written against a baseline that did not pass `prepare_crapts` has no
 writer version for `regression_gate`, so the writer returns an error before
 the first byte, like a missing coverage kind.
 
-- [ ] **T1 - Migrate the library API to sections, notices and coverage kind.**
+- [x] **T1 - Migrate the library API to sections, notices and coverage kind.**
   Add `coverage::CoverageKind`, `run::Analysis::{coverage_kind, notices}`,
   `run::Settings::fail_sections`, `report::Section` and `Placement` in
   `report/section.rs`, and the sections slice of `run::run`. cargo-crap

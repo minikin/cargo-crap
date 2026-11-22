@@ -174,3 +174,50 @@ impl std::io::Write for Refuses {
 pub(crate) fn every(triage: &[Assessment]) -> Vec<Option<Assessment>> {
     triage.iter().copied().map(Some).collect()
 }
+
+pub(crate) struct FixedSection {
+    pub key: &'static str,
+    pub raw: &'static str,
+    pub text: &'static str,
+    pub placement: super::Placement,
+    pub failures: Option<usize>,
+}
+
+impl FixedSection {
+    pub(crate) fn failing(failures: Option<usize>) -> Self {
+        Self {
+            key: "changed",
+            raw: "{}",
+            text: "changed result",
+            placement: super::Placement::Lead,
+            failures,
+        }
+    }
+}
+
+impl super::Section for FixedSection {
+    fn json_key(&self) -> &str {
+        self.key
+    }
+
+    fn json(&self) -> Box<serde_json::value::RawValue> {
+        serde_json::value::RawValue::from_string(self.raw.to_owned()).expect("valid raw JSON")
+    }
+
+    fn write(
+        &self,
+        _: Format,
+        out: &mut dyn std::io::Write,
+    ) -> anyhow::Result<()> {
+        writeln!(out, "{}", self.text)?;
+        Ok(())
+    }
+
+    fn placement(&self) -> super::Placement {
+        self.placement
+    }
+
+    fn failures(&self) -> Option<usize> {
+        self.failures
+    }
+}

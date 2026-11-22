@@ -1903,6 +1903,8 @@ fn run() -> Result<ExitCode> {
         entries,
         diagnostics,
         scope: &scope,
+        coverage_kind: None,
+        notices: &[],
     };
     let baseline = raw.map(|raw| BaselineFilter::new(analysis.scope, &allow).prepare(raw));
 
@@ -1933,12 +1935,14 @@ fn run() -> Result<ExitCode> {
         links: links.as_ref(),
         cwd: &knobs.cwd,
         workspace_root,
+        fail_sections: false,
     };
     let outcome = run::run(
         &cargo_crap::tool::CARGO_CRAP,
         &report,
         analysis,
         baseline.as_ref(),
+        &[],
         &duplicates.render_extras(try_weight),
         out.as_mut(),
     )?;

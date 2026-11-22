@@ -1,5 +1,6 @@
 //! Prepare a baseline, select and render score rows, then return the verdict after flushing.
 
+use crate::coverage::CoverageKind;
 use crate::delta::{Baseline, DeltaCounts, attach_reasons, compute_delta, gating_signal_count};
 use crate::duplicates::{
     compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, verdict::Assessment,
@@ -7,7 +8,7 @@ use crate::duplicates::{
 use crate::entry::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::filter::{self, AllowSet};
 use crate::gate::{GateOutcome, threshold_count};
-use crate::report::{self, Format, RenderOptions, SourceLinks, Tool, TriagedBy};
+use crate::report::{self, Format, RenderOptions, Section, SourceLinks, Tool, TriagedBy};
 use crate::score::DEFAULT_TRY_WEIGHT;
 use crate::signals::SignalSettings;
 use anyhow::{Context, Result};
@@ -76,6 +77,10 @@ pub struct Analysis<'a> {
     pub diagnostics: Option<ScopeDiagnostics>,
     /// The predicate used to prepare this run's baseline.
     pub scope: &'a dyn Scope,
+    /// The measured coverage unit, which the crapts envelope requires.
+    pub coverage_kind: Option<CoverageKind>,
+    /// Caller notices in report order.
+    pub notices: &'a [String],
 }
 
 #[expect(
@@ -107,6 +112,7 @@ pub struct Settings<'a> {
     /// Working directory for relative duplicate paths.
     pub cwd: &'a Path,
     pub workspace_root: Option<&'a Path>,
+    pub fail_sections: bool,
 }
 
 pub struct RenderExtras<'a> {
@@ -158,6 +164,7 @@ pub fn run(
     settings: &Settings<'_>,
     analysis: Analysis<'_>,
     baseline: Option<&PreparedBaseline>,
+    sections: &[&dyn Section],
     extras: &RenderExtras<'_>,
     out: &mut dyn Write,
 ) -> Result<GateOutcome> {
@@ -230,18 +237,22 @@ pub fn run(
     };
     report::render_duplicates(&options, out).context("writing duplicate report")?;
     out.flush().context("flushing output")?;
-    Ok(GateOutcome::from_counts(
-        threshold_count(
-            tool.policy.fail_above_counts,
-            &eligible,
-            shown,
-            settings.threshold,
-        ),
-        regressed,
-        gating_signals,
-        settings.fail_above,
-        settings.fail_regression,
-    ))
+    let section_failures = sections.iter().filter_map(|s| s.failures()).sum();
+    Ok(GateOutcome {
+        section_failures,
+        ..GateOutcome::from_counts(
+            threshold_count(
+                tool.policy.fail_above_counts,
+                &eligible,
+                shown,
+                settings.threshold,
+            ),
+            regressed,
+            gating_signals,
+            settings.fail_above,
+            settings.fail_regression,
+        )
+    })
 }
 
 fn render_delta_summary_lines(
@@ -340,6 +351,7 @@ mod tests {
             links: None,
             cwd: Path::new(""),
             workspace_root: None,
+            fail_sections: false,
         };
         let mut row = sample().remove(0);
         row.signals = Some(Signals {
@@ -356,18 +368,75 @@ mod tests {
             entries: vec![row],
             diagnostics: None,
             scope: &AllFiles,
+            coverage_kind: None,
+            notices: &[],
         };
         let outcome = run(
             &SECOND_TOOL,
             &settings,
             analysis,
             Some(&baseline),
+            &[],
             &RenderExtras::default(),
             &mut Vec::new(),
         )
         .unwrap();
         assert_eq!(outcome.regressed, 0);
         assert_eq!(outcome.exit_code(), std::process::ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn the_outcome_sums_the_failures_each_section_reports() {
+        use crate::report::test_support::{FixedSection, SECOND_TOOL};
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let settings = Settings {
+            allow: &allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: crate::delta::DEFAULT_EPSILON,
+            signals: &signals,
+            fail_above: false,
+            fail_regression: false,
+            format: Format::Human,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: false,
+        };
+        let outcome = |sections: &[&dyn Section]| {
+            let analysis = Analysis {
+                entries: Vec::new(),
+                diagnostics: None,
+                scope: &AllFiles,
+                coverage_kind: None,
+                notices: &[],
+            };
+            run(
+                &SECOND_TOOL,
+                &settings,
+                analysis,
+                None,
+                sections,
+                &RenderExtras::default(),
+                &mut Vec::new(),
+            )
+            .unwrap()
+        };
+        let (two, none, one) = (
+            FixedSection::failing(Some(2)),
+            FixedSection::failing(None),
+            FixedSection::failing(Some(1)),
+        );
+        assert_eq!(outcome(&[]).section_failures, 0);
+        assert_eq!(outcome(&[&two, &none, &one]).section_failures, 3);
+        assert!(!outcome(&[&two]).tripped);
     }
 
     #[test]

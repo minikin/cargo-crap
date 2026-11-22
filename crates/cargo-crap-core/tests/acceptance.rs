@@ -98,11 +98,14 @@ fn a_core_only_caller_can_report_a_scored_function() {
         links: None,
         cwd: Path::new("."),
         workspace_root: None,
+        fail_sections: false,
     };
     let analysis = Analysis {
         entries: vec![row, hidden],
         diagnostics: None,
         scope: &OnlyFile("src/a.rs"),
+        coverage_kind: None,
+        notices: &[],
     };
 
     // When it calls run::run with JSON output, threshold 2, fail-above
@@ -113,6 +116,7 @@ fn a_core_only_caller_can_report_a_scored_function() {
         &settings,
         analysis,
         None,
+        &[],
         &RenderExtras::default(),
         &mut out,
     )

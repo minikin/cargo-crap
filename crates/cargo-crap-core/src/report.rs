@@ -41,6 +41,7 @@ mod per_crate;
 mod pr_comment;
 mod reasons;
 mod sarif;
+mod section;
 mod shields;
 mod summary;
 mod tool;
@@ -52,6 +53,7 @@ pub(crate) mod test_support;
 // Re-exports — the rest of the crate depends on these names being on `report`.
 pub use json::Envelope;
 pub use links::SourceLinks;
+pub use section::{Placement, Section};
 pub use summary::{render_delta_counts, render_delta_summary, render_summary};
 pub use tool::{Schemas, Tool};
 pub use types::{output_width, set_color_enabled};
