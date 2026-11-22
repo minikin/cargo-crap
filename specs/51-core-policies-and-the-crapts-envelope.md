@@ -657,7 +657,7 @@ the first byte, like a missing coverage kind.
   _equal-score selection is independent of the order of tied input rows_.
   Tests: property (a permuted tie group selects the prefix of an
   independent ordering, including the line component), acceptance.
-- [ ] **T4 - Publish the crapts v1 schemas and admit complete baselines.**
+- [x] **T4 - Publish the crapts v1 schemas and admit complete baselines.**
   Needs: T1. `schemas/crapts/{report-v1,delta-v1}.json`,
   `delta::{CraptsBaseline, load_crapts_baseline}`,
   `BaselineFilter::prepare_crapts` and the SemVer check without a new

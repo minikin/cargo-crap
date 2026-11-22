@@ -1,7 +1,11 @@
 //! The crapts policy values, exercised through the public core pipeline with
 //! a fixture tool, resolved settings and finished rows.
 
-use cargo_crap_core::delta::{Baseline, DEFAULT_EPSILON};
+#[path = "support/schemas.rs"]
+mod schemas;
+
+use cargo_crap_core::coverage::CoverageKind;
+use cargo_crap_core::delta::{Baseline, DEFAULT_EPSILON, load_crapts_baseline};
 use cargo_crap_core::entry::{CrapEntry, SortOrder};
 use cargo_crap_core::filter::AllowSet;
 use cargo_crap_core::gate::GateOutcome;
@@ -9,7 +13,7 @@ use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieO
 use cargo_crap_core::report::{Format, Schemas, Tool};
 use cargo_crap_core::run::{self, Analysis, BaselineFilter, RenderExtras, Scope, Settings};
 use cargo_crap_core::signals::SignalSettings;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::Path;
 
 const CRAPTS: Tool = Tool {
@@ -645,5 +649,421 @@ fn equal_score_selection_is_independent_of_the_order_of_tied_input_rows() {
     for perm in perms {
         assert_eq!(absolute(&knobs, perm.clone()).identities(), expected);
         assert_eq!(compare(&knobs, perm, vec![]).identities(), expected);
+    }
+}
+
+fn handwritten_absolute() -> Value {
+    json!({
+        "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v1.json",
+        "version": "0.2.3",
+        "name_scheme": 1,
+        "coverage_kind": "lines",
+        "threshold": 30,
+        "selection": null,
+        "notices": [],
+        "summary": {
+            "total": 1,
+            "crappy": 0,
+            "regressed": null,
+            "improved": null,
+            "new": null,
+            "moved": null,
+            "unchanged": null,
+            "removed": null,
+            "changed_failures": null
+        },
+        "entries": [{
+            "file": "src/a.ts",
+            "function": "run",
+            "line": 4,
+            "cyclomatic": 2,
+            "coverage": 50.0,
+            "crap": 20.0
+        }],
+        "diagnostics": {
+            "analyzed_files": 1,
+            "coverage_files": 1,
+            "matched_files": 1,
+            "source_only": {"count": 0, "examples": []},
+            "coverage_only": {"count": 0, "examples": []}
+        }
+    })
+}
+
+fn handwritten_delta() -> Value {
+    json!({
+        "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/delta-v1.json",
+        "version": "0.2.3",
+        "name_scheme": 1,
+        "coverage_kind": "lines",
+        "threshold": 30,
+        "selection": null,
+        "regression_gate": {
+            "skipped": false,
+            "baseline_version": "0.2.0",
+            "version": "0.2.3"
+        },
+        "notices": [],
+        "summary": {
+            "total": 2,
+            "crappy": 0,
+            "regressed": 1,
+            "improved": 0,
+            "new": 1,
+            "moved": 0,
+            "unchanged": 0,
+            "removed": 1,
+            "changed_failures": null
+        },
+        "entries": [
+            {
+                "file": "src/a.ts",
+                "function": "run",
+                "line": 4,
+                "cyclomatic": 2,
+                "coverage": 50.0,
+                "crap": 20.0,
+                "baseline_crap": 10.0,
+                "delta": 10.0,
+                "status": "regressed"
+            },
+            {
+                "file": "src/b.ts",
+                "function": "added",
+                "line": 1,
+                "cyclomatic": 1,
+                "coverage": 100.0,
+                "crap": 1.0,
+                "baseline_crap": null,
+                "delta": null,
+                "status": "new"
+            }
+        ],
+        "removed": [{
+            "file": "old.ts",
+            "function": "gone",
+            "baseline_crap": 5.0
+        }],
+        "diagnostics": {
+            "analyzed_files": 2,
+            "coverage_files": 2,
+            "matched_files": 2,
+            "source_only": {"count": 0, "examples": []},
+            "coverage_only": {"count": 0, "examples": []}
+        }
+    })
+}
+
+fn write_json(
+    dir: &tempfile::TempDir,
+    name: &str,
+    value: &Value,
+) -> std::path::PathBuf {
+    let path = dir.path().join(name);
+    std::fs::write(&path, serde_json::to_string_pretty(value).unwrap()).unwrap();
+    path
+}
+
+type DocEdit = fn(&mut Value);
+
+#[test]
+fn the_closed_schemas_reject_malformed_wire_values() {
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+
+    // Given a valid populated absolute and delta report
+    let abs_orig = handwritten_absolute();
+    let delta_orig = handwritten_delta();
+    assert!(abs_schema.is_valid(&abs_orig));
+    assert!(delta_schema.is_valid(&delta_orig));
+
+    let abs_edits: &[(&str, DocEdit)] = &[
+        ("adding an unknown outer key", |d| {
+            d["unknown"] = json!(1);
+        }),
+        ("replacing coverage_files with lcov_files", |d| {
+            let diag = d["diagnostics"].as_object_mut().unwrap();
+            let v = diag.remove("coverage_files").unwrap();
+            diag.insert("lcov_files".into(), v);
+        }),
+        ("dropping selection", |d| {
+            d.as_object_mut().unwrap().remove("selection");
+        }),
+        ("setting name_scheme to 2", |d| {
+            d["name_scheme"] = json!(2);
+        }),
+        ("setting selection to {top:null,min:null}", |d| {
+            d["selection"] = json!({"top": null, "min": null});
+        }),
+        ("setting selection to {top:0,min:null}", |d| {
+            d["selection"] = json!({"top": 0, "min": null});
+        }),
+        ("giving a row an empty uncovered array", |d| {
+            d["entries"][0]["uncovered"] = json!([]);
+        }),
+    ];
+    for &(label, edit) in abs_edits {
+        // When an independent schema validator checks a copy after <edit>
+        let mut copy = abs_orig.clone();
+        edit(&mut copy);
+        // Then it rejects that copy and accepts the original
+        assert!(
+            !abs_schema.is_valid(&copy),
+            "absolute should reject: {label}"
+        );
+    }
+
+    let delta_edits: &[(&str, DocEdit)] = &[
+        ("dropping removed", |d| {
+            d.as_object_mut().unwrap().remove("removed");
+        }),
+        ("dropping regression_gate", |d| {
+            d.as_object_mut().unwrap().remove("regression_gate");
+        }),
+        ("giving a new row a non-null delta", |d| {
+            d["entries"][1]["delta"] = json!(1.0);
+        }),
+        ("giving a paired row a null delta", |d| {
+            d["entries"][0]["delta"] = json!(null);
+        }),
+        ("supplying a string for summary.regressed", |d| {
+            d["summary"]["regressed"] = json!("1");
+        }),
+    ];
+    for &(label, edit) in delta_edits {
+        let mut copy = delta_orig.clone();
+        edit(&mut copy);
+        assert!(
+            !delta_schema.is_valid(&copy),
+            "delta should reject: {label}"
+        );
+    }
+}
+
+#[test]
+fn a_foreign_or_sliced_baseline_fails_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let cases: Vec<(&str, String, Vec<&str>)> = vec![
+        (
+            "name_scheme absent",
+            {
+                let mut d = handwritten_absolute();
+                d.as_object_mut().unwrap().remove("name_scheme");
+                serde_json::to_string(&d).unwrap()
+            },
+            vec!["base.json", "name_scheme", "Refresh"],
+        ),
+        (
+            "name_scheme 2 and version 0.1.0",
+            {
+                let mut d = handwritten_absolute();
+                d["name_scheme"] = json!(2);
+                d["version"] = json!("0.1.0");
+                serde_json::to_string(&d).unwrap()
+            },
+            vec!["base.json", "name_scheme", "Refresh"],
+        ),
+        (
+            "coverage_kind statements",
+            {
+                let mut d = handwritten_absolute();
+                d["coverage_kind"] = json!("statements");
+                serde_json::to_string(&d).unwrap()
+            },
+            vec!["base.json", "coverage_kind", "statements", "lines"],
+        ),
+        (
+            "selection top 5",
+            {
+                let mut d = handwritten_absolute();
+                d["selection"] = json!({"top": 5, "min": null});
+                serde_json::to_string(&d).unwrap()
+            },
+            vec![
+                "base.json",
+                "was written with --top or --min and is not a complete baseline",
+            ],
+        ),
+        (
+            "selection min 3",
+            {
+                let mut d = handwritten_absolute();
+                d["selection"] = json!({"top": null, "min": 3});
+                serde_json::to_string(&d).unwrap()
+            },
+            vec![
+                "base.json",
+                "was written with --top or --min and is not a complete baseline",
+            ],
+        ),
+        (
+            "selection absent",
+            {
+                let mut d = handwritten_absolute();
+                d.as_object_mut().unwrap().remove("selection");
+                serde_json::to_string(&d).unwrap()
+            },
+            vec!["base.json", "selection"],
+        ),
+        (
+            "malformed JSON",
+            "{".to_owned(),
+            vec!["base.json", CRAPTS.baseline_hint],
+        ),
+    ];
+
+    // Given an otherwise complete lines baseline named base.json and a current lines run
+    for (label, content, needles) in cases {
+        let path = dir.path().join("base.json");
+        std::fs::write(&path, content).unwrap();
+        // When the caller loads base.json with <change>
+        let err = load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines)
+            .expect_err(&format!("expected admission failure: {label}"));
+        let msg = format!("{err:#}");
+        // Then load_crapts_baseline returns Err naming base.json and <diagnostic>
+        for needle in needles {
+            assert!(
+                msg.contains(needle),
+                "{label}: expected {needle:?} in {msg}"
+            );
+        }
+    }
+}
+
+#[test]
+fn admission_also_checks_the_structure_of_a_complete_baseline() {
+    let dir = tempfile::tempdir().unwrap();
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+
+    let cases: &[(&str, bool, &str, DocEdit)] = &[
+        ("removing diagnostics", false, "diagnostics", |d| {
+            d.as_object_mut().unwrap().remove("diagnostics");
+        }),
+        ("replacing entries with a string", false, "entries", |d| {
+            d["entries"] = json!("nope");
+        }),
+        (
+            "adding unknown outer field surplus",
+            false,
+            "surplus",
+            |d| {
+                d["surplus"] = json!(true);
+            },
+        ),
+        (
+            "adding unknown field surplus to a current row",
+            true,
+            "surplus",
+            |d| {
+                d["entries"][0]["surplus"] = json!(true);
+            },
+        ),
+        (
+            "setting fingerprint to 63 lowercase a's",
+            false,
+            "fingerprint",
+            |d| {
+                d["entries"][0]["fingerprint"] = json!("a".repeat(63));
+            },
+        ),
+        (
+            "setting fingerprint to 64 uppercase A's",
+            true,
+            "fingerprint",
+            |d| {
+                d["entries"][0]["fingerprint"] = json!("A".repeat(64));
+            },
+        ),
+        (
+            "removing removed while regression_gate exists",
+            true,
+            "removed",
+            |d| {
+                d.as_object_mut().unwrap().remove("removed");
+            },
+        ),
+        (
+            "assigning unknown to entries[0].status",
+            true,
+            "status",
+            |d| {
+                d["entries"][0]["status"] = json!("unknown");
+            },
+        ),
+    ];
+
+    for &(label, is_delta, defective_field, edit) in cases {
+        // Given a complete compatible <shape> report and a copy with <edit>
+        let orig = if is_delta {
+            handwritten_delta()
+        } else {
+            handwritten_absolute()
+        };
+        let schema = if is_delta { &delta_schema } else { &abs_schema };
+        let mut copy = orig.clone();
+        edit(&mut copy);
+
+        let orig_path = write_json(&dir, "orig.json", &orig);
+        let copy_path = write_json(&dir, "copy.json", &copy);
+
+        // When the offline schema validator and the public baseline reader each inspect both files
+        // Then each accepts the original and rejects the copy
+        assert!(schema.is_valid(&orig), "{label}: original must validate");
+        assert!(!schema.is_valid(&copy), "{label}: copy must fail schema");
+        assert!(
+            load_crapts_baseline(&orig_path, &CRAPTS, CoverageKind::Lines).is_ok(),
+            "{label}: original must load"
+        );
+        let err = load_crapts_baseline(&copy_path, &CRAPTS, CoverageKind::Lines)
+            .expect_err(&format!("{label}: copy must fail loader"));
+        // And the reader's error names the file and the defective field
+        let msg = format!("{err:#}");
+        assert!(msg.contains("copy.json"), "{label}: {msg}");
+        assert!(msg.contains(defective_field), "{label}: {msg}");
+    }
+}
+
+#[test]
+fn both_schemas_and_the_baseline_reader_enforce_semver() {
+    let dir = tempfile::tempdir().unwrap();
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+
+    // Given otherwise compatible unsliced absolute and delta reports at version "0.2.3-rc.1+build.7"
+    let mut abs_orig = handwritten_absolute();
+    abs_orig["version"] = json!("0.2.3-rc.1+build.7");
+    let mut delta_orig = handwritten_delta();
+    delta_orig["version"] = json!("0.2.3-rc.1+build.7");
+
+    for (name, orig, schema) in [
+        ("absolute", &abs_orig, &abs_schema),
+        ("delta", &delta_orig, &delta_schema),
+    ] {
+        let orig_path = write_json(&dir, &format!("{name}-orig.json"), orig);
+        assert!(schema.is_valid(orig), "{name} original must validate");
+        assert!(
+            load_crapts_baseline(&orig_path, &CRAPTS, CoverageKind::Lines).is_ok(),
+            "{name} original must load"
+        );
+
+        // When the caller replaces the top-level version with "<version>" in a copy of each
+        for bad_version in ["0.2", "0.02.3", "0.2.3-"] {
+            let mut copy = orig.clone();
+            copy["version"] = json!(bad_version);
+            let copy_path = write_json(&dir, &format!("{name}-bad.json"), &copy);
+            // Then each offline schema validator and the public loader reject its copy
+            assert!(
+                !schema.is_valid(&copy),
+                "{name} schema must reject {bad_version}"
+            );
+            let err = load_crapts_baseline(&copy_path, &CRAPTS, CoverageKind::Lines)
+                .expect_err(&format!("{name} loader must reject {bad_version}"));
+            // And the loader error names the file, version and the offending string
+            let msg = format!("{err:#}");
+            assert!(msg.contains(&format!("{name}-bad.json")), "{msg}");
+            assert!(msg.contains("version"), "{msg}");
+            assert!(msg.contains(bad_version), "{msg}");
+        }
     }
 }

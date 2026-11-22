@@ -1,7 +1,9 @@
 //! Prepare a baseline, select and render score rows, then return the verdict after flushing.
 
 use crate::coverage::CoverageKind;
-use crate::delta::{Baseline, DeltaCounts, attach_reasons, compare, gating_signal_count};
+use crate::delta::{
+    Baseline, CraptsBaseline, DeltaCounts, attach_reasons, compare, gating_signal_count,
+};
 use crate::duplicates::{
     compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, verdict::Assessment,
 };
@@ -49,24 +51,58 @@ impl<'a> BaselineFilter<'a> {
         &self,
         mut baseline: Baseline,
     ) -> PreparedBaseline {
-        baseline.entries.retain(|row| self.scope.keeps(&row.file));
-        filter::allow(&mut baseline.entries, self.allow);
+        self.filter_entries(&mut baseline.entries);
         if let Some(groups) = &mut baseline.duplicate_groups {
             for group in groups {
                 group.retain(|member| self.scope.keeps(&member.file));
             }
         }
-        PreparedBaseline(baseline)
+        PreparedBaseline {
+            baseline,
+            notice: None,
+        }
+    }
+
+    #[must_use]
+    pub fn prepare_crapts(
+        &self,
+        mut baseline: CraptsBaseline,
+    ) -> PreparedBaseline {
+        self.filter_entries(&mut baseline.entries);
+        PreparedBaseline {
+            baseline: Baseline {
+                entries: baseline.entries,
+                try_weight: DEFAULT_TRY_WEIGHT,
+                duplicate_groups: None,
+            },
+            notice: baseline.notice,
+        }
+    }
+
+    fn filter_entries(
+        &self,
+        entries: &mut Vec<CrapEntry>,
+    ) {
+        entries.retain(|row| self.scope.keeps(&row.file));
+        filter::allow(entries, self.allow);
     }
 }
 
 #[derive(Debug)]
-pub struct PreparedBaseline(Baseline);
+pub struct PreparedBaseline {
+    baseline: Baseline,
+    notice: Option<String>,
+}
 
 impl PreparedBaseline {
     #[must_use]
     pub fn as_baseline(&self) -> &Baseline {
-        &self.0
+        &self.baseline
+    }
+
+    #[must_use]
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
     }
 }
 
@@ -556,6 +592,61 @@ mod tests {
         assert_eq!(outcome(&[]).section_failures, 0);
         assert_eq!(outcome(&[&two, &none, &one]).section_failures, 3);
         assert!(!outcome(&[&two]).tripped);
+    }
+
+    #[test]
+    fn prepare_crapts_matches_prepare_filtering_and_preserves_notice() {
+        struct UnderSrc;
+        impl Scope for UnderSrc {
+            fn keeps(
+                &self,
+                file: &Path,
+            ) -> bool {
+                file.starts_with("src")
+            }
+        }
+        let sample = crate::report::test_support::sample().remove(0);
+        let rows = vec![
+            CrapEntry {
+                file: "src/keep.ts".into(),
+                function: "keep".into(),
+                ..sample.clone()
+            },
+            CrapEntry {
+                file: "src/skip.ts".into(),
+                function: "skip".into(),
+                ..sample.clone()
+            },
+            CrapEntry {
+                file: "other/out.ts".into(),
+                function: "out".into(),
+                ..sample
+            },
+        ];
+        let allow = AllowSet::compile(&["skip".into()]).unwrap();
+        let filter = BaselineFilter::new(&UnderSrc, &allow);
+        let prepared_plain = filter.prepare(Baseline {
+            entries: rows.clone(),
+            try_weight: DEFAULT_TRY_WEIGHT,
+            duplicate_groups: None,
+        });
+        let prepared_crapts = filter.prepare_crapts(CraptsBaseline {
+            entries: rows,
+            notice: Some("skip note".into()),
+        });
+        let names = |p: &PreparedBaseline| -> Vec<String> {
+            p.as_baseline()
+                .entries
+                .iter()
+                .map(|e| e.function.clone())
+                .collect()
+        };
+        assert_eq!(names(&prepared_crapts), names(&prepared_plain));
+        assert_eq!(names(&prepared_crapts), ["keep"]);
+        assert_eq!(prepared_crapts.as_baseline().try_weight, DEFAULT_TRY_WEIGHT);
+        assert!(prepared_crapts.as_baseline().duplicate_groups.is_none());
+        assert_eq!(prepared_plain.notice(), None);
+        assert_eq!(prepared_crapts.notice(), Some("skip note"));
     }
 
     #[test]
