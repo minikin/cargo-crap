@@ -9034,3 +9034,360 @@ fn top_and_min_narrow_the_section_but_not_the_gate() {
     // And the exit code is 1
     assert_eq!(out.status.code(), Some(1), "{out:?}");
 }
+
+// ── Spec 46: Tool branding value ─────────────────────────────────────────
+
+/// A tool whose every value differs from cargo-crap's and from one another.
+const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
+    name: "other-tool",
+    version: "7.7.7-other",
+    info_uri: "https://example.test/other-tool",
+    schemas: cargo_crap::report::Schemas {
+        report: "https://example.test/schemas/other-report.json",
+        delta: "https://example.test/schemas/other-delta.json",
+    },
+    comment_marker: "<!-- other-tool-marker -->",
+    baseline_hint: "other-tool --json",
+};
+
+/// Entries free of every branding string, one in `demo-crate` so the
+/// per-crate rollups render, and one above every threshold so the
+/// crappy-only formats render it.
+fn spec46_entries() -> Vec<cargo_crap::merge::CrapEntry> {
+    let entry =
+        |function: &str, crap: f64, crate_name: Option<&str>| cargo_crap::merge::CrapEntry {
+            file: PathBuf::from("src/demo.rs"),
+            function: function.into(),
+            line: 1,
+            cyclomatic: 10.0,
+            coverage: Some(0.0),
+            crap,
+            crate_name: crate_name.map(Into::into),
+            signals: None,
+            signal_spans: cargo_crap::signals::Spans::default(),
+            uncovered: Vec::new(),
+        };
+    let mut tidy = entry("tidy", 1.0, None);
+    tidy.line = 20;
+    tidy.cyclomatic = 1.0;
+    tidy.coverage = Some(100.0);
+    vec![entry("tangled", 110.0, Some("demo-crate")), tidy]
+}
+
+/// [`spec46_entries`] as a delta: `tangled` regressed from 100 to 110 and
+/// `tidy` is unchanged at 1.
+fn spec46_delta() -> cargo_crap::delta::DeltaReport {
+    use cargo_crap::delta::DeltaStatus;
+    cargo_crap::delta::DeltaReport {
+        entries: spec46_entries()
+            .into_iter()
+            .map(|current| {
+                let (delta, status) = if current.function == "tangled" {
+                    (10.0, DeltaStatus::Regressed)
+                } else {
+                    (0.0, DeltaStatus::Unchanged)
+                };
+                cargo_crap::delta::DeltaEntry {
+                    baseline_crap: Some(current.crap - delta),
+                    delta: Some(delta),
+                    status,
+                    baseline_signals: None,
+                    reasons: Vec::new(),
+                    previous_file: None,
+                    current,
+                }
+            })
+            .collect(),
+        removed: Vec::new(),
+    }
+}
+
+/// The absolute and the delta render of the spec 46 fixtures in `format`
+/// under `tool`.
+fn spec46_render(
+    tool: &cargo_crap::report::Tool,
+    format: cargo_crap::report::Format,
+) -> (String, String) {
+    let opts = cargo_crap::report::RenderOptions {
+        format,
+        ..cargo_crap::report::RenderOptions::new(tool)
+    };
+    let mut absolute = Vec::new();
+    cargo_crap::report::render(&spec46_entries(), &opts, &mut absolute).expect("renders");
+    let mut delta = Vec::new();
+    cargo_crap::report::render_delta(&spec46_delta(), &opts, &mut delta).expect("renders");
+    (
+        String::from_utf8(absolute).expect("utf-8"),
+        String::from_utf8(delta).expect("utf-8"),
+    )
+}
+
+// Spec 46 T1
+
+#[test]
+fn formats_without_branding_do_not_depend_on_the_tool() {
+    use cargo_crap::report::Format;
+    // Given the spec 46 entries and delta report
+    for format in [Format::Human, Format::GitHub, Format::Shields] {
+        // When they are rendered once with cargo-crap's Tool and once with
+        // the second tool
+        let cargo_crap = spec46_render(&cargo_crap::tool::CARGO_CRAP, format);
+        let second = spec46_render(&SECOND_TOOL, format);
+        // Then the two outputs are byte-identical
+        assert_eq!(cargo_crap, second, "{format:?}");
+    }
+}
+
+// Spec 46 T2
+
+#[test]
+fn the_json_report_carries_the_second_tools_version_and_schema() {
+    // Given entries rendered with the second tool
+    // When they are rendered as --format json
+    let (absolute, _) = spec46_render(&SECOND_TOOL, cargo_crap::report::Format::Json);
+    let doc: serde_json::Value = serde_json::from_str(&absolute).expect("JSON");
+    // Then the envelope's version is the second tool's
+    assert_eq!(doc["version"], "7.7.7-other");
+    // And its $schema is the second tool's report schema
+    assert_eq!(
+        doc["$schema"],
+        "https://example.test/schemas/other-report.json"
+    );
+}
+
+#[test]
+fn the_json_delta_carries_the_second_tools_version_and_schema() {
+    // Given a delta report rendered with the second tool
+    // When it is rendered as --format json
+    let (_, delta) = spec46_render(&SECOND_TOOL, cargo_crap::report::Format::Json);
+    let doc: serde_json::Value = serde_json::from_str(&delta).expect("JSON");
+    // Then the envelope's version is the second tool's
+    assert_eq!(doc["version"], "7.7.7-other");
+    // And its $schema is the second tool's delta schema
+    assert_eq!(
+        doc["$schema"],
+        "https://example.test/schemas/other-delta.json"
+    );
+}
+
+// Spec 46 T3
+
+#[test]
+fn sarif_names_the_second_tool_as_its_driver() {
+    // Given entries above the threshold rendered with the second tool
+    // When they are rendered as --format sarif
+    let opts = cargo_crap::report::RenderOptions {
+        format: cargo_crap::report::Format::Sarif,
+        ..cargo_crap::report::RenderOptions::new(&SECOND_TOOL)
+    };
+    let mut out = Vec::new();
+    cargo_crap::report::render(&spec46_entries(), &opts, &mut out).expect("renders");
+    let absolute = String::from_utf8(out).expect("utf-8");
+    let doc: serde_json::Value = serde_json::from_str(&absolute).expect("JSON");
+    let driver = &doc["runs"][0]["tool"]["driver"];
+    // Then the driver's name and version are the second tool's
+    assert_eq!(driver["name"], "other-tool");
+    assert_eq!(driver["version"], "7.7.7-other");
+    // And its informationUri and the rule's helpUri are the second tool's
+    assert_eq!(driver["informationUri"], "https://example.test/other-tool");
+    assert_eq!(
+        driver["rules"][0]["helpUri"],
+        "https://example.test/other-tool"
+    );
+}
+
+#[test]
+fn sarif_with_a_delta_report_is_refused_under_the_second_tool() {
+    // Given a delta report and render options carrying the second tool
+    let opts = cargo_crap::report::RenderOptions {
+        format: cargo_crap::report::Format::Sarif,
+        ..cargo_crap::report::RenderOptions::new(&SECOND_TOOL)
+    };
+    // When it is rendered as --format sarif
+    let mut out = Vec::new();
+    let err = cargo_crap::report::render_delta(&spec46_delta(), &opts, &mut out)
+        .expect_err("SARIF has no delta form");
+    // Then rendering fails with the refusal
+    assert_eq!(
+        err.to_string(),
+        "--format sarif is incompatible with --baseline; use --format json for delta output"
+    );
+    // And nothing is written
+    assert_eq!(out, [] as [u8; 0]);
+}
+
+// Spec 46 T4
+
+// The marker and version scenarios share one helper so both cover the
+// outline's four rows.
+fn spec46_marker_reports(
+    tool: &cargo_crap::report::Tool
+) -> Vec<(&'static str, &'static str, String)> {
+    use cargo_crap::report::Format;
+    let mut reports = Vec::new();
+    for (format, name) in [
+        (Format::Markdown, "markdown"),
+        (Format::PrComment, "pr-comment"),
+    ] {
+        let (absolute, delta) = spec46_render(tool, format);
+        reports.push(("entries", name, absolute));
+        reports.push(("a delta report", name, delta));
+    }
+    reports
+}
+
+#[test]
+fn the_markdown_and_pr_comment_reports_start_with_the_second_tools_marker() {
+    // Given each input of the outline rendered with the second tool
+    // When it is rendered in each format of the outline
+    for (input, format, output) in spec46_marker_reports(&SECOND_TOOL) {
+        let mut lines = output.lines();
+        // Then the first line is the second tool's marker
+        assert_eq!(
+            lines.next(),
+            Some("<!-- other-tool-marker -->"),
+            "{input} as {format}"
+        );
+        // And the second line is empty
+        assert_eq!(lines.next(), Some(""), "{input} as {format}");
+    }
+}
+
+#[test]
+fn the_markdown_and_pr_comment_reports_do_not_depend_on_the_tools_version() {
+    // Given the second tool and a copy of it whose version is "8.8.8-copy"
+    let copy = cargo_crap::report::Tool {
+        version: "8.8.8-copy",
+        ..SECOND_TOOL
+    };
+    // And each input of the outline rendered with each
+    // When both are rendered in each format of the outline
+    let (second, copied) = (
+        spec46_marker_reports(&SECOND_TOOL),
+        spec46_marker_reports(&copy),
+    );
+    // Then the two outputs are byte-identical
+    assert_eq!(second.len(), 4);
+    for (a, b) in second.iter().zip(&copied) {
+        assert_eq!(a, b, "{} as {}", a.0, a.1);
+    }
+}
+
+// Spec 46 T5
+
+#[test]
+fn a_baseline_that_does_not_parse_names_the_second_tools_hint() {
+    // Given a baseline file broken.json holding the text "not json"
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("broken.json");
+    fs::write(&path, "not json").expect("write");
+    let expected = format!(
+        "parsing baseline {} — must be JSON from `other-tool --json`",
+        path.display()
+    );
+    // When it is loaded with the second tool, through load_baseline and
+    // through load_baseline_with_weight
+    let plain = cargo_crap::delta::load_baseline(&path, &SECOND_TOOL);
+    let weighted = cargo_crap::delta::load_baseline_with_weight(&path, &SECOND_TOOL);
+    // Then both loads fail
+    let (plain, weighted) = (plain.expect_err("fails"), weighted.expect_err("fails"));
+    // And each error's first line names the path and the second tool's hint
+    assert_eq!(plain.to_string(), expected);
+    assert_eq!(weighted.to_string(), expected);
+}
+
+// Spec 46 T6
+
+#[test]
+fn no_cargo_crap_branding_reaches_a_second_tools_output() {
+    use cargo_crap::report::Format;
+    // Given entries and a delta report rendered with the second tool
+    let opts = |format| cargo_crap::report::RenderOptions {
+        format,
+        ..cargo_crap::report::RenderOptions::new(&SECOND_TOOL)
+    };
+    let all = [
+        Format::Human,
+        Format::Json,
+        Format::GitHub,
+        Format::Markdown,
+        Format::PrComment,
+        Format::Sarif,
+        Format::Shields,
+    ];
+    // When the entries are rendered in all seven formats and the delta
+    // report in every format but sarif
+    let mut outputs = Vec::new();
+    for format in all {
+        let mut out = Vec::new();
+        let rendered = cargo_crap::report::render(&spec46_entries(), &opts(format), &mut out);
+        // Then each of the thirteen renders succeeds
+        rendered.unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        outputs.push((format!("{format:?}"), out));
+        if !matches!(format, Format::Sarif) {
+            let mut out = Vec::new();
+            let rendered =
+                cargo_crap::report::render_delta(&spec46_delta(), &opts(format), &mut out);
+            rendered.unwrap_or_else(|e| panic!("{format:?} delta: {e}"));
+            outputs.push((format!("{format:?} delta"), out));
+        }
+    }
+    assert_eq!(outputs.len(), 13);
+    // The sections the default options leave out render too: duplicates,
+    // scope diagnostics, source links and uncovered hints.
+    let side = |name: &str, start_line| cargo_crap::duplicates::extract::Location {
+        file: PathBuf::from("src/demo.rs"),
+        start_line,
+        end_line: start_line + 9,
+        name: name.into(),
+    };
+    let pairs = [cargo_crap::duplicates::compare::DuplicatePair {
+        first: side("tangled", 1),
+        second: side("tidy", 20),
+        score: 0.9,
+    }];
+    let stray = || cargo_crap::merge::StrayFiles {
+        count: 0,
+        examples: Vec::new(),
+    };
+    let diagnostics = cargo_crap::merge::ScopeDiagnostics {
+        analyzed_files: 1,
+        lcov_files: 1,
+        matched_files: 1,
+        source_only: stray(),
+        lcov_only: stray(),
+    };
+    let links =
+        cargo_crap::report::SourceLinks::new("https://example.test/repo".into(), "abc123".into());
+    let mut entries = spec46_entries();
+    entries[0].uncovered = vec![cargo_crap::coverage::LineRange { start: 2, end: 3 }];
+    for format in all {
+        let rich = cargo_crap::report::RenderOptions {
+            duplicates: Some(&pairs),
+            diagnostics: Some(&diagnostics),
+            links: Some(&links),
+            uncovered_hints: true,
+            ..opts(format)
+        };
+        let mut out = Vec::new();
+        cargo_crap::report::render(&entries, &rich, &mut out).expect("renders");
+        cargo_crap::report::render_duplicates(&rich, &mut out).expect("renders");
+        outputs.push((format!("{format:?} with every section"), out));
+    }
+    let (_, markdown) = outputs
+        .iter()
+        .find(|(name, _)| name == "Markdown with every section")
+        .expect("rendered");
+    let markdown = String::from_utf8_lossy(markdown);
+    assert!(
+        markdown.contains("example.test/repo") && markdown.contains("0.90"),
+        "{markdown}"
+    );
+    // And no output contains "cargo-crap", "cargo crap" or "cargo_crap"
+    for (name, out) in &outputs {
+        let text = String::from_utf8_lossy(out);
+        for brand in ["cargo-crap", "cargo crap", "cargo_crap"] {
+            assert!(!text.contains(brand), "{name} contains {brand}:\n{text}");
+        }
+    }
+}

@@ -16,6 +16,7 @@
 //!
 //! Shared building blocks (severity grade, coverage bar, Δ formatting, source
 //! links, per-crate rollups) live in [`types`], [`links`], and [`per_crate`].
+//! [`RenderOptions`] carries the front end's [`Tool`].
 
 use crate::delta::{DeltaCounts, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
@@ -43,15 +44,17 @@ mod reasons;
 mod sarif;
 mod shields;
 mod summary;
+mod tool;
 mod types;
 
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 // Re-exports — the rest of the crate depends on these names being on `report`.
-pub use json::{DELTA_SCHEMA_URL, Envelope, REPORT_SCHEMA_URL, SCHEMA_VERSION};
+pub use json::Envelope;
 pub use links::SourceLinks;
 pub use summary::{render_delta_counts, render_delta_summary, render_summary};
+pub use tool::{Schemas, Tool};
 pub use types::{output_width, set_color_enabled};
 
 /// Output format for the report.
@@ -91,18 +94,31 @@ pub enum Format {
 /// Options shared by [`render`] and [`render_delta`], so their signatures
 /// survive new knobs without breaking every call site again.
 ///
-/// Construct with struct-update syntax over [`Default`]:
+/// Construct with struct-update syntax over [`RenderOptions::new`]:
 ///
 /// ```
-/// use cargo_crap::report::{Format, RenderOptions};
+/// use cargo_crap::report::{Format, RenderOptions, Schemas, Tool};
+/// const TOOL: Tool = Tool {
+///     name: "my-tool",
+///     version: "1.0.0",
+///     info_uri: "https://example.test/my-tool",
+///     schemas: Schemas {
+///         report: "https://example.test/report.json",
+///         delta: "https://example.test/delta.json",
+///     },
+///     comment_marker: "<!-- my-tool-report -->",
+///     baseline_hint: "my-tool --format json",
+/// };
 /// let opts = RenderOptions {
 ///     format: Format::Json,
-///     ..Default::default()
+///     ..RenderOptions::new(&TOOL)
 /// };
 /// # let _ = opts;
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct RenderOptions<'a> {
+    /// The front end whose name, version and URLs the reports carry.
+    pub tool: &'a Tool,
     /// CRAP score above which a function is flagged.
     pub threshold: f64,
     /// Output format to dispatch to.
@@ -189,6 +205,37 @@ pub struct TriagedBy<'a> {
 }
 
 impl<'a> RenderOptions<'a> {
+    /// Options for `tool` with the CLI defaults: threshold 30, human
+    /// format, no links, no diagnostics, changed-only delta rows, no
+    /// uncovered hints, no duplicates, the classical `?` weight, a capped
+    /// human table, no working directory, so paths show as given, no
+    /// triage provider, every pair reported on its own, and no group left
+    /// untriaged by a budget.
+    #[must_use]
+    pub fn new(tool: &'a Tool) -> Self {
+        Self {
+            tool,
+            threshold: crate::score::DEFAULT_THRESHOLD,
+            format: Format::Human,
+            links: None,
+            diagnostics: None,
+            show_unchanged: false,
+            uncovered_hints: false,
+            duplicates: None,
+            try_weight: crate::config::DEFAULT_TRY_WEIGHT,
+            triage: None,
+            sliced: false,
+            delta_counts: None,
+            width: None,
+            cwd: Path::new(""),
+            triaged_by: None,
+            groups: None,
+            novelty: None,
+            untriaged: 0,
+            workspace_root: None,
+        }
+    }
+
     /// The duplicates as groups, the one answer every duplicate section
     /// reads: `groups` when set, else each pair in `duplicates` as a group
     /// of two. `None` when neither is set: detection was not asked for.
@@ -219,37 +266,6 @@ impl<'a> RenderOptions<'a> {
     }
 }
 
-impl Default for RenderOptions<'_> {
-    /// CLI defaults: threshold 30, human format, no links, no
-    /// diagnostics, changed-only delta rows, no uncovered hints, no
-    /// duplicates, the classical `?` weight, a capped human table, no
-    /// working directory, so paths show as given, no triage provider,
-    /// every pair reported on its own, and no group left untriaged by a
-    /// budget.
-    fn default() -> Self {
-        Self {
-            threshold: crate::score::DEFAULT_THRESHOLD,
-            format: Format::Human,
-            links: None,
-            diagnostics: None,
-            show_unchanged: false,
-            uncovered_hints: false,
-            duplicates: None,
-            try_weight: crate::config::DEFAULT_TRY_WEIGHT,
-            triage: None,
-            sliced: false,
-            delta_counts: None,
-            width: None,
-            cwd: Path::new(""),
-            triaged_by: None,
-            groups: None,
-            novelty: None,
-            untriaged: 0,
-            workspace_root: None,
-        }
-    }
-}
-
 /// Render `entries` in the format requested by `opts` to `out`.
 ///
 /// For `Format::Human` we emit a table and a summary line. The summary uses
@@ -276,18 +292,9 @@ pub fn render(
             out,
         ),
         Format::GitHub => github::render_github(entries, threshold, opts.cwd, out),
-        Format::Markdown => {
-            markdown::render_markdown(&shown, threshold, opts.links, opts.uncovered_hints, out)
-        },
-        Format::PrComment => pr_comment::render_pr_comment(
-            &shown,
-            threshold,
-            opts.links,
-            opts.uncovered_hints,
-            opts.cwd,
-            out,
-        ),
-        Format::Sarif => sarif::render_sarif(&shown, threshold, out),
+        Format::Markdown => markdown::render_markdown(&shown, opts, out),
+        Format::PrComment => pr_comment::render_pr_comment(&shown, opts, out),
+        Format::Sarif => sarif::render_sarif(&shown, threshold, opts.tool, out),
         Format::Shields => shields::render_shields(entries, threshold, out),
     }
 }
@@ -318,24 +325,8 @@ pub fn render_delta(
         },
         Format::Human => human::render_delta_human(shown, opts, &counts, out),
         Format::GitHub => github::render_delta_github(report, threshold, opts.cwd, out),
-        Format::Markdown => markdown::render_delta_markdown(
-            shown,
-            threshold,
-            opts.links,
-            opts.show_unchanged,
-            opts.uncovered_hints,
-            &counts,
-            out,
-        ),
-        Format::PrComment => pr_comment::render_delta_pr_comment(
-            shown,
-            threshold,
-            opts.links,
-            opts.uncovered_hints,
-            &counts,
-            opts.cwd,
-            out,
-        ),
+        Format::Markdown => markdown::render_delta_markdown(shown, opts, &counts, out),
+        Format::PrComment => pr_comment::render_delta_pr_comment(shown, opts, &counts, out),
         // SARIF describes the *current* set of findings, not deltas. The
         // upstream consumers (GitHub Code Scanning, VS Code) don't model
         // baseline diffs, so combining `--baseline` with `--format sarif`
@@ -526,8 +517,11 @@ fn duplicate_table(
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR
 /// comment. Used by both [`markdown`] and [`pr_comment`] renderers.
-pub(crate) fn write_pr_comment_marker(out: &mut dyn Write) -> Result<()> {
-    writeln!(out, "<!-- cargo-crap-report -->")?;
+pub(crate) fn write_pr_comment_marker(
+    tool: &Tool,
+    out: &mut dyn Write,
+) -> Result<()> {
+    writeln!(out, "{}", tool.comment_marker)?;
     writeln!(out)?;
     Ok(())
 }
@@ -547,6 +541,320 @@ pub fn crappy_count(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn new_options_carry_the_tool_and_every_other_default() {
+        let opts = RenderOptions::new(&test_support::SECOND_TOOL);
+        assert_eq!(*opts.tool, test_support::SECOND_TOOL);
+        assert_eq!(opts.threshold, crate::score::DEFAULT_THRESHOLD);
+        assert!(matches!(opts.format, Format::Human));
+        assert!(opts.links.is_none());
+        assert!(opts.diagnostics.is_none());
+        assert!(!opts.show_unchanged);
+        assert!(!opts.uncovered_hints);
+        assert!(opts.duplicates.is_none());
+        assert_eq!(opts.try_weight, crate::config::DEFAULT_TRY_WEIGHT);
+        assert!(opts.triage.is_none());
+        assert!(!opts.sliced);
+        assert!(opts.delta_counts.is_none());
+        assert!(opts.width.is_none());
+        assert_eq!(opts.cwd, Path::new(""));
+        assert!(opts.triaged_by.is_none());
+        assert!(opts.groups.is_none());
+        assert!(opts.novelty.is_none());
+        assert_eq!(opts.untriaged, 0);
+        assert!(opts.workspace_root.is_none());
+    }
+
+    fn leaked(s: String) -> &'static str {
+        s.leak()
+    }
+
+    fn arb_tool() -> impl proptest::strategy::Strategy<Value = Tool> {
+        use proptest::strategy::Strategy;
+        proptest::collection::vec("[ -~]{1,24}", 7).prop_map(|v| {
+            let mut v = v.into_iter().map(leaked);
+            let mut next = || v.next().expect("seven values");
+            Tool {
+                name: next(),
+                version: next(),
+                info_uri: next(),
+                schemas: Schemas {
+                    report: next(),
+                    delta: next(),
+                },
+                comment_marker: next(),
+                baseline_hint: next(),
+            }
+        })
+    }
+
+    fn arb_entries() -> impl proptest::strategy::Strategy<Value = Vec<CrapEntry>> {
+        use proptest::strategy::Strategy;
+        proptest::collection::vec(
+            (
+                "[a-z_]{1,12}",
+                1u32..20,
+                proptest::option::of(0.0f64..=100.0),
+                0.0f64..200.0,
+                proptest::option::of("[a-z-]{1,8}"),
+            ),
+            0..5,
+        )
+        .prop_map(|rows| {
+            rows.into_iter()
+                .enumerate()
+                .map(|(i, (function, cc, coverage, crap, crate_name))| {
+                    let mut entry = test_support::sample().remove(0);
+                    entry.function = function;
+                    entry.line = i + 1;
+                    entry.cyclomatic = f64::from(cc);
+                    entry.coverage = coverage;
+                    entry.crap = crap;
+                    entry.crate_name = crate_name;
+                    entry
+                })
+                .collect()
+        })
+    }
+
+    /// How each current entry stood in the baseline: absent (new), or
+    /// shifted by a score that may be zero (unchanged) or either sign
+    /// (improved, regressed), in the same file or another one (moved).
+    fn arb_shifts() -> impl proptest::strategy::Strategy<Value = Vec<Option<(f64, bool)>>> {
+        proptest::collection::vec(
+            proptest::option::of((
+                proptest::prop_oneof![proptest::strategy::Just(0.0), -50.0f64..50.0],
+                proptest::bool::ANY,
+            )),
+            0..5,
+        )
+    }
+
+    /// A delta of `entries` against a baseline built from `shifts`, plus
+    /// `removed` functions only the baseline has, so every status a
+    /// renderer branches on can occur.
+    fn delta_of(
+        entries: &[CrapEntry],
+        shifts: &[Option<(f64, bool)>],
+        removed: usize,
+    ) -> DeltaReport {
+        let mut baseline: Vec<CrapEntry> = entries
+            .iter()
+            .zip(shifts)
+            .filter_map(|(entry, shift)| {
+                shift.map(|(s, moved)| CrapEntry {
+                    file: if moved {
+                        PathBuf::from("elsewhere.rs")
+                    } else {
+                        entry.file.clone()
+                    },
+                    crap: (entry.crap - s).max(0.0),
+                    ..entry.clone()
+                })
+            })
+            .collect();
+        baseline.extend((0..removed).map(|i| CrapEntry {
+            file: PathBuf::from("gone.rs"),
+            function: format!("gone_{i}"),
+            ..test_support::sample().remove(1)
+        }));
+        crate::delta::compute_delta(entries, &baseline, crate::delta::DEFAULT_EPSILON)
+    }
+
+    #[test]
+    fn the_generated_deltas_reach_every_status() {
+        use crate::delta::DeltaStatus;
+        let entries: Vec<CrapEntry> = ["new", "same", "worse", "better", "moved"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| CrapEntry {
+                function: name.into(),
+                line: i + 1,
+                crap: 40.0,
+                ..test_support::sample().remove(0)
+            })
+            .collect();
+        let shifts = [
+            None,
+            Some((0.0, false)),
+            Some((10.0, false)),
+            Some((-10.0, false)),
+            Some((0.0, true)),
+        ];
+        let delta = delta_of(&entries, &shifts, 1);
+        let statuses: Vec<DeltaStatus> = delta.entries.iter().map(|e| e.status).collect();
+        for status in [
+            DeltaStatus::New,
+            DeltaStatus::Unchanged,
+            DeltaStatus::Regressed,
+            DeltaStatus::Improved,
+            DeltaStatus::Moved,
+        ] {
+            assert!(statuses.contains(&status), "{status:?} in {statuses:?}");
+        }
+        assert_eq!(delta.removed.len(), 1);
+    }
+
+    fn rendered(
+        tool: &Tool,
+        format: Format,
+        entries: &[CrapEntry],
+        delta: &DeltaReport,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let opts = RenderOptions {
+            format,
+            show_unchanged: true,
+            ..RenderOptions::new(tool)
+        };
+        let mut absolute = Vec::new();
+        render(entries, &opts, &mut absolute).expect("renders");
+        let mut out = Vec::new();
+        render_delta(delta, &opts, &mut out).expect("renders");
+        (absolute, out)
+    }
+
+    proptest::proptest! {
+        /// The human, github and shields formats carry no branding, so
+        /// the tool they are given never changes a byte of them.
+        #[test]
+        fn formats_without_branding_do_not_depend_on_the_tool(
+            tool in arb_tool(),
+            entries in arb_entries(),
+            shifts in arb_shifts(),
+            removed in 0usize..3,
+        ) {
+            let delta = delta_of(&entries, &shifts, removed);
+            for format in [Format::Human, Format::GitHub, Format::Shields] {
+                proptest::prop_assert_eq!(
+                    rendered(&tool, format, &entries, &delta),
+                    rendered(&test_support::CARGO_CRAP_FIXTURE, format, &entries, &delta),
+                    "{:?}", format
+                );
+            }
+        }
+    }
+
+    // The marker and version checks share one helper so both cover the
+    // same four report paths.
+    fn marker_reports(tool: &Tool) -> Vec<String> {
+        let entries = test_support::sample();
+        let report = crate::delta::compute_delta(&entries, &entries, 0.01);
+        let mut reports = Vec::new();
+        for format in [Format::Markdown, Format::PrComment] {
+            let opts = RenderOptions {
+                format,
+                ..RenderOptions::new(tool)
+            };
+            let (mut absolute, mut delta) = (Vec::new(), Vec::new());
+            render(&entries, &opts, &mut absolute).expect("renders");
+            render_delta(&report, &opts, &mut delta).expect("renders");
+            reports.extend([absolute, delta].map(|b| String::from_utf8(b).expect("utf-8")));
+        }
+        reports
+    }
+
+    #[test]
+    fn the_marker_writing_reports_start_with_the_tools_marker() {
+        for report in marker_reports(&test_support::SECOND_TOOL) {
+            let mut lines = report.lines();
+            assert_eq!(lines.next(), Some("<!-- other-tool-marker -->"), "{report}");
+            assert_eq!(lines.next(), Some(""), "{report}");
+        }
+    }
+
+    #[test]
+    fn the_marker_writing_reports_do_not_depend_on_the_tools_version() {
+        let copy = Tool {
+            version: "8.8.8-copy",
+            ..test_support::SECOND_TOOL
+        };
+        assert_eq!(
+            marker_reports(&test_support::SECOND_TOOL),
+            marker_reports(&copy)
+        );
+    }
+
+    fn arb_distinct_tool() -> impl proptest::strategy::Strategy<Value = Tool> {
+        use proptest::strategy::Strategy;
+        arb_tool().prop_filter("seven distinct values", |t| {
+            let values = [
+                t.name,
+                t.version,
+                t.info_uri,
+                t.schemas.report,
+                t.schemas.delta,
+                t.comment_marker,
+                t.baseline_hint,
+            ];
+            values
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == values.len()
+        })
+    }
+
+    fn rendered_text(
+        tool: &Tool,
+        format: Format,
+        delta: bool,
+    ) -> String {
+        let entries = test_support::sample();
+        let opts = RenderOptions {
+            format,
+            ..RenderOptions::new(tool)
+        };
+        let mut out = Vec::new();
+        if delta {
+            let report = crate::delta::compute_delta(&entries, &entries, 0.01);
+            render_delta(&report, &opts, &mut out).expect("renders");
+        } else {
+            render(&entries, &opts, &mut out).expect("renders");
+        }
+        String::from_utf8(out).expect("utf-8")
+    }
+
+    fn json_of(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).expect("JSON")
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn every_branded_field_follows_any_tool(tool in arb_distinct_tool()) {
+            use proptest::prop_assert_eq;
+            let report = json_of(&rendered_text(&tool, Format::Json, false));
+            prop_assert_eq!(&report["version"], tool.version);
+            prop_assert_eq!(&report["$schema"], tool.schemas.report);
+            let delta = json_of(&rendered_text(&tool, Format::Json, true));
+            prop_assert_eq!(&delta["version"], tool.version);
+            prop_assert_eq!(&delta["$schema"], tool.schemas.delta);
+            let sarif = json_of(&rendered_text(&tool, Format::Sarif, false));
+            let driver = &sarif["runs"][0]["tool"]["driver"];
+            prop_assert_eq!(&driver["name"], tool.name);
+            prop_assert_eq!(&driver["version"], tool.version);
+            prop_assert_eq!(&driver["informationUri"], tool.info_uri);
+            prop_assert_eq!(&driver["rules"][0]["helpUri"], tool.info_uri);
+            for format in [Format::Markdown, Format::PrComment] {
+                for delta in [false, true] {
+                    let text = rendered_text(&tool, format, delta);
+                    prop_assert_eq!(text.lines().next(), Some(tool.comment_marker));
+                }
+            }
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("broken.json");
+            std::fs::write(&path, "not json").expect("write");
+            let err = crate::delta::load_baseline(&path, &tool).expect_err("does not parse");
+            prop_assert_eq!(
+                err.to_string(),
+                format!(
+                    "parsing baseline {} — must be JSON from `{}`",
+                    path.display(),
+                    tool.baseline_hint
+                )
+            );
+        }
+    }
 
     fn at(file: &str) -> CrapEntry {
         let mut entry = test_support::sample().remove(0);
@@ -578,7 +886,7 @@ mod tests {
         let with = |format| RenderOptions {
             format,
             workspace_root: Some(root),
-            ..RenderOptions::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let below = [
             Format::Human,
@@ -643,7 +951,7 @@ mod tests {
             format: Format::Json,
             workspace_root: Some(Path::new("/ws")),
             diagnostics: Some(&diagnostics),
-            ..RenderOptions::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let below = JsonBelowRoot::of(&opts);
         let shown = below.options(&opts).diagnostics.expect("diagnostics");
@@ -656,7 +964,10 @@ mod tests {
 
     #[test]
     fn render_options_default_to_no_workspace_root() {
-        assert_eq!(RenderOptions::default().workspace_root, None);
+        assert_eq!(
+            RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE).workspace_root,
+            None
+        );
     }
     use super::*;
     use crate::delta::{DeltaCounts, DeltaEntry, DeltaStatus};
@@ -688,16 +999,20 @@ mod tests {
             let grouped = RenderOptions {
                 duplicates: Some(&pairs),
                 groups: Some(&groups),
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             };
             assert_eq!(grouped.duplicate_groups().as_deref(), Some(&groups[..]));
             let paired = RenderOptions {
                 duplicates: Some(&pairs),
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             };
             let expected: Vec<DuplicateGroup> = pairs.iter().map(DuplicateGroup::of_pair).collect();
             assert_eq!(paired.duplicate_groups().as_deref(), Some(&expected[..]));
-            assert_eq!(RenderOptions::default().duplicate_groups(), None);
+            assert_eq!(
+                RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
+                    .duplicate_groups(),
+                None
+            );
         }
 
         #[test]
@@ -713,7 +1028,7 @@ mod tests {
                     duplicates: Some(&pairs),
                     groups: Some(&groups),
                     novelty: Some(&comparison),
-                    ..RenderOptions::default()
+                    ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
                 };
                 render_duplicates(&opts, &mut buf).unwrap();
                 String::from_utf8(buf).unwrap()
@@ -751,7 +1066,7 @@ mod tests {
                     format,
                     duplicates: Some(&pairs),
                     groups: Some(&[]),
-                    ..RenderOptions::default()
+                    ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
                 };
                 render_duplicates(&opts, &mut buf).unwrap();
                 String::from_utf8(buf).unwrap()
@@ -808,7 +1123,7 @@ mod tests {
                 duplicates: Some(&pairs),
                 groups: Some(&groups),
                 triage: Some(&triage),
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             };
             let by_pair = opts.pair_triage().expect("every pair covered");
             let expected = [sure(0.1), sure(0.1), sure(0.1), sure(0.2)].map(Some);
@@ -822,7 +1137,7 @@ mod tests {
             let opts = RenderOptions {
                 duplicates: Some(&pairs),
                 triage: Some(&triage),
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             };
             assert_eq!(opts.pair_triage().expect("as given").as_ref(), triage);
         }
@@ -836,7 +1151,7 @@ mod tests {
                 duplicates: Some(&pairs),
                 groups: Some(&groups),
                 triage: Some(&one),
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             };
             assert_eq!(short.pair_triage(), None, "one verdict, two groups");
             let stray = [pair(0, 1), pair(5, 6), pair(8, 9)];
@@ -845,13 +1160,13 @@ mod tests {
                 duplicates: Some(&stray),
                 groups: Some(&groups),
                 triage: Some(&two),
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             };
             assert_eq!(unmatched.pair_triage(), None, "a pair in no group");
             let untriaged = RenderOptions {
                 duplicates: Some(&pairs),
                 groups: Some(&groups),
-                ..RenderOptions::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             };
             assert_eq!(untriaged.pair_triage(), None);
         }
@@ -883,7 +1198,7 @@ mod tests {
                 unchanged: 3,
                 removed: 2,
             }),
-            ..RenderOptions::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         render_delta(&report, &opts, &mut buf).unwrap();
@@ -902,7 +1217,7 @@ mod tests {
         let opts = RenderOptions {
             format,
             delta_counts: Some(counts),
-            ..RenderOptions::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         render_delta(&report, &opts, &mut buf).unwrap();

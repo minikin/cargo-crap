@@ -69,7 +69,7 @@ fn options(
         format: Format::Human,
         uncovered_hints,
         width: Some(width),
-        ..RenderOptions::default()
+        ..RenderOptions::new(&cargo_crap::tool::CARGO_CRAP)
     }
 }
 

@@ -83,6 +83,7 @@ syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
                   ├── shields.rs          Shields.io endpoint badge
                   ├── duplicates.rs       Duplicate candidates section
                   ├── summary.rs          --summary aggregate
+                  ├── tool.rs             Tool: the branding a front end passes in
                   └── test_support.rs     shared fixtures (cfg(test))
 
 syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicates
@@ -116,6 +117,8 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 **`src/config.rs`** loads the optional `.cargo-crap.toml`. It walks up from CWD until the file is found and returns `Config::default()` if absent. `#[serde(deny_unknown_fields)]` catches typos. CLI flags always override config values.
 
 **`src/report/`** renders `Vec<CrapEntry>` or `DeltaReport` in seven formats: human (colored Unicode table), JSON (versioned envelope), GitHub Actions (`::warning` annotations), Markdown (exhaustive GFM table), pr-comment (opinionated PR-comment with capped sections + `<details>` blocks), SARIF 2.1.0, and Shields.io endpoint-badge JSON. The entry file `src/report.rs` is a thin dispatcher (`Format` enum, `render` / `render_delta` / `render_summary` / `render_delta_summary`); each format lives in a sibling submodule. Cross-cutting helpers (`Grade`, `coverage_bar`, `delta_display`) live in `report/types.rs`; optional GitHub source-link wrapping (`SourceLinks`, `linkify`) lives in `report/links.rs`; per-crate rollup tables (workspace mode) live in `report/per_crate.rs`. Each submodule owns its `#[cfg(test)] mod tests` block; shared fixtures (e.g. `sample()`) live in `report/test_support.rs`.
+
+**`src/tool.rs`** holds `CARGO_CRAP`, cargo-crap's `report::Tool`: the name, version, URLs, PR-comment marker and baseline hint its reports carry. It stays outside `src/report/` so `env!("CARGO_PKG_VERSION")` expands in cargo-crap's package once the report code moves into a shared core crate.
 
 **`src/duplicates/`** is a second, opt-in pass over the same AST (`--duplicates`). `extract` collects one `FunctionPrint` per non-test function, `normalize` erases identifiers, literal values and field/path names while keeping control flow, operators, receiver shape and statement order, `fingerprint` hashes every normalized subtree into a `BTreeSet<Fingerprint>` (FNV-1a, not `DefaultHasher`, because the fingerprints must be stable across processes), and `compare` scores every pair by Jaccard similarity. The pass is quadratic in the number of functions, which is why it is off by default; functions below `duplicates.min-nodes` (default 20) are dropped before comparison. It reuses the complexity pass's test filter, so the two analyses cannot disagree about what counts as source. Its `triage/` submodule (spec 30) asks a TypeSafe model three typed questions about each reported pair and annotates the human and JSON output. Triage is opt-in twice: the HTTP client is behind the `triage` Cargo feature (off by default), and the run needs `[duplicates.triage] enabled = true` plus `TYPESAFE_API_KEY`. Any failure degrades to the untriaged report. `just dev` and CI test both builds.
 

@@ -4,12 +4,41 @@
 //! respective tests; only fixtures used by *more than one* submodule end up
 //! here.
 
-use super::{Format, RenderOptions};
+use super::{Format, RenderOptions, Schemas, Tool};
 use crate::coverage::LineRange;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::duplicates::triage::verdict::Assessment;
 use crate::merge::CrapEntry;
 use std::path::PathBuf;
+
+/// cargo-crap's branding with a fixed version. The report tests use it in
+/// place of cargo-crap's own `Tool` value, which stays behind in the front
+/// end when the report moves into the core.
+pub(crate) const CARGO_CRAP_FIXTURE: Tool = Tool {
+    name: "cargo-crap",
+    version: "0.0.0-test",
+    info_uri: "https://github.com/minikin/cargo-crap",
+    schemas: Schemas {
+        report: "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/report-v1.json",
+        delta: "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/delta-v2.json",
+    },
+    comment_marker: "<!-- cargo-crap-report -->",
+    baseline_hint: "cargo crap --format json",
+};
+
+/// A tool whose every value differs from cargo-crap's and from one another,
+/// so a field read from the wrong place shows.
+pub(crate) const SECOND_TOOL: Tool = Tool {
+    name: "other-tool",
+    version: "7.7.7-other",
+    info_uri: "https://example.test/other-tool",
+    schemas: Schemas {
+        report: "https://example.test/schemas/other-report.json",
+        delta: "https://example.test/schemas/other-delta.json",
+    },
+    comment_marker: "<!-- other-tool-marker -->",
+    baseline_hint: "other-tool --json",
+};
 
 /// Shorthand for the common test shape: a threshold and a format, every
 /// other knob at its default. Sites needing links / diagnostics /
@@ -21,7 +50,7 @@ pub(crate) fn opts(
     RenderOptions {
         threshold,
         format,
-        ..Default::default()
+        ..RenderOptions::new(&CARGO_CRAP_FIXTURE)
     }
 }
 

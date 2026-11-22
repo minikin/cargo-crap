@@ -100,7 +100,7 @@ fn json_output_round_trips() {
     let mut buf = Vec::new();
     let opts = cargo_crap::report::RenderOptions {
         format: cargo_crap::report::Format::Json,
-        ..Default::default()
+        ..cargo_crap::report::RenderOptions::new(&cargo_crap::tool::CARGO_CRAP)
     };
     cargo_crap::report::render(&entries, &opts, &mut buf).expect("render");
 

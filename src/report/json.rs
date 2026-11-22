@@ -15,34 +15,6 @@ use crate::report::RenderOptions;
 use anyhow::Result;
 use std::io::Write;
 
-/// Schema/release version stamped onto every JSON envelope so consumers can
-/// detect breaking changes between releases. Mirrors the crate version.
-pub const SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Build the published HTTPS URL for a schema file in this repo.
-///
-/// `concat!` only takes literals, so the base URL is repeated by expansion
-/// rather than reference. Centralized here so a repo move or schema-version
-/// bump changes only this macro and the filename arguments below.
-macro_rules! schema_url {
-    ($file:literal) => {
-        concat!(
-            "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/",
-            $file
-        )
-    };
-}
-
-/// Stable HTTPS URL of the JSON Schema describing the absolute envelope shape.
-pub const REPORT_SCHEMA_URL: &str = schema_url!("report-v1.json");
-
-/// Stable HTTPS URL of the JSON Schema describing the delta envelope shape.
-///
-/// Bumped to `delta-v2.json` in spec 13: adds the `moved` status value and
-/// the optional `previous_file` field. Consumers reading v1 see one new
-/// enum value and one new optional field — strictly additive.
-pub const DELTA_SCHEMA_URL: &str = schema_url!("delta-v2.json");
-
 /// JSON wire format for `--format json` output and `--baseline` input.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Envelope {
@@ -364,8 +336,8 @@ pub(crate) fn render_json(
 ) -> Result<()> {
     let duplicate_groups = wire_groups(opts.groups, opts.triage);
     let envelope = Envelope {
-        schema: Some(REPORT_SCHEMA_URL.to_string()),
-        version: SCHEMA_VERSION.to_string(),
+        schema: Some(opts.tool.schemas.report.to_string()),
+        version: opts.tool.version.to_string(),
         entries: entries.to_vec(),
         diagnostics: opts.diagnostics.cloned(),
         duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
@@ -407,8 +379,8 @@ pub(crate) fn render_delta_json(
     serde_json::to_writer_pretty(
         &mut *out,
         &DeltaOutput {
-            schema: DELTA_SCHEMA_URL,
-            version: SCHEMA_VERSION,
+            schema: opts.tool.schemas.delta,
+            version: opts.tool.version,
             entries: &report.entries,
             removed: &report.removed,
             diagnostics: opts.diagnostics,
@@ -429,6 +401,41 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn second_tool_json(delta: bool) -> serde_json::Value {
+        let opts = RenderOptions {
+            format: Format::Json,
+            ..RenderOptions::new(&super::super::test_support::SECOND_TOOL)
+        };
+        let mut buf = Vec::new();
+        if delta {
+            let report = crate::delta::compute_delta(&sample(), &sample(), 0.01);
+            super::super::render_delta(&report, &opts, &mut buf).unwrap();
+        } else {
+            render(&sample(), &opts, &mut buf).unwrap();
+        }
+        serde_json::from_slice(&buf).unwrap()
+    }
+
+    #[test]
+    fn the_report_envelope_carries_the_tools_version_and_report_schema() {
+        let doc = second_tool_json(false);
+        assert_eq!(doc["version"], "7.7.7-other");
+        assert_eq!(
+            doc["$schema"],
+            "https://example.test/schemas/other-report.json"
+        );
+    }
+
+    #[test]
+    fn the_delta_envelope_carries_the_tools_version_and_delta_schema() {
+        let doc = second_tool_json(true);
+        assert_eq!(doc["version"], "7.7.7-other");
+        assert_eq!(
+            doc["$schema"],
+            "https://example.test/schemas/other-delta.json"
+        );
+    }
+
     #[test]
     fn json_output_is_envelope_with_version_and_entries() {
         let mut buf = Vec::new();
@@ -437,8 +444,8 @@ mod tests {
         assert!(parsed.is_object(), "JSON output must be an envelope object");
         assert_eq!(
             parsed["version"].as_str(),
-            Some(SCHEMA_VERSION),
-            "version field must equal SCHEMA_VERSION"
+            Some(super::super::test_support::CARGO_CRAP_FIXTURE.version),
+            "version field must equal the tool's version"
         );
         assert!(
             parsed["entries"].is_array(),
@@ -474,7 +481,7 @@ mod tests {
                 threshold: 30.0,
                 format: Format::Json,
                 diagnostics: Some(&diag),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -522,7 +529,7 @@ mod tests {
                 threshold: 30.0,
                 format: Format::Json,
                 links: Some(&links),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -538,7 +545,7 @@ mod tests {
         RenderOptions {
             format: Format::Json,
             try_weight,
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         }
     }
 
@@ -618,7 +625,7 @@ mod tests {
                 format: Format::Json,
                 duplicates: Some(pairs),
                 triage: triage.as_deref(),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -690,7 +697,7 @@ mod tests {
                 format: Format::Json,
                 duplicates: Some(&pairs),
                 triage: Some(&triage),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -761,7 +768,7 @@ mod tests {
             duplicates: Some(&pairs),
             groups: Some(&groups),
             triage: triage.as_deref(),
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         if delta {
@@ -824,7 +831,7 @@ mod tests {
                 groups: Some(&groups),
                 triage: Some(&triage),
                 untriaged,
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             };
             let (mut plain, mut delta) = (Vec::new(), Vec::new());
             render(&sample(), &opts, &mut plain).unwrap();
@@ -846,7 +853,7 @@ mod tests {
             format: Format::Json,
             duplicates: Some(&pairs),
             untriaged: 2,
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         render(&sample(), &opts, &mut buf).unwrap();
@@ -883,7 +890,7 @@ mod tests {
             duplicates: Some(&pairs),
             groups: Some(&groups),
             triage: Some(&triage),
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         render(&sample(), &opts, &mut buf).unwrap();
@@ -915,7 +922,7 @@ mod tests {
             duplicates: Some(&pairs),
             groups: Some(&groups),
             novelty: Some(&comparison),
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         if delta {
@@ -979,7 +986,7 @@ mod tests {
                 &RenderOptions {
                     format: Format::Json,
                     duplicates: Some(&pairs),
-                    ..Default::default()
+                    ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
                 },
                 &mut buf,
             )

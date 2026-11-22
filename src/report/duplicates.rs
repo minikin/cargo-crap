@@ -940,7 +940,7 @@ mod tests {
                 format: Format::Human,
                 duplicates: Some(&pairs),
                 triage: Some(&triage),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -963,7 +963,7 @@ mod tests {
             &RenderOptions {
                 format,
                 duplicates: Some(pairs),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -997,7 +997,7 @@ mod tests {
                 format: Format::Markdown,
                 duplicates: Some(&pairs),
                 cwd: Path::new("/work"),
-                ..Default::default()
+                ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
             },
             &mut buf,
         )
@@ -1226,7 +1226,7 @@ mod tests {
     fn at_work<'a>() -> crate::report::RenderOptions<'a> {
         crate::report::RenderOptions {
             cwd: Path::new("/work"),
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         }
     }
 
@@ -1267,7 +1267,7 @@ mod tests {
         let opts = RenderOptions {
             workspace_root: Some(Path::new("/ws")),
             cwd: Path::new("/ws/crates"),
-            ..RenderOptions::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         assert_eq!(
             location(&at("/ws/crates/a/src/lib.rs", 1, "f"), &opts),
@@ -1275,7 +1275,7 @@ mod tests {
         );
         let single = RenderOptions {
             cwd: Path::new("/ws/crates"),
-            ..RenderOptions::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         assert_eq!(
             location(&at("/ws/crates/a/src/lib.rs", 1, "f"), &single),
@@ -1603,7 +1603,7 @@ mod tests {
             links: Some(&links),
             duplicates: Some(&pairs),
             cwd: &root,
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         let mut buf = Vec::new();
         render_table(&opts, None, &mut buf).expect("a Vec writer cannot fail");
@@ -1721,7 +1721,7 @@ mod tests {
                     format,
                     duplicates: Some(&pairs),
                     triage: Some(&triage),
-                    ..Default::default()
+                    ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
                 },
                 &mut buf,
             )

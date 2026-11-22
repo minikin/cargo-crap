@@ -13,7 +13,7 @@ use super::types::{
     Grade, cc_display, delta_display, uncovered_cell_suffix, write_abs_gfm_header,
     write_delta_gfm_header,
 };
-use super::write_pr_comment_marker;
+use super::{RenderOptions, write_pr_comment_marker};
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaReport, DeltaStatus, RemovedEntry};
 use crate::merge::CrapEntry;
 use anyhow::Result;
@@ -457,14 +457,18 @@ fn write_pr_comment_removed_section(
 
 pub(crate) fn render_delta_pr_comment(
     report: &DeltaReport,
-    threshold: f64,
-    links: Option<&SourceLinks>,
-    uncovered_hints: bool,
+    opts: &RenderOptions,
     counts: &DeltaCounts,
-    cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
-    write_pr_comment_marker(out)?;
+    let RenderOptions {
+        threshold,
+        links,
+        uncovered_hints,
+        cwd,
+        ..
+    } = *opts;
+    write_pr_comment_marker(opts.tool, out)?;
     if counts.is_empty() {
         writeln!(out, "_No functions found._")?;
         return Ok(());
@@ -574,13 +578,17 @@ fn write_pr_comment_abs_table(
 
 pub(crate) fn render_pr_comment(
     entries: &[CrapEntry],
-    threshold: f64,
-    links: Option<&SourceLinks>,
-    uncovered_hints: bool,
-    cwd: &Path,
+    opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    write_pr_comment_marker(out)?;
+    let RenderOptions {
+        threshold,
+        links,
+        uncovered_hints,
+        cwd,
+        ..
+    } = *opts;
+    write_pr_comment_marker(opts.tool, out)?;
     if entries.is_empty() {
         writeln!(out, "_No functions found._")?;
         return Ok(());
@@ -600,6 +608,21 @@ mod tests {
     use super::super::test_support::opts;
     use super::super::{Format, RenderOptions, render};
     use super::*;
+
+    fn pr_opts<'a>(
+        links: Option<&'a SourceLinks>,
+        uncovered_hints: bool,
+        cwd: &'a Path,
+    ) -> RenderOptions<'a> {
+        RenderOptions {
+            threshold: 30.0,
+            format: Format::PrComment,
+            links,
+            uncovered_hints,
+            cwd,
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
+        }
+    }
 
     fn delta_entry(
         file: &str,
@@ -633,8 +656,13 @@ mod tests {
     fn render_delta_pr_to_string(report: &DeltaReport) -> String {
         let mut buf = Vec::new();
         let cwd = std::env::current_dir().expect("cwd");
-        render_delta_pr_comment(report, 30.0, None, false, &report.counts(), &cwd, &mut buf)
-            .unwrap();
+        render_delta_pr_comment(
+            report,
+            &pr_opts(None, false, &cwd),
+            &report.counts(),
+            &mut buf,
+        )
+        .unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -645,7 +673,13 @@ mod tests {
         let mut buf = Vec::new();
         let cwd = std::env::current_dir().expect("cwd");
         let counts = report.counts();
-        render_delta_pr_comment(report, 30.0, Some(links), false, &counts, &cwd, &mut buf).unwrap();
+        render_delta_pr_comment(
+            report,
+            &pr_opts(Some(links), false, &cwd),
+            &counts,
+            &mut buf,
+        )
+        .unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -1642,7 +1676,7 @@ mod tests {
         let opts = RenderOptions {
             format: Format::PrComment,
             links: Some(&links),
-            ..Default::default()
+            ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         };
         render(&entries, &opts, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
@@ -1659,7 +1693,7 @@ mod tests {
         // Kills: dropping the header suffix or cell suffix in the abs path.
         let entries = super::super::test_support::sample_with_uncovered();
         let mut buf = Vec::new();
-        render_pr_comment(&entries, 30.0, None, true, Path::new(""), &mut buf).unwrap();
+        render_pr_comment(&entries, &pr_opts(None, true, Path::new("")), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("| | CRAP | CC | Cov % | Function | Location | Uncovered |"),
@@ -1673,7 +1707,7 @@ mod tests {
         // Kills: inverting/hardcoding the uncovered_hints gate.
         let entries = super::super::test_support::sample_with_uncovered();
         let mut buf = Vec::new();
-        render_pr_comment(&entries, 30.0, None, false, Path::new(""), &mut buf).unwrap();
+        render_pr_comment(&entries, &pr_opts(None, false, Path::new("")), &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(!s.contains("Uncovered"), "no column when off:\n{s}");
         assert!(!s.contains("12–14"), "no cell when off:\n{s}");
@@ -1689,8 +1723,13 @@ mod tests {
         };
         let mut buf = Vec::new();
         let counts = report.counts();
-        render_delta_pr_comment(&report, 30.0, None, true, &counts, Path::new(""), &mut buf)
-            .unwrap();
+        render_delta_pr_comment(
+            &report,
+            &pr_opts(None, true, Path::new("")),
+            &counts,
+            &mut buf,
+        )
+        .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("| | CRAP | Δ | CC | Cov % | Function | Location | Uncovered |"),
