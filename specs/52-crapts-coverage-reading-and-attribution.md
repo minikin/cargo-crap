@@ -582,6 +582,197 @@ And no withdrawn key contributes an observation to a source
 
 ## Tasks
 
+Spec 52 builds after Spec 50 rebases onto Spec 49. Every task is one jj change and runs `RUSTUP_TOOLCHAIN=1.99.0 just dev` and `RUSTUP_TOOLCHAIN=1.99.0 just dev-mutants-diff` with `INSTA_UPDATE=no`.
+
+- [ ] **T1 - Add string-key path matching and UTF-16-ordered stray examples in cargo-crap-core.**
+  Add `paths::assign_by_key(cwd, sources, keys, policy)` in
+  `crates/cargo-crap-core/src/paths.rs` and `StrayFiles::from_raw_spellings`
+  in `crates/cargo-crap-core/src/entry.rs` (automatically re-exported through
+  `cargo_crap`). Convert backslashes to forward slashes for filesystem lookup,
+  resolve relative sources against `cwd` only for the real-path tier,
+  distinguish host-absolute from foreign-absolute keys, match case-sensitive
+  whole components preserving `..` and stripping initial drive prefixes, keep
+  foreign and relative groups distinct, retain independent spelling indices,
+  and apply the amended `TiePolicy::Unmatched` across all fitting sources.
+  In `StrayFiles::from_raw_spellings`, count distinct exact spellings, sort
+  by unsigned UTF-16 code units (proper prefix first), truncate to
+  `SCOPE_EXAMPLE_CAP`, and copy selected spellings verbatim into `examples`.
+  Scenarios: _Match whole path components across checkout and platform spellings_,
+  _An absolute alias resolves through the filesystem and a relative alias stays lexical_,
+  _A real-path group takes precedence over every lexical key_,
+  _Preserve a shared-key tie even when one source has better coverage_,
+  _Stray examples sort original strings before taking the first ten_,
+  _Diagnostics retain separator aliases and sort supplementary characters by UTF-16_,
+  _Generated paths preserve key ownership under reordering_.
+  Tests: unit tests in `paths.rs` (cross-platform checkout keys, drive and
+  UNC prefixes, `..` retention, case sensitivity, degenerate `./`, symlink
+  absolute vs relative alias, real-path precedence over lexical keys,
+  shared-key tie retention with canonical and longer alternatives) and in
+  `entry.rs` (`U+10000` vs `U+E000`, `a-b/c.ts` vs `a/b.ts`, separator
+  aliases `src/./a.ts` vs `src\a.ts`, dedup and cap at 10). Property test in
+  `paths.rs` permuting small trees of display paths and relative or
+  nonexistent absolute keys and verifying translated spellings, bindings,
+  tie memberships, and zero withdrawn-key bindings against an independent
+  exhaustive ownership search.
+- [ ] **T2 - Add StrictLcovFile and read_strict_lcov in cargo-crap-core.**
+  Add `StrictLcovFile` and `read_strict_lcov(text, label)` in
+  `crates/cargo-crap-core/src/coverage/lcov.rs` and re-export both in
+  `crates/cargo-crap-core/src/coverage/mod.rs` (and through `cargo_crap`).
+  Strip one terminal CR per physical line, preserve first-SF order, handle
+  only `SF:`, `DA:` (ASCII decimal digits and optional nonempty comma-free
+  checksum), and exact `end_of_record`, skip unrelated records, resume
+  counts across repeated `SF:` spellings, validate open `SF` before `DA`
+  syntax and numeric limits (`1..=2^53-1` lines, binary64 counts with ties
+  to even and per-addition rounding), and reject non-finite counts or totals
+  with `"line <line>: <reason>"` naming `label`. Keep `parse_lcov` and
+  `parse_lcov_with` unchanged.
+  Scenarios: _Resume strict LCOV counts across records and ignore unrelated records_,
+  _Strict LCOV errors identify the physical record_,
+  _Read strict LCOV at its numeric boundaries_.
+  Tests: unit tests in `lcov.rs` covering CRLF endings, EOF after `SF:`,
+  repeated `SF:` summation, ignored `TN:`/`FN:` records, every physical-record
+  error row, wide line numbers `4294967296` and `9007199254740991`, `2^64`
+  hits, and overflow on the second `10^308` record. Property test in
+  `lcov.rs` generating valid `SF`/`DA` records and permuting complete records
+  with equal per-line sums to check invariant keys and line counts.
+- [ ] **T3 - Pin cargo-crap-core in crapts, add Row::is_arrow, and guard the workspace.**
+  Add `cargo-crap-core = { path = "../cargo-crap-core", version = "=0.1.0" }`
+  (matching the root package pin) and `serde` / `serde_json` (without
+  `preserve_order`) in `crates/crapts/Cargo.toml` and update `Cargo.lock`.
+  Add `pub is_arrow: bool` to `crapts::Row` in `crates/crapts/src/analyze.rs`
+  (`true` for block and concise arrow functions, `false` for all other
+  scored units including ordinary function expressions) and update row
+  constructors and test literals. Extend `tests/workspace.rs` with
+  dependency-consumer checks for the locked core pin, disabled
+  `preserve_order`, and parser guards for core and both front ends.
+  Scenarios: _The analyzer identifies arrows independently of the binding name_,
+  _The crapts library uses the version of core pinned by the workspace_.
+  Tests: unit tests in `crates/crapts/src/analyze.rs` for concise arrow,
+  block arrow, ordinary function expression, class constructor, and class
+  methods/initializers verifying `name` and `is_arrow`. Acceptance tests in
+  `tests/workspace.rs` validating `cargo metadata --locked` edges and parser
+  isolation across `cargo-crap-core`, `cargo-crap`, and `crapts`.
+- [ ] **T4 - Implement Istanbul JSON parsing and validation in crapts::coverage.**
+  Needs: T3. Create `crates/crapts/src/coverage/istanbul.rs` and
+  `crates/crapts/src/coverage/mod.rs` and expose `pub mod coverage` from
+  `crates/crapts/src/lib.rs`. Define `Coverage`, `CoverageUnit`, and
+  `read_coverage(cwd, path)` supporting path resolution from `cwd`, lossy
+  UTF-8 decoding with single-BOM stripping, Unicode whitespace skipping, and
+  `{` JSON dispatch. Parse Istanbul `coverage-final.json` via a
+  document-order `serde_json` `RawValue` visitor (keeping `preserve_order`
+  disabled): check syntax over the full input first, resolve duplicate
+  members by replacing at first position, sort canonical array-index keys
+  `0..=4294967294` numerically before remaining keys in insertion order,
+  validate in exact order (`not an Istanbul coverage-final.json`, `missing or invalid hit map s`,
+  missing span per hit ID, then `invalid span`, `invalid start`, `invalid end`,
+  `invalid hit count`), convert numeric tokens to binary64 (ties to even,
+  signed `-0.0`, finite integral range checks), and normalize `-0.0` to `0.0`.
+  Scenarios: _Read Istanbul statement IDs, spans and hits from the top-level key_,
+  _Reject malformed Istanbul objects, endpoints and counts_,
+  _Duplicate JSON members take their final value at their first position_,
+  _Istanbul uses binary64 integers for positions and hits_.
+  Tests: unit tests in `istanbul.rs` exercising top-level keys vs ignored
+  inner `path`, null end columns, every malformed object/span/endpoint/hit
+  alteration and validation precedence, duplicate member replacement and
+  array-index vs string key order, and binary64 boundaries (`9007199254740993`,
+  `-0`, `1e300`, `1e400`).
+- [ ] **T5 - Complete crapts::coverage format detection, OS errors, and LCOV reading.**
+  Needs: T2, T4. Extend `crates/crapts/src/coverage/mod.rs` to detect LCOV
+  when leading Unicode whitespace does not reach `{` and any LF-delimited
+  line (before trimming) begins with `SF:`, dispatching to
+  `cargo_crap_core::coverage::read_strict_lcov` (`CoverageUnit::Lines`) and
+  mapping errors to `InputError` naming the resolved path. Map missing files
+  (`ENOENT`), directories (`EISDIR`), access denial (`EACCES`), malformed
+  JSON (`invalid JSON`), and non-matching payloads (`unrecognized coverage format`)
+  to `InputError` naming the resolved report path.
+  Scenarios: _Detect the coverage unit from the contents_,
+  _Identify an unreadable or unrecognized report_.
+  Tests: unit and integration tests in `crates/crapts/src/coverage/mod.rs`
+  covering UTF-8 BOM, U+0009..U+3000 and U+FEFF whitespace vs U+0085,
+  non-UTF-8 lossy `SF:` bytes, `ENOENT`, `EISDIR`, `EACCES` (enforced mode or
+  injected failing read when running with elevated file permissions),
+  truncated/non-object JSON, empty input, and leading-space or non-line-start `SF:`.
+- [ ] **T6 - Implement crapts::attribute binding, merging, diagnostics, warnings, and LCOV attribution.**
+  Needs: T1, T5. Create `crates/crapts/src/attribute.rs` and expose
+  `pub mod attribute` from `crates/crapts/src/lib.rs`. Implement
+  `AttributedRow`, `Attribution`, and `attribute(cwd, analyses, coverage, missing)`.
+  Bind distinct analyzed files with rows to original coverage keys via
+  `paths::assign_by_key` with `TiePolicy::Unmatched`. Build `ScopeDiagnostics`
+  before applying `missing` using `StrayFiles::from_raw_spellings`. Format
+  tie warnings (UTF-16-sorted source names, traversal-order keys, UTF-16-sorted
+  messages) followed by overlap warnings (only when both sides have files).
+  Merge LCOV counts per line across bound keys and merge Istanbul aliases by
+  complete span across distinct bound keys (keeping duplicate spans within a
+  single key). Attribute LCOV observations from distinct owned `statement_lines`
+  intersected with recorded `DA` lines, compute inclusive uncovered
+  `LineRange` values, apply `MissingCoveragePolicy::{Pessimistic, Optimistic, Skip}`
+  while distinguishing matched-empty files (`0%`, CRAP at `0%`, retained row),
+  and score via `cargo_crap_core::score::crap`.
+  Scenarios: _Match whole path components across checkout and platform spellings_,
+  _Preserve a shared-key tie even when one source has better coverage_,
+  _Merge the winning keys and count each original spelling_,
+  _Merge Istanbul aliases by complete span while preserving a single key's observations_,
+  _Scope diagnostics count analyzed files before missing rows are skipped_,
+  _Report overlap only when both inputs have files_,
+  _Return bounded examples and ordered warnings_,
+  _LCOV shares a line between owners and ignores lines without owned starts_,
+  _An owned LCOV line without a DA keeps the missed range open_,
+  _Distinguish an absent file from zero evidence in a matched file_,
+  _Reuse the same file analysis after skipping missing coverage_,
+  _A fractional coverage result uses the core's binary64 CRAP score_,
+  _Generated LCOV reports measure each owned line once_.
+  Tests: unit tests in `attribute.rs` for key binding, alias merging (LCOV
+  line sums and Istanbul complete-span vs intra-key duplicates), diagnostics
+  counts and cap/order, warning ordering, shared/unrecorded LCOV lines,
+  missing policies across reused borrowed `FileAnalysis`, and exact
+  `score::crap` fractional parity (`1.702331961591221`). Property test in
+  `attribute.rs` permuting complete LCOV records with equal per-line sums
+  and verifying denominators, numerators, and ascending uncovered ranges.
+- [ ] **T7 - Implement Istanbul region attribution, uncovered ranges, and arrow warning in crapts::attribute.**
+  Needs: T6. Extend `crates/crapts/src/attribute.rs` to attribute Istanbul
+  statement starts using an innermost `body_regions` interval sweep (start
+  inclusive, end exclusive, UTF-16 columns, full-width wide coordinates),
+  preserve duplicate-span observations within a single key, compute
+  inclusive per-owner uncovered `LineRange` runs across mixed lines, gaps,
+  multiline misses, and reverse input order, and emit the line-shaped
+  Istanbul producer warning once across the run (after path and overlap
+  warnings) when at least five eligible single-line arrows with owned
+  executable statement lines and body starts strictly after the earliest
+  line start all receive zero assigned statements.
+  Scenarios: _The six-line nested callback separates parent coverage from callback coverage_,
+  _Attribute Istanbul starts at UTF-16 body boundaries_,
+  _A constructor owns separate initializers around its written body_,
+  _Mixed lines and gaps produce inclusive uncovered ranges per owner_,
+  _Distinguish an absent file from zero evidence in a matched file_,
+  _Warn about line-shaped Istanbul statements once across the run_,
+  _The caller receives rows, the measured unit and diagnostics from one run_,
+  _Generated nested bodies assign each Istanbul observation to one owner_.
+  Tests: unit tests in `attribute.rs` for the six-line callback under both
+  formats, astral UTF-16 boundary (`U+1F600` at columns 37/38/39/42), class
+  constructor/initializers/static block, reverse-order mixed multiline and
+  gap ranges (`[2,6]` and `[10,10]` vs `[2,2]`), matched-empty vs unmapped
+  Istanbul rows, and all six line-shaped arrow threshold examples. Property
+  test in `attribute.rs` generating nested/disjoint body regions and labeled
+  starts (inside, at boundaries, and outside) across shuffled statement
+  orders and checking covered/total counts, total observation conservation,
+  and `[0, 100]` bounds against an independent innermost-region lookup.
+- [ ] **T8 - Add public crapts acceptance suite, verify core compatibility, and update CHANGELOG.**
+  Needs: T7. Add end-to-end source-to-result acceptance fixtures in
+  `crates/crapts/tests/` exercising real TypeScript files through Spec 50's
+  analyzer, `crapts::coverage::read_coverage`, and `crapts::attribute::attribute`
+  across both Istanbul and LCOV reports, symlink resolution, diagnostics,
+  warnings, and all missing policies. Add compatibility acceptance tests
+  verifying `TiePolicy::PerSource` vs `TiePolicy::Unmatched`, `parse_lcov`,
+  and `parse_lcov_with` (`Lenient` and `Strict`), and verify the Spec 44
+  `cargo-crap` goldens with `INSTA_UPDATE=no`. Record the Unreleased entry in
+  `CHANGELOG.md` from Implementation Notes.
+  Scenarios: _The caller receives rows, the measured unit and diagnostics from one run_,
+  _Both path policies and the original LCOV APIs remain callable_.
+  Tests: acceptance tests in `crates/crapts/tests/` for every public
+  library fixture and unit/diagnostics contract, `TiePolicy` and LCOV
+  compatibility tests, and full `just dev`, `just dev-mutants-diff`, and
+  Spec 44 golden runs with `INSTA_UPDATE=no`.
+
 ---
 
 ## Implementation Notes
