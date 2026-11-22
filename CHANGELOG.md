@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added original-string path matching, UTF-16-ordered stray-file examples and
+  strict LCOV reading to cargo-crap-core and its cargo-crap re-exports. The
+  crapts library now reads Istanbul and LCOV reports and returns scored rows,
+  observation counts and diagnostics. The new required `crapts::Row::is_arrow`
+  field identifies arrow functions. Set it in row literals and add it or `..` to
+  exhaustive patterns.
 - The language-neutral modules live in the new `cargo-crap-core` 0.1.0
   library, with their existing public items: `score`, `entry`, `paths`,
   `coverage`, `signals::{model, config}`,

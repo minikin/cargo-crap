@@ -6,8 +6,7 @@ use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
 
-const NESTED: &str =
-    "function outer() {\n  setup();\n  return () => {\n    if (ready) run();\n  };\n}";
+const NESTED: &str = include_str!("../../tests/fixtures/attribution/nested.ts");
 const ARROW: &str = "items.map(x => x + 1);";
 const WARNING: &str = "The coverage producer appears to write one statement per line. These callbacks will score 0% while their parents absorb the line.";
 
@@ -151,7 +150,7 @@ fn utf16_body_boundaries_are_half_open_and_ignore_statement_ends() {
 fn constructor_receives_disjoint_regions_around_its_written_body() {
     let files = [analysis(
         "c.ts",
-        "class C {\n  a = p ? q : r\n  static s = build(() => flag && ready)\n  constructor() { if (flag) go() }\n  b = xs.map(x => x ?? 0)\n  static { while (p) break }\n}",
+        include_str!("../../tests/fixtures/attribution/constructor.ts"),
     )];
     let file = starts(&[
         (2, 6, 1),
@@ -180,7 +179,7 @@ fn constructor_receives_disjoint_regions_around_its_written_body() {
 fn uncovered_ranges_use_only_the_owners_instrumented_start_lines() {
     let files = [analysis(
         "f.ts",
-        "function f() {\n  a(); b();\n  const g = () => {\n    work();\n  };\n  c();\n  d();\n\n\n  e();\n}",
+        include_str!("../../tests/fixtures/attribution/gaps.ts"),
     )];
     let mut points = [
         (2, 2, 5, Some(1), 0),

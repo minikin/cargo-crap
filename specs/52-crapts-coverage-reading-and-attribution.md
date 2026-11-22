@@ -756,7 +756,7 @@ Spec 52 builds after Spec 50 rebases onto Spec 49. Every task is one jj change a
   starts (inside, at boundaries, and outside) across shuffled statement
   orders and checking covered/total counts, total observation conservation,
   and `[0, 100]` bounds against an independent innermost-region lookup.
-- [ ] **T8 - Add public crapts acceptance suite, verify core compatibility, and update CHANGELOG.**
+- [x] **T8 - Add public crapts acceptance suite, verify core compatibility, and update CHANGELOG.**
   Needs: T7. Add end-to-end source-to-result acceptance fixtures in
   `crates/crapts/tests/` exercising real TypeScript files through Spec 50's
   analyzer, `crapts::coverage::read_coverage`, and `crapts::attribute::attribute`
