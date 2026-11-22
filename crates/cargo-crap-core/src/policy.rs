@@ -5,6 +5,7 @@ use crate::report::Format;
 pub enum EnvelopeKind {
     /// The report-v1 and delta-v2 schema family.
     CargoCrapV1,
+    /// The crapts report-v1 and delta-v1 schema family.
     CraptsV1,
 }
 

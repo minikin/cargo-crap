@@ -416,10 +416,27 @@ fn delta_rows_without_fingerprints(entries: &[DeltaEntry]) -> std::borrow::Cow<'
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub(crate) struct CraptsSelection {
     pub(crate) top: Option<usize>,
     pub(crate) min: Option<f64>,
+}
+
+impl CraptsSelection {
+    pub(crate) fn from_limits(
+        top: Option<usize>,
+        min: Option<f64>,
+    ) -> Result<Option<Self>> {
+        if top == Some(0) {
+            bail!("crapts JSON selection requires top >= 1, got 0");
+        }
+        if let Some(m) = min
+            && !m.is_finite()
+        {
+            bail!("crapts JSON selection requires a finite min, got {m}");
+        }
+        Ok((top.is_some() || min.is_some()).then_some(Self { top, min }))
+    }
 }
 
 pub(crate) struct CraptsJsonContext<'a> {
@@ -1442,5 +1459,36 @@ mod tests {
             normalize_crapts_path(Path::new("././src\\f.ts")),
             "src/f.ts"
         );
+    }
+
+    #[test]
+    fn crapts_selection_rejects_zero_top_and_non_finite_min() {
+        assert_eq!(CraptsSelection::from_limits(None, None).unwrap(), None);
+        assert_eq!(
+            CraptsSelection::from_limits(Some(1), None).unwrap(),
+            Some(CraptsSelection {
+                top: Some(1),
+                min: None,
+            })
+        );
+        assert_eq!(
+            CraptsSelection::from_limits(None, Some(10.0)).unwrap(),
+            Some(CraptsSelection {
+                top: None,
+                min: Some(10.0),
+            })
+        );
+        for (top, min) in [
+            (Some(0), None),
+            (Some(0), Some(10.0)),
+            (None, Some(f64::NAN)),
+            (None, Some(f64::INFINITY)),
+            (None, Some(f64::NEG_INFINITY)),
+        ] {
+            let err = CraptsSelection::from_limits(top, min)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("selection"), "{err}");
+        }
     }
 }

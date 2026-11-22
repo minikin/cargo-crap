@@ -398,11 +398,7 @@ fn write_crapts_json(
         coverage_kind.ok_or_else(|| anyhow::anyhow!("crapts JSON requires coverage_kind"))?;
     let diagnostics =
         diagnostics.ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
-    let selection =
-        (settings.top.is_some() || settings.min.is_some()).then_some(report::CraptsSelection {
-            top: settings.top,
-            min: settings.min,
-        });
+    let selection = report::CraptsSelection::from_limits(settings.top, settings.min)?;
     let ctx = report::CraptsJsonContext {
         tool,
         coverage_kind,
@@ -945,12 +941,61 @@ mod tests {
     }
 
     #[test]
-    fn text_notices_precede_human_and_markdown_bodies_and_stay_out_of_machine_formats() {
+    fn crapts_json_rejects_invalid_selection_before_writing() {
         let tool = crapts_test_tool();
         let allow = AllowSet::compile(&[]).unwrap();
         let signals = SignalSettings::default();
+        let base = Settings {
+            allow: &allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: crate::delta::DEFAULT_EPSILON,
+            signals: &signals,
+            fail_above: false,
+            fail_regression: false,
+            format: Format::Json,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: false,
+        };
+        for (min, top) in [(None, Some(0)), (Some(f64::NAN), None)] {
+            let mut out = Vec::new();
+            let err = run(
+                &tool,
+                &Settings { min, top, ..base },
+                Analysis {
+                    entries: Vec::new(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                None,
+                &[],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("selection") && out.is_empty(), "{err}");
+        }
+    }
+
+    #[test]
+    fn text_notices_precede_human_and_markdown_bodies_and_stay_out_of_machine_formats() {
+        let mut tool = crapts_test_tool();
+        tool.policy.summary_formats = &[Format::Human, Format::Markdown, Format::PrComment];
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
         let caller_notices = ["first note".to_owned()];
-        let render_with = |format: Format| {
+        let render_with = |format: Format, summary: bool| {
             let settings = Settings {
                 allow: &allow,
                 min: None,
@@ -962,7 +1007,7 @@ mod tests {
                 fail_above: false,
                 fail_regression: false,
                 format,
-                summary: false,
+                summary,
                 show_unchanged: false,
                 uncovered_hints: false,
                 width: None,
@@ -991,25 +1036,38 @@ mod tests {
             String::from_utf8(out).unwrap()
         };
 
-        let human = render_with(Format::Human);
-        assert!(human.starts_with("first note\n\n"), "{human}");
-        assert_eq!(human.matches("first note").count(), 1);
-
-        for format in [Format::Markdown, Format::PrComment] {
-            let md = render_with(format);
+        for summary in [false, true] {
+            let human = render_with(Format::Human, summary);
             assert!(
-                md.starts_with(&format!(
-                    "{}\n\n> **Note:** first note\n\n",
-                    tool.comment_marker
-                )),
-                "{format:?}: {md}"
+                human.starts_with("first note\n\n"),
+                "summary={summary}: {human}"
             );
-            assert_eq!(md.matches(tool.comment_marker).count(), 1, "{format:?}");
-            assert_eq!(md.matches("first note").count(), 1, "{format:?}");
+            assert_eq!(human.matches("first note").count(), 1);
+
+            for format in [Format::Markdown, Format::PrComment] {
+                let md = render_with(format, summary);
+                assert!(
+                    md.starts_with(&format!(
+                        "{}\n\n> **Note:** first note\n\n",
+                        tool.comment_marker
+                    )),
+                    "{format:?} summary={summary}: {md}"
+                );
+                assert_eq!(
+                    md.matches(tool.comment_marker).count(),
+                    1,
+                    "{format:?} summary={summary}"
+                );
+                assert_eq!(
+                    md.matches("first note").count(),
+                    1,
+                    "{format:?} summary={summary}"
+                );
+            }
         }
 
         for format in [Format::GitHub, Format::Sarif, Format::Shields] {
-            let out = render_with(format);
+            let out = render_with(format, false);
             assert!(!out.contains("first note"), "{format:?}: {out}");
         }
     }
