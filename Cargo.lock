@@ -435,6 +435,7 @@ dependencies = [
  "proptest",
  "regex-syntax",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

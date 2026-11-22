@@ -24,6 +24,7 @@ sha2.workspace = true
 globset.workspace = true
 proptest.workspace = true
 regex-syntax.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -64,6 +64,17 @@ pub struct InputError {
 }
 
 impl InputError {
+    pub(crate) fn at(
+        path: &Path,
+        message: impl fmt::Display,
+    ) -> Self {
+        Self {
+            path: path.to_owned(),
+            side: None,
+            message: message.to_string(),
+        }
+    }
+
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
