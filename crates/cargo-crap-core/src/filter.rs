@@ -125,6 +125,9 @@ pub(crate) fn slice_with_ties(
     Some(shown)
 }
 
+/// Callers must pass `entries` in descending CRAP order for [`TieOrder::Stable`],
+/// which takes the first `top` qualifying rows without re-sorting.
+/// [`TieOrder::FileFunctionLine`] re-sorts qualifying rows before taking `top`.
 fn slice_of_with_ties(
     entries: &[CrapEntry],
     min: Option<f64>,

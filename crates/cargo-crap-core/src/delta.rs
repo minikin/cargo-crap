@@ -22,6 +22,7 @@ use crate::report::Tool;
 use crate::signals::{Signal, SignalSettings, Signals};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use serde_json::value::RawValue;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -517,26 +518,28 @@ pub fn load_crapts_baseline(
 ) -> Result<CraptsBaseline> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading baseline {}", path.display()))?;
-    let value: serde_json::Value = serde_json::from_str(&raw).with_context(|| {
+    let _: Box<RawValue> = serde_json::from_str(&raw).with_context(|| {
         format!(
             "parsing baseline {}: expected JSON from `{}`",
             path.display(),
             tool.baseline_hint
         )
     })?;
-    parse_crapts_baseline(path, tool, current_kind, value)
+    parse_crapts_baseline(path, tool, current_kind, &raw)
 }
 
 fn parse_crapts_baseline(
     path: &Path,
     tool: &Tool,
     current_kind: CoverageKind,
-    value: serde_json::Value,
+    raw: &str,
 ) -> Result<CraptsBaseline> {
-    let Some(obj) = value.as_object() else {
+    if !raw.trim_ascii_start().starts_with('{') {
         bail!("baseline {}: expected a JSON object", path.display());
-    };
-    check_name_scheme(obj, path, tool)?;
+    }
+    let obj: HashMap<String, Box<RawValue>> = serde_json::from_str(raw)
+        .with_context(|| format!("baseline {}: expected a JSON object", path.display()))?;
+    check_name_scheme(&obj, path, tool)?;
     if !is_valid_semver(tool.version) {
         bail!(
             "tool {} has invalid version {:?} (expected valid SemVer)",
@@ -544,14 +547,15 @@ fn parse_crapts_baseline(
             tool.version
         );
     }
-    check_coverage_kind(obj, path, current_kind)?;
-    check_selection(obj, path)?;
-    let baseline_version = check_semver_field(obj.get("version"), path, "version")?;
+    check_coverage_kind(&obj, path, current_kind)?;
+    check_selection(&obj, path)?;
+    let baseline_version =
+        check_semver_field(obj.get("version").map(AsRef::as_ref), path, "version")?;
     let is_delta = obj.contains_key("regression_gate") || obj.contains_key("removed");
     let entries = if is_delta {
-        parse_crapts_delta_doc(path, value)?
+        parse_crapts_delta_doc(path, raw)?
     } else {
-        parse_crapts_absolute_doc(path, value)?
+        parse_crapts_absolute_doc(path, raw)?
     };
     let regression_gate_skipped = !same_major_minor(&baseline_version, tool.version);
     let notice = regression_gate_skipped.then(|| {
@@ -633,23 +637,105 @@ pub(crate) fn same_major_minor(
     major_minor(a) == major_minor(b)
 }
 
-fn is_draft07_nonneg_int(v: &serde_json::Value) -> bool {
-    v.as_f64().is_some_and(|f| f >= 0.0 && f.fract() == 0.0)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonNonNegInt {
+    Fits(u64),
+    Overflow,
 }
 
-fn draft07_pos_u64(v: &serde_json::Value) -> Option<u64> {
-    if let Some(n) = v.as_u64() {
-        return (n >= 1).then_some(n);
+fn parse_json_nonneg_int(raw: &RawValue) -> Option<JsonNonNegInt> {
+    let token = raw.get().trim_ascii();
+    let (neg, rest) = match token.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, token),
+    };
+    if !rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        return None;
     }
-    let f = v.as_f64()?;
-    // 2^64 is exact in f64; every integral f64 strictly below it fits u64.
-    let in_range = (1.0..18_446_744_073_709_551_616.0).contains(&f) && f.fract() == 0.0;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "range [1, 2^64) and fract == 0 guarantee an exact u64"
-    )]
-    in_range.then_some(f as u64)
+    let (mantissa, exp_str) = match rest.split_once(['e', 'E']) {
+        Some((m, e)) => (m, Some(e)),
+        None => (rest, None),
+    };
+    let (int_part, frac_part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let combined: String = int_part.chars().chain(frac_part.chars()).collect();
+    let trimmed_right = combined.trim_end_matches('0');
+    let sig = trimmed_right.trim_start_matches('0');
+    if sig.is_empty() {
+        return Some(JsonNonNegInt::Fits(0));
+    }
+    if neg {
+        return None;
+    }
+    let trailing_zeros = combined.len() - trimmed_right.len();
+    let base_scale = i128::try_from(trailing_zeros).ok()? - i128::try_from(frac_part.len()).ok()?;
+    let scale = match exp_str {
+        None => base_scale,
+        Some(e) => match e.parse::<i128>() {
+            Ok(exp) => base_scale.saturating_add(exp),
+            Err(_) if e.starts_with('-') => return None,
+            Err(_) => return Some(JsonNonNegInt::Overflow),
+        },
+    };
+    apply_decimal_scale(sig, scale)
+}
+
+fn apply_decimal_scale(
+    sig: &str,
+    scale: i128,
+) -> Option<JsonNonNegInt> {
+    if scale < 0 {
+        return None;
+    }
+    let Ok(mut val) = sig.parse::<u64>() else {
+        return Some(JsonNonNegInt::Overflow);
+    };
+    let Ok(zeros) = usize::try_from(scale) else {
+        return Some(JsonNonNegInt::Overflow);
+    };
+    for _ in 0..zeros {
+        let Some(next) = val.checked_mul(10) else {
+            return Some(JsonNonNegInt::Overflow);
+        };
+        val = next;
+    }
+    Some(JsonNonNegInt::Fits(val))
+}
+
+fn is_draft07_nonneg_int(v: &RawValue) -> bool {
+    parse_json_nonneg_int(v).is_some()
+}
+
+fn draft07_pos_u64(v: &RawValue) -> Option<u64> {
+    match parse_json_nonneg_int(v) {
+        Some(JsonNonNegInt::Fits(n)) if n >= 1 => Some(n),
+        _ => None,
+    }
+}
+
+fn raw_is_null(v: &RawValue) -> bool {
+    v.get().trim_ascii() == "null"
+}
+
+fn raw_is_object(v: &RawValue) -> bool {
+    v.get().trim_ascii_start().starts_with('{')
+}
+
+fn raw_str(v: &RawValue) -> Option<String> {
+    serde_json::from_str::<String>(v.get()).ok()
+}
+
+fn raw_f64(v: &RawValue) -> Option<f64> {
+    serde_json::from_str::<f64>(v.get())
+        .ok()
+        .filter(|n| n.is_finite())
+}
+
+fn raw_bool(v: &RawValue) -> Option<bool> {
+    serde_json::from_str::<bool>(v.get()).ok()
+}
+
+fn raw_array(v: &RawValue) -> Option<Vec<Box<RawValue>>> {
+    serde_json::from_str::<Vec<Box<RawValue>>>(v.get()).ok()
 }
 
 fn is_drive_rooted(s: &str) -> bool {
@@ -794,15 +880,16 @@ fn is_valid_fingerprint(s: &str) -> bool {
 }
 
 fn check_name_scheme(
-    obj: &serde_json::Map<String, serde_json::Value>,
+    obj: &HashMap<String, Box<RawValue>>,
     path: &Path,
     tool: &Tool,
 ) -> Result<()> {
     match obj.get("name_scheme") {
-        Some(v) if v.as_f64() == Some(1.0) => Ok(()),
+        Some(v) if parse_json_nonneg_int(v) == Some(JsonNonNegInt::Fits(1)) => Ok(()),
         Some(other) => bail!(
-            "baseline {} has unsupported name_scheme {other} (expected 1). Refresh the baseline with `{}`",
+            "baseline {} has unsupported name_scheme {} (expected 1). Refresh the baseline with `{}`",
             path.display(),
+            other.get().trim_ascii(),
             tool.baseline_hint
         ),
         None => bail!(
@@ -814,11 +901,11 @@ fn check_name_scheme(
 }
 
 fn check_coverage_kind(
-    obj: &serde_json::Map<String, serde_json::Value>,
+    obj: &HashMap<String, Box<RawValue>>,
     path: &Path,
     current_kind: CoverageKind,
 ) -> Result<()> {
-    let found = match obj.get("coverage_kind").and_then(serde_json::Value::as_str) {
+    let found = match obj.get("coverage_kind").and_then(|v| raw_str(v)).as_deref() {
         Some("statements") => CoverageKind::Statements,
         Some("lines") => CoverageKind::Lines,
         _ => bail!(
@@ -838,12 +925,12 @@ fn check_coverage_kind(
 }
 
 fn check_selection(
-    obj: &serde_json::Map<String, serde_json::Value>,
+    obj: &HashMap<String, Box<RawValue>>,
     path: &Path,
 ) -> Result<()> {
     match obj.get("selection") {
-        Some(serde_json::Value::Null) => Ok(()),
-        Some(serde_json::Value::Object(_)) => bail!(
+        Some(v) if raw_is_null(v) => Ok(()),
+        Some(v) if raw_is_object(v) => bail!(
             "baseline {} was written with --top or --min and is not a complete baseline",
             path.display()
         ),
@@ -859,174 +946,172 @@ fn check_selection(
 }
 
 fn check_semver_field(
-    value: Option<&serde_json::Value>,
+    value: Option<&RawValue>,
     path: &Path,
     field: &str,
 ) -> Result<String> {
-    let Some(version) = value.and_then(serde_json::Value::as_str) else {
+    let Some(version) = value.and_then(raw_str) else {
         bail!("baseline {}: invalid {field}", path.display());
     };
-    if !is_valid_semver(version) {
+    if !is_valid_semver(&version) {
         bail!(
             "baseline {}: invalid {field} {version:?} (expected valid SemVer)",
             path.display()
         );
     }
-    Ok(version.to_owned())
+    Ok(version)
 }
 
-// Preserves presence so explicit JSON null stays Some(Value::Null) rather than None.
-fn present_value<'de, D>(
-    deserializer: D
-) -> std::result::Result<Option<serde_json::Value>, D::Error>
+// Preserves presence so explicit JSON null stays Some(RawValue) rather than None.
+fn present_raw<'de, D>(deserializer: D) -> std::result::Result<Option<Box<RawValue>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
-fn decode_object<T: serde::de::DeserializeOwned>(
-    value: serde_json::Value,
+fn decode_raw_object<T: serde::de::DeserializeOwned>(
+    value: &RawValue,
     path: &Path,
     label: &str,
 ) -> Result<T> {
-    if !value.is_object() {
+    if !raw_is_object(value) {
         bail!(
             "baseline {}: invalid {label} (expected a JSON object)",
             path.display()
         );
     }
-    serde_json::from_value(value)
+    serde_json::from_str(value.get())
         .with_context(|| format!("baseline {}: invalid {label}", path.display()))
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsAbsolute {
-    #[serde(rename = "$schema", default, deserialize_with = "present_value")]
-    schema: Option<serde_json::Value>,
-    version: serde_json::Value,
-    name_scheme: serde_json::Value,
-    coverage_kind: serde_json::Value,
-    threshold: serde_json::Value,
-    selection: serde_json::Value,
-    notices: serde_json::Value,
-    summary: serde_json::Value,
-    entries: serde_json::Value,
-    #[serde(default, deserialize_with = "present_value")]
-    changed: Option<serde_json::Value>,
-    diagnostics: serde_json::Value,
+    #[serde(rename = "$schema", default, deserialize_with = "present_raw")]
+    schema: Option<Box<RawValue>>,
+    version: Box<RawValue>,
+    name_scheme: Box<RawValue>,
+    coverage_kind: Box<RawValue>,
+    threshold: Box<RawValue>,
+    selection: Box<RawValue>,
+    notices: Box<RawValue>,
+    summary: Box<RawValue>,
+    entries: Box<RawValue>,
+    #[serde(default, deserialize_with = "present_raw")]
+    changed: Option<Box<RawValue>>,
+    diagnostics: Box<RawValue>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsDelta {
-    #[serde(rename = "$schema", default, deserialize_with = "present_value")]
-    schema: Option<serde_json::Value>,
-    version: serde_json::Value,
-    name_scheme: serde_json::Value,
-    coverage_kind: serde_json::Value,
-    threshold: serde_json::Value,
-    selection: serde_json::Value,
-    regression_gate: serde_json::Value,
-    notices: serde_json::Value,
-    summary: serde_json::Value,
-    entries: serde_json::Value,
-    removed: serde_json::Value,
-    #[serde(default, deserialize_with = "present_value")]
-    changed: Option<serde_json::Value>,
-    diagnostics: serde_json::Value,
+    #[serde(rename = "$schema", default, deserialize_with = "present_raw")]
+    schema: Option<Box<RawValue>>,
+    version: Box<RawValue>,
+    name_scheme: Box<RawValue>,
+    coverage_kind: Box<RawValue>,
+    threshold: Box<RawValue>,
+    selection: Box<RawValue>,
+    regression_gate: Box<RawValue>,
+    notices: Box<RawValue>,
+    summary: Box<RawValue>,
+    entries: Box<RawValue>,
+    removed: Box<RawValue>,
+    #[serde(default, deserialize_with = "present_raw")]
+    changed: Option<Box<RawValue>>,
+    diagnostics: Box<RawValue>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsDiagnostics {
-    analyzed_files: serde_json::Value,
-    coverage_files: serde_json::Value,
-    matched_files: serde_json::Value,
-    source_only: serde_json::Value,
-    coverage_only: serde_json::Value,
+    analyzed_files: Box<RawValue>,
+    coverage_files: Box<RawValue>,
+    matched_files: Box<RawValue>,
+    source_only: Box<RawValue>,
+    coverage_only: Box<RawValue>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsStray {
-    count: serde_json::Value,
-    examples: serde_json::Value,
+    count: Box<RawValue>,
+    examples: Box<RawValue>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsSummary {
-    total: serde_json::Value,
-    crappy: serde_json::Value,
-    regressed: serde_json::Value,
-    improved: serde_json::Value,
-    new: serde_json::Value,
-    moved: serde_json::Value,
-    unchanged: serde_json::Value,
-    removed: serde_json::Value,
-    changed_failures: serde_json::Value,
+    total: Box<RawValue>,
+    crappy: Box<RawValue>,
+    regressed: Box<RawValue>,
+    improved: Box<RawValue>,
+    new: Box<RawValue>,
+    moved: Box<RawValue>,
+    unchanged: Box<RawValue>,
+    removed: Box<RawValue>,
+    changed_failures: Box<RawValue>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRegressionGate {
-    skipped: serde_json::Value,
-    baseline_version: serde_json::Value,
-    version: serde_json::Value,
+    skipped: Box<RawValue>,
+    baseline_version: Box<RawValue>,
+    version: Box<RawValue>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsRemoved {
-    file: serde_json::Value,
-    function: serde_json::Value,
-    baseline_crap: serde_json::Value,
+    file: Box<RawValue>,
+    function: Box<RawValue>,
+    baseline_crap: Box<RawValue>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawLineRange {
-    start: serde_json::Value,
-    end: serde_json::Value,
+    start: Box<RawValue>,
+    end: Box<RawValue>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsEntry {
-    file: serde_json::Value,
-    function: serde_json::Value,
-    line: serde_json::Value,
-    cyclomatic: serde_json::Value,
-    coverage: serde_json::Value,
-    crap: serde_json::Value,
-    #[serde(default, deserialize_with = "present_value")]
-    uncovered: Option<serde_json::Value>,
-    #[serde(default, deserialize_with = "present_value")]
-    fingerprint: Option<serde_json::Value>,
+    file: Box<RawValue>,
+    function: Box<RawValue>,
+    line: Box<RawValue>,
+    cyclomatic: Box<RawValue>,
+    coverage: Box<RawValue>,
+    crap: Box<RawValue>,
+    #[serde(default, deserialize_with = "present_raw")]
+    uncovered: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    fingerprint: Option<Box<RawValue>>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsDeltaEntry {
-    file: serde_json::Value,
-    function: serde_json::Value,
-    line: serde_json::Value,
-    cyclomatic: serde_json::Value,
-    coverage: serde_json::Value,
-    crap: serde_json::Value,
-    #[serde(default, deserialize_with = "present_value")]
-    uncovered: Option<serde_json::Value>,
-    #[serde(default, deserialize_with = "present_value")]
-    fingerprint: Option<serde_json::Value>,
-    baseline_crap: serde_json::Value,
-    delta: serde_json::Value,
-    status: serde_json::Value,
-    #[serde(default, deserialize_with = "present_value")]
-    previous_file: Option<serde_json::Value>,
-    #[serde(default, deserialize_with = "present_value")]
-    reasons: Option<serde_json::Value>,
+    file: Box<RawValue>,
+    function: Box<RawValue>,
+    line: Box<RawValue>,
+    cyclomatic: Box<RawValue>,
+    coverage: Box<RawValue>,
+    crap: Box<RawValue>,
+    #[serde(default, deserialize_with = "present_raw")]
+    uncovered: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    fingerprint: Option<Box<RawValue>>,
+    baseline_crap: Box<RawValue>,
+    delta: Box<RawValue>,
+    status: Box<RawValue>,
+    #[serde(default, deserialize_with = "present_raw")]
+    previous_file: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    reasons: Option<Box<RawValue>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1056,31 +1141,31 @@ enum RawReasonAction {
 #[serde(deny_unknown_fields)]
 struct RawCraptsReason {
     signal: RawReasonSignal,
-    value: serde_json::Value,
-    #[serde(default, deserialize_with = "present_value")]
-    baseline: Option<serde_json::Value>,
-    #[serde(default, deserialize_with = "present_value")]
-    limit: Option<serde_json::Value>,
+    value: Box<RawValue>,
+    #[serde(default, deserialize_with = "present_raw")]
+    baseline: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    limit: Option<Box<RawValue>>,
     gating: bool,
     action: RawReasonAction,
-    spans: serde_json::Value,
+    spans: Box<RawValue>,
 }
 
 struct CommonOuter {
-    schema: Option<serde_json::Value>,
-    threshold: serde_json::Value,
-    notices: serde_json::Value,
-    summary: serde_json::Value,
-    changed: Option<serde_json::Value>,
-    diagnostics: serde_json::Value,
+    schema: Option<Box<RawValue>>,
+    threshold: Box<RawValue>,
+    notices: Box<RawValue>,
+    summary: Box<RawValue>,
+    changed: Option<Box<RawValue>>,
+    diagnostics: Box<RawValue>,
 }
 
 fn parse_crapts_absolute_doc(
     path: &Path,
-    value: serde_json::Value,
+    raw_doc: &str,
 ) -> Result<Vec<CrapEntry>> {
     let raw: RawCraptsAbsolute =
-        serde_json::from_value(value).with_context(|| format!("baseline {}", path.display()))?;
+        serde_json::from_str(raw_doc).with_context(|| format!("baseline {}", path.display()))?;
     let _ = (
         &raw.version,
         &raw.name_scheme,
@@ -1099,23 +1184,23 @@ fn parse_crapts_absolute_doc(
         },
         false,
     )?;
-    parse_crapts_entries(path, raw.entries, false)
+    parse_crapts_entries(path, &raw.entries, false)
 }
 
 fn parse_crapts_delta_doc(
     path: &Path,
-    value: serde_json::Value,
+    raw_doc: &str,
 ) -> Result<Vec<CrapEntry>> {
     let raw: RawCraptsDelta =
-        serde_json::from_value(value).with_context(|| format!("baseline {}", path.display()))?;
+        serde_json::from_str(raw_doc).with_context(|| format!("baseline {}", path.display()))?;
     let _ = (
         &raw.version,
         &raw.name_scheme,
         &raw.coverage_kind,
         &raw.selection,
     );
-    validate_regression_gate(path, raw.regression_gate)?;
-    validate_removed(path, raw.removed)?;
+    validate_regression_gate(path, &raw.regression_gate)?;
+    validate_removed(path, &raw.removed)?;
     validate_common_outer(
         path,
         CommonOuter {
@@ -1128,7 +1213,7 @@ fn parse_crapts_delta_doc(
         },
         true,
     )?;
-    parse_crapts_entries(path, raw.entries, true)
+    parse_crapts_entries(path, &raw.entries, true)
 }
 
 fn validate_common_outer(
@@ -1137,42 +1222,42 @@ fn validate_common_outer(
     is_delta: bool,
 ) -> Result<()> {
     if let Some(schema) = outer.schema
-        && !schema.as_str().is_some_and(is_valid_uri)
+        && !raw_str(&schema).is_some_and(|s| is_valid_uri(&s))
     {
         bail!("baseline {}: invalid $schema", path.display());
     }
     ensure_finite_min(&outer.threshold, 0.0, path, "threshold")?;
-    let _: Vec<String> = serde_json::from_value(outer.notices)
+    let _: Vec<String> = serde_json::from_str(outer.notices.get())
         .with_context(|| format!("baseline {}: invalid notices", path.display()))?;
     if let Some(changed) = outer.changed
-        && !changed.is_object()
+        && !raw_is_object(&changed)
     {
         bail!("baseline {}: invalid changed", path.display());
     }
-    validate_crapts_summary(path, outer.summary, is_delta)?;
-    validate_crapts_diagnostics(path, outer.diagnostics)
+    validate_crapts_summary(path, &outer.summary, is_delta)?;
+    validate_crapts_diagnostics(path, &outer.diagnostics)
 }
 
 fn validate_crapts_diagnostics(
     path: &Path,
-    v: serde_json::Value,
+    v: &RawValue,
 ) -> Result<()> {
-    let d: RawCraptsDiagnostics = decode_object(v, path, "diagnostics")?;
+    let d: RawCraptsDiagnostics = decode_raw_object(v, path, "diagnostics")?;
     require_nonneg_int(&d.analyzed_files, path, "diagnostics.analyzed_files")?;
     require_nonneg_int(&d.coverage_files, path, "diagnostics.coverage_files")?;
     require_nonneg_int(&d.matched_files, path, "diagnostics.matched_files")?;
-    validate_crapts_stray(path, "diagnostics.source_only", d.source_only)?;
-    validate_crapts_stray(path, "diagnostics.coverage_only", d.coverage_only)
+    validate_crapts_stray(path, "diagnostics.source_only", &d.source_only)?;
+    validate_crapts_stray(path, "diagnostics.coverage_only", &d.coverage_only)
 }
 
 fn validate_crapts_stray(
     path: &Path,
     field: &str,
-    v: serde_json::Value,
+    v: &RawValue,
 ) -> Result<()> {
-    let s: RawCraptsStray = decode_object(v, path, field)?;
+    let s: RawCraptsStray = decode_raw_object(v, path, field)?;
     require_nonneg_int(&s.count, path, field)?;
-    let examples: Vec<String> = serde_json::from_value(s.examples)
+    let examples: Vec<String> = serde_json::from_str(s.examples.get())
         .with_context(|| format!("baseline {}: invalid {field}.examples", path.display()))?;
     if examples.len() > SCOPE_EXAMPLE_CAP {
         bail!(
@@ -1185,13 +1270,13 @@ fn validate_crapts_stray(
 
 fn validate_crapts_summary(
     path: &Path,
-    v: serde_json::Value,
+    v: &RawValue,
     is_delta: bool,
 ) -> Result<()> {
-    let s: RawCraptsSummary = decode_object(v, path, "summary")?;
+    let s: RawCraptsSummary = decode_raw_object(v, path, "summary")?;
     require_nonneg_int(&s.total, path, "summary.total")?;
     require_nonneg_int(&s.crappy, path, "summary.crappy")?;
-    if !s.changed_failures.is_null() {
+    if !raw_is_null(&s.changed_failures) {
         require_nonneg_int(&s.changed_failures, path, "summary.changed_failures")?;
     }
     for (name, val) in [
@@ -1204,7 +1289,7 @@ fn validate_crapts_summary(
     ] {
         if is_delta {
             require_nonneg_int(val, path, name)?;
-        } else if !val.is_null() {
+        } else if !raw_is_null(val) {
             bail!(
                 "baseline {}: {name} must be null in an absolute report",
                 path.display()
@@ -1216,40 +1301,40 @@ fn validate_crapts_summary(
 
 fn validate_regression_gate(
     path: &Path,
-    v: serde_json::Value,
+    v: &RawValue,
 ) -> Result<()> {
-    let g: RawRegressionGate = decode_object(v, path, "regression_gate")?;
-    if !g.skipped.is_boolean() {
+    let g: RawRegressionGate = decode_raw_object(v, path, "regression_gate")?;
+    if raw_bool(&g.skipped).is_none() {
         bail!(
             "baseline {}: invalid regression_gate.skipped",
             path.display()
         );
     }
     check_semver_field(
-        Some(&g.baseline_version),
+        Some(g.baseline_version.as_ref()),
         path,
         "regression_gate.baseline_version",
     )?;
-    check_semver_field(Some(&g.version), path, "regression_gate.version")?;
+    check_semver_field(Some(g.version.as_ref()), path, "regression_gate.version")?;
     Ok(())
 }
 
 fn validate_removed(
     path: &Path,
-    v: serde_json::Value,
+    v: &RawValue,
 ) -> Result<()> {
-    let serde_json::Value::Array(items) = v else {
+    let Some(items) = raw_array(v) else {
         bail!(
             "baseline {}: invalid removed (expected an array)",
             path.display()
         );
     };
     for raw in items {
-        let item: RawCraptsRemoved = decode_object(raw, path, "removed")?;
-        if item.file.as_str().is_none_or(str::is_empty) {
+        let item: RawCraptsRemoved = decode_raw_object(&raw, path, "removed")?;
+        if raw_str(&item.file).as_deref().is_none_or(str::is_empty) {
             bail!("baseline {}: invalid removed.file", path.display());
         }
-        if item.function.as_str().is_none_or(str::is_empty) {
+        if raw_str(&item.function).as_deref().is_none_or(str::is_empty) {
             bail!("baseline {}: invalid removed.function", path.display());
         }
         ensure_finite_min(&item.baseline_crap, 1.0, path, "removed.baseline_crap")?;
@@ -1259,10 +1344,10 @@ fn validate_removed(
 
 fn parse_crapts_entries(
     path: &Path,
-    v: serde_json::Value,
+    v: &RawValue,
     is_delta: bool,
 ) -> Result<Vec<CrapEntry>> {
-    let serde_json::Value::Array(items) = v else {
+    let Some(items) = raw_array(v) else {
         bail!(
             "baseline {}: invalid entries (expected an array)",
             path.display()
@@ -1273,10 +1358,10 @@ fn parse_crapts_entries(
         .enumerate()
         .map(|(i, item)| {
             if is_delta {
-                parse_crapts_delta_row(path, i, item)
+                parse_crapts_delta_row(path, i, &item)
             } else {
-                let raw: RawCraptsEntry = decode_object(item, path, &format!("entries[{i}]"))?;
-                parse_entry_core(path, i, raw)
+                let raw: RawCraptsEntry = decode_raw_object(&item, path, &format!("entries[{i}]"))?;
+                parse_entry_core(path, i, &raw)
             }
         })
         .collect()
@@ -1285,17 +1370,17 @@ fn parse_crapts_entries(
 fn parse_crapts_delta_row(
     path: &Path,
     index: usize,
-    item: serde_json::Value,
+    item: &RawValue,
 ) -> Result<CrapEntry> {
-    let raw: RawCraptsDeltaEntry = decode_object(item, path, &format!("entries[{index}]"))?;
+    let raw: RawCraptsDeltaEntry = decode_raw_object(item, path, &format!("entries[{index}]"))?;
     validate_delta_row(path, index, &raw)?;
     if let Some(reasons) = raw.reasons {
-        validate_reasons(path, index, reasons)?;
+        validate_reasons(path, index, &reasons)?;
     }
     parse_entry_core(
         path,
         index,
-        RawCraptsEntry {
+        &RawCraptsEntry {
             file: raw.file,
             function: raw.function,
             line: raw.line,
@@ -1313,15 +1398,18 @@ fn validate_delta_row(
     index: usize,
     raw: &RawCraptsDeltaEntry,
 ) -> Result<()> {
-    let Some(status) = raw.status.as_str() else {
+    let Some(status) = raw_str(&raw.status) else {
         bail!(
             "baseline {}: invalid entries[{index}].status",
             path.display()
         );
     };
-    match status {
+    match status.as_str() {
         "new" => {
-            if !raw.baseline_crap.is_null() || !raw.delta.is_null() || raw.previous_file.is_some() {
+            if !raw_is_null(&raw.baseline_crap)
+                || !raw_is_null(&raw.delta)
+                || raw.previous_file.is_some()
+            {
                 bail!(
                     "baseline {}: invalid new row entries[{index}] (baseline_crap and delta must be null, previous_file absent)",
                     path.display()
@@ -1345,14 +1433,14 @@ fn validate_paired_delta_row(
     raw: &RawCraptsDeltaEntry,
 ) -> Result<()> {
     ensure_finite_min(&raw.baseline_crap, 1.0, path, "baseline_crap")?;
-    if !raw.delta.as_f64().is_some_and(f64::is_finite) {
+    if raw_f64(&raw.delta).is_none() {
         bail!(
             "baseline {}: invalid entries[{index}].delta",
             path.display()
         );
     }
     if let Some(pf) = &raw.previous_file
-        && pf.as_str().is_none_or(str::is_empty)
+        && raw_str(pf).as_deref().is_none_or(str::is_empty)
     {
         bail!(
             "baseline {}: invalid entries[{index}].previous_file",
@@ -1365,9 +1453,9 @@ fn validate_paired_delta_row(
 fn validate_reasons(
     path: &Path,
     index: usize,
-    v: serde_json::Value,
+    v: &RawValue,
 ) -> Result<()> {
-    let serde_json::Value::Array(items) = v else {
+    let Some(items) = raw_array(v) else {
         bail!(
             "baseline {}: invalid entries[{index}].reasons",
             path.display()
@@ -1375,7 +1463,7 @@ fn validate_reasons(
     };
     let label = format!("entries[{index}].reasons");
     for raw in items {
-        let r: RawCraptsReason = decode_object(raw, path, &label)?;
+        let r: RawCraptsReason = decode_raw_object(&raw, path, &label)?;
         let _ = (r.signal, r.gating, r.action);
         ensure_finite_min(&r.value, 0.0, path, "reasons.value")?;
         if let Some(b) = &r.baseline {
@@ -1384,11 +1472,11 @@ fn validate_reasons(
         if let Some(limit) = &r.limit {
             require_nonneg_int(limit, path, "reasons.limit")?;
         }
-        let serde_json::Value::Array(spans) = r.spans else {
+        let Some(spans) = raw_array(&r.spans) else {
             bail!("baseline {}: invalid reasons.spans", path.display());
         };
         for span in spans {
-            let parsed: RawLineRange = decode_object(span, path, "reasons.spans")?;
+            let parsed: RawLineRange = decode_raw_object(&span, path, "reasons.spans")?;
             parse_line_range(path, "reasons.spans", &parsed)?;
         }
     }
@@ -1398,18 +1486,14 @@ fn validate_reasons(
 fn parse_entry_core(
     path: &Path,
     index: usize,
-    raw: RawCraptsEntry,
+    raw: &RawCraptsEntry,
 ) -> Result<CrapEntry> {
-    let file = raw
-        .file
-        .as_str()
+    let file = raw_str(&raw.file)
         .filter(|s| is_valid_crapts_path(s))
         .ok_or_else(|| {
             anyhow::anyhow!("baseline {}: invalid entries[{index}].file", path.display())
         })?;
-    let function = raw
-        .function
-        .as_str()
+    let function = raw_str(&raw.function)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -1421,11 +1505,11 @@ fn parse_entry_core(
     let cyclomatic = require_pos_int_f64(&raw.cyclomatic, path, "cyclomatic")?;
     let coverage = parse_coverage(path, index, &raw.coverage)?;
     let crap = ensure_finite_min(&raw.crap, 1.0, path, "crap")?;
-    let uncovered = parse_uncovered(path, index, raw.uncovered)?;
-    let fingerprint = parse_fingerprint(path, index, raw.fingerprint.as_ref())?;
+    let uncovered = parse_uncovered(path, index, raw.uncovered.as_deref())?;
+    let fingerprint = parse_fingerprint(path, index, raw.fingerprint.as_deref())?;
     Ok(CrapEntry {
         file: PathBuf::from(file),
-        function: function.to_owned(),
+        function,
         line,
         cyclomatic,
         coverage,
@@ -1441,12 +1525,12 @@ fn parse_entry_core(
 fn parse_coverage(
     path: &Path,
     index: usize,
-    v: &serde_json::Value,
+    v: &RawValue,
 ) -> Result<Option<f64>> {
-    if v.is_null() {
+    if raw_is_null(v) {
         return Ok(None);
     }
-    match v.as_f64() {
+    match raw_f64(v) {
         Some(c) if (0.0..=100.0).contains(&c) => Ok(Some(c)),
         _ => bail!(
             "baseline {}: invalid entries[{index}].coverage",
@@ -1458,12 +1542,12 @@ fn parse_coverage(
 fn parse_uncovered(
     path: &Path,
     index: usize,
-    raw: Option<serde_json::Value>,
+    raw: Option<&RawValue>,
 ) -> Result<Vec<LineRange>> {
     let Some(v) = raw else {
         return Ok(Vec::new());
     };
-    let serde_json::Value::Array(items) = v else {
+    let Some(items) = raw_array(v) else {
         bail!(
             "baseline {}: invalid entries[{index}].uncovered",
             path.display()
@@ -1479,7 +1563,7 @@ fn parse_uncovered(
     items
         .into_iter()
         .map(|item| {
-            let range: RawLineRange = decode_object(item, path, &label)?;
+            let range: RawLineRange = decode_raw_object(&item, path, &label)?;
             parse_line_range(path, "uncovered", &range)
         })
         .collect()
@@ -1488,13 +1572,12 @@ fn parse_uncovered(
 fn parse_fingerprint(
     path: &Path,
     index: usize,
-    raw: Option<&serde_json::Value>,
+    raw: Option<&RawValue>,
 ) -> Result<Option<String>> {
     let Some(v) = raw else {
         return Ok(None);
     };
-    let s = v
-        .as_str()
+    let s = raw_str(v)
         .filter(|s| is_valid_fingerprint(s))
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -1502,7 +1585,7 @@ fn parse_fingerprint(
                 path.display()
             )
         })?;
-    Ok(Some(s.to_owned()))
+    Ok(Some(s))
 }
 
 fn parse_line_range(
@@ -1517,7 +1600,7 @@ fn parse_line_range(
 }
 
 fn require_nonneg_int(
-    v: &serde_json::Value,
+    v: &RawValue,
     path: &Path,
     field: &str,
 ) -> Result<()> {
@@ -1528,17 +1611,22 @@ fn require_nonneg_int(
 }
 
 fn require_pos_int_f64(
-    v: &serde_json::Value,
+    v: &RawValue,
     path: &Path,
     field: &str,
 ) -> Result<f64> {
-    v.as_f64()
-        .filter(|&f| f >= 1.0 && f.fract() == 0.0)
-        .ok_or_else(|| anyhow::anyhow!("baseline {}: invalid {field}", path.display()))
+    let is_pos_int = matches!(
+        parse_json_nonneg_int(v),
+        Some(JsonNonNegInt::Fits(1..) | JsonNonNegInt::Overflow)
+    );
+    match raw_f64(v) {
+        Some(n) if is_pos_int => Ok(n),
+        _ => bail!("baseline {}: invalid {field}", path.display()),
+    }
 }
 
 fn require_pos_usize(
-    v: &serde_json::Value,
+    v: &RawValue,
     path: &Path,
     field: &str,
 ) -> Result<usize> {
@@ -1548,7 +1636,7 @@ fn require_pos_usize(
 }
 
 fn require_pos_u32(
-    v: &serde_json::Value,
+    v: &RawValue,
     path: &Path,
     field: &str,
 ) -> Result<u32> {
@@ -1558,13 +1646,13 @@ fn require_pos_u32(
 }
 
 fn ensure_finite_min(
-    v: &serde_json::Value,
+    v: &RawValue,
     min: f64,
     path: &Path,
     field: &str,
 ) -> Result<f64> {
-    match v.as_f64() {
-        Some(n) if n.is_finite() && n >= min => Ok(n),
+    match raw_f64(v) {
+        Some(n) if n >= min => Ok(n),
         _ => bail!("baseline {}: invalid {field}", path.display()),
     }
 }
@@ -1870,6 +1958,7 @@ fn stem(name: &str) -> &str {
 }
 
 fn rounded_delta(d: f64) -> f64 {
+    // Adding 0.0 normalizes IEEE-754 -0.0 to 0.0 for JSON output.
     (d * 1e6).round() / 1e6 + 0.0
 }
 
@@ -3921,35 +4010,71 @@ mod crapts_admission_tests {
     }
 
     #[test]
+    fn raw_json_integer_parser_handles_wide_and_scientific_tokens() {
+        let raw = |s: &str| RawValue::from_string(s.to_owned()).unwrap();
+        for ok in [
+            "0",
+            "-0.0",
+            "2",
+            "0.0",
+            "2.0",
+            "1.5e1",
+            "500e-2",
+            "1e3",
+            "4294967296",
+            "18014398509481984.0",
+            "18014398509481985.0",
+            "18446744073709551615.0",
+            "1e20",
+            "1e9999999999999999999999999999999999999999",
+        ] {
+            assert!(is_draft07_nonneg_int(&raw(ok)), "{ok}");
+        }
+        for bad in [
+            "-1",
+            "-1.0",
+            "2.5",
+            "1.5e0",
+            "1e-5",
+            "1e-9999999999999999999999999999999999999999",
+            "\"2\"",
+            "null",
+        ] {
+            assert!(!is_draft07_nonneg_int(&raw(bad)), "{bad}");
+        }
+
+        assert_eq!(draft07_pos_u64(&raw("1")), Some(1));
+        assert_eq!(draft07_pos_u64(&raw("2.0")), Some(2));
+        assert_eq!(draft07_pos_u64(&raw("1.5e1")), Some(15));
+        assert_eq!(draft07_pos_u64(&raw("500e-2")), Some(5));
+        assert_eq!(draft07_pos_u64(&raw("1e+3")), Some(1000));
+        assert_eq!(
+            draft07_pos_u64(&raw("18014398509481985")),
+            Some(18_014_398_509_481_985)
+        );
+        assert_eq!(
+            draft07_pos_u64(&raw("18014398509481985.0")),
+            Some(18_014_398_509_481_985)
+        );
+        assert_eq!(
+            draft07_pos_u64(&raw("18446744073709551615")),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            draft07_pos_u64(&raw("18446744073709551615.0")),
+            Some(u64::MAX)
+        );
+        assert_eq!(draft07_pos_u64(&raw("18446744073709551616")), None);
+        assert_eq!(draft07_pos_u64(&raw("18446744073709551616.0")), None);
+        assert_eq!(draft07_pos_u64(&raw("0")), None);
+        assert_eq!(draft07_pos_u64(&raw("0.0")), None);
+        assert_eq!(draft07_pos_u64(&raw("1.5")), None);
+        assert_eq!(draft07_pos_u64(&raw("1e20")), None);
+        assert_eq!(draft07_pos_u64(&raw("\"1\"")), None);
+    }
+
+    #[test]
     fn primitive_validators_check_boundaries() {
-        assert!(is_draft07_nonneg_int(&json!(0)));
-        assert!(is_draft07_nonneg_int(&json!(2)));
-        assert!(is_draft07_nonneg_int(&json!(0.0)));
-        assert!(is_draft07_nonneg_int(&json!(2.0)));
-        assert!(is_draft07_nonneg_int(&json!(4_294_967_296_u64)));
-        assert!(is_draft07_nonneg_int(&json!(18_014_398_509_481_984.0)));
-        assert!(!is_draft07_nonneg_int(&json!(-1)));
-        assert!(!is_draft07_nonneg_int(&json!(-1.0)));
-        assert!(!is_draft07_nonneg_int(&json!(2.5)));
-        assert!(!is_draft07_nonneg_int(&json!("2")));
-
-        assert_eq!(draft07_pos_u64(&json!(1)), Some(1));
-        assert_eq!(draft07_pos_u64(&json!(2.0)), Some(2));
-        assert_eq!(
-            draft07_pos_u64(&json!(18_014_398_509_481_984_u64)),
-            Some(18_014_398_509_481_984)
-        );
-        assert_eq!(
-            draft07_pos_u64(&json!(18_014_398_509_481_984.0)),
-            Some(18_014_398_509_481_984)
-        );
-        assert_eq!(draft07_pos_u64(&json!(18_446_744_073_709_551_616.0)), None);
-        assert_eq!(draft07_pos_u64(&json!(0)), None);
-        assert_eq!(draft07_pos_u64(&json!(0.0)), None);
-        assert_eq!(draft07_pos_u64(&json!(1.5)), None);
-        assert_eq!(draft07_pos_u64(&json!(1e20)), None);
-        assert_eq!(draft07_pos_u64(&json!("1")), None);
-
         for ok in [
             "a.ts", "src/a.ts", ".env.ts", "a", "0:x.ts", "a:b.ts", "Z:", "0:/a.ts",
         ] {
@@ -4116,7 +4241,7 @@ mod crapts_admission_tests {
     type DocEdit = fn(&mut Value);
 
     fn assert_rejected(
-        doc: Value,
+        doc: &Value,
         kind: CoverageKind,
         needle: &str,
     ) {
@@ -4125,7 +4250,8 @@ mod crapts_admission_tests {
             version: "0.2.3",
             ..SECOND_TOOL
         };
-        let err = parse_crapts_baseline(path, &tool, kind, doc).unwrap_err();
+        let raw = serde_json::to_string(doc).unwrap();
+        let err = parse_crapts_baseline(path, &tool, kind, &raw).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("base.json"), "missing file in: {msg}");
         assert!(msg.contains(needle), "expected {needle:?} in: {msg}");
@@ -4133,9 +4259,9 @@ mod crapts_admission_tests {
 
     #[test]
     fn load_crapts_baseline_rejects_admission_defects() {
-        assert_rejected(json!([]), CoverageKind::Lines, "object");
+        assert_rejected(&json!([]), CoverageKind::Lines, "object");
         assert_rejected(
-            {
+            &{
                 let mut d = valid_absolute_doc();
                 d["name_scheme"] = json!(2);
                 d
@@ -4144,7 +4270,7 @@ mod crapts_admission_tests {
             "name_scheme",
         );
         assert_rejected(
-            {
+            &{
                 let mut d = valid_absolute_doc();
                 d.as_object_mut().unwrap().remove("name_scheme");
                 d
@@ -4153,7 +4279,7 @@ mod crapts_admission_tests {
             "name_scheme",
         );
         assert_rejected(
-            {
+            &{
                 let mut d = valid_absolute_doc();
                 d["coverage_kind"] = json!("branches");
                 d
@@ -4162,7 +4288,7 @@ mod crapts_admission_tests {
             "coverage_kind",
         );
         assert_rejected(
-            {
+            &{
                 let mut d = valid_absolute_doc();
                 d["coverage_kind"] = json!("statements");
                 d
@@ -4171,7 +4297,7 @@ mod crapts_admission_tests {
             "statements",
         );
         assert_rejected(
-            {
+            &{
                 let mut d = valid_absolute_doc();
                 d["selection"] = json!(1);
                 d
@@ -4180,7 +4306,7 @@ mod crapts_admission_tests {
             "selection",
         );
         assert_rejected(
-            {
+            &{
                 let mut d = valid_absolute_doc();
                 d["version"] = json!(123);
                 d
@@ -4268,7 +4394,7 @@ mod crapts_admission_tests {
         for &(needle, edit) in abs_cases {
             let mut doc = valid_absolute_doc();
             edit(&mut doc);
-            assert_rejected(doc, CoverageKind::Lines, needle);
+            assert_rejected(&doc, CoverageKind::Lines, needle);
         }
 
         let tool = Tool {
@@ -4279,12 +4405,13 @@ mod crapts_admission_tests {
         statements_doc["coverage_kind"] = json!("statements");
         statements_doc["diagnostics"]["coverage_only"]["examples"] =
             json!(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]);
+        let statements_raw = serde_json::to_string(&statements_doc).unwrap();
         assert!(
             parse_crapts_baseline(
                 Path::new("base.json"),
                 &tool,
                 CoverageKind::Statements,
-                statements_doc
+                &statements_raw
             )
             .is_ok()
         );
@@ -4362,7 +4489,7 @@ mod crapts_admission_tests {
         for &(needle, edit) in delta_cases {
             let mut doc = valid_delta_doc();
             edit(&mut doc);
-            assert_rejected(doc, CoverageKind::Lines, needle);
+            assert_rejected(&doc, CoverageKind::Lines, needle);
         }
     }
 
@@ -4405,7 +4532,7 @@ mod crapts_admission_tests {
         for &(needle, edit) in reason_cases {
             let mut doc = valid_delta_doc();
             edit(&mut doc);
-            assert_rejected(doc, CoverageKind::Lines, needle);
+            assert_rejected(&doc, CoverageKind::Lines, needle);
         }
     }
 

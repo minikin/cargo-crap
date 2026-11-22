@@ -10312,7 +10312,6 @@ fn cargo_craps_json_delta_omits_a_callers_fingerprint() {
 #[test]
 fn cargo_crap_keeps_its_recorded_reports() {
     use cargo_crap::{filter::AllowSet, run::BaselineFilter, signals::SignalSettings};
-    // Given the spec 48 row with a fingerprint, cargo-crap and the alternate brand
     let allow = AllowSet::compile(&[]).unwrap();
     let signals = SignalSettings::default();
     let settings = pipeline_settings(&allow, &signals);
@@ -10326,7 +10325,6 @@ fn cargo_crap_keeps_its_recorded_reports() {
         },
     ]));
     for tool in [&cargo_crap::tool::CARGO_CRAP, &SECOND_TOOL] {
-        // When run renders absolute and delta JSON with no sections
         let (absolute, _) = pipeline_report(tool, &settings, &scope, vec![current.clone()], None);
         let (delta, _) = pipeline_report(
             tool,
@@ -10335,10 +10333,8 @@ fn cargo_crap_keeps_its_recorded_reports() {
             vec![current.clone()],
             Some(&baseline),
         );
-        // Then both views omit the fingerprint and validate against report-v1 and delta-v2
         assert_untagged_json(&absolute, "schemas/report-v1.json");
         assert_untagged_json(&delta, "schemas/delta-v2.json");
-        // And each carries its own tool's version and schema URL
         for (out, schema) in [
             (&absolute, tool.schemas.report),
             (&delta, tool.schemas.delta),
@@ -10348,7 +10344,6 @@ fn cargo_crap_keeps_its_recorded_reports() {
             assert_eq!(doc["$schema"], schema);
         }
     }
-    // And the alternate brand with cargo-crap policy keeps its URLs, marker and baseline hint
     let sarif_settings = cargo_crap::run::Settings {
         format: cargo_crap::report::Format::Sarif,
         ..settings

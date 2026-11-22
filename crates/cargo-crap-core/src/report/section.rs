@@ -20,7 +20,8 @@ pub trait Section {
     fn json(&self) -> Box<RawValue>;
 
     /// # Errors
-    /// Returns the section's own write failure.
+    /// Any error propagates out of [`crate::run::run`] in place of a
+    /// [`crate::gate::GateOutcome`] before any bytes reach the report writer.
     fn write(
         &self,
         format: Format,

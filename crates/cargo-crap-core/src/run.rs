@@ -276,8 +276,9 @@ pub fn run(
     } else {
         None
     };
+    let staged = stage_sections(settings.format, sections)?;
     let notices = collect_notices(analysis.notices, baseline);
-    let include_marker = write_prefix(tool, settings.format, &notices, sections, out)?;
+    let include_marker = write_prefix(tool, settings.format, &notices, &staged, out)?;
     let body = RunBody {
         tool,
         settings,
@@ -293,7 +294,7 @@ pub fn run(
     };
     let (regressed, gating_signals) = write_report_body(&body, summary, include_marker, out)?;
     report::render_duplicates(&options, out).context("writing duplicate report")?;
-    write_suffix(settings.format, sections, out)?;
+    write_suffix(settings.format, &staged, out)?;
     out.flush().context("flushing output")?;
     let regression_skipped = baseline.is_some_and(PreparedBaseline::regression_gate_skipped);
     Ok(GateOutcome::evaluate(GateInput {
@@ -385,19 +386,59 @@ fn write_report_body(
     }
 }
 
+struct StagedSections {
+    lead: Vec<Vec<u8>>,
+    trail: Vec<Vec<u8>>,
+}
+
+impl StagedSections {
+    fn is_empty(&self) -> bool {
+        self.lead.is_empty() && self.trail.is_empty()
+    }
+}
+
+fn stage_sections(
+    format: Format,
+    sections: &[&dyn Section],
+) -> Result<StagedSections> {
+    let mut staged = StagedSections {
+        lead: Vec::new(),
+        trail: Vec::new(),
+    };
+    if !matches!(
+        format,
+        Format::Human | Format::Markdown | Format::PrComment | Format::GitHub
+    ) {
+        return Ok(staged);
+    }
+    for section in sections {
+        let placement = section.placement();
+        let mut buf = Vec::new();
+        section.write(format, &mut buf)?;
+        if buf.last().is_some_and(|&b| b != b'\n') {
+            buf.push(b'\n');
+        }
+        match placement {
+            Placement::Lead => staged.lead.push(buf),
+            Placement::Trail => staged.trail.push(buf),
+        }
+    }
+    Ok(staged)
+}
+
 fn write_prefix(
     tool: &Tool,
     format: Format,
     notices: &[&str],
-    sections: &[&dyn Section],
+    staged: &StagedSections,
     out: &mut dyn Write,
 ) -> Result<bool> {
     match format {
         Format::Human | Format::Markdown | Format::PrComment => {
-            write_text_prefix(tool, format, notices, sections, out)
+            write_text_prefix(tool, format, notices, staged, out)
         },
         Format::GitHub => {
-            write_sections(sections, Placement::Lead, format, "", "", out)?;
+            write_staged(&staged.lead, "", "", out)?;
             Ok(true)
         },
         Format::Json | Format::Sarif | Format::Shields => Ok(true),
@@ -408,10 +449,10 @@ fn write_text_prefix(
     tool: &Tool,
     format: Format,
     notices: &[&str],
-    sections: &[&dyn Section],
+    staged: &StagedSections,
     out: &mut dyn Write,
 ) -> Result<bool> {
-    if notices.is_empty() && sections.is_empty() {
+    if notices.is_empty() && staged.is_empty() {
         return Ok(true);
     }
     let markdown = matches!(format, Format::Markdown | Format::PrComment);
@@ -428,35 +469,33 @@ fn write_text_prefix(
         }
         writeln!(out)?;
     }
-    write_sections(sections, Placement::Lead, format, "", "\n", out)?;
+    write_staged(&staged.lead, "", "\n", out)?;
     Ok(!markdown)
 }
 
 fn write_suffix(
     format: Format,
-    sections: &[&dyn Section],
+    staged: &StagedSections,
     out: &mut dyn Write,
 ) -> Result<()> {
     match format {
         Format::Human | Format::Markdown | Format::PrComment => {
-            write_sections(sections, Placement::Trail, format, "\n", "", out)
+            write_staged(&staged.trail, "\n", "", out)
         },
-        Format::GitHub => write_sections(sections, Placement::Trail, format, "", "", out),
+        Format::GitHub => write_staged(&staged.trail, "", "", out),
         Format::Json | Format::Sarif | Format::Shields => Ok(()),
     }
 }
 
-fn write_sections(
-    sections: &[&dyn Section],
-    placement: Placement,
-    format: Format,
+fn write_staged(
+    blocks: &[Vec<u8>],
     before: &str,
     after: &str,
     out: &mut dyn Write,
 ) -> Result<()> {
-    for section in sections.iter().filter(|s| s.placement() == placement) {
+    for block in blocks {
         out.write_all(before.as_bytes())?;
-        section.write(format, out)?;
+        out.write_all(block)?;
         out.write_all(after.as_bytes())?;
     }
     Ok(())
@@ -1639,6 +1678,233 @@ mod tests {
                 "{err}"
             );
             assert_eq!(out, [] as [u8; 0]);
+        }
+    }
+
+    #[test]
+    fn github_sections_terminate_unterminated_commands_and_keep_empty_silent() {
+        struct RawWriteSection {
+            bytes: &'static str,
+            placement: Placement,
+        }
+        impl Section for RawWriteSection {
+            fn json_key(&self) -> &str {
+                panic!("GitHub must not call json_key");
+            }
+            fn json(&self) -> Box<serde_json::value::RawValue> {
+                panic!("GitHub must not call json");
+            }
+            fn write(
+                &self,
+                _: Format,
+                out: &mut dyn Write,
+            ) -> Result<()> {
+                out.write_all(self.bytes.as_bytes())?;
+                Ok(())
+            }
+            fn placement(&self) -> Placement {
+                self.placement
+            }
+            fn failures(&self) -> Option<usize> {
+                None
+            }
+        }
+
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let (lead_term, lead_unterm, lead_empty, trail_unterm, trail_empty, trail_term) = (
+            RawWriteSection {
+                bytes: "::warning::lead-term\n",
+                placement: Placement::Lead,
+            },
+            RawWriteSection {
+                bytes: "::warning::lead-unterm",
+                placement: Placement::Lead,
+            },
+            RawWriteSection {
+                bytes: "",
+                placement: Placement::Lead,
+            },
+            RawWriteSection {
+                bytes: "::warning::trail-unterm",
+                placement: Placement::Trail,
+            },
+            RawWriteSection {
+                bytes: "",
+                placement: Placement::Trail,
+            },
+            RawWriteSection {
+                bytes: "::warning::trail-term\n",
+                placement: Placement::Trail,
+            },
+        );
+        let mut out = Vec::new();
+        run(
+            &tool,
+            &section_settings(&allow, &signals, Format::GitHub),
+            Analysis {
+                entries: crate::report::test_support::sample(),
+                diagnostics: Some(empty_test_diag()),
+                scope: &AllFiles,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            None,
+            &[
+                &lead_term,
+                &lead_unterm,
+                &lead_empty,
+                &trail_unterm,
+                &trail_empty,
+                &trail_term,
+            ],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 5, "{text:?}");
+        assert_eq!(lines[0], "::warning::lead-term");
+        assert_eq!(lines[1], "::warning::lead-unterm");
+        assert!(lines[2].starts_with("::warning file="), "{text:?}");
+        assert!(lines[2].contains("crappy"), "{text:?}");
+        assert_eq!(lines[3], "::warning::trail-unterm");
+        assert_eq!(lines[4], "::warning::trail-term");
+    }
+
+    #[test]
+    fn section_placement_is_sampled_once_per_section() {
+        use std::cell::Cell;
+
+        struct FlippingSection {
+            label: &'static str,
+            first: Placement,
+            second: Placement,
+            calls: Cell<usize>,
+        }
+        impl Section for FlippingSection {
+            fn json_key(&self) -> &str {
+                panic!("text format must not call json_key");
+            }
+            fn json(&self) -> Box<serde_json::value::RawValue> {
+                panic!("text format must not call json");
+            }
+            fn write(
+                &self,
+                _: Format,
+                out: &mut dyn Write,
+            ) -> Result<()> {
+                writeln!(out, "{}", self.label)?;
+                Ok(())
+            }
+            fn placement(&self) -> Placement {
+                let n = self.calls.get();
+                self.calls.set(n + 1);
+                if n == 0 { self.first } else { self.second }
+            }
+            fn failures(&self) -> Option<usize> {
+                None
+            }
+        }
+
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+
+        for (first, second, label) in [
+            (Placement::Lead, Placement::Trail, "lead-once"),
+            (Placement::Trail, Placement::Lead, "trail-once"),
+        ] {
+            let section = FlippingSection {
+                label,
+                first,
+                second,
+                calls: Cell::new(0),
+            };
+            let mut out = Vec::new();
+            run(
+                &tool,
+                &section_settings(&allow, &signals, Format::Markdown),
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                None,
+                &[&section],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert_eq!(section.calls.get(), 1);
+            assert_eq!(text.matches(label).count(), 1, "{text}");
+            let body_pos = text.find("crappy").unwrap();
+            let sec_pos = text.find(label).unwrap();
+            assert_eq!(first == Placement::Lead, sec_pos < body_pos, "{text}");
+        }
+    }
+
+    #[test]
+    fn failing_lead_or_trail_sections_write_zero_bytes() {
+        struct FailWriteSection(Placement);
+        impl Section for FailWriteSection {
+            fn json_key(&self) -> &str {
+                panic!("text format must not call json_key");
+            }
+            fn json(&self) -> Box<serde_json::value::RawValue> {
+                panic!("text format must not call json");
+            }
+            fn write(
+                &self,
+                _: Format,
+                _: &mut dyn Write,
+            ) -> Result<()> {
+                anyhow::bail!("section write failed")
+            }
+            fn placement(&self) -> Placement {
+                self.0
+            }
+            fn failures(&self) -> Option<usize> {
+                Some(1)
+            }
+        }
+
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        for format in [
+            Format::Human,
+            Format::Markdown,
+            Format::PrComment,
+            Format::GitHub,
+        ] {
+            for placement in [Placement::Lead, Placement::Trail] {
+                let mut out = Vec::new();
+                let err = run(
+                    &tool,
+                    &section_settings(&allow, &signals, format),
+                    Analysis {
+                        entries: crate::report::test_support::sample(),
+                        diagnostics: Some(empty_test_diag()),
+                        scope: &AllFiles,
+                        coverage_kind: Some(CoverageKind::Lines),
+                        notices: &["note".to_owned()],
+                    },
+                    None,
+                    &[&FailWriteSection(placement)],
+                    &RenderExtras::default(),
+                    &mut out,
+                )
+                .unwrap_err()
+                .to_string();
+                assert!(err.contains("section write failed"), "{err}");
+                assert_eq!(out, [] as [u8; 0], "{format:?} {placement:?}");
+            }
         }
     }
 }

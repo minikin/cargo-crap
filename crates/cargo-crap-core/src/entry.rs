@@ -69,10 +69,7 @@ pub(crate) fn compare_crap_desc(
     b: &CrapEntry,
     tie_order: TieOrder,
 ) -> std::cmp::Ordering {
-    let by_score = b
-        .crap
-        .partial_cmp(&a.crap)
-        .unwrap_or(std::cmp::Ordering::Equal);
+    let by_score = b.crap.total_cmp(&a.crap);
     match tie_order {
         TieOrder::Stable => by_score,
         TieOrder::FileFunctionLine => {

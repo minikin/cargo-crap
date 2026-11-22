@@ -1,5 +1,5 @@
-//! The crapts policy values, exercised through the public core pipeline with
-//! a fixture tool, resolved settings and finished rows.
+//! Exercises `cargo_crap_core` from an external crate so private core helpers
+//! stay unreachable and the published schemas validate actual wire output.
 
 #[path = "support/schemas.rs"]
 mod schemas;
@@ -1128,6 +1128,70 @@ fn admission_rejects_null_optionals_positional_arrays_and_drive_paths() {
 }
 
 #[test]
+fn admission_preserves_exact_wide_line_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = AllowSet::compile(&[]).unwrap();
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+
+    for (name, mut doc, schema) in [
+        ("abs", handwritten_absolute(), &abs_schema),
+        ("delta", handwritten_delta(), &delta_schema),
+    ] {
+        doc["entries"][0]["cyclomatic"] = json!(4_294_967_296_u64);
+        doc["summary"]["total"] = json!(18_014_398_509_481_984.0);
+        doc["entries"][0]["file"] = json!("src/a.ts");
+        doc["entries"][0]["line"] = json!(4444);
+        let template = serde_json::to_string_pretty(&doc).unwrap();
+        for (tag, token, expected) in [
+            ("odd-int", "18014398509481985", 18_014_398_509_481_985_u64),
+            (
+                "odd-float",
+                "18014398509481985.0",
+                18_014_398_509_481_985_u64,
+            ),
+            ("max-int", "18446744073709551615", u64::MAX),
+            ("max-float", "18446744073709551615.0", u64::MAX),
+        ] {
+            let literal = template.replacen("\"line\": 4444", &format!("\"line\": {token}"), 1);
+            let parsed: Value = serde_json::from_str(&literal).unwrap();
+            assert!(schema.is_valid(&parsed), "{name}/{tag} must validate");
+            let path = dir.path().join(format!("{name}-wide-{tag}.json"));
+            std::fs::write(&path, &literal).unwrap();
+            let loaded = load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines);
+            #[cfg(target_pointer_width = "64")]
+            {
+                let prepared =
+                    BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded.unwrap());
+                assert_eq!(
+                    prepared.as_baseline().entries[0].line,
+                    usize::try_from(expected).unwrap(),
+                    "{name}/{tag}"
+                );
+            }
+            #[cfg(not(target_pointer_width = "64"))]
+            {
+                let _ = expected;
+                let err = loaded.unwrap_err().to_string();
+                assert!(err.contains("line"), "{name}/{tag}: {err}");
+            }
+        }
+        for (tag, token) in [
+            ("over-int", "18446744073709551616"),
+            ("over-float", "18446744073709551616.0"),
+        ] {
+            let literal = template.replacen("\"line\": 4444", &format!("\"line\": {token}"), 1);
+            let path = dir.path().join(format!("{name}-over-{tag}.json"));
+            std::fs::write(&path, &literal).unwrap();
+            let err = load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("line"), "{name}/{tag}: {err}");
+        }
+    }
+}
+
+#[test]
 fn admission_matches_schema_on_wide_integers_and_schema_uri() {
     let dir = tempfile::tempdir().unwrap();
     let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
@@ -1140,19 +1204,6 @@ fn admission_matches_schema_on_wide_integers_and_schema_uri() {
         doc["entries"][0]["cyclomatic"] = json!(4_294_967_296_u64);
         doc["summary"]["total"] = json!(18_014_398_509_481_984.0);
         doc["entries"][0]["file"] = json!("src/a.ts");
-        for (tag, line_val) in [
-            ("int", json!(18_014_398_509_481_984_u64)),
-            ("float", json!(18_014_398_509_481_984.0)),
-        ] {
-            let mut wide = doc.clone();
-            wide["entries"][0]["line"] = line_val;
-            assert!(schema.is_valid(&wide), "{name}/{tag} must validate");
-            let path = write_json(&dir, &format!("{name}-wide-{tag}.json"), &wide);
-            assert!(
-                load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines).is_ok(),
-                "{name}/{tag} must load"
-            );
-        }
 
         let mut omitted_schema = doc.clone();
         omitted_schema.as_object_mut().unwrap().remove("$schema");
@@ -1968,8 +2019,7 @@ fn a_skipped_regression_notice_reaches_each_text_renderer() {
                 workspace_root: None,
                 fail_sections: false,
             };
-            let mut out = Vec::new();
-            let outcome = run::run(
+            let (text, diag, outcome) = run_with_front_end_diagnostics(
                 &CRAPTS,
                 &settings,
                 Analysis {
@@ -1981,12 +2031,9 @@ fn a_skipped_regression_notice_reaches_each_text_renderer() {
                 },
                 Some(&prepared),
                 &[],
-                &RenderExtras::default(),
-                &mut out,
-            )
-            .unwrap();
+            );
+            assert_eq!(diag, "", "{format:?} summary={summary}");
             assert_eq!(outcome.exit_code(), std::process::ExitCode::SUCCESS);
-            let text = String::from_utf8(out).unwrap();
             if format == Format::Human {
                 assert!(
                     text.starts_with(&format!("{expected}\n\n")),
@@ -2501,6 +2548,80 @@ fn format_settings<'a>(
     }
 }
 
+fn run_with_front_end_diagnostics(
+    tool: &Tool,
+    settings: &Settings<'_>,
+    analysis: Analysis<'_>,
+    baseline: Option<&cargo_crap_core::run::PreparedBaseline>,
+    sections: &[&dyn Section],
+) -> (String, String, GateOutcome) {
+    use std::io::Write as _;
+    let mut diagnostics = Vec::new();
+    if matches!(
+        settings.format,
+        Format::Json | Format::GitHub | Format::Sarif | Format::Shields
+    ) {
+        for notice in analysis.notices {
+            writeln!(diagnostics, "{notice}").unwrap();
+        }
+        if let Some(notice) = baseline.and_then(cargo_crap_core::run::PreparedBaseline::notice) {
+            writeln!(diagnostics, "{notice}").unwrap();
+        }
+    }
+    let mut out = Vec::new();
+    let outcome = run::run(
+        tool,
+        settings,
+        analysis,
+        baseline,
+        sections,
+        &RenderExtras::default(),
+        &mut out,
+    )
+    .unwrap();
+    (
+        String::from_utf8(out).unwrap(),
+        String::from_utf8(diagnostics).unwrap(),
+        outcome,
+    )
+}
+
+fn control_body(
+    tool: &Tool,
+    settings: &Settings<'_>,
+    entries: Vec<CrapEntry>,
+    baseline: Option<&cargo_crap_core::run::PreparedBaseline>,
+    coverage_kind: Option<CoverageKind>,
+    diagnostics: Option<ScopeDiagnostics>,
+) -> String {
+    let mut out = Vec::new();
+    run::run(
+        tool,
+        settings,
+        Analysis {
+            entries,
+            diagnostics,
+            scope: &Everything,
+            coverage_kind,
+            notices: &[],
+        },
+        baseline,
+        &[],
+        &RenderExtras::default(),
+        &mut out,
+    )
+    .unwrap();
+    let raw = String::from_utf8(out).unwrap();
+    if !settings.summary && matches!(settings.format, Format::Markdown | Format::PrComment) {
+        let marker_prefix = format!("{}\n\n", tool.comment_marker);
+        raw.strip_prefix(&marker_prefix)
+            .expect("full markdown control begins with marker")
+            .to_owned()
+    } else {
+        raw
+    }
+}
+
 #[test]
 fn notices_and_sections_have_a_defined_order_in_text_reports() {
     let dir = tempfile::tempdir().unwrap();
@@ -2537,10 +2658,18 @@ fn notices_and_sections_have_a_defined_order_in_text_reports() {
     for format in [Format::Human, Format::Markdown, Format::PrComment] {
         for base in [None, Some(&prepared)] {
             for summary in [false, true] {
-                let mut out = Vec::new();
-                run::run(
+                let settings = format_settings(&allow, &signals, format, summary, false);
+                let expected_body = control_body(
                     &CRAPTS,
-                    &format_settings(&allow, &signals, format, summary, false),
+                    &settings,
+                    vec![row("src/a.ts", "f", 1, 40.0)],
+                    base,
+                    Some(CoverageKind::Lines),
+                    Some(zero_diagnostics()),
+                );
+                let (text, diag, _) = run_with_front_end_diagnostics(
+                    &CRAPTS,
+                    &settings,
                     Analysis {
                         entries: vec![row("src/a.ts", "f", 1, 40.0)],
                         diagnostics: Some(zero_diagnostics()),
@@ -2550,11 +2679,8 @@ fn notices_and_sections_have_a_defined_order_in_text_reports() {
                     },
                     base,
                     &[&trail, &lead],
-                    &RenderExtras::default(),
-                    &mut out,
-                )
-                .unwrap();
-                let text = String::from_utf8(out).unwrap();
+                );
+                assert_eq!(diag, "", "{format:?}");
                 let prefix = if format == Format::Human {
                     "coverage note\n\nchanged result\n\n".to_owned()
                 } else {
@@ -2563,20 +2689,18 @@ fn notices_and_sections_have_a_defined_order_in_text_reports() {
                         CRAPTS.comment_marker
                     )
                 };
-                assert!(
-                    text.starts_with(&prefix),
-                    "{format:?} delta={} summary={summary}:\n{text}",
+                assert_eq!(
+                    text,
+                    format!("{prefix}{expected_body}\nreview notes\n"),
+                    "{format:?} delta={} summary={summary}",
                     base.is_some()
                 );
-                assert!(text.ends_with("\n\nreview notes\n"), "{text}");
                 assert_eq!(text.matches("coverage note").count(), 1);
                 assert_eq!(text.matches("changed result").count(), 1);
                 assert_eq!(text.matches("review notes").count(), 1);
                 if format != Format::Human {
                     assert_eq!(text.matches(CRAPTS.comment_marker).count(), 1);
                 }
-                let body = &text[prefix.len()..text.len() - "\n\nreview notes\n".len()];
-                assert_ne!(body.trim(), "", "{format:?}: empty body");
             }
         }
     }
@@ -2617,10 +2741,19 @@ fn a_pr_comment_without_notices_puts_the_lead_section_directly_after_the_marker(
 
     for base in [None, Some(&prepared)] {
         for summary in [false, true] {
+            let settings = format_settings(&allow, &signals, Format::PrComment, summary, false);
+            let expected_body = control_body(
+                &CRAPTS,
+                &settings,
+                vec![row("src/a.ts", "f", 1, 40.0)],
+                base,
+                Some(CoverageKind::Lines),
+                Some(zero_diagnostics()),
+            );
             let mut out = Vec::new();
             run::run(
                 &CRAPTS,
-                &format_settings(&allow, &signals, Format::PrComment, summary, false),
+                &settings,
                 Analysis {
                     entries: vec![row("src/a.ts", "f", 1, 40.0)],
                     diagnostics: Some(zero_diagnostics()),
@@ -2635,13 +2768,13 @@ fn a_pr_comment_without_notices_puts_the_lead_section_directly_after_the_marker(
             )
             .unwrap();
             let text = String::from_utf8(out).unwrap();
-            assert!(text.starts_with(&expected_prefix), "{text}");
-            assert!(text.ends_with("\n\nreview notes\n"), "{text}");
+            assert_eq!(
+                text,
+                format!("{expected_prefix}{expected_body}\nreview notes\n")
+            );
             assert_eq!(text.matches(CRAPTS.comment_marker).count(), 1);
             assert_eq!(text.matches("changed result").count(), 1);
             assert_eq!(text.matches("review notes").count(), 1);
-            let body = &text[expected_prefix.len()..text.len() - "\n\nreview notes\n".len()];
-            assert_ne!(body.trim(), "");
         }
     }
 }
@@ -2662,8 +2795,7 @@ fn notices_and_sections_preserve_the_grammar_of_each_machine_format() {
     };
 
     let render = |format: Format| -> (String, GateOutcome) {
-        let mut out = Vec::new();
-        let outcome = run::run(
+        let (out, diag, outcome) = run_with_front_end_diagnostics(
             &CRAPTS,
             &format_settings(&allow, &signals, format, false, true),
             Analysis {
@@ -2675,13 +2807,11 @@ fn notices_and_sections_preserve_the_grammar_of_each_machine_format() {
             },
             None,
             &[&section],
-            &RenderExtras::default(),
-            &mut out,
-        )
-        .unwrap();
+        );
+        assert_eq!(diag, "coverage note\n", "{format:?}");
         assert_eq!(outcome.section_failures, 1);
         assert_eq!(outcome.exit_code(), std::process::ExitCode::from(1));
-        (String::from_utf8(out).unwrap(), outcome)
+        (out, outcome)
     };
 
     let (json_raw, _) = render(Format::Json);
@@ -2753,10 +2883,19 @@ fn cargo_crap_v1_renders_caller_supplied_text_sections() {
     for format in [Format::Human, Format::Markdown, Format::PrComment] {
         for base in [None, Some(&prepared)] {
             for summary in [false, true] {
+                let settings = format_settings(&allow, &signals, format, summary, false);
+                let expected_body = control_body(
+                    &audit,
+                    &settings,
+                    vec![row("src/a.rs", "f", 1, 40.0)],
+                    base,
+                    None,
+                    None,
+                );
                 let mut out = Vec::new();
                 run::run(
                     &audit,
-                    &format_settings(&allow, &signals, format, summary, false),
+                    &settings,
                     Analysis {
                         entries: vec![row("src/a.rs", "f", 1, 40.0)],
                         diagnostics: None,
@@ -2776,12 +2915,12 @@ fn cargo_crap_v1_renders_caller_supplied_text_sections() {
                 } else {
                     "<!-- audit -->\n\nchanged result\n\n"
                 };
-                assert!(
-                    text.starts_with(expected_start),
-                    "{format:?} delta={} summary={summary}:\n{text}",
+                assert_eq!(
+                    text,
+                    format!("{expected_start}{expected_body}\nreview notes\n"),
+                    "{format:?} delta={} summary={summary}",
                     base.is_some()
                 );
-                assert!(text.ends_with("\n\nreview notes\n"), "{text}");
                 assert_eq!(text.matches("changed result").count(), 1);
                 assert_eq!(text.matches("review notes").count(), 1);
                 if format != Format::Human {
@@ -2853,6 +2992,7 @@ fn a_section_or_writer_error_takes_precedence_over_any_positive_count() {
             key: "changed",
             placement,
         };
+        let mut out = Vec::new();
         let err = run::run(
             &cargo_crap::tool::CARGO_CRAP,
             &settings,
@@ -2866,11 +3006,12 @@ fn a_section_or_writer_error_takes_precedence_over_any_positive_count() {
             Some(&prepared),
             &[&failing],
             &RenderExtras::default(),
-            &mut Vec::new(),
+            &mut out,
         )
         .expect_err("failing section must override positive gate counts");
         let chain = format!("{err:#}");
         assert!(chain.contains("section write failed"), "{chain}");
+        assert_eq!(out, [] as [u8; 0], "{placement:?}");
     }
 
     let ok_section = TestSection {

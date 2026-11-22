@@ -75,16 +75,15 @@ syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
                   ├── links.rs            SourceLinks, linkify
                   ├── per_crate.rs        crate rollup
                   ├── human.rs            comfy-table
-                  ├── json.rs             versioned envelopes (cargo-crap and crapts v1)
+                  ├── json.rs             versioned envelope
                   ├── github.rs           ::warning annotations
                   ├── markdown.rs         exhaustive GFM
                   ├── pr_comment.rs       opinionated PR comment
                   ├── sarif.rs            SARIF 2.1.0
                   ├── shields.rs          Shields.io endpoint badge
                   ├── duplicates.rs       Duplicate candidates section
-                  ├── section.rs          Section and Placement for caller-supplied sections
                   ├── summary.rs          --summary aggregate
-                  ├── tool.rs             Tool: the branding and policy a front end passes in
+                  ├── tool.rs             Tool: the branding a front end passes in
                   └── test_support.rs     shared fixtures (cfg(test))
 
 syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicates
