@@ -261,19 +261,70 @@ fn body_regions(rows: &[&Row]) -> Vec<(SourceSpan, usize)> {
     bodies
 }
 
+#[derive(Default)]
+struct ArrowCandidates {
+    count: usize,
+    has_assignment: bool,
+}
+
+impl ArrowCandidates {
+    fn warning(&self) -> Option<String> {
+        (self.count >= 5 && !self.has_assignment).then(|| {
+            "The coverage producer appears to write one statement per line. These callbacks will score 0% while their parents absorb the line.".to_owned()
+        })
+    }
+}
+
+fn eligible_arrow(
+    row: &Row,
+    first_columns: &HashMap<u64, f64>,
+) -> bool {
+    row.is_arrow
+        && row.span.start.line == row.span.end.line
+        && !row.statement_lines.is_empty()
+        && row.body_regions.iter().any(|body| {
+            let start = Point::from(body.start);
+            first_columns
+                .get(&start.line.to_bits())
+                .is_some_and(|&first| first < start.column)
+        })
+}
+
 fn statement_evidence(
     rows: &[&Row],
     statements: &[Statement],
+    arrows: &mut ArrowCandidates,
 ) -> Vec<Evidence> {
-    let bodies = body_regions(rows);
+    let mut pending = body_regions(rows).into_iter().peekable();
+    let mut opened = Vec::new();
     let mut evidence = vec![Evidence::default(); rows.len()];
-    for s in statements {
-        if let Some(&(_, owner)) = bodies
-            .iter()
-            .rev()
-            .find(|(body, _)| Point::from(body.start) <= s.start && s.start < Point::from(body.end))
+    let mut first_columns = HashMap::new();
+    let mut ordered: Vec<_> = statements.iter().collect();
+    // Nonnegative, finite coordinates have the same order as their unsigned bit patterns.
+    ordered.sort_unstable_by_key(|s| (s.start.line.to_bits(), s.start.column.to_bits()));
+    for statement in ordered {
+        let start = statement.start;
+        first_columns
+            .entry(start.line.to_bits())
+            .or_insert(start.column);
+        while let Some(region) = pending.next_if(|(body, _)| Point::from(body.start) <= start) {
+            opened.push(region);
+        }
+        // The analyzer emits nested or disjoint bodies, with the innermost live body on top.
+        while opened
+            .last()
+            .is_some_and(|(body, _)| Point::from(body.end) <= start)
         {
-            evidence[owner].record(s.start.line as u32, s.hits);
+            opened.pop();
+        }
+        if let Some(&(_, owner)) = opened.last() {
+            evidence[owner].record(start.line as u32, statement.hits);
+        }
+    }
+    for (row, observed) in rows.iter().zip(&evidence) {
+        if eligible_arrow(row, &first_columns) {
+            arrows.count += 1;
+            arrows.has_assignment |= observed.total != 0;
         }
     }
     evidence
@@ -292,16 +343,19 @@ pub fn attribute(
     let keys = coverage.keys();
     let assignment = paths::assign_by_key(cwd, &sources, &keys, TiePolicy::Unmatched);
     let diagnostics = diagnostics(&assignment, &sources, &keys);
-    let warnings = path_warnings(&assignment, &sources, &keys, &diagnostics);
+    let mut warnings = path_warnings(&assignment, &sources, &keys, &diagnostics);
     let mut rows = Vec::new();
+    let mut arrows = ArrowCandidates::default();
     for (file, bound) in files.iter().zip(&assignment.bindings) {
         let evidence = match &coverage.0 {
             CoverageData::Lines(line_files) => {
                 line_evidence(&file.rows, &merge_lines(line_files, bound))
             },
-            CoverageData::Statements(statement_files) => {
-                statement_evidence(&file.rows, &merge_statements(statement_files, bound))
-            },
+            CoverageData::Statements(statement_files) => statement_evidence(
+                &file.rows,
+                &merge_statements(statement_files, bound),
+                &mut arrows,
+            ),
         };
         rows.extend(
             file.rows
@@ -310,6 +364,7 @@ pub fn attribute(
                 .filter_map(|(row, observed)| observed.score(row, !bound.is_empty(), missing)),
         );
     }
+    warnings.extend(arrows.warning());
     Attribution {
         rows,
         unit: coverage.unit(),
@@ -460,3 +515,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "attribute/istanbul_tests.rs"]
+mod istanbul_tests;

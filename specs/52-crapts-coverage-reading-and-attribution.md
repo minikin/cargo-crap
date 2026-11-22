@@ -728,7 +728,7 @@ Spec 52 builds after Spec 50 rebases onto Spec 49. Every task is one jj change a
   `score::crap` fractional parity (`1.702331961591221`). Property test in
   `attribute.rs` permuting complete LCOV records with equal per-line sums
   and verifying denominators, numerators, and ascending uncovered ranges.
-- [ ] **T7 - Implement Istanbul region attribution, uncovered ranges, and arrow warning in crapts::attribute.**
+- [x] **T7 - Implement Istanbul region attribution, uncovered ranges, and arrow warning in crapts::attribute.**
   Needs: T6. Extend `crates/crapts/src/attribute.rs` to attribute Istanbul
   statement starts using an innermost `body_regions` interval sweep (start
   inclusive, end exclusive, UTF-16 columns, full-width wide coordinates),
