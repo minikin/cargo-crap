@@ -134,7 +134,7 @@ gates-test:
 parser-guard:
     bash scripts/gates/parser-guard.sh
 
-# Mutation tests for a specific file: just mutants src/delta.rs
+# Mutation tests for a specific file: just mutants crates/cargo-crap-core/src/delta.rs
 mutants FILE:
     cargo mutants --workspace --file {{FILE}}
 

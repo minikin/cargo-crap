@@ -963,8 +963,6 @@ mod tests {
         assert!(report.removed.is_empty());
     }
 
-    // --- tunable epsilon ---------------------------------------------------
-
     #[test]
     fn custom_epsilon_zero_catches_sub_default_deltas() {
         // delta = 0.001 is below DEFAULT_EPSILON (0.01) and would normally
@@ -988,8 +986,6 @@ mod tests {
         let report = compute_delta(&[entry("foo", 9.999)], &[entry("foo", 10.0)], 0.0);
         assert_eq!(report.entries[0].status, DeltaStatus::Improved);
     }
-
-    // --- load_baseline contract --------------------------------------------
 
     #[test]
     fn load_baseline_accepts_wrapped_envelope() {
@@ -1151,8 +1147,6 @@ mod tests {
         assert_eq!(baseline.duplicate_groups, None);
     }
 
-    // ─── Move-aware delta detection (spec 13) ────────────────────────────
-
     /// Build a `CrapEntry` parameterized by file + function + score so the
     /// move-detection scenarios can mint pairs without copy-paste.
     fn entry_in(
@@ -1299,8 +1293,6 @@ mod tests {
         assert_eq!(report.removed.len(), 1);
         assert_eq!(report.removed[0].file, PathBuf::from("src/b.rs"));
     }
-
-    // --- DeltaReport::sort (spec 17) ---------------------------------------
 
     #[test]
     fn sort_file_orders_entries_by_current_key_and_removed_by_file_function() {
@@ -1837,8 +1829,6 @@ mod tests {
             proptest::prop_assert_eq!(c.regressed, report.regression_count());
         }
     }
-
-    // --- Spec 43 · signal reasons -------------------------------------------
 
     fn r(
         start: u32,

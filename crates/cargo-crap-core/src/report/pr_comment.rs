@@ -674,8 +674,6 @@ mod tests {
         String::from_utf8(buf).unwrap()
     }
 
-    // --- Path-prefix helper -------------------------------------------------
-
     #[test]
     fn lcp_empty_for_fewer_than_two_paths() {
         assert_eq!(longest_common_path_prefix(&[]), PathBuf::new());
@@ -753,8 +751,6 @@ mod tests {
         assert_eq!(longest_common_path_prefix(&paths), PathBuf::new());
     }
 
-    // --- compute_render_prefix CWD fallback --------------------------------
-
     #[test]
     fn render_prefix_empty_paths_returns_empty() {
         // Kills: replacing `&&` with `||` in the CWD-fallback guard chain.
@@ -792,8 +788,6 @@ mod tests {
             "no cwd"
         );
     }
-
-    // --- pr-comment renderer (delta) ---------------------------------------
 
     #[test]
     fn pr_comment_starts_with_marker() {
@@ -1217,8 +1211,6 @@ mod tests {
         ));
     }
 
-    // --- pr-comment renderer (absolute, no baseline) -----------------------
-
     #[test]
     fn pr_comment_absolute_starts_with_marker() {
         let entries = vec![CrapEntry {
@@ -1260,8 +1252,6 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("## ✅ No CRAP threshold violations"));
     }
-
-    // --- Mutation-killing tests --------------------------------------------
 
     #[test]
     fn pr_comment_hot_spots_filter_is_strict_above_threshold() {
@@ -1427,8 +1417,6 @@ mod tests {
             "breakdown must report 3 unchanged, got:\n{s}"
         );
     }
-
-    // --- Source links (spec 12) --------------------------------------------
 
     #[test]
     fn pr_comment_no_links_when_links_arg_is_none() {
@@ -1683,8 +1671,6 @@ mod tests {
             "absolute pr-comment must link Function:\n{s}"
         );
     }
-
-    // --- uncovered hints ----------------------------------------------------
 
     #[test]
     fn uncovered_hints_extend_the_absolute_table() {

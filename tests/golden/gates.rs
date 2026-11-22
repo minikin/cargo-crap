@@ -295,6 +295,14 @@ fn a_change_to_a_core_proptest_seed_runs_the_rust_jobs() {
 }
 
 #[test]
+fn a_change_to_a_core_test_fixture_runs_the_rust_jobs() {
+    assert!(any_glob_matches(
+        &globs(CI, "            rust:"),
+        "crates/cargo-crap-core/tests/fixtures/lcov/p_bad_known.info"
+    ));
+}
+
+#[test]
 fn a_change_to_any_golden_proptest_seed_runs_the_rust_jobs() {
     let ci = read(".github/workflows/ci.yml");
     let filter = block(&lines(&ci), "            rust:");
