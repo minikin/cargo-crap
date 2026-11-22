@@ -424,6 +424,7 @@ dependencies = [
 name = "crapts"
 version = "0.1.0"
 dependencies = [
+ "globset",
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
