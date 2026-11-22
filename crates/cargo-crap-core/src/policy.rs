@@ -22,6 +22,7 @@ pub enum PairPolicy {
 #[non_exhaustive]
 pub enum TieOrder {
     Stable,
+    FileFunctionLine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

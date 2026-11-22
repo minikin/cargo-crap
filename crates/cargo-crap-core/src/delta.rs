@@ -15,9 +15,9 @@
 
 use crate::coverage::LineRange;
 use crate::duplicates::model::Location;
-use crate::entry::{CrapEntry, SortOrder};
+use crate::entry::{CrapEntry, SortOrder, compare_crap_desc, file_order_key};
 use crate::paths::{path_key, unique_best_by_suffix};
-use crate::policy::PairPolicy;
+use crate::policy::{PairPolicy, TieOrder};
 use crate::report::Tool;
 use crate::signals::{Signal, SignalSettings, Signals};
 use anyhow::{Context, Result};
@@ -323,16 +323,21 @@ impl DeltaReport {
         &mut self,
         order: SortOrder,
     ) {
+        self.sort_with_ties(order, TieOrder::Stable);
+    }
+
+    pub(crate) fn sort_with_ties(
+        &mut self,
+        order: SortOrder,
+        tie_order: TieOrder,
+    ) {
         match order {
-            SortOrder::Crap => self.entries.sort_by(|a, b| {
-                b.current
-                    .crap
-                    .partial_cmp(&a.current.crap)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            }),
+            SortOrder::Crap => self
+                .entries
+                .sort_by(|a, b| compare_crap_desc(&a.current, &b.current, tie_order)),
             SortOrder::File => {
                 self.entries
-                    .sort_by(|a, b| current_key(&a.current).cmp(&current_key(&b.current)));
+                    .sort_by(|a, b| file_order_key(&a.current).cmp(&file_order_key(&b.current)));
                 self.removed
                     .sort_by(|a, b| removed_key(a).cmp(&removed_key(b)));
             },
@@ -440,12 +445,6 @@ pub fn load_baseline_with_weight(
                 .collect()
         }),
     })
-}
-
-/// File-order key for a current entry: `(file, function, line)` ascending,
-/// normalized to forward slashes so the ordering is platform-stable (spec 17).
-fn current_key(e: &CrapEntry) -> (String, &str, usize) {
-    (path_key(&e.file), e.function.as_str(), e.line)
 }
 
 /// File-order key for a removed entry: `(file, function)` ascending.
@@ -2519,5 +2518,49 @@ mod full_name_tests {
                 prop_assert!(e.previous_file.is_none());
             }
         }
+    }
+
+    #[test]
+    fn sort_with_ties_breaks_crap_ties_only_under_file_function_line() {
+        let mut a = row("a.ts", "a", 40.0);
+        a.line = 9;
+        let mut a_early = row("a.ts", "a", 40.0);
+        a_early.line = 2;
+        let b = row("b.ts", "f", 40.0);
+        let input = vec![b, a, a_early];
+        let keys = |r: &DeltaReport| -> Vec<(String, String, usize)> {
+            r.entries
+                .iter()
+                .map(|e| {
+                    (
+                        e.current.file.to_string_lossy().into_owned(),
+                        e.current.function.clone(),
+                        e.current.line,
+                    )
+                })
+                .collect()
+        };
+
+        let mut stable = compare(&input, &[], DEFAULT_EPSILON, PairPolicy::FileFunction);
+        stable.sort_with_ties(SortOrder::Crap, TieOrder::Stable);
+        assert_eq!(
+            keys(&stable),
+            vec![
+                ("b.ts".into(), "f".into(), 1),
+                ("a.ts".into(), "a".into(), 9),
+                ("a.ts".into(), "a".into(), 2),
+            ]
+        );
+
+        let mut settled = compare(&input, &[], DEFAULT_EPSILON, PairPolicy::FileFunction);
+        settled.sort_with_ties(SortOrder::Crap, TieOrder::FileFunctionLine);
+        assert_eq!(
+            keys(&settled),
+            vec![
+                ("a.ts".into(), "a".into(), 2),
+                ("a.ts".into(), "a".into(), 9),
+                ("b.ts".into(), "f".into(), 1),
+            ]
+        );
     }
 }

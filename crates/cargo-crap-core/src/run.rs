@@ -171,7 +171,13 @@ pub fn run(
     let mut eligible = analysis.entries;
     filter::allow(&mut eligible, settings.allow);
     keep_signals(&mut eligible, settings.signals.enabled);
-    let slice = filter::slice(&mut eligible, settings.min, settings.top, settings.sort);
+    let slice = filter::slice_with_ties(
+        &mut eligible,
+        settings.min,
+        settings.top,
+        settings.sort,
+        tool.policy.tie_order,
+    );
     let shown = slice.as_deref().unwrap_or(&eligible);
     let options = RenderOptions {
         tool,
@@ -251,7 +257,7 @@ fn write_delta(
     let counts = delta.counts();
     let gating_signals = gating_signal_count(&delta);
     delta.restrict_to(shown);
-    delta.sort(settings.sort);
+    delta.sort_with_ties(settings.sort, options.tool.policy.tie_order);
     if summary {
         render_delta_summary_lines(&counts, gating_signals, out)?;
     } else {

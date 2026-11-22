@@ -18,7 +18,7 @@ const CRAPTS: Tool = Tool {
         pairing: PairPolicy::FileFunction,
         fail_above_counts: Population::All,
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
-        tie_order: TieOrder::Stable,
+        tie_order: TieOrder::FileFunctionLine,
     },
     name: "crapts",
     version: "0.2.3",
@@ -73,6 +73,9 @@ fn row(
 struct Knobs {
     tool: Tool,
     epsilon: f64,
+    min: Option<f64>,
+    top: Option<usize>,
+    sort: SortOrder,
     allow: Vec<String>,
     scope: &'static dyn Scope,
 }
@@ -82,6 +85,9 @@ impl Default for Knobs {
         Self {
             tool: CRAPTS,
             epsilon: DEFAULT_EPSILON,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
             allow: Vec::new(),
             scope: &Everything,
         }
@@ -108,6 +114,21 @@ impl Report {
             .unwrap_or_else(|| panic!("no entry {file}::{function} in {}", self.raw))
     }
 
+    fn identities(&self) -> Vec<(String, String, usize)> {
+        self.json["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .map(|e| {
+                (
+                    e["file"].as_str().unwrap().to_owned(),
+                    e["function"].as_str().unwrap().to_owned(),
+                    usize::try_from(e["line"].as_u64().unwrap()).unwrap(),
+                )
+            })
+            .collect()
+    }
+
     fn removed(&self) -> Vec<(String, String, f64)> {
         self.json["removed"]
             .as_array()
@@ -124,23 +145,23 @@ impl Report {
     }
 }
 
-fn compare(
+fn render_json(
     knobs: &Knobs,
     head: Vec<CrapEntry>,
-    baseline: Vec<CrapEntry>,
+    baseline: Option<Vec<CrapEntry>>,
 ) -> Report {
     let allow = AllowSet::compile(&knobs.allow).unwrap();
     let signals = SignalSettings::default();
     let settings = Settings {
         allow: &allow,
-        min: None,
-        top: None,
-        sort: SortOrder::Crap,
+        min: knobs.min,
+        top: knobs.top,
+        sort: knobs.sort,
         threshold: 30.0,
         epsilon: knobs.epsilon,
         signals: &signals,
         fail_above: false,
-        fail_regression: true,
+        fail_regression: baseline.is_some(),
         format: Format::Json,
         summary: false,
         show_unchanged: false,
@@ -151,10 +172,12 @@ fn compare(
         workspace_root: None,
         fail_sections: false,
     };
-    let prepared = BaselineFilter::new(knobs.scope, &allow).prepare(Baseline {
-        entries: baseline,
-        try_weight: cargo_crap_core::score::DEFAULT_TRY_WEIGHT,
-        duplicate_groups: None,
+    let prepared = baseline.map(|entries| {
+        BaselineFilter::new(knobs.scope, &allow).prepare(Baseline {
+            entries,
+            try_weight: cargo_crap_core::score::DEFAULT_TRY_WEIGHT,
+            duplicate_groups: None,
+        })
     });
     let mut head = head;
     head.retain(|r| knobs.scope.keeps(&r.file));
@@ -170,7 +193,7 @@ fn compare(
         &knobs.tool,
         &settings,
         analysis,
-        Some(&prepared),
+        prepared.as_ref(),
         &[],
         &RenderExtras::default(),
         &mut out,
@@ -182,6 +205,21 @@ fn compare(
         raw,
         outcome,
     }
+}
+
+fn absolute(
+    knobs: &Knobs,
+    head: Vec<CrapEntry>,
+) -> Report {
+    render_json(knobs, head, None)
+}
+
+fn compare(
+    knobs: &Knobs,
+    head: Vec<CrapEntry>,
+    baseline: Vec<CrapEntry>,
+) -> Report {
+    render_json(knobs, head, Some(baseline))
 }
 
 #[test]
@@ -512,4 +550,100 @@ fn scope_and_allows_apply_before_pairing() {
     assert_eq!(report.json["entries"].as_array().unwrap().len(), 1);
     assert_eq!(report.outcome.crappy, 0);
     assert_eq!(report.outcome.regressed, 0);
+}
+
+#[test]
+fn ties_are_settled_before_top_and_display_order() {
+    // Given descending scores z.ts::high=50, b.ts::third=40, a.ts::z=40, a.ts::a=40 and 0.ts::low=1 in that order
+    let rows = || {
+        vec![
+            row("z.ts", "high", 1, 50.0),
+            row("b.ts", "third", 1, 40.0),
+            row("a.ts", "z", 1, 40.0),
+            row("a.ts", "a", 1, 40.0),
+            row("0.ts", "low", 1, 1.0),
+        ]
+    };
+    let crap_knobs = Knobs {
+        min: Some(40.0),
+        top: Some(2),
+        sort: SortOrder::Crap,
+        ..Knobs::default()
+    };
+    let file_knobs = Knobs {
+        sort: SortOrder::File,
+        ..Knobs {
+            min: Some(40.0),
+            top: Some(2),
+            ..Knobs::default()
+        }
+    };
+    let expected_crap = vec![
+        ("z.ts".to_owned(), "high".to_owned(), 1),
+        ("a.ts".to_owned(), "a".to_owned(), 1),
+    ];
+    let expected_file = vec![
+        ("a.ts".to_owned(), "a".to_owned(), 1),
+        ("z.ts".to_owned(), "high".to_owned(), 1),
+    ];
+    // When the caller requests min 40 and top 2, first by CRAP and then by file
+    // Then CRAP order shows z.ts::high then a.ts::a, and file order shows a.ts::a then z.ts::high
+    // And the same two identities win in absolute and delta mode
+    assert_eq!(absolute(&crap_knobs, rows()).identities(), expected_crap);
+    assert_eq!(absolute(&file_knobs, rows()).identities(), expected_file);
+    assert_eq!(
+        compare(&crap_knobs, rows(), rows()).identities(),
+        expected_crap
+    );
+    assert_eq!(
+        compare(&file_knobs, rows(), rows()).identities(),
+        expected_file
+    );
+
+    let top_three = Knobs {
+        min: Some(40.0),
+        top: Some(3),
+        sort: SortOrder::Crap,
+        ..Knobs::default()
+    };
+    let expected_three = vec![
+        ("z.ts".to_owned(), "high".to_owned(), 1),
+        ("a.ts".to_owned(), "a".to_owned(), 1),
+        ("a.ts".to_owned(), "z".to_owned(), 1),
+    ];
+    assert_eq!(absolute(&top_three, rows()).identities(), expected_three);
+    assert_eq!(
+        compare(&top_three, rows(), rows()).identities(),
+        expected_three
+    );
+}
+
+#[test]
+fn equal_score_selection_is_independent_of_the_order_of_tied_input_rows() {
+    // Given eligible rows in score order with a tied group cut by top, including same file and function on different lines
+    let tied = [
+        row("b.ts", "f", 1, 40.0),
+        row("a.ts", "f", 9, 40.0),
+        row("a.ts", "f", 2, 40.0),
+    ];
+    let perms = [
+        vec![tied[0].clone(), tied[1].clone(), tied[2].clone()],
+        vec![tied[1].clone(), tied[2].clone(), tied[0].clone()],
+        vec![tied[2].clone(), tied[0].clone(), tied[1].clone()],
+    ];
+    let expected = vec![
+        ("a.ts".to_owned(), "f".to_owned(), 2),
+        ("a.ts".to_owned(), "f".to_owned(), 9),
+    ];
+    let knobs = Knobs {
+        top: Some(2),
+        sort: SortOrder::Crap,
+        ..Knobs::default()
+    };
+    // When a caller permutes the tied rows and compares the selections with TieOrder::FileFunctionLine
+    // Then each selection equals the prefix of an independent ordering by descending score then ascending normalized file, function and line
+    for perm in perms {
+        assert_eq!(absolute(&knobs, perm.clone()).identities(), expected);
+        assert_eq!(compare(&knobs, perm, vec![]).identities(), expected);
+    }
 }

@@ -651,7 +651,7 @@ the first byte, like a missing coverage kind.
   Tests: unit for the stem and rounding helpers, property (each eligible
   identity once, counts and removals equal across slices, self-comparison
   all unchanged), acceptance in `tests/crapts_policy.rs`.
-- [ ] **T3 - Settle score ties by file, function and line.** Needs: T2.
+- [x] **T3 - Settle score ties by file, function and line.** Needs: T2.
   `TieOrder::FileFunctionLine` in selection before top and in both display
   orders. Scenarios: _ties are settled before top and display order_,
   _equal-score selection is independent of the order of tied input rows_.
