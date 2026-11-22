@@ -309,7 +309,7 @@ mod coverage_spelling {
 #[test]
 fn resume_strict_lcov_counts_across_records_and_ignore_unrelated_records() {
     use cargo_crap_core::coverage::{StrictLcovFile, read_strict_lcov};
-    let report = "TN:suite\r\nSF:./src/a.ts\r\nDA:4,0\r\nDA:4,2,sum\r\nFN:bad\r\nSF:src/b.ts\r\nDA:4,7\r\nend_of_record\r\nSF:./src/a.ts\r\nDA:4,3\r\nSF:empty.ts";
+    let report = "TN:suite\r\nSF:./src/a.ts\r\nDA:4,0\r\nDA:4,2,checksum\r\nFN:not,a,proper,record\r\nSF:src/b.ts\r\nDA:4,7\r\nend_of_record\r\nSF:./src/a.ts\r\nDA:4,3\r\nSF:empty.ts";
     let files: Vec<StrictLcovFile> = read_strict_lcov(report, Path::new("cov.info")).unwrap();
     let keys: Vec<_> = files.iter().map(|f| f.key.as_str()).collect();
     assert_eq!(keys, ["./src/a.ts", "src/b.ts", "empty.ts"]);
@@ -321,11 +321,31 @@ fn resume_strict_lcov_counts_across_records_and_ignore_unrelated_records() {
 #[test]
 fn strict_lcov_errors_identify_the_physical_record() {
     use cargo_crap_core::coverage::read_strict_lcov;
-    let result = read_strict_lcov("TN:x\nDA:malformed\nSF:a.ts", Path::new("cov.info"));
-    assert_eq!(
-        result.unwrap_err().to_string(),
-        "cov.info: line 2: DA outside an SF record"
-    );
+    let cases = [
+        ("TN:x\nDA:8,1\nSF:a.ts", 2, "DA outside an SF record"),
+        ("TN:x\nDA:malformed\nSF:a.ts", 2, "DA outside an SF record"),
+        (
+            "SF:a.ts\nend_of_record\nDA:8,1",
+            3,
+            "DA outside an SF record",
+        ),
+        ("SF:a.ts\nSF:", 2, "missing SF path"),
+        ("SF:a.ts\nDA:0,1", 2, "invalid DA number"),
+        ("SF:a.ts\nDA:9007199254740992,1", 2, "invalid DA number"),
+        ("SF:a.ts\nDA:+1,+2", 2, "invalid DA record"),
+        ("SF:a.ts\nDA:1,-1", 2, "invalid DA record"),
+        ("SF:a.ts\nDA:1,1.5", 2, "invalid DA record"),
+        ("SF:a.ts\nDA:1,1,", 2, "invalid DA record"),
+        ("SF:a.ts\nDA:1,1,checksum,extra", 2, "invalid DA record"),
+    ];
+    for (text, line, reason) in cases {
+        let error = read_strict_lcov(text, Path::new("cov.info")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("cov.info: line {line}: {reason}"),
+            "{text}"
+        );
+    }
 }
 
 #[test]
@@ -342,4 +362,8 @@ fn read_strict_lcov_at_its_numeric_boundaries() {
         ]
         .into()
     );
+    let huge = format!("1{}", "0".repeat(308));
+    let overflow = format!("SF:a\nDA:2,{huge}\nDA:2,{huge}");
+    let error = read_strict_lcov(&overflow, Path::new("cov.info")).unwrap_err();
+    assert_eq!(error.to_string(), "cov.info: line 3: invalid DA number");
 }

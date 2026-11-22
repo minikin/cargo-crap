@@ -205,7 +205,7 @@ pub fn parse_lcov_with(
     Ok(files)
 }
 
-/// A producer's original SF spelling. Counts follow binary64 addition in physical record order.
+/// Counts follow binary64 addition in physical record order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StrictLcovFile {
     pub key: String,
@@ -280,7 +280,7 @@ fn add_strict_line(
     Ok(())
 }
 
-/// Preserves distinct SF spellings in first-appearance order. Unrelated record types are ignored.
+/// The caller removes the initial BOM and decodes lossy UTF-8 before parsing records.
 ///
 /// # Errors
 /// An invalid SF or DA names the report and the one-based physical line.
@@ -318,6 +318,14 @@ mod tests {
         assert_eq!(actual[0].lines, BTreeMap::from([(4, 5.0)]));
         assert_eq!(actual[1].lines, BTreeMap::from([(4, 7.0)]));
         assert_eq!(actual[2].lines, BTreeMap::new());
+        assert_eq!(read_strict(&format!("{text}\n")).unwrap(), actual);
+        let names = ["src/a\u{feff}b.ts", r"\\ci\share\a.ts", "trailing.ts "];
+        let report = format!("SF:{}\n", names.join("\nSF:"));
+        let files = read_strict(&report).unwrap();
+        assert_eq!(
+            files.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(),
+            names
+        );
         let one_cr = read_strict("SF:a.ts\r\r\nend_of_record \nDA:1,1").unwrap();
         assert_eq!(one_cr[0].key, "a.ts\r");
         assert_eq!(one_cr[0].lines[&1], 1.0);
@@ -401,22 +409,36 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn permuting_complete_strict_records_preserves_line_sums(
-            records in proptest::collection::vec((0..5_u8, 1..8_u64, 0..50_u16, proptest::num::u32::ANY), 0..32)
+            records in proptest::collection::vec((
+                0..5_u8, 1..8_u64, 0..50_u16, proptest::num::u32::ANY,
+                proptest::bool::ANY, proptest::bool::ANY
+            ), 0..32)
         ) {
             use std::fmt::Write as _;
+            use std::collections::HashSet;
+            let key = |id, dotted| if dotted { format!("./{id}.ts") } else { format!("{id}.ts") };
             let mut expected = BTreeMap::<String, BTreeMap<u64, f64>>::new();
-            for &(file, line, hits, _) in &records {
-                *expected.entry(format!("{file}.ts")).or_default().entry(line).or_default() += f64::from(hits);
+            for &(file, line, hits, _, dotted, _) in &records {
+                *expected.entry(key(file, dotted)).or_default().entry(line).or_default() += f64::from(hits);
             }
             let mut reordered = records.clone();
-            reordered.sort_by_key(|r|r.3);
+            reordered.sort_by_key(|r| r.3);
             for items in [records, reordered] {
                 let mut text = String::new();
-                for (file, line, hits, _) in items {
-                    writeln!(text, "SF:{file}.ts\nDA:{line},{hits}\nend_of_record").unwrap();
+                let mut order = Vec::new();
+                for (file, line, hits, _, dotted, closed) in items {
+                    let name = key(file, dotted);
+                    writeln!(text, "SF:{name}\nDA:{line},{hits}").unwrap();
+                    if closed { text.push_str("end_of_record\n"); }
+                    if !order.contains(&name) { order.push(name); }
                 }
-                let files: BTreeMap<_,_> = read_strict(&text).unwrap().into_iter().map(|f|(f.key, f.lines)).collect();
-                proptest::prop_assert_eq!(&files, &expected);
+                let files = read_strict(&text).unwrap();
+                proptest::prop_assert_eq!(files.len(), expected.len());
+                let names: Vec<_> = files.iter().map(|f| &f.key).collect();
+                proptest::prop_assert_eq!(names.iter().collect::<HashSet<_>>().len(), files.len());
+                proptest::prop_assert_eq!(names, order.iter().collect::<Vec<_>>());
+                let sums: BTreeMap<_, _> = files.into_iter().map(|f| (f.key, f.lines)).collect();
+                proptest::prop_assert_eq!(&sums, &expected);
             }
         }
     }
