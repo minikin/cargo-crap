@@ -699,7 +699,7 @@ the first byte, like a missing coverage kind.
   presence_, _a foreign-baseline diagnostic names the caller's tool_, _the
   foreign-key probe preserves cargo-crap's original parse errors_. Tests:
   unit, CLI acceptance in `tests/cli.rs` against the golden stream.
-- [ ] **T8 - Embed section objects and count their failures.** Needs: T6.
+- [x] **T8 - Embed section objects and count their failures.** Needs: T6.
   The `changed` slot, key and object checks before the first byte,
   `summary.changed_failures`, `GateOutcome.section_failures` and
   `Settings.fail_sections`, and the `CargoCrapV1` refusal. Scenarios: _a

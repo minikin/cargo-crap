@@ -10,7 +10,7 @@ use crate::duplicates::{
 };
 use crate::entry::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::filter::{self, AllowSet};
-use crate::gate::{GateOutcome, threshold_count};
+use crate::gate::{GateInput, GateOutcome, threshold_count};
 use crate::policy::EnvelopeKind;
 use crate::report::{self, Format, RenderOptions, Section, SourceLinks, Tool, TriagedBy};
 use crate::score::DEFAULT_TRY_WEIGHT;
@@ -270,49 +270,107 @@ pub fn run(
     );
     let notices = collect_notices(analysis.notices, baseline);
     let include_marker = write_text_notices(tool, settings.format, &notices, out)?;
-    let (regressed, gating_signals) = if summary {
-        write_summary(settings, &eligible, shown, baseline, tool, out)?
-    } else if tool.policy.envelope == EnvelopeKind::CraptsV1 && settings.format == Format::Json {
-        write_crapts_json(
-            tool,
-            settings,
-            &eligible,
-            shown,
-            crappy,
-            analysis.coverage_kind,
-            analysis.diagnostics.as_ref(),
-            &notices,
-            baseline,
-            out,
-        )?
-    } else if let Some(baseline) = baseline {
-        write_delta(
-            settings,
-            &eligible,
-            shown,
-            baseline,
-            &options,
-            include_marker,
-            out,
-        )?
-    } else {
-        report::render_inner(shown, &options, include_marker, out)?;
-        (0, 0)
+    let body = RunBody {
+        tool,
+        settings,
+        eligible: &eligible,
+        shown,
+        crappy,
+        coverage_kind: analysis.coverage_kind,
+        diagnostics: analysis.diagnostics.as_ref(),
+        notices: &notices,
+        baseline,
+        sections,
+        options: &options,
     };
+    let (regressed, gating_signals) = write_report_body(&body, summary, include_marker, out)?;
     report::render_duplicates(&options, out).context("writing duplicate report")?;
     out.flush().context("flushing output")?;
     let regression_skipped = baseline.is_some_and(PreparedBaseline::regression_gate_skipped);
     let section_failures = sections.iter().filter_map(|s| s.failures()).sum();
-    Ok(GateOutcome {
+    Ok(GateOutcome::evaluate(GateInput {
+        crappy,
+        regressed,
+        gating_signals,
         section_failures,
-        ..GateOutcome::from_counts(
-            crappy,
-            regressed,
-            gating_signals,
-            settings.fail_above,
-            settings.fail_regression && !regression_skipped,
+        fail_above: settings.fail_above,
+        fail_regression: settings.fail_regression && !regression_skipped,
+        fail_sections: settings.fail_sections,
+    }))
+}
+
+struct RunBody<'a> {
+    tool: &'a Tool,
+    settings: &'a Settings<'a>,
+    eligible: &'a [CrapEntry],
+    shown: &'a [CrapEntry],
+    crappy: usize,
+    coverage_kind: Option<CoverageKind>,
+    diagnostics: Option<&'a ScopeDiagnostics>,
+    notices: &'a [&'a str],
+    baseline: Option<&'a PreparedBaseline>,
+    sections: &'a [&'a dyn Section],
+    options: &'a RenderOptions<'a>,
+}
+
+fn write_report_body(
+    body: &RunBody<'_>,
+    summary: bool,
+    include_marker: bool,
+    out: &mut dyn Write,
+) -> Result<(usize, usize)> {
+    if summary {
+        return write_summary(
+            body.settings,
+            body.eligible,
+            body.shown,
+            body.baseline,
+            body.tool,
+            out,
+        );
+    }
+    if body.settings.format == Format::Json {
+        return write_json_body(body, include_marker, out);
+    }
+    if let Some(baseline) = body.baseline {
+        write_delta(
+            body.settings,
+            body.eligible,
+            body.shown,
+            baseline,
+            body.options,
+            include_marker,
+            out,
         )
-    })
+    } else {
+        report::render_inner(body.shown, body.options, include_marker, out)?;
+        Ok((0, 0))
+    }
+}
+
+fn write_json_body(
+    body: &RunBody<'_>,
+    include_marker: bool,
+    out: &mut dyn Write,
+) -> Result<(usize, usize)> {
+    if body.tool.policy.envelope == EnvelopeKind::CraptsV1 {
+        return write_crapts_json(body, out);
+    }
+    report::reject_cargo_crap_json_sections(body.sections)?;
+    if let Some(baseline) = body.baseline {
+        write_delta(
+            body.settings,
+            body.eligible,
+            body.shown,
+            baseline,
+            body.options,
+            include_marker,
+            out,
+        )
+    } else {
+        report::render_inner(body.shown, body.options, include_marker, out)?;
+        Ok((0, 0))
+    }
 }
 
 fn write_text_notices(
@@ -378,46 +436,43 @@ fn compute_prepared_delta(
     (delta, counts, gating_signals)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "internal dispatch carrying run inputs without allocating an intermediate wrapper"
-)]
 fn write_crapts_json(
-    tool: &Tool,
-    settings: &Settings<'_>,
-    eligible: &[CrapEntry],
-    shown: &[CrapEntry],
-    crappy: usize,
-    coverage_kind: Option<CoverageKind>,
-    diagnostics: Option<&ScopeDiagnostics>,
-    notices: &[&str],
-    baseline: Option<&PreparedBaseline>,
+    body: &RunBody<'_>,
     out: &mut dyn Write,
 ) -> Result<(usize, usize)> {
-    let coverage_kind =
-        coverage_kind.ok_or_else(|| anyhow::anyhow!("crapts JSON requires coverage_kind"))?;
-    let diagnostics =
-        diagnostics.ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
-    let selection = report::CraptsSelection::from_limits(settings.top, settings.min)?;
+    let coverage_kind = body
+        .coverage_kind
+        .ok_or_else(|| anyhow::anyhow!("crapts JSON requires coverage_kind"))?;
+    let diagnostics = body
+        .diagnostics
+        .ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
+    let selection = report::CraptsSelection::from_limits(body.settings.top, body.settings.min)?;
+    let changed = report::extract_crapts_changed(body.sections)?;
     let ctx = report::CraptsJsonContext {
-        tool,
+        tool: body.tool,
         coverage_kind,
-        threshold: settings.threshold,
+        threshold: body.settings.threshold,
         selection,
-        notices,
-        total: eligible.len(),
-        crappy,
+        notices: body.notices,
+        total: body.eligible.len(),
+        crappy: body.crappy,
+        changed: changed.as_ref(),
         diagnostics,
     };
-    let Some(baseline) = baseline else {
-        report::render_crapts_json(shown, &ctx, out)?;
+    let Some(baseline) = body.baseline else {
+        report::render_crapts_json(body.shown, &ctx, out)?;
         return Ok((0, 0));
     };
     let baseline_version = baseline.baseline_version().ok_or_else(|| {
         anyhow::anyhow!("crapts delta JSON requires a baseline prepared with prepare_crapts")
     })?;
-    let (delta, counts, gating_signals) =
-        compute_prepared_delta(settings, eligible, shown, baseline, tool);
+    let (delta, counts, gating_signals) = compute_prepared_delta(
+        body.settings,
+        body.eligible,
+        body.shown,
+        baseline,
+        body.tool,
+    );
     report::render_crapts_delta_json(
         &delta,
         &counts,
@@ -712,7 +767,7 @@ mod tests {
             workspace_root: None,
             fail_sections: false,
         };
-        let outcome = |sections: &[&dyn Section]| {
+        let outcome = |sections: &[&dyn Section], fail_sections: bool| {
             let analysis = Analysis {
                 entries: Vec::new(),
                 diagnostics: None,
@@ -722,7 +777,10 @@ mod tests {
             };
             run(
                 &SECOND_TOOL,
-                &settings,
+                &Settings {
+                    fail_sections,
+                    ..settings
+                },
                 analysis,
                 None,
                 sections,
@@ -736,9 +794,11 @@ mod tests {
             FixedSection::failing(None),
             FixedSection::failing(Some(1)),
         );
-        assert_eq!(outcome(&[]).section_failures, 0);
-        assert_eq!(outcome(&[&two, &none, &one]).section_failures, 3);
-        assert!(!outcome(&[&two]).tripped);
+        assert_eq!(outcome(&[], false).section_failures, 0);
+        assert_eq!(outcome(&[&two, &none, &one], false).section_failures, 3);
+        assert!(!outcome(&[&two], false).tripped);
+        assert!(outcome(&[&two], true).tripped);
+        assert!(!outcome(&[&none], true).tripped);
     }
 
     #[test]

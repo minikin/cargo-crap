@@ -14,6 +14,17 @@ pub(crate) fn threshold_count(
     crappy_count(rows, threshold)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GateInput {
+    pub(crate) crappy: usize,
+    pub(crate) regressed: usize,
+    pub(crate) gating_signals: usize,
+    pub(crate) section_failures: usize,
+    pub(crate) fail_above: bool,
+    pub(crate) fail_regression: bool,
+    pub(crate) fail_sections: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GateOutcome {
     /// Score rows strictly above the threshold in the selected gate population.
@@ -26,19 +37,14 @@ pub struct GateOutcome {
 
 impl GateOutcome {
     #[must_use]
-    pub(crate) fn from_counts(
-        crappy: usize,
-        regressed: usize,
-        gating_signals: usize,
-        fail_above: bool,
-        fail_regression: bool,
-    ) -> Self {
-        let tripped = (fail_above && crappy > 0)
-            || (fail_regression && (regressed > 0 || gating_signals > 0));
+    pub(crate) fn evaluate(input: GateInput) -> Self {
+        let tripped = (input.fail_above && input.crappy > 0)
+            || (input.fail_regression && (input.regressed > 0 || input.gating_signals > 0))
+            || (input.fail_sections && input.section_failures > 0);
         Self {
-            crappy,
-            regressed,
-            section_failures: 0,
+            crappy: input.crappy,
+            regressed: input.regressed,
+            section_failures: input.section_failures,
             tripped,
         }
     }
@@ -87,21 +93,39 @@ mod tests {
     }
 
     #[test]
-    fn score_and_signal_gates_preserve_the_independent_counts() {
+    fn score_signal_and_section_gates_preserve_the_independent_counts() {
         for case in [
-            (0, 0, 0, true, true, 0),
-            (2, 0, 0, true, false, 1),
-            (2, 0, 0, false, true, 0),
-            (0, 3, 0, false, true, 1),
-            (0, 0, 2, false, true, 1),
-            (0, 3, 2, true, false, 0),
+            (0, 0, 0, 0, true, true, true, 0),
+            (2, 0, 0, 0, true, false, false, 1),
+            (2, 0, 0, 0, false, true, true, 0),
+            (0, 3, 0, 0, false, true, false, 1),
+            (0, 0, 2, 0, false, true, false, 1),
+            (0, 3, 2, 0, true, false, true, 0),
+            (0, 0, 0, 2, true, true, false, 0),
+            (0, 0, 0, 2, false, false, true, 1),
         ] {
-            let (crappy, regressed, signals, fail_above, fail_regression, code) = case;
-            let outcome =
-                GateOutcome::from_counts(crappy, regressed, signals, fail_above, fail_regression);
+            let (
+                crappy,
+                regressed,
+                gating_signals,
+                section_failures,
+                fail_above,
+                fail_regression,
+                fail_sections,
+                code,
+            ) = case;
+            let outcome = GateOutcome::evaluate(super::GateInput {
+                crappy,
+                regressed,
+                gating_signals,
+                section_failures,
+                fail_above,
+                fail_regression,
+                fail_sections,
+            });
             assert_eq!(
                 (outcome.crappy, outcome.regressed, outcome.section_failures),
-                (crappy, regressed, 0),
+                (crappy, regressed, section_failures),
                 "case {case:?}"
             );
             assert_eq!(outcome.tripped, code == 1, "case {case:?}");

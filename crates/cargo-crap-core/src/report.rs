@@ -53,7 +53,8 @@ pub(crate) mod test_support;
 // Re-exports — the rest of the crate depends on these names being on `report`.
 pub use json::Envelope;
 pub(crate) use json::{
-    CraptsJsonContext, CraptsSelection, render_crapts_delta_json, render_crapts_json,
+    CraptsJsonContext, CraptsSelection, extract_crapts_changed, reject_cargo_crap_json_sections,
+    render_crapts_delta_json, render_crapts_json,
 };
 pub use links::SourceLinks;
 pub use section::{Placement, Section};

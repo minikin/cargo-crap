@@ -10,7 +10,7 @@ use cargo_crap_core::entry::{CrapEntry, ScopeDiagnostics, SortOrder, StrayFiles}
 use cargo_crap_core::filter::AllowSet;
 use cargo_crap_core::gate::GateOutcome;
 use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
-use cargo_crap_core::report::{Format, Schemas, Tool};
+use cargo_crap_core::report::{Format, Placement, Schemas, Section, Tool};
 use cargo_crap_core::run::{self, Analysis, BaselineFilter, RenderExtras, Scope, Settings};
 use cargo_crap_core::signals::SignalSettings;
 use serde_json::{Value, json};
@@ -2000,4 +2000,447 @@ fn a_foreign_baseline_diagnostic_names_the_callers_tool() {
         .expect_err("load_baseline_with_weight must reject top-level name_scheme");
     assert_eq!(err_entries.to_string(), expected);
     assert_eq!(err_weighted.to_string(), expected);
+}
+
+struct TestSection {
+    key: &'static str,
+    raw: &'static str,
+    text: &'static str,
+    github: Option<&'static str>,
+    placement: Placement,
+    failures: Option<usize>,
+}
+
+impl Section for TestSection {
+    fn json_key(&self) -> &str {
+        self.key
+    }
+
+    fn json(&self) -> Box<serde_json::value::RawValue> {
+        serde_json::value::RawValue::from_string(self.raw.to_owned()).expect("valid raw JSON")
+    }
+
+    fn write(
+        &self,
+        format: Format,
+        out: &mut dyn std::io::Write,
+    ) -> anyhow::Result<()> {
+        let line = match (format, self.github) {
+            (Format::GitHub, Some(gh)) => gh,
+            _ => self.text,
+        };
+        writeln!(out, "{line}")?;
+        Ok(())
+    }
+
+    fn placement(&self) -> Placement {
+        self.placement
+    }
+
+    fn failures(&self) -> Option<usize> {
+        self.failures
+    }
+}
+
+fn extract_raw_changed_value(raw: &str) -> &str {
+    let (_, rest) = raw.split_once("\n  \"changed\": ").expect("changed member");
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut escaped = false;
+    for (i, ch) in rest.char_indices() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_str = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &rest[..=i];
+                }
+            },
+            _ => {},
+        }
+    }
+    panic!("unclosed changed object in:\n{raw}");
+}
+
+fn json_settings<'a>(
+    allow: &'a AllowSet,
+    signals: &'a SignalSettings,
+    fail_above: bool,
+    fail_regression: bool,
+    fail_sections: bool,
+) -> Settings<'a> {
+    Settings {
+        allow,
+        min: None,
+        top: None,
+        sort: SortOrder::Crap,
+        threshold: 30.0,
+        epsilon: DEFAULT_EPSILON,
+        signals,
+        fail_above,
+        fail_regression,
+        format: Format::Json,
+        summary: false,
+        show_unchanged: false,
+        uncovered_hints: false,
+        width: None,
+        links: None,
+        cwd: Path::new(""),
+        workspace_root: None,
+        fail_sections,
+    }
+}
+
+#[test]
+fn a_section_contributes_one_ordered_json_object_and_a_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = json_settings(&allow, &signals, false, false, false);
+    let base_path = write_crapts_baseline_file(
+        &dir,
+        "base.json",
+        &CRAPTS,
+        CoverageKind::Lines,
+        vec![row("src/a.ts", "f", 1, 10.0)],
+    );
+    let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+
+    let supplied = r#"{ "version" : "0.2.3",  "counts" : {"fail":0} }"#;
+    let section = TestSection {
+        key: "changed",
+        raw: supplied,
+        text: "changed result",
+        github: None,
+        placement: Placement::Lead,
+        failures: Some(0),
+    };
+
+    for (base, schema) in [(None, &abs_schema), (Some(&prepared), &delta_schema)] {
+        for entries in [vec![row("src/a.ts", "f", 1, 12.0)], Vec::new()] {
+            let mut out = Vec::new();
+            run::run(
+                &CRAPTS,
+                &settings,
+                Analysis {
+                    entries: entries.clone(),
+                    diagnostics: Some(zero_diagnostics()),
+                    scope: &Everything,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                base,
+                &[&section],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            let raw = String::from_utf8(out).unwrap();
+            let doc: Value = serde_json::from_str(&raw).unwrap();
+            assert!(schema.is_valid(&doc), "{raw}");
+            assert_eq!(extract_raw_changed_value(&raw), supplied);
+            assert_eq!(doc["summary"]["changed_failures"], 0);
+
+            let mut without = Vec::new();
+            run::run(
+                &CRAPTS,
+                &settings,
+                Analysis {
+                    entries,
+                    diagnostics: Some(zero_diagnostics()),
+                    scope: &Everything,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                base,
+                &[],
+                &RenderExtras::default(),
+                &mut without,
+            )
+            .unwrap();
+            let doc_without: Value = serde_json::from_slice(&without).unwrap();
+            assert!(schema.is_valid(&doc_without));
+            assert!(doc_without.get("changed").is_none());
+            assert!(doc_without["summary"]["changed_failures"].is_null());
+        }
+    }
+}
+
+#[test]
+fn a_present_section_can_omit_a_failure_count() {
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = json_settings(&allow, &signals, false, false, true);
+    let section = TestSection {
+        key: "changed",
+        raw: "{}",
+        text: "changed result",
+        github: None,
+        placement: Placement::Lead,
+        failures: None,
+    };
+    let mut out = Vec::new();
+    let outcome = run::run(
+        &CRAPTS,
+        &settings,
+        Analysis {
+            entries: vec![row("src/a.ts", "clean", 1, 5.0)],
+            diagnostics: Some(zero_diagnostics()),
+            scope: &Everything,
+            coverage_kind: Some(CoverageKind::Lines),
+            notices: &[],
+        },
+        None,
+        &[&section],
+        &RenderExtras::default(),
+        &mut out,
+    )
+    .unwrap();
+    let doc: Value = serde_json::from_slice(&out).unwrap();
+    assert!(abs_schema.is_valid(&doc));
+    assert_eq!(doc["changed"], json!({}));
+    assert!(doc["summary"]["changed_failures"].is_null());
+    assert_eq!(outcome.section_failures, 0);
+    assert_eq!(outcome.exit_code(), std::process::ExitCode::SUCCESS);
+}
+
+#[test]
+fn cargo_craps_closed_json_envelope_has_no_section_slot() {
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = json_settings(&allow, &signals, false, false, false);
+    let base_entry = row("src/a.rs", "f", 1, 10.0);
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare(Baseline {
+        entries: vec![base_entry.clone()],
+        try_weight: cargo_crap_core::score::DEFAULT_TRY_WEIGHT,
+        duplicate_groups: None,
+    });
+    let section = TestSection {
+        key: "changed",
+        raw: "{}",
+        text: "changed result",
+        github: None,
+        placement: Placement::Lead,
+        failures: Some(0),
+    };
+    for base in [None, Some(&prepared)] {
+        let mut bad_out = Vec::new();
+        let err = run::run(
+            &cargo_crap::tool::CARGO_CRAP,
+            &settings,
+            Analysis {
+                entries: vec![base_entry.clone()],
+                diagnostics: None,
+                scope: &Everything,
+                coverage_kind: None,
+                notices: &[],
+            },
+            base,
+            &[&section],
+            &RenderExtras::default(),
+            &mut bad_out,
+        )
+        .expect_err("CargoCrapV1 JSON must refuse sections")
+        .to_string();
+        assert!(
+            err.contains("changed") && err.contains("CargoCrapV1"),
+            "{err}"
+        );
+        assert_eq!(bad_out, [] as [u8; 0]);
+
+        let mut ok_out = Vec::new();
+        run::run(
+            &cargo_crap::tool::CARGO_CRAP,
+            &settings,
+            Analysis {
+                entries: vec![base_entry.clone()],
+                diagnostics: None,
+                scope: &Everything,
+                coverage_kind: None,
+                notices: &[],
+            },
+            base,
+            &[],
+            &RenderExtras::default(),
+            &mut ok_out,
+        )
+        .unwrap();
+        let doc: Value = serde_json::from_slice(&ok_out).unwrap();
+        let schema = schemas::compile(if base.is_some() {
+            "schemas/delta-v2.json"
+        } else {
+            "schemas/report-v1.json"
+        });
+        assert!(schema.is_valid(&doc));
+    }
+}
+
+#[test]
+fn a_caller_cannot_overwrite_a_json_envelope_member_with_a_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = json_settings(&allow, &signals, false, false, false);
+    let base_path =
+        write_crapts_baseline_file(&dir, "base.json", &CRAPTS, CoverageKind::Lines, vec![]);
+    let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+
+    let mk = |key: &'static str| TestSection {
+        key,
+        raw: "{}",
+        text: "",
+        github: None,
+        placement: Placement::Lead,
+        failures: Some(0),
+    };
+    let (changed_a, changed_b, entries_sec, extra_sec) =
+        (mk("changed"), mk("changed"), mk("entries"), mk("extra"));
+    let cases: &[(&[&dyn Section], &str)] = &[
+        (&[&changed_a, &changed_b], "changed"),
+        (&[&entries_sec], "entries"),
+        (&[&extra_sec], "extra"),
+    ];
+    for base in [None, Some(&prepared)] {
+        for &(sections, offending) in cases {
+            let mut out = Vec::new();
+            let err = run::run(
+                &CRAPTS,
+                &settings,
+                Analysis {
+                    entries: Vec::new(),
+                    diagnostics: Some(zero_diagnostics()),
+                    scope: &Everything,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                base,
+                sections,
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .expect_err("disallowed section key must fail")
+            .to_string();
+            assert!(err.contains(offending), "{err}");
+            assert_eq!(out, [] as [u8; 0]);
+        }
+    }
+}
+
+#[test]
+fn a_declared_section_must_supply_a_raw_json_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = json_settings(&allow, &signals, false, false, false);
+    let base_path =
+        write_crapts_baseline_file(&dir, "base.json", &CRAPTS, CoverageKind::Lines, vec![]);
+    let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+
+    for raw in ["[]", "null"] {
+        let section = TestSection {
+            key: "changed",
+            raw,
+            text: "",
+            github: None,
+            placement: Placement::Lead,
+            failures: Some(0),
+        };
+        for base in [None, Some(&prepared)] {
+            let mut out = Vec::new();
+            let err = run::run(
+                &CRAPTS,
+                &settings,
+                Analysis {
+                    entries: Vec::new(),
+                    diagnostics: Some(zero_diagnostics()),
+                    scope: &Everything,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                base,
+                &[&section],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .expect_err("non-object section payload must fail")
+            .to_string();
+            assert!(err.contains("changed") && err.contains("object"), "{err}");
+            assert_eq!(out, [] as [u8; 0]);
+        }
+    }
+}
+
+#[test]
+fn section_failures_are_observable_even_when_their_gate_is_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let base_tool = Tool {
+        version: "0.1.9",
+        ..CRAPTS
+    };
+    let base_path = write_crapts_baseline_file(
+        &dir,
+        "base.json",
+        &base_tool,
+        CoverageKind::Lines,
+        vec![row("src/a.ts", "f", 1, 20.0)],
+    );
+    let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+    let section = TestSection {
+        key: "changed",
+        raw: r#"{"counts":{"fail":2}}"#,
+        text: "changed result",
+        github: None,
+        placement: Placement::Lead,
+        failures: Some(2),
+    };
+
+    for (fail_sections, expected_code) in [(false, 0u8), (true, 1u8)] {
+        let settings = json_settings(&allow, &signals, false, true, fail_sections);
+        let mut out = Vec::new();
+        let outcome = run::run(
+            &CRAPTS,
+            &settings,
+            Analysis {
+                entries: vec![row("src/a.ts", "f", 1, 40.0)],
+                diagnostics: Some(zero_diagnostics()),
+                scope: &Everything,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            Some(&prepared),
+            &[&section],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        let doc: Value = serde_json::from_slice(&out).unwrap();
+        assert!(delta_schema.is_valid(&doc));
+        assert_eq!(doc["summary"]["changed_failures"], 2);
+        assert_eq!(outcome.section_failures, 2);
+        assert_eq!(
+            outcome.exit_code(),
+            std::process::ExitCode::from(expected_code)
+        );
+    }
 }

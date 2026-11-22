@@ -12,8 +12,9 @@ use crate::duplicates::model::Location;
 use crate::duplicates::novelty::Novelty;
 use crate::duplicates::verdict::Assessment;
 use crate::entry::{CrapEntry, ScopeDiagnostics, StrayFiles};
-use crate::report::{RenderOptions, Tool};
+use crate::report::{RenderOptions, Section, Tool};
 use anyhow::{Result, bail};
+use serde_json::value::RawValue;
 use std::io::Write;
 use std::path::Path;
 
@@ -439,6 +440,53 @@ impl CraptsSelection {
     }
 }
 
+pub(crate) struct CraptsChangedSection {
+    pub(crate) raw: Box<RawValue>,
+    pub(crate) failures: Option<usize>,
+}
+
+fn ensure_json_object(
+    key: &str,
+    raw: &RawValue,
+) -> Result<()> {
+    if !raw.get().trim_ascii_start().starts_with('{') {
+        bail!("JSON section {key:?} must supply a JSON object");
+    }
+    Ok(())
+}
+
+pub(crate) fn extract_crapts_changed(
+    sections: &[&dyn Section]
+) -> Result<Option<CraptsChangedSection>> {
+    let mut changed: Option<CraptsChangedSection> = None;
+    for section in sections {
+        let key = section.json_key();
+        if key != "changed" {
+            bail!("crapts v1 JSON envelope has no section slot for {key:?}");
+        }
+        if changed.is_some() {
+            bail!("duplicate JSON section key {key:?}");
+        }
+        let raw = section.json();
+        ensure_json_object(key, &raw)?;
+        changed = Some(CraptsChangedSection {
+            raw,
+            failures: section.failures(),
+        });
+    }
+    Ok(changed)
+}
+
+pub(crate) fn reject_cargo_crap_json_sections(sections: &[&dyn Section]) -> Result<()> {
+    if let Some(first) = sections.first() {
+        bail!(
+            "EnvelopeKind::CargoCrapV1 JSON envelope has no section slot for {:?}",
+            first.json_key()
+        );
+    }
+    Ok(())
+}
+
 pub(crate) struct CraptsJsonContext<'a> {
     pub(crate) tool: &'a Tool,
     pub(crate) coverage_kind: CoverageKind,
@@ -447,6 +495,7 @@ pub(crate) struct CraptsJsonContext<'a> {
     pub(crate) notices: &'a [&'a str],
     pub(crate) total: usize,
     pub(crate) crappy: usize,
+    pub(crate) changed: Option<&'a CraptsChangedSection>,
     pub(crate) diagnostics: &'a ScopeDiagnostics,
 }
 
@@ -535,6 +584,8 @@ struct CraptsAbsoluteEnvelope<'a> {
     notices: &'a [&'a str],
     summary: CraptsSummary,
     entries: Vec<CraptsAbsoluteRow<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed: Option<&'a RawValue>,
     diagnostics: CraptsDiagnostics,
 }
 
@@ -552,6 +603,8 @@ struct CraptsDeltaEnvelope<'a> {
     summary: CraptsSummary,
     entries: Vec<CraptsDeltaRow<'a>>,
     removed: Vec<CraptsRemovedRow<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed: Option<&'a RawValue>,
     diagnostics: CraptsDiagnostics,
 }
 
@@ -662,9 +715,10 @@ pub(crate) fn render_crapts_json(
             moved: None,
             unchanged: None,
             removed: None,
-            changed_failures: None,
+            changed_failures: ctx.changed.and_then(|c| c.failures),
         },
         entries: rows,
+        changed: ctx.changed.map(|c| c.raw.as_ref()),
         diagnostics: crapts_diagnostics(ctx.diagnostics),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
@@ -716,10 +770,11 @@ pub(crate) fn render_crapts_delta_json(
             moved: Some(counts.moved),
             unchanged: Some(counts.unchanged),
             removed: Some(counts.removed),
-            changed_failures: None,
+            changed_failures: ctx.changed.and_then(|c| c.failures),
         },
         entries: rows,
         removed,
+        changed: ctx.changed.map(|c| c.raw.as_ref()),
         diagnostics: crapts_diagnostics(ctx.diagnostics),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
@@ -1378,6 +1433,7 @@ mod tests {
             notices: &notices,
             total: 1,
             crappy: 0,
+            changed: None,
             diagnostics: &diag,
         };
 
@@ -1490,5 +1546,135 @@ mod tests {
                 .to_string();
             assert!(err.contains("selection"), "{err}");
         }
+    }
+
+    #[test]
+    fn section_key_and_payload_validation_enforces_slots_and_objects() {
+        use crate::report::{Placement, test_support::FixedSection};
+        let valid = FixedSection {
+            key: "changed",
+            raw: r#"{ "version" : "0.2.3",  "counts" : {"fail":0} }"#,
+            text: "",
+            placement: Placement::Lead,
+            failures: Some(0),
+        };
+        assert!(extract_crapts_changed(&[]).unwrap().is_none());
+        let extracted = extract_crapts_changed(&[&valid]).unwrap().unwrap();
+        assert_eq!(extracted.raw.get(), valid.raw);
+        assert_eq!(extracted.failures, Some(0));
+
+        let dup_err = extract_crapts_changed(&[&valid, &valid])
+            .err()
+            .expect("duplicate changed must fail")
+            .to_string();
+        assert!(dup_err.contains("changed"), "{dup_err}");
+
+        for key in ["entries", "extra"] {
+            let bad_key = FixedSection { key, ..valid };
+            let err = extract_crapts_changed(&[&bad_key])
+                .err()
+                .expect("disallowed key must fail")
+                .to_string();
+            assert!(err.contains(key), "{err}");
+        }
+
+        for raw in ["[]", "null"] {
+            let non_obj = FixedSection { raw, ..valid };
+            let err = extract_crapts_changed(&[&non_obj])
+                .err()
+                .expect("non-object changed must fail")
+                .to_string();
+            assert!(err.contains("changed") && err.contains("object"), "{err}");
+        }
+
+        reject_cargo_crap_json_sections(&[]).unwrap();
+        let closed_err = reject_cargo_crap_json_sections(&[&valid])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            closed_err.contains("changed") && closed_err.contains("CargoCrapV1"),
+            "{closed_err}"
+        );
+    }
+
+    #[test]
+    fn crapts_changed_section_sits_before_diagnostics_in_both_envelopes() {
+        use crate::report::{Placement, test_support::FixedSection};
+        let valid = FixedSection {
+            key: "changed",
+            raw: r#"{ "version" : "0.2.3",  "counts" : {"fail":0} }"#,
+            text: "",
+            placement: Placement::Lead,
+            failures: Some(0),
+        };
+        let extracted = extract_crapts_changed(&[&valid]).unwrap().unwrap();
+        let diag = empty_diagnostics();
+        let tool = Tool {
+            version: "0.2.3",
+            ..crate::report::test_support::SECOND_TOOL
+        };
+        let ctx = CraptsJsonContext {
+            tool: &tool,
+            coverage_kind: CoverageKind::Lines,
+            threshold: 30.0,
+            selection: None,
+            notices: &[],
+            total: 0,
+            crappy: 0,
+            changed: Some(&extracted),
+            diagnostics: &diag,
+        };
+        let mut abs_buf = Vec::new();
+        render_crapts_json(&[], &ctx, &mut abs_buf).unwrap();
+        let abs_raw = String::from_utf8(abs_buf).unwrap();
+        assert_eq!(
+            top_level_keys(&abs_raw),
+            [
+                "$schema",
+                "version",
+                "name_scheme",
+                "coverage_kind",
+                "threshold",
+                "selection",
+                "notices",
+                "summary",
+                "entries",
+                "changed",
+                "diagnostics",
+            ]
+        );
+        let empty_delta = DeltaReport {
+            entries: Vec::new(),
+            removed: Vec::new(),
+        };
+        let mut delta_buf = Vec::new();
+        render_crapts_delta_json(
+            &empty_delta,
+            &DeltaCounts::default(),
+            "0.2.0",
+            false,
+            &ctx,
+            &mut delta_buf,
+        )
+        .unwrap();
+        let delta_raw = String::from_utf8(delta_buf).unwrap();
+        assert_eq!(
+            top_level_keys(&delta_raw),
+            [
+                "$schema",
+                "version",
+                "name_scheme",
+                "coverage_kind",
+                "threshold",
+                "selection",
+                "regression_gate",
+                "notices",
+                "summary",
+                "entries",
+                "removed",
+                "changed",
+                "diagnostics",
+            ]
+        );
     }
 }
