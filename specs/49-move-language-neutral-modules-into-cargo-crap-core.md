@@ -296,7 +296,7 @@ source guard drops each file as it moves.
   `cargo_crap::merge::CrapEntry`, plus
   `cargo test --workspace --all-features --doc --locked`.
 
-- [ ] **T7 — Record the core API and verify the move.**
+- [x] **T7 — Record the core API and verify the move.**
   Needs: T5, T6. Add the Unreleased `CHANGELOG.md` entry with the new core
   API, the root re-exports and each widened item, and update the source
   locations in `CLAUDE.md`. Add the `render_human` case to

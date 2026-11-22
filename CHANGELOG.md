@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The language-neutral modules live in the new `cargo-crap-core` 0.1.0
+  library, with their existing public items: `score`, `entry`, `paths`,
+  `coverage`, `signals::{model, config}`,
+  `duplicates::{model, compare, group, novelty, verdict}`, `delta`,
+  `report`, `filter`, `gate`, `run` and `policy`. A front end that already
+  has scored rows can render a report and get a gate verdict without
+  linking `syn` (spec 49). cargo-crap re-exports `score`, `entry`, `paths`,
+  `coverage`, `delta`, `report`, `filter`, `gate`, `run` and `policy` from
+  its crate root, `signals::{model, config}` beside `signals::compute`, and
+  the five duplicate modules beside `duplicates::{extract, fingerprint,
+  normalize, scan, triage}`. Every existing `cargo_crap::` path still
+  resolves to the same type, so a row, tool or policy value passes between
+  the two crates' APIs without conversion. No item's visibility was
+  widened. cargo-crap depends on `cargo-crap-core = "=0.1.0"`, which is not
+  on crates.io yet: cargo-crap cannot be published there until the core is.
+
 - Library callers can use `run::run` to write and flush a report and
   receive its `gate::GateOutcome`. The `filter` module selects report
   rows, and `policy` lets each tool choose its summary formats and

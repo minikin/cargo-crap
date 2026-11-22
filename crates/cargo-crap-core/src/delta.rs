@@ -1446,6 +1446,19 @@ mod tests {
             "a root remap is not a move"
         );
         assert!(report.removed.is_empty());
+
+        let baseline = vec![entry_at("src/report/human.rs", "render_human", 6.0)];
+        let current = vec![entry_at(
+            "crates/cargo-crap-core/src/report/human.rs",
+            "render_human",
+            6.0,
+        )];
+        let report = compute_delta(&current, &baseline, DEFAULT_EPSILON);
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+        assert_eq!(report.entries[0].baseline_crap, Some(6.0));
+        assert!(report.entries[0].previous_file.is_none());
+        assert!(report.removed.is_empty());
     }
 
     #[test]
