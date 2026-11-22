@@ -2,6 +2,7 @@
 
 mod analyze;
 pub mod attribute;
+pub mod cli;
 pub mod config;
 pub mod coverage;
 mod discover;

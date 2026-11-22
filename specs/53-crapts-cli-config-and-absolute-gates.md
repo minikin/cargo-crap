@@ -800,7 +800,7 @@ Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.
   unit tests for every valid key/alias, rejection of unknown/flag-only/
   duplicate/wrong-type keys, and TOML syntax location formatting, plus
   property tests (proptest) for finite float acceptance and `top` bounds.
-- [ ] **T6 - Build crapts CLI parsing, priority routing and `--print-config`.**
+- [x] **T6 - Build crapts CLI parsing, priority routing and `--print-config`.**
   Needs: T4, T5. Implement `crates/crapts/src/cli.rs` and wire priority
   routing in `crates/crapts/src/{lib,main}.rs`. Enforce priority order
   (`-h`/`--help`, then `-V`/`--version`, then `--print-config`), handle

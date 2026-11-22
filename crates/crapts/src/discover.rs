@@ -60,6 +60,13 @@ impl ExcludePattern {
 }
 
 impl DiscoveryOptions {
+    pub(crate) fn validate(
+        cwd: &Path,
+        patterns: &[ExcludePattern],
+    ) -> Result<(), InputError> {
+        compile(cwd, patterns).map(|_| ())
+    }
+
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
         let cwd = cwd.into();
         let base_dir = std::path::absolute(&cwd).unwrap_or_else(|_| PathBuf::from("."));
