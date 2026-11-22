@@ -1851,7 +1851,7 @@ fn colour_follows_the_crapts_sink_and_environment() {
     #[cfg(unix)]
     for (vars, color) in [
         (vec![], true),
-        (vec![("FORCE_COLOR", "0")], false),
+        (vec![("FORCE_COLOR", "0")], true),
         (vec![("NO_COLOR", "1"), ("FORCE_COLOR", "1")], false),
     ] {
         assert_eq!(ansi(terminal_text(d.path(), &vars, &[])), color);

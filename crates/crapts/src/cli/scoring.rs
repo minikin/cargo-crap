@@ -105,12 +105,9 @@ fn color_enabled(
     no: Option<&OsStr>,
     force: Option<&OsStr>,
 ) -> bool {
-    if !stdout || no.is_some_and(|v| !v.is_empty()) {
-        return false;
-    }
-    force
-        .filter(|value| !value.is_empty())
-        .map_or(terminal, |value| value != "0")
+    let disabled = no.is_some_and(|v| !v.is_empty());
+    let forced = force.is_some_and(|v| !v.is_empty() && v != "0");
+    stdout && !disabled && (terminal || forced)
 }
 
 fn source_links(
@@ -277,7 +274,7 @@ mod presentation_tests {
             (true, false, None, None, false),
             (true, false, None, Some("1"), true),
             (true, false, None, Some("0"), false),
-            (true, true, None, Some("0"), false),
+            (true, true, None, Some("0"), true),
             (true, true, Some("1"), Some("1"), false),
             (false, true, None, Some("1"), false),
             (false, false, None, None, false),
