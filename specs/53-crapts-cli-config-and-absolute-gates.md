@@ -731,7 +731,7 @@ Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.
   base-relative, suffix, and name-glob syntax, plus property tests (proptest)
   for nearest-ancestor precedence and equivalence with `AllowSet::compile`
   when bases equal `cwd`.
-- [ ] **T2 - Extend core policy, settings, renderers and migrate cargo-crap.**
+- [x] **T2 - Extend core policy, settings, renderers and migrate cargo-crap.**
   Add `signal_detail_hint: Option<&'static str>` to `policy::Policy` in
   `crates/cargo-crap-core/src/policy.rs` and apply it in
   `crates/cargo-crap-core/src/report/summary.rs` on positive signal

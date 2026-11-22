@@ -3,7 +3,7 @@
 //! No row caps, no `<details>` collapsing. The `pr-comment` format trades
 //! completeness for readability; this format is the dual.
 
-use super::links::{SourceLinks, linkify};
+use super::links::linkify;
 use super::per_crate::write_per_crate_markdown;
 use super::types::{
     Grade, cc_display, delta_display, format_location_with_prev, no_change_message,
@@ -56,7 +56,7 @@ fn write_markdown_absolute_summary(
 fn write_markdown_entries_table(
     entries: &[CrapEntry],
     threshold: f64,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -69,13 +69,13 @@ fn write_markdown_entries_table(
         };
         let func = linkify(
             format!("`{}`", entry.function),
-            links,
+            opts,
             &entry.file,
             entry.line,
         );
         let loc = linkify(
             format!("`{}:{}`", entry.file.display(), entry.line),
-            links,
+            opts,
             &entry.file,
             entry.line,
         );
@@ -101,7 +101,7 @@ pub(crate) fn render_markdown(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    write_pr_comment_marker(opts.tool, out)?;
+    write_pr_comment_marker(opts, out)?;
     render_markdown_body(entries, opts, out)
 }
 
@@ -112,7 +112,6 @@ pub(crate) fn render_markdown_body(
 ) -> Result<()> {
     let RenderOptions {
         threshold,
-        links,
         uncovered_hints,
         ..
     } = *opts;
@@ -123,7 +122,7 @@ pub(crate) fn render_markdown_body(
     let crappy = super::crappy_count(entries, threshold);
     write_markdown_absolute_heading(crappy, threshold, out)?;
     write_per_crate_markdown(entries, threshold, out)?;
-    write_markdown_entries_table(entries, threshold, links, uncovered_hints, out)?;
+    write_markdown_entries_table(entries, threshold, opts, uncovered_hints, out)?;
     write_markdown_absolute_summary(crappy, entries.len(), threshold, out)
 }
 
@@ -170,7 +169,7 @@ fn write_markdown_delta_heading(
 fn write_delta_entries_table(
     entries: &[&DeltaEntry],
     threshold: f64,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -179,9 +178,9 @@ fn write_delta_entries_table(
         let e = &de.current;
         let grade = Grade::of(e.crap, threshold);
         let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
-        let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
+        let func = linkify(format!("`{}`", e.function), opts, &e.file, e.line);
         let loc_text = format_location_with_prev(&e.file, e.line, de.previous_file.as_deref());
-        let loc = linkify(loc_text, links, &e.file, e.line);
+        let loc = linkify(loc_text, opts, &e.file, e.line);
         writeln!(
             out,
             "| {} | {:.1} | {} | {} | {} | {} | {} |{}",
@@ -224,7 +223,7 @@ pub(crate) fn render_delta_markdown(
     counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
-    write_pr_comment_marker(opts.tool, out)?;
+    write_pr_comment_marker(opts, out)?;
     render_delta_markdown_body(report, opts, counts, out)
 }
 
@@ -236,7 +235,6 @@ pub(crate) fn render_delta_markdown_body(
 ) -> Result<()> {
     let RenderOptions {
         threshold,
-        links,
         show_unchanged,
         uncovered_hints,
         ..
@@ -257,22 +255,22 @@ pub(crate) fn render_delta_markdown_body(
         report,
         &visible,
         threshold,
-        links,
+        opts,
         uncovered_hints,
         counts,
         out,
     )?;
-    write_markdown_reasons_and_stats(report, links, counts, out)
+    write_markdown_reasons_and_stats(report, opts, counts, out)
 }
 
 /// The "Harder to maintain" section (spec 43), then the stats line.
 fn write_markdown_reasons_and_stats(
     report: &DeltaReport,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
-    super::reasons::write_markdown(report, links, None, std::path::Path::new(""), out)?;
+    super::reasons::write_markdown(report, opts, None, std::path::Path::new(""), out)?;
     write_markdown_delta_stats(counts, out)
 }
 
@@ -282,7 +280,7 @@ fn write_markdown_delta_body(
     report: &DeltaReport,
     visible: &[&DeltaEntry],
     threshold: f64,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
     counts: &DeltaCounts,
     out: &mut dyn Write,
@@ -291,7 +289,7 @@ fn write_markdown_delta_body(
         return writeln!(out, "_{}_", no_change_message(counts)).map_err(Into::into);
     }
     if !visible.is_empty() {
-        write_delta_entries_table(visible, threshold, links, uncovered_hints, out)?;
+        write_delta_entries_table(visible, threshold, opts, uncovered_hints, out)?;
     }
     if !report.removed.is_empty() {
         write_markdown_removed(&report.removed, out)?;
@@ -304,6 +302,7 @@ mod tests {
     use super::super::{Format, RenderOptions, render};
     use super::*;
     use crate::delta::DeltaStatus;
+    use crate::report::SourceLinks;
     use crate::report::test_support::Refuses;
     use std::path::PathBuf;
 

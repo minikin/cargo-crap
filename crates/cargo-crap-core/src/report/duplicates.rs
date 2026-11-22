@@ -10,7 +10,7 @@ use owo_colors::Style;
 
 use super::links::linkify;
 use super::types::{bar, below_root, cwd_relative, styled, workspace_relative};
-use super::{RenderOptions, SourceLinks, TriagedBy};
+use super::{RenderOptions, TriagedBy};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::group::DuplicateGroup;
 use crate::duplicates::model::Location;
@@ -594,7 +594,7 @@ fn group_cell(
         return pair_cell(pair, opts);
     }
     let shown = &group.members[..NAMED.min(group.members.len())];
-    let names: Vec<String> = shown.iter().map(|m| name(m, opts.links)).collect();
+    let names: Vec<String> = shown.iter().map(|m| name(m, opts)).collect();
     let locations: Vec<String> = shown.iter().map(|m| location(m, opts)).collect();
     let more = match group.members.len() - shown.len() {
         0 => String::new(),
@@ -616,8 +616,8 @@ fn pair_cell(
 ) -> String {
     format!(
         "{} ↔ {}<br><sub>{} · {}</sub>",
-        name(&pair.first, opts.links),
-        name(&pair.second, opts.links),
+        name(&pair.first, opts),
+        name(&pair.second, opts),
         location(&pair.first, opts),
         location(&pair.second, opts)
     )
@@ -627,9 +627,9 @@ fn pair_cell(
 /// set and its path can be made repo-relative.
 fn name(
     at: &Location,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
 ) -> String {
-    linkify(code_span(&at.name), links, &at.file, at.start_line)
+    linkify(code_span(&at.name), opts, &at.file, at.start_line)
 }
 
 /// Where one side of a pair is, as a code span so no character in the path

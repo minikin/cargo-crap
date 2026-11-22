@@ -5,7 +5,8 @@
 //! every entry of the report, including the `Unchanged` rows spec 16 hides
 //! from the table: a signal can rise while the CRAP score stays put.
 
-use super::links::{SourceLinks, linkify};
+use super::RenderOptions;
+use super::links::linkify;
 use super::types::uncovered_display;
 use crate::delta::{DeltaEntry, DeltaReport, Reason};
 use anyhow::Result;
@@ -103,7 +104,7 @@ pub(crate) fn write_human(
 /// nothing when there is no reason.
 pub(crate) fn write_markdown(
     report: &DeltaReport,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     cap: Option<usize>,
     prefix: &Path,
     out: &mut dyn Write,
@@ -115,10 +116,10 @@ pub(crate) fn write_markdown(
     let cap = cap.unwrap_or(rows.len());
     let (shown, folded) = rows.split_at(cap.min(rows.len()));
     writeln!(out, "\n### {TITLE}\n")?;
-    write_gfm_table(shown, links, prefix, out)?;
+    write_gfm_table(shown, opts, prefix, out)?;
     if !folded.is_empty() {
         writeln!(out, "\n<details><summary>{} more</summary>\n", folded.len())?;
-        write_gfm_table(folded, links, prefix, out)?;
+        write_gfm_table(folded, opts, prefix, out)?;
         writeln!(out, "\n</details>")?;
     }
     Ok(())
@@ -126,7 +127,7 @@ pub(crate) fn write_markdown(
 
 fn write_gfm_table(
     rows: &[(&DeltaEntry, &Reason)],
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     prefix: &Path,
     out: &mut dyn Write,
 ) -> Result<()> {
@@ -134,7 +135,7 @@ fn write_gfm_table(
     writeln!(out, "|---|---|---|---|---|---|")?;
     for (entry, reason) in rows {
         let e = &entry.current;
-        let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
+        let func = linkify(format!("`{}`", e.function), opts, &e.file, e.line);
         writeln!(
             out,
             "| {} | {} `{}` | {} | {} | {} | {} |",
@@ -224,7 +225,14 @@ mod tests {
         cap: Option<usize>,
     ) -> String {
         let mut out = Vec::new();
-        write_markdown(report, None, cap, Path::new("src"), &mut out).expect("writes");
+        write_markdown(
+            report,
+            &crate::report::RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE),
+            cap,
+            Path::new("src"),
+            &mut out,
+        )
+        .expect("writes");
         String::from_utf8(out).expect("utf-8")
     }
 

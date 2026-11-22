@@ -9037,7 +9037,10 @@ fn top_and_min_narrow_the_section_but_not_the_gate() {
 
 /// A tool whose seven branding strings differ from cargo-crap's and from one another.
 const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
-    policy: cargo_crap::tool::CARGO_CRAP_POLICY,
+    policy: cargo_crap::policy::Policy {
+        signal_detail_hint: None,
+        ..cargo_crap::tool::CARGO_CRAP_POLICY
+    },
     name: "other-tool",
     version: "7.7.7-other",
     info_uri: "https://example.test/other-tool",
@@ -9581,6 +9584,8 @@ fn pipeline_settings<'a>(
         links: None,
         cwd: Path::new(""),
         workspace_root: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections: false,
     }
 }
@@ -9917,8 +9922,11 @@ fn the_delta_outcome_counts_hidden_score_changes_once_each() {
     assert_eq!(outcome.exit_code(), std::process::ExitCode::from(1));
 }
 
-#[test]
-fn the_library_distinguishes_hidden_signal_reasons_from_score_regressions() {
+fn hidden_signal_summary(
+    tool: &cargo_crap::report::Tool,
+    nesting: u32,
+    lines: u32,
+) -> (String, cargo_crap::gate::GateOutcome) {
     use cargo_crap::{
         filter::AllowSet,
         report::Format,
@@ -9941,21 +9949,43 @@ fn the_library_distinguishes_hidden_signal_reasons_from_score_regressions() {
     before.signals = Some(Signals::default());
     let baseline =
         BaselineFilter::new(&scope, &allow).prepare(scored_baseline(vec![before.clone()]));
+    let mut current = before;
+    current.signals = Some(Signals {
+        nesting,
+        lines,
+        ..Signals::default()
+    });
+    let (out, verdict) = pipeline_report(tool, &settings, &scope, vec![current], Some(&baseline));
+    (String::from_utf8(out).unwrap(), verdict)
+}
+
+#[test]
+fn a_language_specific_hint_follows_the_callers_policy() {
     for (nesting, lines, code) in [(1, 0, 1), (0, 1, 0)] {
-        let mut current = before.clone();
-        current.signals = Some(Signals {
-            nesting,
-            lines,
-            ..Signals::default()
-        });
-        let (out, verdict) = pipeline_report(
-            &SECOND_TOOL,
-            &settings,
-            &scope,
-            vec![current],
-            Some(&baseline),
-        );
-        let summary = String::from_utf8(out).unwrap();
+        for (tool, hint) in [
+            (
+                &cargo_crap::tool::CARGO_CRAP,
+                "; run without --summary for the reasons",
+            ),
+            (&SECOND_TOOL, ""),
+        ] {
+            let (text, _) = hidden_signal_summary(tool, nesting, lines);
+            let line = text.lines().find(|line| line.contains("signal regression"));
+            let expected = format!("\u{2717} 1 signal regression(s){hint}");
+            assert_eq!(
+                line,
+                (code == 1).then_some(expected.as_str()),
+                "{}",
+                tool.name
+            );
+        }
+    }
+}
+
+#[test]
+fn the_library_distinguishes_hidden_signal_reasons_from_score_regressions() {
+    for (nesting, lines, code) in [(1, 0, 1), (0, 1, 0)] {
+        let (summary, verdict) = hidden_signal_summary(&SECOND_TOOL, nesting, lines);
         assert!(summary.contains("↑ 0 regressed"), "{summary}");
         assert_eq!(summary.contains("✗ 1 signal regression(s)"), code == 1);
         assert_eq!(

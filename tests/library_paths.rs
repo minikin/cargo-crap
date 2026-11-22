@@ -172,6 +172,8 @@ fn existing_cargo_crap_clients_compile_at_their_original_paths() {
         links: None,
         cwd: std::path::Path::new("."),
         workspace_root: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections: false,
     };
     assert_eq!(

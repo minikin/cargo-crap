@@ -22,6 +22,7 @@ const CRAPTS: Tool = Tool {
         pairing: PairPolicy::FileFunction,
         fail_above_counts: Population::All,
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
+        signal_detail_hint: None,
         tie_order: TieOrder::FileFunctionLine,
     },
     name: "crapts",
@@ -198,6 +199,8 @@ fn write_crapts_baseline_file(
         links: None,
         cwd: Path::new(""),
         workspace_root: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections: false,
     };
     let analysis = Analysis {
@@ -248,6 +251,8 @@ fn render_json(
         links: None,
         cwd: Path::new(""),
         workspace_root: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections: false,
     };
     let is_delta = baseline.is_some();
@@ -1327,6 +1332,8 @@ fn both_schemas_and_the_baseline_reader_enforce_semver() {
         links: None,
         cwd: Path::new(""),
         workspace_root: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections: false,
     };
     let mut out = Vec::new();
@@ -1474,6 +1481,8 @@ fn a_summary_request_respects_the_tools_format_policy() {
             links: None,
             cwd: Path::new(""),
             workspace_root: None,
+            pr_comment_marker: None,
+            repo_prefix: None,
             fail_sections: false,
         };
         let mut out = Vec::new();
@@ -1616,6 +1625,8 @@ fn the_crapts_json_writer_rejects_fractional_complexity() {
         links: None,
         cwd: Path::new(""),
         workspace_root: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections: false,
     };
     let bad = CrapEntry {
@@ -1692,6 +1703,8 @@ fn both_crapts_report_shapes_admit_rows_without_a_wire_fingerprint() {
             links: None,
             cwd: Path::new(""),
             workspace_root: None,
+            pr_comment_marker: None,
+            repo_prefix: None,
             fail_sections: false,
         };
         let mut out = Vec::new();
@@ -1751,6 +1764,8 @@ fn v1_reserves_a_valid_optional_row_fingerprint_for_a_later_writer() {
         links: None,
         cwd: Path::new(""),
         workspace_root: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections: false,
     };
     for (shape, orig, schema) in [
@@ -1827,6 +1842,8 @@ fn a_complete_saved_report_supplies_just_its_current_rows_as_the_next_baseline()
         links: None,
         cwd: Path::new(""),
         workspace_root: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections: false,
     };
     for (name, rep) in [("abs.json", &abs), ("delta.json", &delta)] {
@@ -1928,6 +1945,8 @@ fn a_version_mismatch_skips_only_the_regression_gate() {
             links: None,
             cwd: Path::new(""),
             workspace_root: None,
+            pr_comment_marker: None,
+            repo_prefix: None,
             fail_sections: false,
         };
         let mut out = Vec::new();
@@ -2017,6 +2036,8 @@ fn a_skipped_regression_notice_reaches_each_text_renderer() {
                 links: None,
                 cwd: Path::new(""),
                 workspace_root: None,
+                pr_comment_marker: None,
+                repo_prefix: None,
                 fail_sections: false,
             };
             let (text, diag, outcome) = run_with_front_end_diagnostics(
@@ -2187,6 +2208,8 @@ fn json_settings<'a>(
         links: None,
         cwd: Path::new(""),
         workspace_root: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections,
     }
 }
@@ -2612,10 +2635,12 @@ fn control_body(
     )
     .unwrap();
     let raw = String::from_utf8(out).unwrap();
-    if !settings.summary && matches!(settings.format, Format::Markdown | Format::PrComment) {
+    if matches!(settings.format, Format::Markdown | Format::PrComment)
+        && (!settings.summary || tool.policy.envelope == EnvelopeKind::CraptsV1)
+    {
         let marker_prefix = format!("{}\n\n", tool.comment_marker);
         raw.strip_prefix(&marker_prefix)
-            .expect("full markdown control begins with marker")
+            .expect("markdown control begins with marker")
             .to_owned()
     } else {
         raw
@@ -3042,4 +3067,60 @@ fn a_section_or_writer_error_takes_precedence_over_any_positive_count() {
     let chain = format!("{flush_err:#}");
     assert!(chain.contains("flushing output"), "{chain}");
     assert!(chain.contains("fixture flush failed"), "{chain}");
+}
+
+#[test]
+fn pr_comment_markers_and_links_belong_to_the_invocation() {
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let links =
+        cargo_crap_core::report::SourceLinks::new("https://example.test/r".into(), "abc".into());
+    for format in [Format::Markdown, Format::PrComment] {
+        for summary in [false, true] {
+            for notices in [Vec::new(), vec!["notice".to_owned()]] {
+                for custom in [None, Some("<!-- local -->")] {
+                    let mut settings = json_settings(&allow, &signals, false, false, false);
+                    settings.format = format;
+                    settings.summary = summary;
+                    settings.repo_prefix = Some(Path::new("packages/app"));
+                    settings.pr_comment_marker = custom;
+                    settings.links = Some(&links);
+                    let analysis = Analysis {
+                        entries: vec![row("../shared.ts", "f", 2, 42.0)],
+                        scope: &Everything,
+                        diagnostics: None,
+                        coverage_kind: Some(CoverageKind::Lines),
+                        notices: &notices,
+                    };
+                    let mut out = Vec::new();
+                    run::run(
+                        &CRAPTS,
+                        &settings,
+                        analysis,
+                        None,
+                        &[],
+                        &RenderExtras::default(),
+                        &mut out,
+                    )
+                    .unwrap();
+                    let text = String::from_utf8(out).unwrap();
+                    let marker = if format == Format::PrComment {
+                        custom.unwrap_or(CRAPTS.comment_marker)
+                    } else {
+                        CRAPTS.comment_marker
+                    };
+                    assert_eq!(text.lines().next(), Some(marker), "{text}");
+                    assert_eq!(text.matches(marker).count(), 1);
+                    if !summary {
+                        assert_eq!(
+                            text.matches("https://example.test/r/blob/abc/packages/shared.ts#L2")
+                                .count(),
+                            2,
+                            "{text}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

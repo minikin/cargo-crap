@@ -1889,7 +1889,6 @@ fn run() -> Result<ExitCode> {
     warn_scope_mismatch(diagnostics.as_ref());
     let mut entries = merge_result.entries;
     assign_crate_names(&mut entries, &members);
-    let (min, top) = (cli.min.or(config.min), cli.top.or(config.top));
     let allow = AllowSet::compile(&effective_allow)?;
     let workspace_root = workspace_root(&roots);
     let raw = load_report_baseline(
@@ -1919,8 +1918,8 @@ fn run() -> Result<ExitCode> {
     );
     let report = run::Settings {
         allow: &allow,
-        min,
-        top,
+        min: cli.min.or(config.min),
+        top: cli.top.or(config.top),
         sort: settings.sort_order,
         threshold: settings.threshold,
         epsilon,
@@ -1935,6 +1934,8 @@ fn run() -> Result<ExitCode> {
         links: links.as_ref(),
         cwd: &knobs.cwd,
         workspace_root,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections: false,
     };
     let outcome = run::run(

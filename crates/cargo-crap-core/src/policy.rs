@@ -41,6 +41,7 @@ pub struct Policy {
     pub pairing: PairPolicy,
     pub fail_above_counts: Population,
     pub summary_formats: &'static [Format],
+    pub signal_detail_hint: Option<&'static str>,
     pub tie_order: TieOrder,
 }
 
@@ -66,6 +67,7 @@ mod tests {
             pairing: PairPolicy::FileFunctionLine,
             fail_above_counts: Population::Shown,
             summary_formats: &[Format::Shields],
+            signal_detail_hint: None,
             tie_order: TieOrder::Stable,
         };
         assert!(shields_only.use_summary(true, Format::Shields));
