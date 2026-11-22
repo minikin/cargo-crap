@@ -55,7 +55,8 @@ impl AllowSet {
             paths: FileAllows::Legacy(build_path_set(&paths)?),
         })
     }
-    /// Match a displayed file relative to each pattern's directory, even for a deleted file.
+
+    /// Matching is lexical, so historical files need not exist.
     pub fn compile_with_bases(
         cwd: &Path,
         patterns: &[(&str, &Path)],
@@ -95,7 +96,7 @@ fn based_glob(
     builder.backslash_escape(true).literal_separator(path);
     let glob = builder.build()?;
     // Globset silently drops empty alternatives. Its two translations differ exactly when it did so.
-    if !path && glob.regex() != builder.empty_alternates(true).build()?.regex() {
+    if glob.regex() != builder.empty_alternates(true).build()?.regex() {
         anyhow::bail!("empty alternative");
     }
     Ok(glob)
@@ -120,14 +121,14 @@ fn relative_to(
     base: &Path,
     path: &Path,
 ) -> PathBuf {
-    for (depth, ancestor) in base.ancestors().enumerate() {
-        if let Ok(tail) = path.strip_prefix(ancestor) {
-            let mut relative: PathBuf = std::iter::repeat_n("..", depth).collect();
-            relative.push(tail);
-            return relative;
-        }
-    }
-    path.to_owned()
+    let shared = base
+        .components()
+        .zip(path.components())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut relative: PathBuf = base.components().skip(shared).map(|_| "..").collect();
+    relative.extend(path.components().skip(shared));
+    relative
 }
 
 pub fn allow(
@@ -701,13 +702,30 @@ mod based_tests {
             assert!(!remains(&set, "file", yes), "{pattern}");
             assert!(remains(&set, "file", no), "{pattern}");
         }
-        for pattern in ["{,x}", "{x,}", "z{a,,b}", "[", "src/["] {
+        for pattern in ["{,x}", "{x,}", "z{a,,b}", "[", "src/[", "src/{,x}.ts"] {
             let err = AllowSet::compile_with_bases(cwd, &[(pattern, cwd)]).unwrap_err();
             assert!(err.to_string().contains(pattern), "{err}");
         }
     }
 
     proptest! {
+        #[test]
+        fn moving_a_base_and_prefixing_the_pattern_preserves_the_verdict(
+            segments in prop::collection::vec("[a-z]{2,5}", 1..5),
+            stem in "[a-z]{1,5}", matches in any::<bool>(),
+        ) {
+            let parent = std::env::current_dir().unwrap();
+            let prefix = segments.join("/");
+            let cwd = parent.join(&prefix);
+            let shifted = format!("{prefix}/src/*.ts");
+            let local = AllowSet::compile_with_bases(&cwd, &[("src/*.ts", &cwd)]).unwrap();
+            let outer = AllowSet::compile_with_bases(&cwd, &[(&shifted, &parent)]).unwrap();
+            let file = format!("{}{}{}", if matches { "src/" } else { "lib/" }, stem, ".ts");
+            prop_assert_eq!(remains(&local, &file, "f"), !matches);
+            prop_assert_eq!(remains(&outer, &file, "f"), !matches);
+            prop_assert!(remains(&local, "../other/foreign.ts", "f"));
+        }
+
         #[test]
         fn cwd_based_patterns_agree_with_legacy_on_local_rows(
             dir in "[a-z]{1,4}", name in "[a-z]{1,4}", depth in 0usize..4,
