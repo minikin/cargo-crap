@@ -1,6 +1,6 @@
 # Spec 54: crapts baseline delta
 
-**Status:** Draft
+**Status:** Approved
 **Effort:** Medium
 **Module:** `crates/crapts/src/{cli,main,config}.rs`, `crates/crapts/src/coverage/mod.rs`, `crates/crapts/tests/{baseline,cli}.rs` (with shared helper `crates/crapts/tests/common/mod.rs` if factored out of `cli.rs`), and `CHANGELOG.md`. Compatibility checks verify `cargo-crap` and the Spec 44 goldens remain untouched.
 **Needs:** Specs 51, 52, and 53. Spec 51 provides `load_crapts_baseline`, `BaselineFilter::prepare_crapts`, `PreparedBaseline::notice`, `EnvelopeKind::CraptsV1`, and `run::run`. Spec 52 provides `Coverage`, `CoverageUnit`, `read_coverage`, and `attribute`. Spec 53 provides the `crapts` CLI, `.crapts.toml` loading, `Discovery.scope`, and `AllowSet::compile_with_bases`.
