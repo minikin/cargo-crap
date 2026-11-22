@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 88814c1b1e093b60acc8581270951bbec53d0d673d7c850deac9b1e042b5ab6d # shrinks to name = "var", value = 0, gaps = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+cc d984bc3a084cc8f6c7b66a364634bf8af1e8588e493c874a23110b988efe7954 # shrinks to name = "var", value = 0, gaps = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
