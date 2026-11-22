@@ -1,3 +1,5 @@
+mod support;
+
 use std::path::Path;
 
 use crapts::{FileStatus, Mode, Side, analyze};
@@ -973,6 +975,8 @@ fn locate_an_implied_constructor_across_discontiguous_initializers() {
 }
 
 proptest::proptest! {
+    #![proptest_config(support::proptest_config())]
+
     #[test]
     fn class_rows_and_constructor_regions_follow_source_order(
         kinds in proptest::collection::vec(0..5u8, 0..20),

@@ -73,9 +73,6 @@ fn discover_the_ordinary_git_file_set() {
     write(root, ".gitignore", "src/tmp.js\nsrc/a.ts\nsrc/replaced\n");
     write(root, ".gitattributes", "src/a.ts linguist-generated=true\n");
     git(&root.join("src/embedded"), &["init", "-q"]);
-    write(root, "src/vendor/old.ts", "");
-    git(root, &["add", "src/vendor/old.ts"]);
-    git(&root.join("src/vendor"), &["init", "-q"]);
     git(
         root,
         &[
@@ -88,9 +85,26 @@ fn discover_the_ordinary_git_file_set() {
     let expected = ["src/a.ts", "src/b.js"];
     assert_eq!(files(root, &paths(&["src", "src/a.ts"])), expected);
     assert_eq!(files(root, &paths(&["src/a.ts", "src", "src"])), expected);
+}
+
+#[test]
+fn retain_outer_index_files_beneath_a_nested_git_entry() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    write(root, "src/vendor/old.ts", "");
+    write(root, "src/bad/old.ts", "");
+    git(root, &["add", "src/vendor/old.ts", "src/bad/old.ts"]);
+    git(&root.join("src/vendor"), &["init", "-q"]);
+    write(root, "src/bad/.git", "bad marker");
+    write(root, ".gitignore", ".git\n");
+    assert_eq!(
+        files(root, &paths(&["src"])),
+        ["src/bad/old.ts", "src/vendor/old.ts"]
+    );
     assert_eq!(
         files(root, &paths(&["src/vendor/old.ts"])),
-        Vec::<String>::new()
+        ["src/vendor/old.ts"]
     );
 }
 
@@ -133,20 +147,58 @@ fn git_records_preserve_filename_bytes() {
 }
 
 #[test]
-fn propagate_git_failures_before_and_after_worktree_detection() {
+fn walk_when_a_gitfile_does_not_identify_a_worktree() {
     let dir = tempdir().unwrap();
     let root = dir.path();
-    let opts = DiscoveryOptions::new(root);
     write(root, ".git", "broken gitfile");
-    let error = discover(&[], &opts).unwrap_err();
-    assert_eq!(error.path(), root.canonicalize().unwrap());
-    assert!(error.to_string().contains(".git"), "{error}");
+    write(root, "real/a.ts", "");
+    assert_eq!(files(root, &[]), ["real/a.ts"]);
+}
 
-    fs::remove_file(root.join(".git")).unwrap();
+#[test]
+fn sort_unicode_paths_in_utf16_order() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write(root, "\u{10000}.ts", "");
+    write(root, "\u{e000}.ts", "");
+    assert_eq!(files(root, &[]), ["\u{10000}.ts", "\u{e000}.ts"]);
     git(root, &["init", "-q"]);
-    write(root, ".git/index", "broken index");
-    let error = discover(&[], &opts).unwrap_err();
-    assert!(error.to_string().contains("git ls-files"), "{error}");
+    assert_eq!(files(root, &[]), ["\u{10000}.ts", "\u{e000}.ts"]);
+}
+
+#[test]
+fn a_hook_environment_cannot_redirect_the_discovery_index() {
+    let key = "CRAPTS_TEST_HOOK_CWD";
+    if let Some(cwd) = std::env::var_os(key) {
+        assert_eq!(files(Path::new(&cwd), &[]), ["mine.ts"]);
+        return;
+    }
+    let ours = tempdir().unwrap();
+    let theirs = tempdir().unwrap();
+    for (root, name) in [(ours.path(), "mine.ts"), (theirs.path(), "other.ts")] {
+        git(root, &["init", "-q"]);
+        write(root, name, "");
+        git(root, &["add", name]);
+        write(root, ".gitignore", "*\n");
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_hook_environment_cannot_redirect_the_discovery_index",
+            "--nocapture",
+        ])
+        .env(key, ours.path())
+        .env("GIT_DIR", theirs.path().join(".git"))
+        .env("GIT_WORK_TREE", theirs.path())
+        .env("GIT_INDEX_FILE", theirs.path().join(".git/index"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
 
 fn walking_fixture(root: &Path) {

@@ -19,9 +19,11 @@ And src/sub is a gitlink and src/embedded is an untracked nested repository, eac
 And .gitignore now matches tracked "src/a.ts" and .gitattributes marks it linguist-generated
 When discovery runs from the repository root with literal roots "src" and "src/a.ts"
 Then the paths are exactly ["src/a.ts", "src/b.js"], in that order
-And submodules and embedded repositories contribute no descendants
+And gitlinks and untracked embedded repositories contribute no descendants
 And a linguist-generated attribute on "src/a.ts" leaves it eligible
 ```
+
+An existing regular file tracked in the outer index remains eligible when its directory acquires a `.git` entry. Sort displayed paths in UTF-16 code-unit order.
 
 ### Scenario: Resolve input roots and preserve path spelling
 
@@ -695,6 +697,8 @@ And splitting at "::" recovers whole segments
 And using any complete emitted name as a case-sensitive, anchored globset name glob
   matches exactly that row in the file
 ```
+
+Compile scheme-1 name globs with case sensitivity and backslash escaping on every platform. The later allow matcher uses the same options as the generated-name test.
 
 ### Scenario: Keep the package and its parser independently buildable
 

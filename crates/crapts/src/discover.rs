@@ -47,15 +47,31 @@ pub fn discover(
         Some(_) => BTreeSet::new(),
         None => walk_files(&cwd, inputs)?,
     };
-    Ok(Discovery {
-        files: names.into_iter().map(PathBuf::from).collect(),
-    })
+    let mut files: Vec<_> = names.into_iter().map(PathBuf::from).collect();
+    files.sort_by_cached_key(|file| file.to_string_lossy().encode_utf16().collect::<Vec<_>>());
+    Ok(Discovery { files })
+}
+
+fn git(cwd: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.current_dir(cwd);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+        "GIT_IMPLICIT_WORK_TREE",
+    ] {
+        command.env_remove(var);
+    }
+    command
 }
 
 fn worktree(cwd: &Path) -> Result<Option<PathBuf>, InputError> {
-    let output = match Command::new("git")
-        .current_dir(cwd)
-        .env("LC_ALL", "C")
+    let output = match git(cwd)
         .args(["rev-parse", "--is-inside-work-tree", "--show-cdup"])
         .output()
     {
@@ -64,14 +80,7 @@ fn worktree(cwd: &Path) -> Result<Option<PathBuf>, InputError> {
         Err(error) => return Err(InputError::at(cwd, format!("git rev-parse: {error}"))),
     };
     if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr);
-        if message.contains("not a git repository") {
-            return Ok(None);
-        }
-        return Err(InputError::at(
-            cwd,
-            format!("git rev-parse: {}", message.trim_end()),
-        ));
+        return Ok(None);
     }
     let response = String::from_utf8_lossy(&output.stdout);
     let mut lines = response.lines();
@@ -104,8 +113,7 @@ fn git_files(
     root: &Path,
     roots: &[PathBuf],
 ) -> Result<BTreeSet<OsString>, InputError> {
-    let output = Command::new("git")
-        .current_dir(cwd)
+    let output = git(cwd)
         .args([
             "--literal-pathspecs",
             "ls-files",
@@ -129,10 +137,7 @@ fn git_files(
     for record in output.stdout.split(|&b| b == 0).filter(|p| !p.is_empty()) {
         let name = git_name(record);
         let absolute = resolve(cwd, Path::new(&name));
-        if !through_symlink(&absolute, root)
-            && !in_nested_repository(&absolute, root)
-            && regular_file(&absolute)?
-        {
+        if !through_symlink(&absolute, root) && regular_file(&absolute)? {
             files.insert(name);
         }
     }
@@ -218,16 +223,6 @@ fn walk_files(
     Ok(files)
 }
 
-fn in_nested_repository(
-    file: &Path,
-    root: &Path,
-) -> bool {
-    file.ancestors()
-        .skip(1)
-        .take_while(|&parent| parent != root)
-        .any(|parent| parent.join(".git").exists())
-}
-
 fn git_name(bytes: &[u8]) -> OsString {
     #[cfg(unix)]
     {
@@ -241,12 +236,19 @@ fn git_name(bytes: &[u8]) -> OsString {
 }
 
 fn regular_file(path: &Path) -> Result<bool, InputError> {
-    match fs::symlink_metadata(path) {
-        Ok(stat) => Ok(stat.is_file()),
-        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
-            Ok(false)
-        },
-        Err(error) => Err(InputError::at(path, error)),
+    fs::symlink_metadata(path)
+        .map(|stat| stat.is_file())
+        .or_else(|error| missing_file(path, error))
+}
+
+fn missing_file(
+    path: &Path,
+    error: std::io::Error,
+) -> Result<bool, InputError> {
+    if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) {
+        Ok(false)
+    } else {
+        Err(InputError::at(path, error))
     }
 }
 
@@ -265,11 +267,10 @@ mod tests {
 
     #[test]
     fn a_metadata_error_other_than_absence_retains_its_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let long = dir.path().join("x".repeat(65536));
-        let error = regular_file(&long).unwrap_err();
-        assert_eq!(error.path(), long);
+        let path = Path::new("unreadable.ts");
+        let error = missing_file(path, ErrorKind::PermissionDenied.into()).unwrap_err();
+        assert_eq!(error.path(), path);
         assert_eq!(error.side(), None);
-        assert!(error.to_string().contains(&long.display().to_string()));
+        assert!(error.to_string().contains("unreadable.ts"));
     }
 }

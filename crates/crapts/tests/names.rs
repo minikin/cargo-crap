@@ -1,3 +1,5 @@
+mod support;
+
 use std::path::Path;
 
 use crapts::{FileStatus, Mode, Side, analyze};
@@ -560,6 +562,8 @@ fn preserve_member_identity_when_the_spelling_changes() {
 }
 
 proptest::proptest! {
+    #![proptest_config(support::proptest_config())]
+
     #[test]
     fn numeric_literals_and_their_canonical_string_keys_name_the_same_member(bits in 0..=f64::MAX.to_bits()) {
         use oxc_syntax::number::ToJsString;

@@ -1,3 +1,5 @@
+mod support;
+
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -18,19 +20,33 @@ fn names(
         .collect()
 }
 
-fn nested_source(
-    name: &str,
-    role: &str,
-    gap: &str,
-    body: i32,
+struct Nest<'a> {
+    role: &'a str,
+    depth: usize,
+    siblings: usize,
     expression: bool,
-) -> String {
-    let members =
-        format!("const box{gap}={gap}{{run(){gap}{{{role}({gap}() => {body},{gap}() => 2);}}}};");
-    if expression {
-        format!("const {name}{gap}={gap}function inner(){{{gap}{members}{gap}}};")
-    } else {
-        format!("function {name}(){{{gap}{members}{gap}}}")
+}
+
+impl Nest<'_> {
+    fn source(
+        &self,
+        name: &str,
+        gap: &str,
+        body: &str,
+    ) -> String {
+        let mut callbacks = vec!["() => 2".to_owned(); self.siblings];
+        callbacks[0] = format!("() => {body}");
+        let args = callbacks.join(&format!(",{gap}"));
+        let role = self.role;
+        let mut members = format!("const box{gap}={gap}{{run(){gap}{{{role}({gap}{args});}}}};");
+        for level in 0..self.depth {
+            members = format!("function level{level}(){{{gap}{members}{gap}}}");
+        }
+        if self.expression {
+            format!("const {name}{gap}={gap}function inner(){{{gap}{members}{gap}}};")
+        } else {
+            format!("function {name}(){{{gap}{members}{gap}}}")
+        }
     }
 }
 
@@ -57,25 +73,34 @@ fn property(units: &[u16]) -> String {
 }
 
 proptest! {
+    #![proptest_config(support::proptest_config())]
+
     #[test]
     fn name_stability_under_edits_that_preserve_naming_sites(
         root in "root[a-zA-Z0-9]{0,12}", role in "call[a-zA-Z0-9]{0,12}",
         gap in prop::sample::select(vec!["/*gap*/", "\n", "\r\n", "  "]),
         body in any::<i16>(), expression in any::<bool>(),
+        depth in 0usize..5, siblings in 1usize..7,
     ) {
-        let value = i32::from(body);
-        let original = nested_source(&root, &role, " ", value, expression);
+        let shape = Nest { role: &role, depth, siblings, expression };
+        let value = body.to_string();
+        let original = shape.source(&root, " ", &value);
         let expected = names("src/a.ts", &original);
-        prop_assert_eq!(expected.len(), 4);
+        prop_assert_eq!(expected.len(), 2 + depth + siblings);
         prop_assert_eq!(&expected[0], &root);
         let moved = names("moved/b.ts", &original);
         prop_assert_eq!(&moved, &expected);
-        let trivia = nested_source(&root, &role, gap, value, expression);
+        let trivia = shape.source(&root, gap, &value);
         prop_assert_eq!(names("src/a.ts", &trivia), &expected[..]);
-        let edited = nested_source(&root, &role, " ", value + 1, expression);
+        let block = format!("{{ const changed = {value}; return changed; }}");
+        let edited = shape.source(&root, " ", &block);
         prop_assert_eq!(names("src/a.ts", &edited), &expected[..]);
+        let with_sibling = format!("function addedSibling() {{}}\n{original}");
+        let mut with_sibling = names("src/a.ts", &with_sibling);
+        prop_assert_eq!(with_sibling.remove(0), "addedSibling");
+        prop_assert_eq!(&with_sibling, &expected);
         let new_root = format!("renamed_{root}");
-        let renamed = nested_source(&new_root, &role, gap, value, expression);
+        let renamed = shape.source(&new_root, gap, &value);
         let actual = names("src/a.ts", &renamed);
         prop_assert_eq!(actual.len(), expected.len());
         for (before, after) in expected.iter().zip(actual) {
@@ -96,7 +121,8 @@ proptest! {
         let mut neighbor = wildcard.clone();
         wildcard.push(u16::from(b'*'));
         neighbor.push(u16::from(b'x'));
-        keys.extend([wildcard, neighbor, vec![], "bare".encode_utf16().collect(), "12".encode_utf16().collect()]);
+        keys.extend([wildcard, neighbor, vec![]]);
+        keys.extend(["bare", "Bare", "12"].map(|key| key.encode_utf16().collect()));
         let members: Vec<_> = keys.iter().map(|key| property(key)).collect();
         let stems: Vec<_> = members.iter().map(|member| {
             let source = format!("const api = {{{member}}}");
@@ -113,7 +139,8 @@ proptest! {
         prop_assert_eq!(actual.iter().collect::<HashSet<_>>().len(), actual.len());
         for (index, (name, &key)) in actual.iter().zip(&order).enumerate() {
             let stem = &stems[key];
-            let ordinal = 1 + order[..index].iter().filter(|&&previous| stems[previous] == *stem).count();
+            let seen = order[..index].iter().filter(|&&previous| stems[previous] == *stem);
+            let ordinal = 1 + seen.count();
             let expected = if ordinal == 1 { stem.clone() } else { format!("{stem}#{ordinal}") };
             prop_assert_eq!(name, &expected);
             let parts: Vec<_> = name.split("::").collect();
@@ -122,8 +149,13 @@ proptest! {
             if key == generated {
                 prop_assert!(parts[1].starts_with("\"key-%3A%3A"));
             }
-            let matcher = GlobBuilder::new(name).case_insensitive(false).backslash_escape(true).build().unwrap().compile_matcher();
-            let matches: Vec<_> = actual.iter().enumerate().filter(|(_, n)| matcher.is_match(n)).map(|(i, _)| i).collect();
+            let matcher = GlobBuilder::new(name)
+                .case_insensitive(false)
+                .backslash_escape(true)
+                .build().unwrap().compile_matcher();
+            let matches: Vec<_> = actual.iter().enumerate()
+                .filter(|(_, n)| matcher.is_match(n))
+                .map(|(i, _)| i).collect();
             prop_assert_eq!(matches, [index]);
             prop_assert!(!matcher.is_match(format!("prefix{name}")), "prefix matched {:?}", name);
             prop_assert!(!matcher.is_match(format!("{name}suffix")), "suffix matched {:?}", name);
