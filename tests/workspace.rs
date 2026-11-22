@@ -144,10 +144,14 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
             .iter()
             .any(|t| t["kind"] == serde_json::json!(["lib"]))
     );
+    let binaries: Vec<_> = targets
+        .iter()
+        .filter(|t| t["kind"] == serde_json::json!(["bin"]))
+        .collect();
+    assert_eq!(binaries.len(), 1);
+    assert_eq!(binaries[0]["name"], "crapts");
     assert!(
-        targets
-            .iter()
-            .all(|t| t["kind"] != serde_json::json!(["bin"]))
+        Path::new(binaries[0]["src_path"].as_str().unwrap()).ends_with("crates/crapts/src/main.rs")
     );
 
     let shared = manifest(&root());
@@ -176,6 +180,8 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
         .collect();
     let required_helpers = [
         "cargo-crap-core",
+        "clap",
+        "toml",
         "globset",
         "libc",
         "serde",

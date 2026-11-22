@@ -755,7 +755,7 @@ Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.
   property tests (proptest) for path-projection normalization, and acceptance
   tests for the Spec 44 golden matrix in default and `--all-features` builds
   with `INSTA_UPDATE=no`, width snapshots, and the alternate-tool hint.
-- [ ] **T3 - Wire the crapts binary target and parser guard.** Needs: T1, T2.
+- [x] **T3 - Wire the crapts binary target and parser guard.** Needs: T1, T2.
   Add the `crapts` `[[bin]]` target and CLI dependencies (`clap`, `toml`,
   preserving the workspace pin to `cargo-crap-core`) in
   `crates/crapts/Cargo.toml` and `Cargo.lock`, with a minimal `src/main.rs`

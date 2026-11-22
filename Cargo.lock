@@ -425,6 +425,7 @@ name = "crapts"
 version = "0.1.0"
 dependencies = [
  "cargo-crap-core",
+ "clap",
  "globset",
  "libc",
  "oxc_allocator",
@@ -440,6 +441,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

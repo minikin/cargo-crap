@@ -30,6 +30,7 @@ lint_workspace() {
             cp -R "$repo/crates/cargo-crap-core" "$dir/crates/" &&
             cp "$repo/crates/crapts/Cargo.toml" "$dir/crates/crapts/" &&
             : > "$dir/crates/crapts/src/lib.rs" &&
+            printf 'fn main() {}\n' > "$dir/crates/crapts/src/main.rs" &&
             echo 'fn main() {}' > "$dir/src/main.rs" &&
             : > "$dir/src/lib.rs"
     } || { echo "FAIL building the lint workspace" >&2; exit 1; }
@@ -345,6 +346,7 @@ guard_workspace() {
             printf '[package]\nname = "cargo-crap-core"\nversion = "0.1.0"\nedition = "2024"\n\n%s\n' "$2" > "$dir/crates/cargo-crap-core/Cargo.toml" &&
             printf '[package]\nname = "crapts"\nversion = "0.1.0"\nedition = "2024"\n\n%s\n' "${3:-}" > "$dir/crates/crapts/Cargo.toml" &&
             : > "$dir/crates/crapts/src/lib.rs" &&
+            printf 'fn main() {}\n' > "$dir/crates/crapts/src/main.rs" &&
             : > "$dir/src/lib.rs" && : > "$dir/crates/cargo-crap-core/src/lib.rs" &&
             (cd "$dir" && "$real_cargo" generate-lockfile --offline -q)
     } > /dev/null 2>&1 || { echo "FAIL building the $1 workspace (syn $syn_version cached?)" >&2; exit 1; }
@@ -383,6 +385,14 @@ check "the parser guard rejects cargo-crap in a crapts target build" "1" "$statu
 check "the parser guard identifies the forbidden front end" "1" \
     "$(grep -q 'crapts links cargo-crap v0.1.0' <<< "$out" && echo 1 || echo 0)"
 
+dir="$(guard_workspace ts-cli '' "[dependencies]
+syn = '=$syn_version'")" || exit 1
+out="$(cd "$dir" && bash "$repo/scripts/gates/parser-guard.sh" 2>&1)"
+status=$?
+check "a crapts package with a binary cannot link syn" "1" "$status"
+check "the guard identifies the binary package's parser" "1" \
+    "$(grep -q "crapts links syn v$syn_version" <<< "$out" && echo 1 || echo 0)"
+
 dir="$(guard_workspace ts-dev '' "[dev-dependencies]
 cargo-crap = { path = '../..' }
 syn = '=$syn_version'")" || exit 1
@@ -418,6 +428,11 @@ guard "$dir"
 check "syn in cargo-crap's tree is not a violation" "0" "$status"
 check "recorded trees are named in the output" "1" \
     "$(grep -q "recorded trees from $dir" <<< "$out" && echo 1 || echo 0)"
+
+dir="$(trees)" || exit 1
+cp "$dir/cargo-crap-core.tree" "$dir/crapts.tree"
+guard "$dir"
+check "a tree from another package cannot stand in for the crapts binary package" "1" "$status"
 
 # The core's rules: `syn ` with its space, so a crate whose name only starts
 # with syn is not a parser, and `oxc_` as for cargo-crap.

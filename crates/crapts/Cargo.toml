@@ -10,8 +10,13 @@ repository.workspace = true
 homepage.workspace = true
 publish = false
 
+[[bin]]
+name = "crapts"
+path = "src/main.rs"
+
 [dependencies]
 cargo-crap-core = { path = "../cargo-crap-core", version = "=0.1.0" }
+clap.workspace = true
 globset.workspace = true
 oxc_allocator.workspace = true
 oxc_ast.workspace = true
@@ -23,6 +28,7 @@ oxc_syntax = { workspace = true, features = ["to_js_string"] }
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
+toml = { workspace = true, features = ["parse"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

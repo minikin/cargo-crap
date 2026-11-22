@@ -49,6 +49,10 @@ for package in "${packages[@]}"; do
         echo "parser guard: $package: no tree was read" >&2
         exit 1
     fi
+    case "$tree" in
+        "$package v"*) ;;
+        *) echo "parser guard: $package: tree belongs to another package" >&2; exit 1 ;;
+    esac
     for rule in "${rules[@]}"; do
         [ "${rule%% *}" = "$package" ] || continue
         prefix="${rule#* }"
