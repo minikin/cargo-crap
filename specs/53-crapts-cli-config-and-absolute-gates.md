@@ -888,7 +888,7 @@ Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.
   for marker validation, colour/width env precedence and GitHub link pair
   assembly, plus CLI acceptance tests in `crates/crapts/tests/cli.rs`
   covering all 17 owned scenarios.
-- [ ] **T9 - Enforce pre-render error precedence, diagnostic ordering and reserved flags.**
+- [x] **T9 - Enforce pre-render error precedence, diagnostic ordering and reserved flags.**
   Needs: T8. Enforce pre-render execution order in
   `crates/crapts/src/{lib,main}.rs`: validate config, options, allow globs,
   marker, companion checks (`--fail-regression`/`--show-unchanged` need

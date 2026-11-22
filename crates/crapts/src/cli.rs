@@ -331,6 +331,35 @@ fn finish_stdout(out: &mut dyn Write) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn validate_comparisons(
+    args: &ArgMatches,
+    settings: &Effective,
+) -> Result<()> {
+    let baseline = settings.baseline.value.is_some();
+    let base = settings.base.value.is_some();
+    for (flag, selector, selected) in [
+        ("fail-regression", "baseline", baseline),
+        ("show-unchanged", "baseline", baseline),
+        ("fail-changed", "base", base),
+    ] {
+        if args.get_flag(flag) && !selected {
+            return Err(InputError::message(format!("--{flag} needs --{selector}")));
+        }
+    }
+    if let Some((selector, _)) = [("baseline", baseline), ("base", base)]
+        .into_iter()
+        .find(|(_, selected)| *selected)
+    {
+        let message = if settings.format.value == Format::Sarif {
+            format!("SARIF does not support --{selector}")
+        } else {
+            format!("--{selector} is not implemented yet")
+        };
+        return Err(InputError::message(message));
+    }
+    Ok(())
+}
+
 fn configured(
     cwd: &Path,
     args: &[OsString],
@@ -353,9 +382,7 @@ fn configured(
         writeln!(out, "{json}").map_err(stdout_error)?;
         return finish_stdout(out);
     }
-    if args.get_flag("fail-changed") && settings.base.value.is_none() {
-        return Err(InputError::message("--fail-changed needs --base"));
-    }
+    validate_comparisons(&args, &settings)?;
     scoring::score(&cwd, worktree, &settings, out, err)
 }
 
@@ -532,6 +559,83 @@ mod tests {
                 prop_assert!(printed[key]["value"].is_null());
                 prop_assert_eq!(&printed[key]["origin"],if flag {"flag"} else if config {"config"} else {"default"});
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+    struct RefusesFlush {
+        bytes: Vec<u8>,
+        attempted: bool,
+    }
+    impl std::io::Write for RefusesFlush {
+        fn write(
+            &mut self,
+            buf: &[u8],
+        ) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.attempted = true;
+            Err(std::io::Error::other("injected flush failure"))
+        }
+    }
+
+    #[test]
+    fn an_explicit_companion_is_checked_before_discovery_or_coverage() {
+        let dir = tempfile::tempdir().unwrap();
+        let args =
+            ["absent.ts", "--coverage", "absent.info", "--show-unchanged"].map(OsString::from);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert_eq!(
+            run(dir.path(), &args, &mut out, &mut err),
+            ExitCode::from(2)
+        );
+        assert_eq!(out.as_slice(), b"");
+        assert_eq!(err, b"error: --show-unchanged needs --baseline\n");
+    }
+
+    #[test]
+    fn a_flush_only_error_overrides_the_runners_verdict() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("f.ts"),
+            "function hot(a,b) { if(a) return 1; if(b) return 2; return 0; }",
+        )
+        .unwrap();
+        std::fs::write(d.path().join("cov"), "SF:f.ts\nDA:1,0\nend_of_record").unwrap();
+        for threshold in ["6", "12"] {
+            let mut sink = RefusesFlush {
+                bytes: Vec::new(),
+                attempted: false,
+            };
+            let mut err = Vec::new();
+            let args = [
+                "--coverage",
+                "cov",
+                "--format",
+                "json",
+                "--threshold",
+                threshold,
+                "--fail-above",
+            ]
+            .map(OsString::from);
+            assert_eq!(
+                run(d.path(), &args, &mut sink, &mut err),
+                std::process::ExitCode::from(2)
+            );
+            assert!(sink.attempted);
+            let doc: serde_json::Value = serde_json::from_slice(&sink.bytes).unwrap();
+            assert_eq!(doc["summary"]["crappy"], usize::from(threshold == "6"));
+            let diagnostic = String::from_utf8(err).unwrap();
+            assert!(
+                diagnostic.contains("stdout") && diagnostic.contains("injected flush failure"),
+                "{diagnostic}"
+            );
         }
     }
 }

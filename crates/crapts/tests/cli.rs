@@ -1789,3 +1789,533 @@ fn github_link_defaults_need_nonempty_environment_components() {
         assert!(!report.contains("]("), "{report}");
     }
 }
+
+fn before_render(
+    cwd: &Path,
+    args: &[&str],
+    causes: &[&str],
+) -> String {
+    before_render_as(cwd, args, causes, || binary(cwd))
+}
+
+fn before_render_as(
+    cwd: &Path,
+    args: &[&str],
+    causes: &[&str],
+    command: impl Fn() -> Command,
+) -> String {
+    let plain = command().args(args).output().unwrap();
+    check(&plain, 2);
+    assert_eq!(plain.stdout.as_slice(), b"");
+    let diagnostic = String::from_utf8(plain.stderr).unwrap();
+    for cause in causes {
+        assert!(
+            diagnostic.contains(cause),
+            "{args:?} expected {cause}: {diagnostic}"
+        );
+    }
+    let path = cwd.join("report.json");
+    let mut with_output = vec!["--output", "report.json"];
+    with_output.extend_from_slice(args);
+    for existing in [false, true] {
+        if existing {
+            fs::write(&path, "keep").unwrap();
+        }
+        let out = command().args(&with_output).output().unwrap();
+        check(&out, 2);
+        assert_eq!(out.stdout.as_slice(), b"");
+        assert_eq!(out.stderr, diagnostic.as_bytes());
+        if existing {
+            assert_eq!(fs::read(&path).unwrap(), b"keep");
+            fs::remove_file(&path).unwrap();
+        } else {
+            assert!(!path.exists());
+        }
+    }
+    diagnostic
+}
+
+#[test]
+fn invalid_input_is_diagnosed_before_a_report_is_opened() {
+    let d = fixture();
+    before_render(d.path(), &[], &["--coverage <file> is required"]);
+    for (flags, causes) in [
+        (vec!["--bogus"], vec!["unknown option --bogus"]),
+        (vec!["--coverage"], vec!["missing value for --coverage"]),
+        (vec!["--format", "xml"], vec!["--format", "xml"]),
+        (vec!["--sort", "size"], vec!["--sort", "size"]),
+        (vec!["--missing", "maybe"], vec!["--missing", "maybe"]),
+        (
+            vec!["--top", "0", "--all-rows"],
+            vec!["--top must be an integer of at least 1", "0"],
+        ),
+        (
+            vec!["--top=1.5"],
+            vec!["--top must be an integer of at least 1", "1.5"],
+        ),
+        (
+            vec!["--top=1e1"],
+            vec!["--top must be an integer of at least 1", "1e1"],
+        ),
+        (
+            vec!["--top=9007199254740992"],
+            vec!["--top must be an integer of at least 1", "9007199254740992"],
+        ),
+        (
+            vec!["--threshold=NaN"],
+            vec!["--threshold", "finite number"],
+        ),
+        (vec!["--min=0x10"], vec!["--min", "finite number"]),
+        (vec!["--epsilon=1e999"], vec!["--epsilon", "finite number"]),
+        (vec!["--epsilon=-0.5"], vec!["--epsilon must be at least 0"]),
+        (
+            vec!["missing-dir", "--exclude", "src/["],
+            vec!["invalid glob", "src/["],
+        ),
+        (vec!["absent.ts"], vec!["path does not exist: absent.ts"]),
+    ] {
+        let mut args = vec!["--coverage", "hits.data"];
+        args.extend(flags);
+        before_render(d.path(), &args, &causes);
+    }
+}
+
+#[test]
+fn discovery_and_source_decoding_errors_exit_two_at_the_native_binary() {
+    let d = fixture();
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(d.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(d.path().join("invalid.ts"), [0x66, 0x80, 0x0a]).unwrap();
+    let root = d.path().canonicalize().unwrap();
+    for (file, cause) in [
+        ("../outside.ts", root.to_str().unwrap()),
+        ("invalid.ts", "invalid UTF-8"),
+    ] {
+        before_render(
+            d.path(),
+            &["--coverage", "hits.data", "--fail-above", file],
+            &[file, cause],
+        );
+    }
+}
+
+fn coverage_error(
+    cwd: &Path,
+    file: &str,
+    causes: &[&str],
+) {
+    let label = cwd.canonicalize().unwrap().join(file);
+    let mut causes = causes.to_vec();
+    causes.push(label.to_str().unwrap());
+    before_render(
+        cwd,
+        &[
+            "src/score.ts",
+            "--coverage",
+            file,
+            "--format",
+            "json",
+            "--threshold",
+            "6",
+            "--fail-above",
+        ],
+        &causes,
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn denied_coverage_reaches_stderr_before_opening_the_output() {
+    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+    let d = fixture();
+    let cwd = d.path();
+    let path = cwd.join("denied");
+    fs::write(&path, "{}").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::File::open(&path).is_err() {
+        coverage_error(cwd, "denied", &["EACCES"]);
+        return;
+    }
+
+    let exe = cwd.join("runner");
+    fs::copy(env!("CARGO_BIN_EXE_crapts"), &exe).unwrap();
+    for path in [cwd.to_owned(), cwd.join("src"), exe.clone()] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let label = path.canonicalize().unwrap();
+    before_render_as(
+        cwd,
+        &[
+            "src/score.ts",
+            "--coverage",
+            "denied",
+            "--format",
+            "json",
+            "--threshold",
+            "6",
+            "--fail-above",
+        ],
+        &["EACCES", label.to_str().unwrap()],
+        || {
+            let mut cmd = Command::new(&exe);
+            cmd.current_dir(cwd).uid(65534).gid(65534);
+            cmd
+        },
+    );
+}
+
+#[test]
+fn coverage_input_errors_reach_stderr_before_the_native_cli_opens_a_report() {
+    let d = fixture();
+    let cwd = d.path();
+    coverage_error(cwd, "gone.info", &["ENOENT"]);
+    fs::create_dir(cwd.join("reports")).unwrap();
+    coverage_error(cwd, "reports", &["EISDIR"]);
+    fs::write(cwd.join("broken"), "{\nSF:a.ts").unwrap();
+    coverage_error(cwd, "broken", &["invalid JSON"]);
+    for input in ["", "[]", "\u{85}{}", "TN:prefix SF:x\nDA:1,1", "  SF:a.ts"] {
+        fs::write(cwd.join("mystery"), input).unwrap();
+        coverage_error(cwd, "mystery", &["unrecognized coverage format"]);
+    }
+    let run = |file: &str, input: String, detail: &[&str]| {
+        fs::write(cwd.join(file), input).unwrap();
+        coverage_error(cwd, file, detail);
+    };
+    for (input, detail) in [
+        ("TN:x\nDA:8,1\nSF:a.ts", "line 2: DA outside an SF record"),
+        (
+            "TN:x\nDA:malformed\nSF:a.ts",
+            "line 2: DA outside an SF record",
+        ),
+        (
+            "SF:a.ts\nend_of_record\nDA:8,1",
+            "line 3: DA outside an SF record",
+        ),
+        ("SF:a.ts\nSF:", "line 2: missing SF path"),
+    ] {
+        run("cov.info", input.to_owned(), &[detail]);
+    }
+    for (da, cause) in [
+        ("0,1", "number"),
+        ("9007199254740992,1", "number"),
+        ("+1,+2", "record"),
+        ("1,-1", "record"),
+        ("1,1.5", "record"),
+        ("1,1,", "record"),
+        ("1,1,checksum,extra", "record"),
+    ] {
+        run(
+            "cov.info",
+            format!("SF:a.ts\nDA:{da}"),
+            &[&format!("line 2: invalid DA {cause}")],
+        );
+    }
+    let count = "0".repeat(308);
+    run(
+        "cov.info",
+        format!("SF:a.ts\nDA:2,1{count}0"),
+        &["line 2: invalid DA number"],
+    );
+    run(
+        "cov.info",
+        format!("SF:a.ts\nDA:2,1{count}\nDA:2,1{count}"),
+        &["line 3: invalid DA number"],
+    );
+}
+
+#[test]
+fn istanbul_entry_and_statement_validation_precedes_output_creation() {
+    let d = fixture();
+    let file = d.path().join("run.json");
+    let span = r#"{"start":{"line":2,"column":3},"end":{"line":2,"column":4}}"#;
+    let run = |entry: &str, detail: &[&str]| {
+        fs::write(&file, format!(r#"{{"src/a.ts":{entry}}}"#)).unwrap();
+        let mut causes = vec!["src/a.ts"];
+        causes.extend_from_slice(detail);
+        coverage_error(d.path(), "run.json", &causes);
+    };
+    let entry = |spans: &str, hits: &str| format!(r#"{{"statementMap":{spans},"s":{hits}}}"#);
+    let map = |value: &str| format!(r#"{{"x":{value}}}"#);
+    for wrong in [
+        "null",
+        "[]",
+        r#"{"lines":{"total":1}}"#,
+        r#"{"s":{"x":0}}"#,
+        r#"{"statementMap":[],"s":{}}"#,
+    ] {
+        run(wrong, &["not an Istanbul coverage-final.json"]);
+    }
+    run(
+        &format!(r#"{{"statementMap":{}}}"#, map(span)),
+        &["missing or invalid hit map s"],
+    );
+    for hits in ["null", "[]"] {
+        run(&entry(&map(span), hits), &["missing or invalid hit map s"]);
+    }
+    for val in [span, "null"] {
+        run(
+            &entry(&map(val), r#"{"extra":1,"x":0}"#),
+            &["statement extra has no span"],
+        );
+    }
+    run(&entry(&map(span), "{}"), &["invalid hit count", "x"]);
+    for hits in ["-1", "0.5", "null", "true", r#""1""#, "1e400"] {
+        run(&entry(&map(span), &map(hits)), &["invalid hit count", "x"]);
+    }
+    for bad in ["null", "[]"] {
+        for target in [span, r#"{"line":2,"column":3}"#, r#"{"line":2,"column":4}"#] {
+            run(
+                &entry(&map(&span.replace(target, bad)), &map("0")),
+                &["invalid span", "x"],
+            );
+        }
+    }
+    for line in ["0", "-0", "1.5", "1e400"] {
+        let span = span.replacen(r#""line":2"#, &format!(r#""line":{line}"#), 1);
+        run(&entry(&map(&span), &map("0")), &["invalid start", "x"]);
+    }
+    for col in ["-1", "null", "0.5"] {
+        run(
+            &entry(
+                &map(&span.replace(r#""column":3"#, &format!(r#""column":{col}"#))),
+                &map("0"),
+            ),
+            &["invalid start", "x"],
+        );
+    }
+    for end in [
+        r#"{"line":1,"column":null}"#,
+        r#"{"line":2.5,"column":4}"#,
+        r#"{"line":2,"column":2}"#,
+        r#"{"line":3,"column":-1}"#,
+        r#"{"line":3,"column":0.5}"#,
+        r#"{"line":3,"column":1e400}"#,
+        r#"{"line":2}"#,
+    ] {
+        run(
+            &entry(
+                &map(&span.replace(r#"{"line":2,"column":4}"#, end)),
+                &map("0"),
+            ),
+            &["invalid end", "x"],
+        );
+    }
+}
+
+#[test]
+fn companion_checks_and_sarif_restrictions_precede_comparison_io() {
+    let d = fixture();
+    for (flags, detail) in [
+        (
+            vec!["--fail-regression"],
+            "--fail-regression needs --baseline",
+        ),
+        (
+            vec!["--show-unchanged"],
+            "--show-unchanged needs --baseline",
+        ),
+        (vec!["--fail-changed"], "--fail-changed needs --base"),
+        (
+            vec!["--format", "sarif", "--baseline", "b.json"],
+            "SARIF does not support --baseline",
+        ),
+        (
+            vec!["--format", "sarif", "--base", "HEAD"],
+            "SARIF does not support --base",
+        ),
+    ] {
+        let mut args = vec!["--coverage", "hits.data"];
+        args.extend(flags);
+        before_render(d.path(), &args, &[detail]);
+    }
+}
+
+#[test]
+fn baseline_comparison_is_reserved() {
+    let d = fixture();
+    let mut args = vec!["--coverage", "hits.data", "--baseline", "b.json"];
+    before_render(d.path(), &args, &["--baseline is not implemented yet"]);
+    args.push("--fail-regression");
+    before_render(d.path(), &args, &["--baseline is not implemented yet"]);
+}
+
+#[test]
+fn git_base_comparison_is_reserved() {
+    let d = fixture();
+    let mut args = vec!["--coverage", "hits.data", "--base", "HEAD"];
+    before_render(d.path(), &args, &["--base is not implemented yet"]);
+    args.push("--fail-changed");
+    before_render(d.path(), &args, &["--base is not implemented yet"]);
+}
+
+fn warning_fixture() -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    let cwd = d.path();
+    source(cwd, ".crapts.toml", "exclude=['old/**']");
+    source(
+        cwd,
+        "recover.js",
+        "const x; let [a]; function kept() { if (x) go() }",
+    );
+    source(cwd, "fatal.ts", "function partial() { if (x) {");
+    for path in ["aa/index.ts", "bb/index.ts"] {
+        source(cwd, path, "function f() {}");
+    }
+    source(cwd, "arrows.ts", &"items.map(x => x + 1);\n".repeat(5));
+    let mut spans = json!({});
+    let mut hits = json!({});
+    for line in 1..=5 {
+        spans[line.to_string()] =
+            json!({"start":{"line":line,"column":0},"end":{"line":line,"column":21}});
+        hits[line.to_string()] = json!(1);
+    }
+    source(
+        cwd,
+        "hits.data",
+        &json!({"arrows.ts":{"statementMap":spans,"s":hits},"index.ts":{"statementMap":{},"s":{}}})
+            .to_string(),
+    );
+    d
+}
+
+fn unused_messages(cwd: &Path) -> String {
+    format!(
+        "warning: {}: exclude 'old/**' excluded no file; globs are relative to the config directory\nwarning: --exclude 'gone/**' excluded no file; globs are relative to the current directory\n",
+        cwd.join(".crapts.toml").canonicalize().unwrap().display()
+    )
+}
+
+#[test]
+fn diagnostics_arrive_in_discovery_parse_path_and_producer_order() {
+    let d = warning_fixture();
+    let out = score(d.path(), &["--exclude", "gone/**", "--format", "json"]);
+    check(&out, 0);
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let rest = stderr.strip_prefix(&unused_messages(d.path())).unwrap();
+    let lines: Vec<_> = rest.lines().collect();
+    assert_eq!(lines.len(), 5, "{rest}");
+    assert!(rest.ends_with('\n'));
+    assert!(
+        lines[0].starts_with("warning: fatal.ts: ")
+            && lines[1].starts_with("warning: recover.js: parse error:"),
+        "{rest}"
+    );
+    assert_eq!(
+        lines[2],
+        "warning: coverage key index.ts is ambiguous between aa/index.ts, bb/index.ts and was left unmatched"
+    );
+    assert_eq!(
+        lines[3],
+        "warning: only 1 of 4 analyzed files matched the coverage report"
+    );
+    assert_eq!(
+        lines[4],
+        "warning: The coverage producer appears to write one statement per line. These callbacks will score 0% while their parents absorb the line."
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["notices"], json!([]));
+    assert!(names(&v).contains(&"kept") && !names(&v).contains(&"partial"));
+}
+
+#[test]
+fn coverage_read_errors_follow_unused_exclusions_and_precede_source_analysis() {
+    let d = warning_fixture();
+    source(d.path(), "hits.data", "{");
+    let errors = before_render(
+        d.path(),
+        &["--coverage", "hits.data", "--exclude", "gone/**"],
+        &["invalid JSON", "hits.data"],
+    );
+    let rest = errors.strip_prefix(&unused_messages(d.path())).unwrap();
+    assert_eq!(rest.lines().count(), 1);
+    assert!(!rest.contains("warning:"));
+}
+
+#[test]
+fn a_complete_report_precedes_the_gate_status() {
+    let d = fixture();
+    for (threshold, code) in [("6", 1), ("12", 0)] {
+        let args = ["--format", "json", "--threshold", threshold, "--fail-above"];
+        let expected = score(d.path(), &args);
+        check(&expected, code);
+        let mut args = args.to_vec();
+        args.extend(["--output", "out.json"]);
+        let out = score(d.path(), &args);
+        check(&out, code);
+        assert!(out.stdout.is_empty() && out.stderr.is_empty());
+        assert_eq!(
+            fs::read(d.path().join("out.json")).unwrap(),
+            expected.stdout
+        );
+    }
+}
+
+#[test]
+fn a_destination_failure_takes_precedence_at_the_process_boundary() {
+    let d = fixture();
+    for threshold in ["6", "12"] {
+        let args = [
+            "--coverage",
+            "hits.data",
+            "--threshold",
+            threshold,
+            "--fail-above",
+            "--format",
+            "json",
+        ];
+        let out = binary(d.path())
+            .args(args)
+            .args(["--output", "src"])
+            .output()
+            .unwrap();
+        check(&out, 2);
+        let diagnostic = String::from_utf8(out.stderr).unwrap();
+        assert!(
+            diagnostic.contains("src") && diagnostic.contains("os error"),
+            "{diagnostic}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::fd::OwnedFd;
+            use std::process::Stdio;
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            let output = binary(d.path())
+                .args(args)
+                .stdout(Stdio::from(OwnedFd::from(writer)))
+                .output()
+                .unwrap();
+            check(&output, 2);
+            let diagnostic = String::from_utf8(output.stderr).unwrap();
+            assert!(
+                diagnostic.contains("stdout")
+                    && diagnostic.to_ascii_lowercase().contains("broken pipe"),
+                "{diagnostic}"
+            );
+        }
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config { cases: 12, ..proptest::test_runner::Config::default() })]
+    #[test]
+    fn a_reserved_comparison_precedes_coverage_and_preserves_the_destination(
+        revision in "[A-Za-z0-9]{1,16}", baseline in proptest::bool::ANY, gate in proptest::bool::ANY,
+    ) {
+        let d = tempfile::tempdir().unwrap();
+        let selector = if baseline { "--baseline" } else { "--base" };
+        let companion = if baseline { "--fail-regression" } else { "--fail-changed" };
+        let mut args = vec!["--coverage", "absent.info", selector, &revision];
+        if gate {
+            args.push(companion);
+        }
+        let expected = format!("{selector} is not implemented yet");
+        before_render(d.path(), &args, &[&expected]);
+    }
+}
