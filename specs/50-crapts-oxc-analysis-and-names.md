@@ -800,7 +800,7 @@ Run T1 through T25 in order after the Spec 45 handoff and rebase. Each scenario 
   Scenarios: _Count class definition expressions in the surrounding execution context_, _Include a method's decorator in its source span_.
   Tests: Acceptance for heritage, decorator and key decisions at file scope and inside a function. Check that the method span starts at its decorator.
 
-- [ ] **T19 - Assign source-order ordinals and verify the naming corpus.** Needs: T18.
+- [x] **T19 - Assign source-order ordinals and verify the naming corpus.** Needs: T18.
   Scenarios: _Apply ordinals after the full names are known (N10)_, _Pin the 78 compatibility examples_, _Resolve key, role and wrapper edge cases_.
   Tests: Unit tests for repeated full stems and per-file reset. Acceptance replays all 78 compatibility fixtures and 29 key, role and wrapper fixtures with their individual expected names. Exercise individual cases in the earlier rule tests as each rule lands.
 
