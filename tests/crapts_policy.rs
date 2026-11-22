@@ -2444,3 +2444,419 @@ fn section_failures_are_observable_even_when_their_gate_is_off() {
         );
     }
 }
+
+fn format_settings<'a>(
+    allow: &'a AllowSet,
+    signals: &'a SignalSettings,
+    format: Format,
+    summary: bool,
+    fail_sections: bool,
+) -> Settings<'a> {
+    Settings {
+        format,
+        summary,
+        ..json_settings(allow, signals, false, false, fail_sections)
+    }
+}
+
+#[test]
+fn notices_and_sections_have_a_defined_order_in_text_reports() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let base_path = write_crapts_baseline_file(
+        &dir,
+        "base.json",
+        &CRAPTS,
+        CoverageKind::Lines,
+        vec![row("src/a.ts", "f", 1, 20.0)],
+    );
+    let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+
+    let trail = TestSection {
+        key: "review",
+        raw: "[]",
+        text: "review notes",
+        github: None,
+        placement: Placement::Trail,
+        failures: None,
+    };
+    let lead = TestSection {
+        key: "changed",
+        raw: "{}",
+        text: "changed result",
+        github: None,
+        placement: Placement::Lead,
+        failures: Some(0),
+    };
+    let notices = ["coverage note".to_owned()];
+
+    for format in [Format::Human, Format::Markdown, Format::PrComment] {
+        for base in [None, Some(&prepared)] {
+            for summary in [false, true] {
+                let mut out = Vec::new();
+                run::run(
+                    &CRAPTS,
+                    &format_settings(&allow, &signals, format, summary, false),
+                    Analysis {
+                        entries: vec![row("src/a.ts", "f", 1, 40.0)],
+                        diagnostics: Some(zero_diagnostics()),
+                        scope: &Everything,
+                        coverage_kind: Some(CoverageKind::Lines),
+                        notices: &notices,
+                    },
+                    base,
+                    &[&trail, &lead],
+                    &RenderExtras::default(),
+                    &mut out,
+                )
+                .unwrap();
+                let text = String::from_utf8(out).unwrap();
+                let prefix = if format == Format::Human {
+                    "coverage note\n\nchanged result\n\n".to_owned()
+                } else {
+                    format!(
+                        "{}\n\n> **Note:** coverage note\n\nchanged result\n\n",
+                        CRAPTS.comment_marker
+                    )
+                };
+                assert!(
+                    text.starts_with(&prefix),
+                    "{format:?} delta={} summary={summary}:\n{text}",
+                    base.is_some()
+                );
+                assert!(text.ends_with("\n\nreview notes\n"), "{text}");
+                assert_eq!(text.matches("coverage note").count(), 1);
+                assert_eq!(text.matches("changed result").count(), 1);
+                assert_eq!(text.matches("review notes").count(), 1);
+                if format != Format::Human {
+                    assert_eq!(text.matches(CRAPTS.comment_marker).count(), 1);
+                }
+                let body = &text[prefix.len()..text.len() - "\n\nreview notes\n".len()];
+                assert_ne!(body.trim(), "", "{format:?}: empty body");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_pr_comment_without_notices_puts_the_lead_section_directly_after_the_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let base_path = write_crapts_baseline_file(
+        &dir,
+        "base.json",
+        &CRAPTS,
+        CoverageKind::Lines,
+        vec![row("src/a.ts", "f", 1, 20.0)],
+    );
+    let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+
+    let trail = TestSection {
+        key: "review",
+        raw: "[]",
+        text: "review notes",
+        github: None,
+        placement: Placement::Trail,
+        failures: None,
+    };
+    let lead = TestSection {
+        key: "changed",
+        raw: "{}",
+        text: "changed result",
+        github: None,
+        placement: Placement::Lead,
+        failures: Some(0),
+    };
+    let expected_prefix = format!("{}\n\nchanged result\n\n", CRAPTS.comment_marker);
+
+    for base in [None, Some(&prepared)] {
+        for summary in [false, true] {
+            let mut out = Vec::new();
+            run::run(
+                &CRAPTS,
+                &format_settings(&allow, &signals, Format::PrComment, summary, false),
+                Analysis {
+                    entries: vec![row("src/a.ts", "f", 1, 40.0)],
+                    diagnostics: Some(zero_diagnostics()),
+                    scope: &Everything,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                base,
+                &[&trail, &lead],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert!(text.starts_with(&expected_prefix), "{text}");
+            assert!(text.ends_with("\n\nreview notes\n"), "{text}");
+            assert_eq!(text.matches(CRAPTS.comment_marker).count(), 1);
+            assert_eq!(text.matches("changed result").count(), 1);
+            assert_eq!(text.matches("review notes").count(), 1);
+            let body = &text[expected_prefix.len()..text.len() - "\n\nreview notes\n".len()];
+            assert_ne!(body.trim(), "");
+        }
+    }
+}
+
+#[test]
+fn notices_and_sections_preserve_the_grammar_of_each_machine_format() {
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let notices = ["coverage note".to_owned()];
+    let section = TestSection {
+        key: "changed",
+        raw: r#"{"counts":{"fail":1}}"#,
+        text: "changed result",
+        github: Some("::warning::changed result"),
+        placement: Placement::Lead,
+        failures: Some(1),
+    };
+
+    let render = |format: Format| -> (String, GateOutcome) {
+        let mut out = Vec::new();
+        let outcome = run::run(
+            &CRAPTS,
+            &format_settings(&allow, &signals, format, false, true),
+            Analysis {
+                entries: vec![row("src/a.ts", "hot", 1, 40.0)],
+                diagnostics: Some(zero_diagnostics()),
+                scope: &Everything,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &notices,
+            },
+            None,
+            &[&section],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(outcome.section_failures, 1);
+        assert_eq!(outcome.exit_code(), std::process::ExitCode::from(1));
+        (String::from_utf8(out).unwrap(), outcome)
+    };
+
+    let (json_raw, _) = render(Format::Json);
+    let doc: Value = serde_json::from_str(&json_raw).unwrap();
+    assert!(abs_schema.is_valid(&doc));
+    assert_eq!(doc["notices"], json!(["coverage note"]));
+    assert_eq!(doc["changed"]["counts"]["fail"], 1);
+    assert_eq!(doc["summary"]["changed_failures"], 1);
+
+    let (gh_raw, _) = render(Format::GitHub);
+    let gh_lines: Vec<&str> = gh_raw.lines().collect();
+    assert_eq!(gh_lines.len(), 2, "{gh_raw}");
+    assert_eq!(gh_lines[0], "::warning::changed result");
+    assert!(gh_lines[1].starts_with("::warning file="), "{gh_raw}");
+    assert!(gh_lines[1].contains("hot"), "{gh_raw}");
+    assert!(!gh_raw.contains("coverage note"));
+
+    let (sarif_raw, _) = render(Format::Sarif);
+    let sarif: Value = serde_json::from_str(&sarif_raw).unwrap();
+    assert_eq!(sarif["version"], "2.1.0");
+    assert_eq!(sarif["runs"][0]["results"].as_array().unwrap().len(), 1);
+    assert!(!sarif_raw.contains("coverage note"));
+    assert!(!sarif_raw.contains("changed result"));
+
+    let (shields_raw, _) = render(Format::Shields);
+    let badge: Value = serde_json::from_str(&shields_raw).unwrap();
+    assert_eq!(
+        badge,
+        json!({
+            "schemaVersion": 1,
+            "label": "CRAP > 30",
+            "message": "1 crappy",
+            "color": "yellow"
+        })
+    );
+    assert!(!shields_raw.contains("coverage note"));
+}
+
+#[test]
+fn cargo_crap_v1_renders_caller_supplied_text_sections() {
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let audit = Tool {
+        comment_marker: "<!-- audit -->",
+        ..cargo_crap::tool::CARGO_CRAP
+    };
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare(Baseline {
+        entries: vec![row("src/a.rs", "f", 1, 20.0)],
+        try_weight: cargo_crap_core::score::DEFAULT_TRY_WEIGHT,
+        duplicate_groups: None,
+    });
+    let trail = TestSection {
+        key: "review",
+        raw: "[]",
+        text: "review notes",
+        github: None,
+        placement: Placement::Trail,
+        failures: None,
+    };
+    let lead = TestSection {
+        key: "changed",
+        raw: "{}",
+        text: "changed result",
+        github: None,
+        placement: Placement::Lead,
+        failures: Some(0),
+    };
+
+    for format in [Format::Human, Format::Markdown, Format::PrComment] {
+        for base in [None, Some(&prepared)] {
+            for summary in [false, true] {
+                let mut out = Vec::new();
+                run::run(
+                    &audit,
+                    &format_settings(&allow, &signals, format, summary, false),
+                    Analysis {
+                        entries: vec![row("src/a.rs", "f", 1, 40.0)],
+                        diagnostics: None,
+                        scope: &Everything,
+                        coverage_kind: None,
+                        notices: &[],
+                    },
+                    base,
+                    &[&trail, &lead],
+                    &RenderExtras::default(),
+                    &mut out,
+                )
+                .unwrap();
+                let text = String::from_utf8(out).unwrap();
+                let expected_start = if format == Format::Human {
+                    "changed result\n\n"
+                } else {
+                    "<!-- audit -->\n\nchanged result\n\n"
+                };
+                assert!(
+                    text.starts_with(expected_start),
+                    "{format:?} delta={} summary={summary}:\n{text}",
+                    base.is_some()
+                );
+                assert!(text.ends_with("\n\nreview notes\n"), "{text}");
+                assert_eq!(text.matches("changed result").count(), 1);
+                assert_eq!(text.matches("review notes").count(), 1);
+                if format != Format::Human {
+                    assert_eq!(text.matches("<!-- audit -->").count(), 1);
+                }
+            }
+        }
+    }
+}
+
+struct FailingSection {
+    key: &'static str,
+    placement: Placement,
+}
+
+impl Section for FailingSection {
+    fn json_key(&self) -> &str {
+        self.key
+    }
+    fn json(&self) -> Box<serde_json::value::RawValue> {
+        serde_json::value::RawValue::from_string("{}".to_owned()).unwrap()
+    }
+    fn write(
+        &self,
+        _: Format,
+        _: &mut dyn std::io::Write,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("section write failed")
+    }
+    fn placement(&self) -> Placement {
+        self.placement
+    }
+    fn failures(&self) -> Option<usize> {
+        Some(1)
+    }
+}
+
+struct FailingFlushWriter(Vec<u8>);
+
+impl std::io::Write for FailingFlushWriter {
+    fn write(
+        &mut self,
+        buf: &[u8],
+    ) -> std::io::Result<usize> {
+        self.0.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::other("fixture flush failed"))
+    }
+}
+
+#[test]
+fn a_section_or_writer_error_takes_precedence_over_any_positive_count() {
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = Settings {
+        format: Format::Human,
+        ..json_settings(&allow, &signals, true, true, true)
+    };
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare(Baseline {
+        entries: vec![row("src/a.rs", "hot", 1, 20.0)],
+        try_weight: cargo_crap_core::score::DEFAULT_TRY_WEIGHT,
+        duplicate_groups: None,
+    });
+
+    for placement in [Placement::Lead, Placement::Trail] {
+        let failing = FailingSection {
+            key: "changed",
+            placement,
+        };
+        let err = run::run(
+            &cargo_crap::tool::CARGO_CRAP,
+            &settings,
+            Analysis {
+                entries: vec![row("src/a.rs", "hot", 1, 40.0)],
+                diagnostics: None,
+                scope: &Everything,
+                coverage_kind: None,
+                notices: &[],
+            },
+            Some(&prepared),
+            &[&failing],
+            &RenderExtras::default(),
+            &mut Vec::new(),
+        )
+        .expect_err("failing section must override positive gate counts");
+        let chain = format!("{err:#}");
+        assert!(chain.contains("section write failed"), "{chain}");
+    }
+
+    let ok_section = TestSection {
+        key: "changed",
+        raw: "{}",
+        text: "changed result",
+        github: None,
+        placement: Placement::Lead,
+        failures: Some(1),
+    };
+    let mut writer = FailingFlushWriter(Vec::new());
+    let flush_err = run::run(
+        &cargo_crap::tool::CARGO_CRAP,
+        &settings,
+        Analysis {
+            entries: vec![row("src/a.rs", "hot", 1, 40.0)],
+            diagnostics: None,
+            scope: &Everything,
+            coverage_kind: None,
+            notices: &[],
+        },
+        Some(&prepared),
+        &[&ok_section],
+        &RenderExtras::default(),
+        &mut writer,
+    )
+    .expect_err("failing flush must override positive gate counts");
+    let chain = format!("{flush_err:#}");
+    assert!(chain.contains("flushing output"), "{chain}");
+    assert!(chain.contains("fixture flush failed"), "{chain}");
+}

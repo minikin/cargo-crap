@@ -709,7 +709,7 @@ the first byte, like a missing coverage kind.
   section_, _a declared section must supply a raw JSON object_, _section
   failures are observable even when their gate is off_. Tests: unit for
   the key checks, acceptance with byte comparison of the raw value.
-- [ ] **T9 - Render sections in text and machine formats.** Needs: T8.
+- [x] **T9 - Render sections in text and machine formats.** Needs: T8.
   Lead and trail sections around the body in Human, Markdown and PrComment
   for both envelopes, the marker on line one, GitHub section commands,
   SARIF and Shields counts only, and error precedence over the verdict.

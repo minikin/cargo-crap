@@ -12,7 +12,9 @@ use crate::entry::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::filter::{self, AllowSet};
 use crate::gate::{GateInput, GateOutcome, threshold_count};
 use crate::policy::EnvelopeKind;
-use crate::report::{self, Format, RenderOptions, Section, SourceLinks, Tool, TriagedBy};
+use crate::report::{
+    self, Format, Placement, RenderOptions, Section, SourceLinks, Tool, TriagedBy,
+};
 use crate::score::DEFAULT_TRY_WEIGHT;
 use crate::signals::SignalSettings;
 use anyhow::{Context, Result};
@@ -269,7 +271,7 @@ pub fn run(
         settings.threshold,
     );
     let notices = collect_notices(analysis.notices, baseline);
-    let include_marker = write_text_notices(tool, settings.format, &notices, out)?;
+    let include_marker = write_prefix(tool, settings.format, &notices, sections, out)?;
     let body = RunBody {
         tool,
         settings,
@@ -285,6 +287,7 @@ pub fn run(
     };
     let (regressed, gating_signals) = write_report_body(&body, summary, include_marker, out)?;
     report::render_duplicates(&options, out).context("writing duplicate report")?;
+    write_suffix(settings.format, sections, out)?;
     out.flush().context("flushing output")?;
     let regression_skipped = baseline.is_some_and(PreparedBaseline::regression_gate_skipped);
     let section_failures = sections.iter().filter_map(|s| s.failures()).sum();
@@ -373,29 +376,81 @@ fn write_json_body(
     }
 }
 
-fn write_text_notices(
+fn write_prefix(
     tool: &Tool,
     format: Format,
     notices: &[&str],
+    sections: &[&dyn Section],
     out: &mut dyn Write,
 ) -> Result<bool> {
-    if notices.is_empty() || !matches!(format, Format::Human | Format::Markdown | Format::PrComment)
-    {
+    match format {
+        Format::Human | Format::Markdown | Format::PrComment => {
+            write_text_prefix(tool, format, notices, sections, out)
+        },
+        Format::GitHub => {
+            write_sections(sections, Placement::Lead, format, "", "", out)?;
+            Ok(true)
+        },
+        Format::Json | Format::Sarif | Format::Shields => Ok(true),
+    }
+}
+
+fn write_text_prefix(
+    tool: &Tool,
+    format: Format,
+    notices: &[&str],
+    sections: &[&dyn Section],
+    out: &mut dyn Write,
+) -> Result<bool> {
+    if notices.is_empty() && sections.is_empty() {
         return Ok(true);
     }
     let markdown = matches!(format, Format::Markdown | Format::PrComment);
     if markdown {
         report::write_pr_comment_marker(tool, out)?;
     }
-    for notice in notices {
-        if markdown {
-            writeln!(out, "> **Note:** {notice}")?;
-        } else {
-            writeln!(out, "{notice}")?;
+    if !notices.is_empty() {
+        for notice in notices {
+            if markdown {
+                writeln!(out, "> **Note:** {notice}")?;
+            } else {
+                writeln!(out, "{notice}")?;
+            }
         }
+        writeln!(out)?;
     }
-    writeln!(out)?;
+    write_sections(sections, Placement::Lead, format, "", "\n", out)?;
     Ok(!markdown)
+}
+
+fn write_suffix(
+    format: Format,
+    sections: &[&dyn Section],
+    out: &mut dyn Write,
+) -> Result<()> {
+    match format {
+        Format::Human | Format::Markdown | Format::PrComment => {
+            write_sections(sections, Placement::Trail, format, "\n", "", out)
+        },
+        Format::GitHub => write_sections(sections, Placement::Trail, format, "", "", out),
+        Format::Json | Format::Sarif | Format::Shields => Ok(()),
+    }
+}
+
+fn write_sections(
+    sections: &[&dyn Section],
+    placement: Placement,
+    format: Format,
+    before: &str,
+    after: &str,
+    out: &mut dyn Write,
+) -> Result<()> {
+    for section in sections.iter().filter(|s| s.placement() == placement) {
+        out.write_all(before.as_bytes())?;
+        section.write(format, out)?;
+        out.write_all(after.as_bytes())?;
+    }
+    Ok(())
 }
 
 fn collect_notices<'a>(
@@ -1129,6 +1184,222 @@ mod tests {
         for format in [Format::GitHub, Format::Sarif, Format::Shields] {
             let out = render_with(format, false);
             assert!(!out.contains("first note"), "{format:?}: {out}");
+        }
+    }
+
+    struct NonJsonSection {
+        label: &'static str,
+        placement: Placement,
+        failures: Option<usize>,
+        forbid_write: bool,
+    }
+
+    impl Section for NonJsonSection {
+        fn json_key(&self) -> &str {
+            panic!("non-JSON renderer must not call json_key");
+        }
+        fn json(&self) -> Box<serde_json::value::RawValue> {
+            panic!("non-JSON renderer must not call json");
+        }
+        fn write(
+            &self,
+            _: Format,
+            out: &mut dyn Write,
+        ) -> Result<()> {
+            assert!(!self.forbid_write, "format must not write section text");
+            writeln!(out, "{}", self.label)?;
+            Ok(())
+        }
+        fn placement(&self) -> Placement {
+            self.placement
+        }
+        fn failures(&self) -> Option<usize> {
+            self.failures
+        }
+    }
+
+    fn section_settings<'a>(
+        allow: &'a AllowSet,
+        signals: &'a SignalSettings,
+        format: Format,
+    ) -> Settings<'a> {
+        Settings {
+            allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: crate::delta::DEFAULT_EPSILON,
+            signals,
+            fail_above: false,
+            fail_regression: false,
+            format,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: true,
+        }
+    }
+
+    #[test]
+    fn text_sections_render_in_placement_and_caller_order() {
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let (t1, l1, t2, l2) = (
+            NonJsonSection {
+                label: "trail-1",
+                placement: Placement::Trail,
+                failures: Some(1),
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "lead-1",
+                placement: Placement::Lead,
+                failures: Some(0),
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "trail-2",
+                placement: Placement::Trail,
+                failures: None,
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "lead-2",
+                placement: Placement::Lead,
+                failures: Some(2),
+                forbid_write: false,
+            },
+        );
+        let ordered: [&dyn Section; 4] = [&t1, &l1, &t2, &l2];
+
+        for format in [Format::Human, Format::Markdown, Format::PrComment] {
+            let mut out = Vec::new();
+            let outcome = run(
+                &tool,
+                &section_settings(&allow, &signals, format),
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                None,
+                &ordered,
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            assert_eq!(outcome.section_failures, 3);
+            assert!(outcome.tripped);
+            let text = String::from_utf8(out).unwrap();
+            let expected_start = if format == Format::Human {
+                "lead-1\n\nlead-2\n\n".to_owned()
+            } else {
+                format!("{}\n\nlead-1\n\nlead-2\n\n", tool.comment_marker)
+            };
+            assert!(text.starts_with(&expected_start), "{format:?}: {text}");
+            assert!(
+                text.ends_with("\n\ntrail-1\n\ntrail-2\n"),
+                "{format:?}: {text}"
+            );
+            assert!(text.find("lead-2").unwrap() < text.find("crappy").unwrap());
+            assert!(text.find("crappy").unwrap() < text.find("trail-1").unwrap());
+        }
+    }
+
+    #[test]
+    fn machine_sections_preserve_github_lines_and_skip_sarif_shields_writes() {
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let (t1, l1, t2, l2) = (
+            NonJsonSection {
+                label: "::warning::trail-1",
+                placement: Placement::Trail,
+                failures: Some(1),
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "::warning::lead-1",
+                placement: Placement::Lead,
+                failures: Some(0),
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "::warning::trail-2",
+                placement: Placement::Trail,
+                failures: None,
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "::warning::lead-2",
+                placement: Placement::Lead,
+                failures: Some(2),
+                forbid_write: false,
+            },
+        );
+        let ordered: [&dyn Section; 4] = [&t1, &l1, &t2, &l2];
+        let mut gh_out = Vec::new();
+        run(
+            &tool,
+            &section_settings(&allow, &signals, Format::GitHub),
+            Analysis {
+                entries: crate::report::test_support::sample(),
+                diagnostics: Some(empty_test_diag()),
+                scope: &AllFiles,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            None,
+            &ordered,
+            &RenderExtras::default(),
+            &mut gh_out,
+        )
+        .unwrap();
+        let gh = String::from_utf8(gh_out).unwrap();
+        let gh_lines: Vec<&str> = gh.lines().collect();
+        assert_eq!(gh_lines.first(), Some(&"::warning::lead-1"), "{gh}");
+        assert_eq!(gh_lines.get(1), Some(&"::warning::lead-2"), "{gh}");
+        assert_eq!(
+            gh_lines.get(gh_lines.len() - 2),
+            Some(&"::warning::trail-1")
+        );
+        assert_eq!(gh_lines.last(), Some(&"::warning::trail-2"));
+        assert!(gh_lines.iter().all(|l| l.starts_with("::warning")), "{gh}");
+
+        let silent = NonJsonSection {
+            label: "never",
+            placement: Placement::Lead,
+            failures: Some(1),
+            forbid_write: true,
+        };
+        for format in [Format::Sarif, Format::Shields] {
+            let mut out = Vec::new();
+            let outcome = run(
+                &tool,
+                &section_settings(&allow, &signals, format),
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                None,
+                &[&silent],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            assert_eq!(outcome.section_failures, 1);
+            assert!(outcome.tripped);
         }
     }
 
