@@ -692,7 +692,7 @@ Spec 52 builds after Spec 50 rebases onto Spec 49. Every task is one jj change a
   non-UTF-8 lossy `SF:` bytes, `ENOENT`, `EISDIR`, `EACCES` (enforced mode or
   injected failing read when running with elevated file permissions),
   truncated/non-object JSON, empty input, and leading-space or non-line-start `SF:`.
-- [ ] **T6 - Implement crapts::attribute binding, merging, diagnostics, warnings, and LCOV attribution.**
+- [x] **T6 - Implement crapts::attribute binding, merging, diagnostics, warnings, and LCOV attribution.**
   Needs: T1, T5. Create `crates/crapts/src/attribute.rs` and expose
   `pub mod attribute` from `crates/crapts/src/lib.rs`. Implement
   `AttributedRow`, `Attribution`, and `attribute(cwd, analyses, coverage, missing)`.

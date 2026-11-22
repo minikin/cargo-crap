@@ -27,13 +27,13 @@ pub(crate) struct Statement {
 type StatementFiles = Vec<(String, Vec<Statement>)>;
 
 #[derive(Debug, PartialEq)]
-enum CoverageData {
+pub(crate) enum CoverageData {
     Statements(StatementFiles),
     Lines(Vec<StrictLcovFile>),
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Coverage(CoverageData);
+pub struct Coverage(pub(crate) CoverageData);
 
 impl Coverage {
     #[must_use]
