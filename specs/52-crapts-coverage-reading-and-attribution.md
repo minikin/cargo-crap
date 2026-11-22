@@ -676,7 +676,7 @@ Spec 52 builds after Spec 50 rebases onto Spec 49. Every task is one jj change a
   alteration and validation precedence, duplicate member replacement and
   array-index vs string key order, and binary64 boundaries (`9007199254740993`,
   `-0`, `1e300`, `1e400`).
-- [ ] **T5 - Complete crapts::coverage format detection, OS errors, and LCOV reading.**
+- [x] **T5 - Complete crapts::coverage format detection, OS errors, and LCOV reading.**
   Needs: T2, T4. Extend `crates/crapts/src/coverage/mod.rs` to detect LCOV
   when leading Unicode whitespace does not reach `{` and any LF-delimited
   line (before trimming) begins with `SF:`, dispatching to

@@ -73,6 +73,13 @@ impl InputError {
         } else {
             format!("{}: {message}", path.display())
         };
+        Self::reported(path, message)
+    }
+
+    pub(crate) fn reported(
+        path: &Path,
+        message: String,
+    ) -> Self {
         Self {
             path: path.to_owned(),
             side: None,

@@ -61,3 +61,87 @@ fn istanbul_uses_binary64_integers_for_positions_and_hits() {
             .ends_with("file: statement x: invalid hit count")
     );
 }
+
+#[test]
+fn detect_the_coverage_unit_from_the_contents() {
+    use CoverageUnit::{Lines, Statements};
+    let cwd = tempfile::tempdir().unwrap();
+    let cases: &[(&str, &[u8], CoverageUnit, &[&str])] = &[
+        ("run.lcov", b"\xef\xbb\xbf \t\n{}", Statements, &[]),
+        (
+            "run.json",
+            b"\xef\xbb\xbfSF:src/a.ts\r\n",
+            Lines,
+            &["src/a.ts"],
+        ),
+        (
+            "run.data",
+            b"TN:suite\nSF:./src/a.ts\nend_of_record",
+            Lines,
+            &["./src/a.ts"],
+        ),
+        (
+            "interior",
+            "SF:src/a\u{feff}b.ts".as_bytes(),
+            Lines,
+            &["src/a\u{feff}b.ts"],
+        ),
+        ("lossy", b"SF:src/a\xffb.ts", Lines, &["src/a\u{fffd}b.ts"]),
+        ("spaced", " \u{feff}{}".as_bytes(), Statements, &[]),
+    ];
+    for &(name, bytes, unit, keys) in cases {
+        std::fs::write(cwd.path().join(name), bytes).unwrap();
+        let report = read_coverage(cwd.path(), &Path::new("absent").join("..").join(name)).unwrap();
+        assert_eq!(report.keys(), keys, "{name}");
+        assert_eq!(report.unit(), unit, "{name}");
+    }
+}
+
+#[test]
+fn identify_an_unreadable_or_unrecognized_report() {
+    let cwd = tempfile::tempdir().unwrap();
+    let directory = cwd.path().join("reports");
+    std::fs::create_dir(&directory).unwrap();
+    for (path, code) in [
+        (directory, "EISDIR"),
+        (cwd.path().join("gone.info"), "ENOENT"),
+    ] {
+        let error = read_coverage(cwd.path(), path.file_name().unwrap().as_ref()).unwrap_err();
+        assert_eq!(error.path(), path);
+        assert_eq!(error.to_string(), format!("{}: {code}", path.display()));
+    }
+    let cases = [
+        ("control", "\u{85}{}", "unrecognized coverage format"),
+        ("broken", "{\nSF:a.ts", "invalid JSON"),
+        ("empty", "", "unrecognized coverage format"),
+        ("array", "[]", "unrecognized coverage format"),
+        (
+            "text",
+            "TN:prefix SF:x\nDA:1,1",
+            "unrecognized coverage format",
+        ),
+        ("indented", "  SF:a.ts", "unrecognized coverage format"),
+        (
+            "double-bom",
+            "\u{feff}\u{feff}SF:a.ts",
+            "unrecognized coverage format",
+        ),
+        (
+            "bad.lcov",
+            "TN:x\nDA:bad\nSF:a.ts",
+            "line 2: DA outside an SF record",
+        ),
+    ];
+    for (name, bytes, detail) in cases {
+        let path = cwd.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let error = read_coverage(cwd.path(), Path::new(name)).unwrap_err();
+        assert_eq!(error.path(), path);
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("{}: {detail}", path.display())),
+            "{error}"
+        );
+    }
+}
