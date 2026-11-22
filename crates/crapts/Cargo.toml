@@ -11,6 +11,7 @@ homepage.workspace = true
 publish = false
 
 [dependencies]
+globset.workspace = true
 oxc_allocator.workspace = true
 oxc_ast.workspace = true
 oxc_ast_visit.workspace = true
@@ -21,7 +22,6 @@ oxc_syntax = { workspace = true, features = ["to_js_string"] }
 sha2.workspace = true
 
 [dev-dependencies]
-globset.workspace = true
 proptest.workspace = true
 regex-syntax.workspace = true
 tempfile.workspace = true

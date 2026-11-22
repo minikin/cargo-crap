@@ -6,5 +6,5 @@ mod lines;
 mod names;
 
 pub use analyze::{FileAnalysis, FileStatus, InputError, Mode, Row, Side, analyze};
-pub use discover::{Discovery, DiscoveryOptions, discover};
+pub use discover::{Discovery, DiscoveryOptions, ExcludePattern, GlobOrigin, discover};
 pub use lines::{Position, SourceSpan};

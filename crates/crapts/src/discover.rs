@@ -5,16 +5,57 @@ use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+
 use crate::InputError;
+
+const DEFAULT_EXCLUDES: [&str; 10] = [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/coverage/**",
+    "**/*.test.*",
+    "**/*.spec.*",
+    "**/*.stories.*",
+    "**/*.min.js",
+    "**/__tests__/**",
+    "**/__mocks__/**",
+];
 
 #[derive(Debug)]
 pub struct DiscoveryOptions {
     pub cwd: PathBuf,
+    pub defaults: Vec<ExcludePattern>,
+    pub excludes: Vec<ExcludePattern>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExcludePattern {
+    pub pattern: String,
+    pub origin: GlobOrigin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GlobOrigin {
+    Default,
+    Config(PathBuf),
+    Flag,
 }
 
 impl DiscoveryOptions {
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
-        Self { cwd: cwd.into() }
+        let defaults = DEFAULT_EXCLUDES
+            .iter()
+            .map(|&pattern| ExcludePattern {
+                pattern: pattern.to_owned(),
+                origin: GlobOrigin::Default,
+            })
+            .collect();
+        Self {
+            cwd: cwd.into(),
+            defaults,
+            excludes: Vec::new(),
+        }
     }
 }
 
@@ -31,6 +72,8 @@ pub fn discover(
         .cwd
         .canonicalize()
         .map_err(|error| InputError::at(&options.cwd, error))?;
+    let defaults = compile(&cwd, &options.defaults)?;
+    let extras = compile(&cwd, &options.excludes)?;
     let repository = worktree(&cwd)?;
     let mut inputs = Vec::new();
     for root in roots {
@@ -47,9 +90,45 @@ pub fn discover(
         Some(_) => BTreeSet::new(),
         None => walk_files(&cwd, inputs)?,
     };
-    let mut files: Vec<_> = names.into_iter().map(PathBuf::from).collect();
+    let mut files: Vec<_> = names
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|file| {
+            source_extension(file).is_some() && !defaults.is_match(file) && !extras.is_match(file)
+        })
+        .collect();
     files.sort_by_cached_key(|file| file.to_string_lossy().encode_utf16().collect::<Vec<_>>());
     Ok(Discovery { files })
+}
+
+fn compile(
+    cwd: &Path,
+    patterns: &[ExcludePattern],
+) -> Result<GlobSet, InputError> {
+    let mut set = GlobSetBuilder::new();
+    for rule in patterns {
+        let glob = GlobBuilder::new(&rule.pattern)
+            .literal_separator(true)
+            .case_insensitive(false)
+            .backslash_escape(true)
+            .build()
+            .map_err(|e| {
+                InputError::at(cwd, format!("invalid exclusion {:?}: {e}", rule.pattern))
+            })?;
+        set.add(glob);
+    }
+    set.build().map_err(|e| InputError::at(cwd, e))
+}
+
+pub(super) fn source_extension(path: &Path) -> Option<&str> {
+    let name = path.file_name()?.as_encoded_bytes();
+    let mut parts = name.rsplitn(2, |&byte| byte == b'.');
+    let ext = std::str::from_utf8(parts.next()?).ok()?;
+    let stem = parts.next()?;
+    if stem.ends_with(b".d") && matches!(ext, "ts" | "cts" | "mts") {
+        return None;
+    }
+    oxc_span::VALID_EXTENSIONS.contains(&ext).then_some(ext)
 }
 
 fn git(cwd: &Path) -> Command {
@@ -255,6 +334,29 @@ fn missing_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_suffixes_apply_to_the_whole_filename() {
+        for (path, expected) in [
+            (".ts", true),
+            ("a.d.ts.js", true),
+            ("a.d.js", true),
+            ("a.d.tsx", true),
+            ("a.D.ts", true),
+            (".d.ts", false),
+            ("a.d.cts", false),
+            ("a.d.mts", false),
+            ("file.ts/other", false),
+            ("ts", false),
+            ("a.TS", false),
+        ] {
+            assert_eq!(
+                source_extension(Path::new(path)).is_some(),
+                expected,
+                "{path}"
+            );
+        }
+    }
 
     #[cfg(windows)]
     #[test]

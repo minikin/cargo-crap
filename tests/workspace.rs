@@ -174,7 +174,7 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
                 .expect("dependency name")
         })
         .collect();
-    let required_helpers = ["sha2"];
+    let required_helpers = ["globset", "sha2"];
     let expected: BTreeSet<_> = parser_pins.into_iter().chain(required_helpers).collect();
     assert_eq!(declared, expected, "direct dependencies of crapts");
     let sha2 = &shared["workspace"]["dependencies"]["sha2"];

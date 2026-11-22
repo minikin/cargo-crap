@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crapts::{DiscoveryOptions, discover};
+use crapts::{DiscoveryOptions, ExcludePattern, GlobOrigin, Mode, Side, analyze, discover};
 use tempfile::tempdir;
 
 fn git(
@@ -141,9 +141,48 @@ fn git_records_preserve_filename_bytes() {
     #[cfg(not(target_os = "linux"))]
     let bytes = b"line\nend.ts".as_slice();
     let name = Path::new(OsStr::from_bytes(bytes));
-    fs::write(root.join(name), "").unwrap();
+    fs::write(root.join(name), "const kept = (x: number) => x").unwrap();
     let result = discover(&[], &DiscoveryOptions::new(root)).unwrap();
     assert_eq!(result.files, [name]);
+    let row = analyze(
+        name,
+        &fs::read(root.join(name)).unwrap(),
+        Mode::Strict(Side::Head),
+    )
+    .unwrap();
+    assert_eq!(row.rows[0].name, "kept");
+}
+
+#[test]
+fn analyze_suffix_only_filenames_as_discovered() {
+    let dir = tempdir().unwrap();
+    for (name, source) in [
+        (".ts", "const f = (x: number) => x"),
+        (".js", "const f = () => <b/>"),
+    ] {
+        write(dir.path(), name, source);
+    }
+    let paths = discover(&[], &DiscoveryOptions::new(dir.path()))
+        .unwrap()
+        .files;
+    assert_eq!(paths, [Path::new(".js"), Path::new(".ts")]);
+    for path in paths {
+        let source = fs::read(dir.path().join(&path)).unwrap();
+        let file = analyze(&path, &source, Mode::Strict(Side::Head)).unwrap();
+        assert_eq!(file.rows[0].name, "f");
+        assert_eq!(file.rows[0].file, path);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_ascii_source_suffix_identifies_a_non_utf8_filename() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let path = Path::new(OsStr::from_bytes(b"\xff.cts"));
+    let file = analyze(path, b"function f(x: number) {}", Mode::Strict(Side::Head)).unwrap();
+    assert_eq!(file.rows[0].file, path);
+    assert_eq!(file.rows[0].name, "f");
 }
 
 #[test]
@@ -207,18 +246,138 @@ fn walking_fixture(root: &Path) {
     }
 }
 
+fn without_exclusions(
+    cwd: &Path,
+    roots: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut options = DiscoveryOptions::new(cwd);
+    options.defaults.clear();
+    discover(roots, &options).unwrap().files
+}
+
+fn flag(pattern: &str) -> ExcludePattern {
+    ExcludePattern {
+        pattern: pattern.to_owned(),
+        origin: GlobOrigin::Flag,
+    }
+}
+
+#[test]
+fn select_the_eight_source_extensions_case_sensitively() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    for suffix in [
+        "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "json", "d.ts", "d.mts", "d.cts",
+        "d.ts.js",
+    ] {
+        write(root, &format!("a.{suffix}"), "");
+    }
+    write(root, "b.TS", "");
+    let expected = [
+        "a.cjs",
+        "a.cts",
+        "a.d.ts.js",
+        "a.js",
+        "a.jsx",
+        "a.mjs",
+        "a.mts",
+        "a.ts",
+        "a.tsx",
+    ];
+    assert_eq!(files(root, &[]), expected);
+    git(root, &["init", "-q"]);
+    assert_eq!(files(root, &[]), expected);
+}
+
+#[test]
+fn apply_default_and_caller_supplied_exclusions() {
+    let dir = tempdir().unwrap();
+    let cwd = dir.path();
+    git(cwd, &["init", "-q"]);
+    let defaults = [
+        "node_modules/p/a.js",
+        "pkg/dist/a.ts",
+        "build/b.ts",
+        "coverage/a.js",
+        "lib/a.test.ts",
+        "a.spec.mts",
+        "src/.hidden/test.stories.tsx",
+        "src/a.min.js",
+        "__tests__/a.cts",
+        "src/__mocks__/a.jsx",
+    ];
+    for name in defaults.into_iter().chain(["src/main.ts", "src/gen/a.ts"]) {
+        write(cwd, name, "");
+        git(cwd, &["add", "-f", "--", name]);
+    }
+    let mut options = DiscoveryOptions::new(cwd);
+    options.excludes.push(flag("src/gen/**"));
+    assert_eq!(
+        discover(&[], &options).unwrap().files,
+        paths(&["src/main.ts"])
+    );
+    options.defaults.clear();
+    let mut expected = paths(&defaults);
+    expected.push(PathBuf::from("src/main.ts"));
+    expected.sort_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
+    assert_eq!(discover(&[], &options).unwrap().files, expected);
+    options.defaults.push(flag("src/main.ts"));
+    assert_eq!(
+        discover(&paths(&["src"]), &options).unwrap().files,
+        paths(&[
+            "src/.hidden/test.stories.tsx",
+            "src/__mocks__/a.jsx",
+            "src/a.min.js"
+        ])
+    );
+}
+
+#[test]
+fn explicit_file_roots_use_the_same_filters_as_directory_roots() {
+    let dir = tempdir().unwrap();
+    let cwd = dir.path();
+    write(cwd, "only.json", "");
+    write(cwd, "one.spec.ts", "");
+    write(cwd, "valid.ts", "");
+    let roots = paths(&["only.json", "one.spec.ts", "valid.ts"]);
+    let mut options = DiscoveryOptions::new(cwd);
+    options.excludes.push(flag("valid.ts"));
+    assert_eq!(
+        discover(&roots, &options).unwrap().files,
+        Vec::<PathBuf>::new()
+    );
+    git(cwd, &["init", "-q"]);
+    assert_eq!(
+        discover(&roots, &options).unwrap().files,
+        Vec::<PathBuf>::new()
+    );
+}
+
+#[test]
+fn an_invalid_replacement_default_names_the_pattern() {
+    let dir = tempdir().unwrap();
+    write(dir.path(), "one.ts", "");
+    let mut options = DiscoveryOptions::new(dir.path());
+    options.defaults = vec![flag("bad/[")];
+    let error = discover(&paths(&["one.ts"]), &options).unwrap_err();
+    assert!(error.to_string().contains("bad/["), "{error}");
+}
+
 #[test]
 fn walk_regular_files_outside_a_git_worktree() {
     let dir = tempdir().unwrap();
     let cwd = dir.path();
     walking_fixture(cwd);
-    assert_eq!(files(cwd, &paths(&["."])), ["real/a.ts"]);
     assert_eq!(
-        files(
+        without_exclusions(cwd, &paths(&["."])),
+        paths(&["real/a.ts"])
+    );
+    assert_eq!(
+        without_exclusions(
             cwd,
             &paths(&["real/a.ts", "real", "deps/node_modules/a.ts", ".git/info"])
         ),
-        ["real/a.ts"]
+        paths(&["real/a.ts"])
     );
     write(cwd, "shared/b.ts", "");
     assert_eq!(
@@ -240,7 +399,10 @@ fn a_bare_repository_does_not_supply_a_worktree() {
 fn walk_with_git_removed_from_path() {
     let key = "CRAPTS_TEST_WALK_WITHOUT_GIT";
     if let Some(directory) = std::env::var_os(key) {
-        assert_eq!(files(Path::new(&directory), &[]), ["real/a.ts"]);
+        assert_eq!(
+            without_exclusions(Path::new(&directory), &[]),
+            paths(&["real/a.ts"])
+        );
         return;
     }
     let dir = tempdir().unwrap();

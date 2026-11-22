@@ -167,7 +167,11 @@ pub fn analyze(
 }
 
 fn grammar_for(path: &Path) -> Result<SourceType, oxc_span::UnknownExtension> {
-    SourceType::from_path(path).map(|grammar| grammar.with_jsx(grammar.is_javascript()))
+    SourceType::from_path(path)
+        .or_else(|error| {
+            crate::discover::source_extension(path).map_or(Err(error), SourceType::from_extension)
+        })
+        .map(|grammar| grammar.with_jsx(grammar.is_javascript()))
 }
 
 struct Collector<'s> {
