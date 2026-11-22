@@ -8,6 +8,7 @@ pub mod duplicates;
 pub mod entry;
 pub mod filter;
 pub mod gate;
+pub mod git;
 pub mod paths;
 pub mod policy;
 pub mod report;

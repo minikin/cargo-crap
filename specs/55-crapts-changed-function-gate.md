@@ -1155,7 +1155,7 @@ SARIF is outside this property: it refuses `--base` with exit 2, as "SARIF refus
 
 Each scenario's assertions are proved at the layer that implements them. T5 proves pairings, change classes and candidate identities in-process. T6 proves touch, counts and reasons in-process. T8 and T9 own the real-command report and exit assertions of those scenarios, so each one ends as a CLI test named after it in `crates/crapts/tests/changed.rs`. The trace lists name the scenarios each CLI task takes over.
 
-- [ ] **T1 - Core Git reader: worktree, revisions, merge base and head state.**
+- [x] **T1 - Core Git reader: worktree, revisions, merge base and head state.**
   Add `cargo_crap_core::git` with the worktree, revision, merge-base and head APIs, the shallow and unrelated-history distinction and the typed errors. Shell out to `git` only.
   Scenarios: _The reader resolves the revision, merge base and head of a worktree_, _Criss-cross history uses Git's merge base and records the count_, _A merge base found in a shallow clone is used and marked shallow_, _The core Git reader needs no parser or Git library_.
   Tests: integration in `crates/cargo-crap-core/tests/git.rs` against temporary repositories, unit tests for output parsing, the parser-guard check, and the CI job "MSRV (Rust 1.88)" passing its default-feature and all-feature `cargo nextest run -p cargo-crap -p cargo-crap-core --all-targets` steps.
