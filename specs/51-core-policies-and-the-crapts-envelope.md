@@ -634,7 +634,7 @@ the first byte, like a missing coverage kind.
   recorded reports_. Tests: unit for the failure sum, acceptance (goldens
   in both builds, the migrated literals in
   `tests/{acceptance,library_paths}.rs`).
-- [ ] **T2 - Pair crapts rows by full name behind the stem guard.**
+- [x] **T2 - Pair crapts rows by full name behind the stem guard.**
   Needs: T1. `PairPolicy::FileFunction`: the count guard per (file, stem),
   full-name, suffix and unique-name passes, the six-decimal rounded delta
   and `previous_file` on every cross-file pair, selected through

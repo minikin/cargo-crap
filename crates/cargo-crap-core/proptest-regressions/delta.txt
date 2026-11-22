@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0fba6bd3098036bd275132c8ccf9c22747cc2576b4769a53e7d4b76ad4616eb5 # shrinks to current = [CrapEntry { file: "src/a.ts", function: "h()", line: 1, cyclomatic: 1.0, coverage: None, crap: 1.0, crate_name: None, uncovered: [], signals: None, signal_spans: Spans { lines: [], nesting: [], bumps: [], bool_ops: [], stubs: [], panics: [] }, fingerprint: None }, CrapEntry { file: "a.ts", function: "f", line: 1, cyclomatic: 1.0, coverage: None, crap: 1.0, crate_name: None, uncovered: [], signals: None, signal_spans: Spans { lines: [], nesting: [], bumps: [], bool_ops: [], stubs: [], panics: [] }, fingerprint: None }], baseline = [CrapEntry { file: "src/a.ts", function: "h()#2", line: 1, cyclomatic: 1.0, coverage: None, crap: 1.0, crate_name: None, uncovered: [], signals: None, signal_spans: Spans { lines: [], nesting: [], bumps: [], bool_ops: [], stubs: [], panics: [] }, fingerprint: None }, CrapEntry { file: "src/a.ts", function: "h()", line: 1, cyclomatic: 1.0, coverage: None, crap: 1.0, crate_name: None, uncovered: [], signals: None, signal_spans: Spans { lines: [], nesting: [], bumps: [], bool_ops: [], stubs: [], panics: [] }, fingerprint: None }]

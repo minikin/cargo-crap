@@ -1,7 +1,7 @@
 //! Prepare a baseline, select and render score rows, then return the verdict after flushing.
 
 use crate::coverage::CoverageKind;
-use crate::delta::{Baseline, DeltaCounts, attach_reasons, compute_delta, gating_signal_count};
+use crate::delta::{Baseline, DeltaCounts, attach_reasons, compare, gating_signal_count};
 use crate::duplicates::{
     compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, verdict::Assessment,
 };
@@ -196,43 +196,9 @@ pub fn run(
     };
     let summary = tool.policy.use_summary(settings.summary, settings.format);
     let (regressed, gating_signals) = if let Some(baseline) = baseline {
-        let before = &baseline.as_baseline().entries;
-        let mut delta = compute_delta(&eligible, before, settings.epsilon);
-        if settings.signals.enabled {
-            attach_reasons(
-                &mut delta,
-                settings.signals,
-                before.iter().any(|row| row.signals.is_some()),
-            );
-        } else {
-            for row in &mut delta.entries {
-                row.baseline_signals = None;
-            }
-        }
-        // Both the summary and the gates describe the full comparison, including hidden rows.
-        let counts = delta.counts();
-        let gating_signals = gating_signal_count(&delta);
-        delta.restrict_to(shown);
-        delta.sort(settings.sort);
-        if summary {
-            render_delta_summary_lines(&counts, gating_signals, out)?;
-        } else {
-            report::render_delta(
-                &delta,
-                &RenderOptions {
-                    delta_counts: Some(counts),
-                    ..options
-                },
-                out,
-            )?;
-        }
-        (counts.regressed, gating_signals)
+        write_delta(settings, &eligible, shown, baseline, &options, summary, out)?
     } else {
-        if summary {
-            report::render_summary(shown, settings.threshold, settings.width, out)?;
-        } else {
-            report::render(shown, &options, out)?;
-        }
+        write_absolute(settings, shown, &options, summary, out)?;
         (0, 0)
     };
     report::render_duplicates(&options, out).context("writing duplicate report")?;
@@ -253,6 +219,68 @@ pub fn run(
             settings.fail_regression,
         )
     })
+}
+
+/// Compares the whole eligible population, then writes the shown rows.
+/// Returns the full comparison's regression and gating signal counts.
+fn write_delta(
+    settings: &Settings<'_>,
+    eligible: &[CrapEntry],
+    shown: &[CrapEntry],
+    baseline: &PreparedBaseline,
+    options: &RenderOptions<'_>,
+    summary: bool,
+    out: &mut dyn Write,
+) -> Result<(usize, usize)> {
+    let before = &baseline.as_baseline().entries;
+    let mut delta = compare(
+        eligible,
+        before,
+        settings.epsilon,
+        options.tool.policy.pairing,
+    );
+    if settings.signals.enabled {
+        attach_reasons(
+            &mut delta,
+            settings.signals,
+            before.iter().any(|row| row.signals.is_some()),
+        );
+    } else {
+        for row in &mut delta.entries {
+            row.baseline_signals = None;
+        }
+    }
+    let counts = delta.counts();
+    let gating_signals = gating_signal_count(&delta);
+    delta.restrict_to(shown);
+    delta.sort(settings.sort);
+    if summary {
+        render_delta_summary_lines(&counts, gating_signals, out)?;
+    } else {
+        report::render_delta(
+            &delta,
+            &RenderOptions {
+                delta_counts: Some(counts),
+                ..*options
+            },
+            out,
+        )?;
+    }
+    Ok((counts.regressed, gating_signals))
+}
+
+fn write_absolute(
+    settings: &Settings<'_>,
+    shown: &[CrapEntry],
+    options: &RenderOptions<'_>,
+    summary: bool,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if summary {
+        report::render_summary(shown, settings.threshold, settings.width, out)
+    } else {
+        report::render(shown, options, out)
+    }
 }
 
 fn render_delta_summary_lines(
@@ -383,6 +411,93 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.regressed, 0);
         assert_eq!(outcome.exit_code(), std::process::ExitCode::SUCCESS);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_display_slice_leaves_the_full_name_comparison_whole(
+            head in proptest::collection::btree_map((0..3usize, 0..4usize), 1u32..40, 0..10),
+            base in proptest::collection::btree_map((0..3usize, 0..4usize), 1u32..40, 0..10),
+            top in proptest::option::of(1usize..6),
+            min in proptest::option::of(1u32..40),
+        ) {
+            use crate::policy::PairPolicy;
+            use crate::report::test_support::SECOND_TOOL;
+            use proptest::prop_assert_eq;
+            let tool = Tool {
+                policy: crate::policy::Policy {
+                    pairing: PairPolicy::FileFunction,
+                    ..SECOND_TOOL.policy
+                },
+                ..SECOND_TOOL
+            };
+            let rows = |picks: &std::collections::BTreeMap<(usize, usize), u32>| {
+                let mut rows: Vec<CrapEntry> = picks
+                    .iter()
+                    .map(|(&(f, n), &crap)| CrapEntry {
+                        file: ["a.ts", "src/a.ts", "b.ts"][f].into(),
+                        function: ["f", "h()", "h()#2", "h()#3"][n].into(),
+                        line: 1,
+                        cyclomatic: 1.0,
+                        crap: f64::from(crap),
+                        ..CrapEntry::default()
+                    })
+                    .collect();
+                crate::entry::sort_entries(&mut rows, SortOrder::Crap);
+                rows
+            };
+            let allow = AllowSet::compile(&[]).unwrap();
+            let signals = SignalSettings::default();
+            let report = |top: Option<usize>, min: Option<u32>, format: Format| {
+                let settings = Settings {
+                    allow: &allow,
+                    min: min.map(f64::from),
+                    top,
+                    sort: SortOrder::Crap,
+                    threshold: 30.0,
+                    epsilon: crate::delta::DEFAULT_EPSILON,
+                    signals: &signals,
+                    fail_above: false,
+                    fail_regression: true,
+                    format,
+                    summary: format == Format::Human,
+                    show_unchanged: false,
+                    uncovered_hints: false,
+                    width: None,
+                    links: None,
+                    cwd: Path::new(""),
+                    workspace_root: None,
+                    fail_sections: false,
+                };
+                let baseline = BaselineFilter::new(&AllFiles, &allow).prepare(Baseline {
+                    entries: rows(&base),
+                    try_weight: DEFAULT_TRY_WEIGHT,
+                    duplicate_groups: None,
+                });
+                let analysis = Analysis {
+                    entries: rows(&head),
+                    diagnostics: None,
+                    scope: &AllFiles,
+                    coverage_kind: None,
+                    notices: &[],
+                };
+                let mut out = Vec::new();
+                let outcome = run(&tool, &settings, analysis, Some(&baseline), &[], &RenderExtras::default(), &mut out).unwrap();
+                (out, outcome)
+            };
+            let json = |(out, outcome): (Vec<u8>, GateOutcome)| {
+                (serde_json::from_slice::<serde_json::Value>(&out).unwrap(), outcome)
+            };
+            let (full, whole) = json(report(None, None, Format::Json));
+            let (sliced, part) = json(report(top, min, Format::Json));
+            prop_assert_eq!(report(None, None, Format::Human).0, report(top, min, Format::Human).0);
+            prop_assert_eq!(&full["removed"], &sliced["removed"]);
+            prop_assert_eq!(whole.regressed, part.regressed);
+            let all = full["entries"].as_array().unwrap();
+            for row in sliced["entries"].as_array().unwrap() {
+                proptest::prop_assert!(all.contains(row), "{row} not in {all:?}");
+            }
+        }
     }
 
     #[test]

@@ -12,6 +12,10 @@ pub enum EnvelopeKind {
 pub enum PairPolicy {
     /// Match file, function and line before suffix and unique-name fallback.
     FileFunctionLine,
+    /// Withhold a (file, stem) group whose size changed, then match file and
+    /// full name before suffix and unique-name fallback, classifying the
+    /// delta rounded to six decimals.
+    FileFunction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -17,6 +17,7 @@ use crate::coverage::LineRange;
 use crate::duplicates::model::Location;
 use crate::entry::{CrapEntry, SortOrder};
 use crate::paths::{path_key, unique_best_by_suffix};
+use crate::policy::PairPolicy;
 use crate::report::Tool;
 use crate::signals::{Signal, SignalSettings, Signals};
 use anyhow::{Context, Result};
@@ -721,6 +722,202 @@ pub fn compute_delta(
     pass_two_name_fallback(&mut entries, baseline, &mut matched, epsilon);
     let removed = collect_removed(baseline, &matched);
     DeltaReport { entries, removed }
+}
+
+#[must_use]
+pub(crate) fn compare(
+    current: &[CrapEntry],
+    baseline: &[CrapEntry],
+    epsilon: f64,
+    pairing: PairPolicy,
+) -> DeltaReport {
+    match pairing {
+        PairPolicy::FileFunctionLine => compute_delta(current, baseline, epsilon),
+        PairPolicy::FileFunction => FullNamePairing::new(current, baseline).finish(epsilon),
+    }
+}
+
+/// A name without its terminal `#` ordinal: `hook()#2` has stem `hook()`.
+fn stem(name: &str) -> &str {
+    match name.rsplit_once('#') {
+        Some((head, digits))
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            head
+        },
+        _ => name,
+    }
+}
+
+fn rounded_delta(d: f64) -> f64 {
+    (d * 1e6).round() / 1e6
+}
+
+/// A row that is not open was withheld by the stem guard or already paired.
+struct FullNamePairing<'a> {
+    current: &'a [CrapEntry],
+    baseline: &'a [CrapEntry],
+    paired: Vec<Option<usize>>,
+    current_open: Vec<bool>,
+    baseline_open: Vec<bool>,
+}
+
+impl<'a> FullNamePairing<'a> {
+    /// Ordinals are assigned in source order, so when a (file, stem) group
+    /// changes size an equal name may now belong to a different body. Such
+    /// a group takes part in no pass on either side.
+    fn new(
+        current: &'a [CrapEntry],
+        baseline: &'a [CrapEntry],
+    ) -> Self {
+        let key = |e: &'a CrapEntry| (path_key(&e.file), stem(&e.function));
+        let mut sizes: HashMap<(String, &str), (usize, usize)> = HashMap::new();
+        for e in current {
+            sizes.entry(key(e)).or_default().0 += 1;
+        }
+        for e in baseline {
+            sizes.entry(key(e)).or_default().1 += 1;
+        }
+        let open = |e: &'a CrapEntry| {
+            let (now, before) = sizes[&key(e)];
+            now == before || now == 0 || before == 0
+        };
+        Self {
+            current,
+            baseline,
+            paired: vec![None; current.len()],
+            current_open: current.iter().map(open).collect(),
+            baseline_open: baseline.iter().map(open).collect(),
+        }
+    }
+
+    fn pair(
+        &mut self,
+        current: usize,
+        baseline: usize,
+    ) {
+        self.paired[current] = Some(baseline);
+        self.current_open[current] = false;
+        self.baseline_open[baseline] = false;
+    }
+
+    fn pair_same_file(&mut self) {
+        let mut index: HashMap<(String, &str), usize> = HashMap::new();
+        for (i, b) in self.baseline.iter().enumerate() {
+            if self.baseline_open[i] {
+                index
+                    .entry((path_key(&b.file), b.function.as_str()))
+                    .or_insert(i);
+            }
+        }
+        for (i, c) in self.current.iter().enumerate() {
+            if !self.current_open[i] {
+                continue;
+            }
+            if let Some(b) = index.remove(&(path_key(&c.file), c.function.as_str())) {
+                self.pair(i, b);
+            }
+        }
+    }
+
+    fn open_by_name(&self) -> HashMap<&'a str, (Vec<usize>, Vec<usize>)> {
+        let mut groups: HashMap<&str, (Vec<usize>, Vec<usize>)> = HashMap::new();
+        for (i, c) in self.current.iter().enumerate() {
+            if self.current_open[i] {
+                groups.entry(&c.function).or_default().0.push(i);
+            }
+        }
+        for (i, b) in self.baseline.iter().enumerate() {
+            if self.baseline_open[i] {
+                groups.entry(&b.function).or_default().1.push(i);
+            }
+        }
+        groups
+    }
+
+    /// Pairs equal names whose files are each other's unique longest
+    /// common path suffix.
+    fn pair_by_suffix(&mut self) {
+        let at = |rows: &'a [CrapEntry], group: Vec<usize>| -> Vec<(usize, &'a Path)> {
+            group
+                .into_iter()
+                .map(|i| (i, rows[i].file.as_path()))
+                .collect()
+        };
+        for (_, (now, before)) in self.open_by_name() {
+            let now = at(self.current, now);
+            let before = at(self.baseline, before);
+            for &(c, file) in &now {
+                let Some(b) = unique_best_by_suffix(file, &before, |(_, f)| f) else {
+                    continue;
+                };
+                let back = unique_best_by_suffix(before[b].1, &now, |(_, f)| f);
+                if back.map(|i| now[i].0) == Some(c) {
+                    self.pair(c, before[b].0);
+                }
+            }
+        }
+    }
+
+    fn pair_unique_names(&mut self) {
+        for (_, (now, before)) in self.open_by_name() {
+            if let ([c], [b]) = (now.as_slice(), before.as_slice()) {
+                self.pair(*c, *b);
+            }
+        }
+    }
+
+    fn finish(
+        mut self,
+        epsilon: f64,
+    ) -> DeltaReport {
+        self.pair_same_file();
+        self.pair_by_suffix();
+        self.pair_unique_names();
+        let entries = self
+            .current
+            .iter()
+            .zip(&self.paired)
+            .map(|(c, b)| full_name_entry(c, b.map(|b| &self.baseline[b]), epsilon))
+            .collect();
+        let kept: HashSet<usize> = self.paired.iter().flatten().copied().collect();
+        let removed = self
+            .baseline
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !kept.contains(i))
+            .map(|(_, b)| RemovedEntry {
+                function: b.function.clone(),
+                file: b.file.clone(),
+                baseline_crap: b.crap,
+            })
+            .collect();
+        DeltaReport { entries, removed }
+    }
+}
+
+/// A pair across files records the baseline path, and an unchanged score
+/// there reads as a move.
+fn full_name_entry(
+    current: &CrapEntry,
+    baseline: Option<&CrapEntry>,
+    epsilon: f64,
+) -> DeltaEntry {
+    let mut entry = build_pass_one_entry(current, None, epsilon);
+    let Some(b) = baseline else {
+        return entry;
+    };
+    let d = rounded_delta(current.crap - b.crap);
+    let moved = path_key(&current.file) != path_key(&b.file);
+    entry.baseline_crap = Some(b.crap);
+    entry.delta = Some(d);
+    entry.baseline_signals = b.signals;
+    entry.previous_file = moved.then(|| b.file.clone());
+    entry.status = match classify_score(d, epsilon) {
+        DeltaStatus::Unchanged if moved => DeltaStatus::Moved,
+        status => status,
+    };
+    entry
 }
 
 #[cfg(test)]
@@ -2200,6 +2397,122 @@ mod tests {
                 .collect();
             let report = reasons_for(&entries, &entries);
             proptest::prop_assert!(report.entries.iter().all(|e| e.reasons.is_empty()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod full_name_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn a_stem_strips_only_a_terminal_hash_and_ascii_digits() {
+        for (name, expected) in [
+            ("hook()#2", "hook()"),
+            ("hook()#12", "hook()"),
+            ("hook()", "hook()"),
+            ("hook()#2::inner", "hook()#2::inner"),
+            ("a#2#3", "a#2"),
+            ("a#", "a#"),
+            ("a#x2", "a#x2"),
+            ("a#2b", "a#2b"),
+            ("a#\u{663}", "a#\u{663}"),
+        ] {
+            assert_eq!(stem(name), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_delta_rounds_to_six_decimals_with_midpoints_away_from_zero() {
+        for (d, expected) in [
+            (0.010_000_4, 0.01),
+            (0.010_000_6, 0.010_001),
+            (0.007_812_5, 0.007_813),
+            (-0.007_812_5, -0.007_813),
+            (0.0, 0.0),
+            (2.0, 2.0),
+        ] {
+            assert_eq!(rounded_delta(d), expected, "{d}");
+        }
+    }
+
+    fn row(
+        file: &str,
+        function: &str,
+        crap: f64,
+    ) -> CrapEntry {
+        CrapEntry {
+            file: file.into(),
+            function: function.into(),
+            line: 1,
+            cyclomatic: 1.0,
+            crap,
+            ..CrapEntry::default()
+        }
+    }
+
+    const FILES: [&str; 4] = ["a.ts", "src/a.ts", "b/a.ts", "c.ts"];
+    const NAMES: [&str; 5] = ["f", "g", "h()", "h()#2", "h()#3"];
+
+    /// Rows with unique (file, full name) keys drawn from shared basenames and repeated stems.
+    fn rows() -> impl Strategy<Value = Vec<CrapEntry>> {
+        proptest::collection::vec((0..FILES.len(), 0..NAMES.len(), 1u32..40), 0..12).prop_map(
+            |picks| {
+                let mut seen = BTreeSet::new();
+                picks
+                    .into_iter()
+                    .filter(|&(f, n, _)| seen.insert((f, n)))
+                    .map(|(f, n, s)| row(FILES[f], NAMES[n], f64::from(s)))
+                    .collect()
+            },
+        )
+    }
+
+    fn identity(
+        file: &Path,
+        function: &str,
+    ) -> (String, String) {
+        (path_key(file), function.to_owned())
+    }
+
+    proptest! {
+        #[test]
+        fn any_valid_comparison_accounts_for_each_eligible_row_once(
+            current in rows(),
+            baseline in rows(),
+        ) {
+            let report = compare(&current, &baseline, DEFAULT_EPSILON, PairPolicy::FileFunction);
+            let heads: Vec<_> = report.entries.iter().map(|e| identity(&e.current.file, &e.current.function)).collect();
+            let expected: Vec<_> = current.iter().map(|e| identity(&e.file, &e.function)).collect();
+            prop_assert_eq!(heads, expected);
+            let mut accounted: Vec<_> = report
+                .entries
+                .iter()
+                .filter(|e| e.baseline_crap.is_some())
+                .map(|e| identity(e.previous_file.as_deref().unwrap_or(&e.current.file), &e.current.function))
+                .chain(report.removed.iter().map(|r| identity(&r.file, &r.function)))
+                .collect();
+            accounted.sort();
+            let mut all: Vec<_> = baseline.iter().map(|e| identity(&e.file, &e.function)).collect();
+            all.sort();
+            prop_assert_eq!(accounted, all);
+            for e in &report.entries {
+                prop_assert_eq!(e.baseline_crap.is_some(), e.delta.is_some());
+                prop_assert_eq!(e.status == DeltaStatus::New, e.baseline_crap.is_none());
+            }
+        }
+
+        #[test]
+        fn comparing_rows_with_themselves_leaves_every_row_unchanged(rows in rows()) {
+            let report = compare(&rows, &rows, DEFAULT_EPSILON, PairPolicy::FileFunction);
+            prop_assert!(report.removed.is_empty());
+            for e in &report.entries {
+                prop_assert_eq!(e.status, DeltaStatus::Unchanged);
+                prop_assert_eq!(e.delta, Some(0.0));
+                prop_assert!(e.previous_file.is_none());
+            }
         }
     }
 }
