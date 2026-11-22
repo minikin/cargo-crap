@@ -25,7 +25,6 @@ impl Scope for OnlyFile {
     }
 }
 
-/// Keeps the bytes written and how many of them the last flush covered.
 #[derive(Default)]
 struct Recorder {
     written: Vec<u8>,
@@ -68,12 +67,23 @@ fn a_core_only_caller_can_report_a_scored_function() {
         crap: 2.5,
         ..CrapEntry::default()
     };
+    // A second crappy row that `top` hides: the Shown population counts one
+    // row where All would count two.
+    let hidden = CrapEntry {
+        file: "src/a.rs".into(),
+        function: "g".into(),
+        line: 9,
+        cyclomatic: 2.0,
+        coverage: Some(60.0),
+        crap: 2.256,
+        ..CrapEntry::default()
+    };
     let allow = AllowSet::compile(&[]).expect("an empty allow set compiles");
     let signals = SignalSettings::default();
     let settings = Settings {
         allow: &allow,
         min: None,
-        top: None,
+        top: Some(1),
         sort: SortOrder::Crap,
         threshold: 2.0,
         epsilon: DEFAULT_EPSILON,
@@ -90,7 +100,7 @@ fn a_core_only_caller_can_report_a_scored_function() {
         workspace_root: None,
     };
     let analysis = Analysis {
-        entries: vec![row],
+        entries: vec![row, hidden],
         diagnostics: None,
         scope: &OnlyFile("src/a.rs"),
     };
@@ -121,6 +131,8 @@ fn a_core_only_caller_can_report_a_scored_function() {
     assert_eq!(entries[0]["function"], "f");
     assert_eq!(entries[0]["file"], "src/a.rs");
     assert_eq!(entries[0]["line"], 3);
+    assert_eq!(entries[0]["cyclomatic"], 2.0);
+    assert_eq!(entries[0]["coverage"], 50.0);
     assert_eq!(entries[0]["crap"], 2.5);
     // And the flushed report is followed by an outcome with crappy = 1 and
     // exit code 1

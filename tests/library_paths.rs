@@ -65,6 +65,14 @@ fn same_type<T>(
 ) {
 }
 
+/// Compiles only when both arguments name one function: distinct fn items
+/// have distinct types even with equal signatures.
+fn same_fn<F>(
+    _: F,
+    _: F,
+) {
+}
+
 macro_rules! same_types {
     ($($root:ty => $core:ty),* $(,)?) => {
         $(same_type(
@@ -81,7 +89,7 @@ fn lcov_file(contents: &str) -> tempfile::NamedTempFile {
     file
 }
 
-fn half_covered_branch() -> Vec<cargo_crap::complexity::FunctionComplexity> {
+fn three_quarters_covered_branch() -> Vec<cargo_crap::complexity::FunctionComplexity> {
     cargo_crap::complexity::analyze_source(
         std::path::Path::new("src/a.rs"),
         "fn f(x: bool) -> u8 {\n    if x {\n        1\n    } else {\n        2\n    }\n}\n",
@@ -101,18 +109,24 @@ impl cargo_crap::run::Scope for Everything {
     }
 }
 
-const HALF_COVERED_LCOV: &str = "SF:src/a.rs\nDA:1,1\nDA:2,1\nDA:3,1\nDA:5,0\nend_of_record\n";
+const THREE_QUARTERS_COVERED_LCOV: &str =
+    "SF:src/a.rs\nDA:1,1\nDA:2,1\nDA:3,1\nDA:5,0\nend_of_record\n";
 
 #[test]
 fn existing_cargo_crap_clients_compile_at_their_original_paths() {
+    // Given the examples in the root src/lib.rs and the imports checked by
+    // this file after spec 48
     use cargo_crap::{
         coverage, delta, filter, gate, merge, policy, report, run, score, signals, tool,
     };
 
+    // When they run against the split packages
+    // Then the existing calls for scoring, Rust analysis, LCOV, merge,
+    // baseline comparison and rendering compile
     assert_eq!(score::crap(6.0, 0.0), 42.0);
-    let lcov = lcov_file(HALF_COVERED_LCOV);
+    let lcov = lcov_file(THREE_QUARTERS_COVERED_LCOV);
     let entries = merge::merge(
-        half_covered_branch(),
+        three_quarters_covered_branch(),
         coverage::parse_lcov(lcov.path()).expect("LCOV parses"),
         merge::MissingCoveragePolicy::Pessimistic,
     )
@@ -123,9 +137,12 @@ fn existing_cargo_crap_clients_compile_at_their_original_paths() {
         ("f", 2.0)
     );
     assert_eq!(entries[0].coverage, Some(75.0));
+    assert_eq!(entries[0].crap, 2.0625);
 
-    let report = delta::compute_delta(&entries, &entries, delta::DEFAULT_EPSILON);
-    assert_eq!(report.regression_count(), 0);
+    let mut before = entries.clone();
+    before[0].crap = 1.0;
+    let report = delta::compute_delta(&entries, &before, delta::DEFAULT_EPSILON);
+    assert_eq!(report.regression_count(), 1);
     let mut rendered = Vec::new();
     report::render(
         &entries,
@@ -133,7 +150,7 @@ fn existing_cargo_crap_clients_compile_at_their_original_paths() {
         &mut rendered,
     )
     .expect("the human table renders");
-    assert!(String::from_utf8_lossy(&rendered).contains('f'));
+    assert!(String::from_utf8_lossy(&rendered).contains("src/a.rs"));
 
     let allow = filter::AllowSet::compile(&[]).expect("an empty allow set compiles");
     let signals = signals::SignalSettings::default();
@@ -175,11 +192,31 @@ fn existing_cargo_crap_clients_compile_at_their_original_paths() {
     .expect("the pipeline runs");
     assert_eq!(outcome.crappy, 1);
     assert_eq!(outcome.exit_code(), std::process::ExitCode::from(1));
+    // And the old signal, config, duplicate and triage imports at the top
+    // of this file resolve from an external crate
 }
 
 #[test]
 fn both_crate_names_refer_to_the_same_public_types() {
+    // Given a caller with access to cargo-crap and cargo-crap-core
+    same_fn(
+        cargo_crap::coverage::parse_lcov,
+        cargo_crap_core::coverage::lcov::parse_lcov,
+    );
+    same_fn(
+        cargo_crap::coverage::lcov::parse_lcov_with,
+        cargo_crap_core::coverage::lcov::parse_lcov_with,
+    );
     same_types!(
+        cargo_crap::signals::Measured => cargo_crap_core::signals::model::Measured,
+        cargo_crap::signals::Signal => cargo_crap_core::signals::model::Signal,
+        cargo_crap::signals::Limits => cargo_crap_core::signals::model::Limits,
+        cargo_crap::duplicates::group::DuplicateGroup => cargo_crap_core::duplicates::group::DuplicateGroup,
+        cargo_crap::duplicates::novelty::Novelty => cargo_crap_core::duplicates::novelty::Novelty,
+        cargo_crap::duplicates::novelty::Comparison => cargo_crap_core::duplicates::novelty::Comparison,
+        cargo_crap::duplicates::triage::verdict::Kind => cargo_crap_core::duplicates::verdict::Kind,
+        cargo_crap::duplicates::triage::verdict::Assessment => cargo_crap_core::duplicates::verdict::Assessment,
+        cargo_crap::duplicates::triage::verdict::WorthExtracting => cargo_crap_core::duplicates::verdict::WorthExtracting,
         cargo_crap::merge::CrapEntry => cargo_crap_core::entry::CrapEntry,
         cargo_crap::merge::ScopeDiagnostics => cargo_crap_core::entry::ScopeDiagnostics,
         cargo_crap::coverage::FileCoverage => cargo_crap_core::coverage::lcov::FileCoverage,
@@ -204,13 +241,19 @@ fn both_crate_names_refer_to_the_same_public_types() {
         cargo_crap::run::PreparedBaseline => cargo_crap_core::run::PreparedBaseline,
     );
 
-    let lcov = lcov_file(HALF_COVERED_LCOV);
+    // When it passes cargo_crap::merge::merge(...).entries directly as
+    // Vec<cargo_crap_core::entry::CrapEntry>
+    let lcov = lcov_file(THREE_QUARTERS_COVERED_LCOV);
     let entries: Vec<cargo_crap_core::entry::CrapEntry> = cargo_crap::merge::merge(
-        half_covered_branch(),
+        three_quarters_covered_branch(),
         cargo_crap::coverage::parse_lcov(lcov.path()).expect("LCOV parses"),
         cargo_crap::merge::MissingCoveragePolicy::Pessimistic,
     )
     .entries;
+    // And it supplies cargo_crap::tool::CARGO_CRAP by reference to a core
+    // renderer
+    // Then the calls type-check without an adapter, serialization or
+    // conversion
     let mut rendered = Vec::new();
     cargo_crap_core::report::render(
         &entries,
@@ -225,6 +268,8 @@ fn both_crate_names_refer_to_the_same_public_types() {
     assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(json["entries"][0]["function"], "f");
 
+    // And a core row with fingerprint Some("a1b2") passes back as
+    // cargo_crap::merge::CrapEntry with that value
     let core_row = cargo_crap_core::entry::CrapEntry {
         function: "f".into(),
         fingerprint: Some("a1b2".into()),
