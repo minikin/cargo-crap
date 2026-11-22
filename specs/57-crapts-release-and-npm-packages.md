@@ -1,6 +1,6 @@
 # Spec 57: crapts release and npm packages
 
-**Status:** Draft
+**Status:** Approved
 **Effort:** Large
 **Module:** `.github/workflows/{_build,release,release-crapts,ci,action}.yml`, `npm/crapts/{package.json,bin/crapts.js,lib/resolve.js,test/}`, `crates/crapts/{Cargo.toml,CHANGELOG.md}`, `crates/cargo-crap-core/{Cargo.toml,CHANGELOG.md,src/report/}`, `Cargo.toml`, `Cargo.lock`, `scripts/release/{prep-crapts.sh,check-core.sh,publish-core.sh,check-tag.sh,stage-npm.mjs,publish-npm.mjs,test.sh}`, `tests/workspace.rs`, `tests/golden/gates.rs`
 **Needs:** Spec 53 (working `crapts` binary and CLI contract, built on Specs 49-52).
