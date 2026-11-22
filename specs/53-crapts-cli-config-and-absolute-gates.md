@@ -916,7 +916,7 @@ Spec 53 builds after Specs 51 and 52 land. Use Rust 1.99.0 (`RUSTUP_TOOLCHAIN=1.
   pre-render error case (preserving absent or `"keep"` `--output` files),
   LCOV/Istanbul diagnostics, closed-pipe stdout failures, and diagnostic
   ordering.
-- [ ] **T10 - Update CHANGELOG, CLAUDE.md and run final compatibility checks.**
+- [x] **T10 - Update CHANGELOG, CLAUDE.md and run final compatibility checks.**
   Needs: T9. Add the Unreleased / Changed breaking library API entry from
   Implementation Notes to `CHANGELOG.md` and document the `crates/crapts`
   pipeline, config/allow base handling and updated core APIs in `CLAUDE.md`.

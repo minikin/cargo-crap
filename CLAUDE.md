@@ -131,6 +131,42 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`core/run.rs`** owns the report pipeline (`run::run`) and `BaselineFilter` (`prepare` for cargo-crap baselines, `prepare_crapts` for admitted crapts baselines with private version metadata and skip notice). `run::run` selects rows according to `Tool.policy`, renders notices, `Placement::Lead` sections, the report body (`CargoCrapV1` or `CraptsV1` JSON, summary, or text and machine formats), duplicates, and `Placement::Trail` sections, then flushes before returning `GateOutcome`. In JSON mode, `CraptsV1` embeds a single validated `changed` section object and records `summary.changed_failures`, while `CargoCrapV1` refuses supplied sections before writing. **`core/report/section.rs`** defines `Section` and `Placement`. **`core/filter.rs`** compiles allow patterns and selects shown rows under `TieOrder::Stable` or `TieOrder::FileFunctionLine`. **`core/gate.rs`** maps threshold counts, full-delta counts (skipping the regression verdict across crapts minor versions), and section failures (`fail_sections`) to an exit code. **`core/policy.rs`** defines `EnvelopeKind`, `PairPolicy`, `TieOrder`, `Population`, and `Policy`. cargo-crap supplies its values in `src/tool.rs`.
 
+### The crapts CLI
+
+`crapts [paths...] --coverage <file>` scores JavaScript and TypeScript. Its
+command and settings live in `crates/crapts/src/cli.rs` and `cli/settings.rs`.
+Help and version run before config lookup. `--print-config` validates the
+effective settings and prints their origins without opening scoring inputs.
+
+The command shares one worktree probe between config lookup and source
+discovery. Core `config::find_upwards` selects the nearest `.crapts.toml`
+from the working directory through the worktree root, or through the filesystem
+root outside Git. When Git is unavailable, discovery walks the filesystem
+and recognizes an ancestor's `.git` directory or gitfile as the boundary.
+Flags override config values, and config values override built-in defaults.
+Each exclude or allow keeps its origin and base directory. Config patterns use
+the config directory. Flag patterns use the invocation directory. Discovery
+matches whole paths for exclusions. Core `AllowSet::compile_with_bases` matches
+file allows by component suffix and name allows against the full emitted name.
+
+Discovery emits unused exclusions before `coverage::read_coverage` reads the
+LCOV or Istanbul input. The command then analyzes each source in ordinary mode
+and emits its first parse diagnostic. `attribute::attribute` assigns coverage
+to the functions and supplies the scored rows, measured unit, scope diagnostics
+and remaining warnings. `cli/scoring.rs` passes those results to the shared
+`run::run` with the crapts tool policy. The absolute JSON counts and
+`--fail-above` use every row that survives the allow patterns. The minimum,
+top limit and sort control the displayed rows. Input errors precede opening the
+destination. A successful flush returns the gate's status, 0 or 1. A command,
+input or output error returns 2.
+
+`Policy::signal_detail_hint` controls the optional signal guidance in a
+summary. `Settings` carries the invocation's `pr_comment_marker` and
+`repo_prefix` to `RenderOptions`. The prefix projects cwd-relative paths
+into repository paths for source links, GitHub annotations and SARIF locations.
+JSON rows and visible path labels stay relative to the invocation.
+`--baseline` and `--base` are reserved for comparison modes.
+
 ## Key design decisions
 
 - Coverage is computed by intersecting AST-derived line spans (from complexity pass) with `DA` records in the LCOV file. Function-level LCOV records (`FN`/`FNDA`) are intentionally ignored because they only give the start line, not the end.
