@@ -1175,7 +1175,7 @@ Each scenario's assertions are proved at the layer that implements them. T5 prov
   Scenarios: _crapts JSON rows carry the row fingerprint_, _cargo-crap reports keep omitting fingerprints_, _A baseline without fingerprints is admitted and pairs by name_.
   Tests: acceptance in `crates/crapts/tests/{cli,baseline}.rs`, `tests/crapts_policy.rs`, the Spec 44 goldens.
 
-- [ ] **T5 - Four-stage matching.** Needs: T3.
+- [x] **T5 - Four-stage matching.** Needs: T3.
   Add `crates/crapts/src/changed/matching.rs`: stages `body`, `name`, `renamed` and `moved`, then the `new`, `ambiguous` and `removed` classification. These tests assert which rows pair, each row's change class, `removed` and the ordered candidates. They assert no verdict, reason or exit code.
   Scenarios: _A staged removal with a working-tree replacement keeps its ancestry_, _Inserting a sibling callback shifts ordinals without touching the old ones_, _Deleting the first of two callbacks and appending another leaves the new one ambiguous_, _An edited function with two same-stem base candidates fails as ambiguous_, _A copy is new and the original keeps its partner_, _A rename with an edit is new and its base row is removed_, _Identical trivial functions renamed together are new_, _A split keeps the surviving name and judges the extracted function on its own_, _Matching pairs each row at most once and accounts for every row_.
   Tests: unit tests in `matching.rs` and in-process acceptance in `crates/crapts/tests/changed.rs` built from base and head sources and file pairings, property for the accounting law.
