@@ -79,7 +79,7 @@ export function total(a: number, b: number) {
 }
 ```
 
-Each tree has `coverage/lcov.info`, in which every line of `checkout` has 0 hits and every line of `total` has 1. `head` also has `coverage/coverage-final.json`, an Istanbul file with the same hits per statement. At the default threshold 30, `base` scores `checkout` CC 3 CRAP 12 and `total` CC 1 CRAP 1. `head` scores `checkout` CC 6 CRAP 42 and `total` CC 1 CRAP 1, with either coverage file.
+Each tree commits its LCOV file as `coverage/lcov.data`, and the harness copies it to `coverage/lcov.info` in the temporary repository. The root `.gitignore` ignores `lcov.info` at any depth, so a fixture file of that name would not be tracked, and the Spec 44 goldens read `.gitignore`, so it stays unchanged. In that file every line of every line of `checkout` has 0 hits and every line of `total` has 1. `head` also has `coverage/coverage-final.json`, an Istanbul file with the same hits per statement. At the default threshold 30, `base` scores `checkout` CC 3 CRAP 12 and `total` CC 1 CRAP 1. `head` scores `checkout` CC 6 CRAP 42 and `total` CC 1 CRAP 1, with either coverage file.
 
 ---
 
@@ -93,7 +93,7 @@ Unless a scenario says otherwise, the harness runs the `crapts` binary of the pa
 Given the committed pages under docs/crapts and the docs fixture
 When  the crapts docs check runs every marker
 Then  each fenced block equals the stream its marker names, and each run exits with the marker's code
-And   the check counts at least one crapts-output, one crapts-stderr and one crapts-help marker
+And   the check counts at least one crapts-output marker, and fails when it finds none
 ```
 
 ### Scenario: A drifted sample fails naming the page, the marker and the first differing line
@@ -243,7 +243,7 @@ And   every flag in the table appears in crapts --help, and uncovered-hints is t
 Given the table in docs/crapts/reference/exit-codes.md
 When  the crapts docs check reads it
 Then  its codes are exactly 0, 1 and 2
-And   each code is the expected exit of at least one marker under docs/crapts
+And   each code is the expected exit of at least one marker under docs/crapts, and code 2 is the exit of a crapts-stderr marker
 And   a page that adds a row for code 3 fails the check naming 3
 ```
 
@@ -378,6 +378,7 @@ And   README.md alone still runs the cargo-crap docs test target
 Given the Spec 44 inputs and snapshots with INSTA_UPDATE=no
 When  I run the workspace tests in the default and all-features builds
 Then  tests/golden.rs, tests/golden/config.rs and tests/golden/gates.rs pass, and no file under tests/snapshots changes
+And   bash scripts/gates/parser-guard.sh exits 0
 ```
 
 ---
@@ -415,6 +416,7 @@ The Default cell of a flag is the clap `[default: X]` text when `--help` prints 
 ### Page conventions
 
 - Pages are English Markdown in the house style of `docs/`. Each page under `docs/crapts/` links back to `docs/crapts/README.md`.
+- A command that exits 2, such as `crapts --top 0`, appears only in a `crapts-stderr` marker or in inline code, never as a line in a bash, sh or console block, because every such line must pass `--print-config`.
 - `docs/crapts/reference/cli.md` keeps a "Differences from cargo-crap" table: `--coverage` against `--lcov`, `.crapts.toml` and its walk to the Git root, the `text` default with its `human` alias, `--top 0` refused, `--fail-above` over every eligible row, SARIF refused with a comparison, and the changed gate that only crapts has. The check verifies that every crapts flag in that table appears in `crapts --help`. The cargo-crap column is prose: the crapts test binary cannot run cargo-crap.
 - `docs/crapts/guides/github-action.md` covers the three ways a pull request run compares (a supplied baseline, a base run, the changed gate alone), how the Action deepens a shallow clone with `fetch-depth: 0` as the faster setup, the permissions, fork pull requests, and the `<!-- crapts-report -->` comment beside cargo-crap's. It takes the input names from `actions/crapts/action.yml` as Spec 58 lands it.
 - Root `tests/docs.rs` stays untouched. `docs/SUMMARY.md` stays cargo-crap's navigation, and `docs/crapts/README.md` is the crapts index.
