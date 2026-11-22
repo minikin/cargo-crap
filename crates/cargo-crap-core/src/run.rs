@@ -270,6 +270,12 @@ pub fn run(
         shown,
         settings.threshold,
     );
+    let (section_counts, section_failures) = collect_section_failures(sections)?;
+    let changed = if settings.format == Format::Json {
+        validate_json_sections(tool.policy.envelope, sections, &section_counts)?
+    } else {
+        None
+    };
     let notices = collect_notices(analysis.notices, baseline);
     let include_marker = write_prefix(tool, settings.format, &notices, sections, out)?;
     let body = RunBody {
@@ -282,7 +288,7 @@ pub fn run(
         diagnostics: analysis.diagnostics.as_ref(),
         notices: &notices,
         baseline,
-        sections,
+        changed: changed.as_ref(),
         options: &options,
     };
     let (regressed, gating_signals) = write_report_body(&body, summary, include_marker, out)?;
@@ -290,7 +296,6 @@ pub fn run(
     write_suffix(settings.format, sections, out)?;
     out.flush().context("flushing output")?;
     let regression_skipped = baseline.is_some_and(PreparedBaseline::regression_gate_skipped);
-    let section_failures = sections.iter().filter_map(|s| s.failures()).sum();
     Ok(GateOutcome::evaluate(GateInput {
         crappy,
         regressed,
@@ -300,6 +305,35 @@ pub fn run(
         fail_regression: settings.fail_regression && !regression_skipped,
         fail_sections: settings.fail_sections,
     }))
+}
+
+fn collect_section_failures(sections: &[&dyn Section]) -> Result<(Vec<Option<usize>>, usize)> {
+    let mut per_section = Vec::with_capacity(sections.len());
+    let mut total: usize = 0;
+    for section in sections {
+        let count = section.failures();
+        if let Some(n) = count {
+            total = total
+                .checked_add(n)
+                .ok_or_else(|| anyhow::anyhow!("section failure count overflowed usize"))?;
+        }
+        per_section.push(count);
+    }
+    Ok((per_section, total))
+}
+
+fn validate_json_sections(
+    envelope: EnvelopeKind,
+    sections: &[&dyn Section],
+    failures: &[Option<usize>],
+) -> Result<Option<report::CraptsChangedSection>> {
+    match envelope {
+        EnvelopeKind::CraptsV1 => report::extract_crapts_changed(sections, failures),
+        EnvelopeKind::CargoCrapV1 => {
+            report::reject_cargo_crap_json_sections(sections)?;
+            Ok(None)
+        },
+    }
 }
 
 struct RunBody<'a> {
@@ -312,7 +346,7 @@ struct RunBody<'a> {
     diagnostics: Option<&'a ScopeDiagnostics>,
     notices: &'a [&'a str],
     baseline: Option<&'a PreparedBaseline>,
-    sections: &'a [&'a dyn Section],
+    changed: Option<&'a report::CraptsChangedSection>,
     options: &'a RenderOptions<'a>,
 }
 
@@ -332,34 +366,9 @@ fn write_report_body(
             out,
         );
     }
-    if body.settings.format == Format::Json {
-        return write_json_body(body, include_marker, out);
-    }
-    if let Some(baseline) = body.baseline {
-        write_delta(
-            body.settings,
-            body.eligible,
-            body.shown,
-            baseline,
-            body.options,
-            include_marker,
-            out,
-        )
-    } else {
-        report::render_inner(body.shown, body.options, include_marker, out)?;
-        Ok((0, 0))
-    }
-}
-
-fn write_json_body(
-    body: &RunBody<'_>,
-    include_marker: bool,
-    out: &mut dyn Write,
-) -> Result<(usize, usize)> {
-    if body.tool.policy.envelope == EnvelopeKind::CraptsV1 {
+    if body.settings.format == Format::Json && body.tool.policy.envelope == EnvelopeKind::CraptsV1 {
         return write_crapts_json(body, out);
     }
-    report::reject_cargo_crap_json_sections(body.sections)?;
     if let Some(baseline) = body.baseline {
         write_delta(
             body.settings,
@@ -502,7 +511,6 @@ fn write_crapts_json(
         .diagnostics
         .ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
     let selection = report::CraptsSelection::from_limits(body.settings.top, body.settings.min)?;
-    let changed = report::extract_crapts_changed(body.sections)?;
     let ctx = report::CraptsJsonContext {
         tool: body.tool,
         coverage_kind,
@@ -511,7 +519,7 @@ fn write_crapts_json(
         notices: body.notices,
         total: body.eligible.len(),
         crappy: body.crappy,
-        changed: changed.as_ref(),
+        changed: body.changed,
         diagnostics,
     };
     let Some(baseline) = body.baseline else {
@@ -1477,6 +1485,160 @@ mod tests {
             };
             prop_assert_eq!(rows, indices(true));
             prop_assert_eq!(members, indices(false));
+        }
+    }
+
+    #[test]
+    fn section_failures_are_sampled_once_for_both_json_and_gate() {
+        use std::cell::Cell;
+
+        struct ChangingSection {
+            key: &'static str,
+            calls: Cell<usize>,
+        }
+        impl Section for ChangingSection {
+            fn json_key(&self) -> &str {
+                self.key
+            }
+            fn json(&self) -> Box<serde_json::value::RawValue> {
+                serde_json::value::RawValue::from_string(r#"{"counts":{"fail":2}}"#.to_owned())
+                    .unwrap()
+            }
+            fn write(
+                &self,
+                _: Format,
+                _: &mut dyn Write,
+            ) -> Result<()> {
+                Ok(())
+            }
+            fn placement(&self) -> Placement {
+                Placement::Lead
+            }
+            fn failures(&self) -> Option<usize> {
+                let n = self.calls.get();
+                self.calls.set(n + 1);
+                if n == 0 { Some(2) } else { Some(0) }
+            }
+        }
+
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let section = ChangingSection {
+            key: "changed",
+            calls: Cell::new(0),
+        };
+        let mut out = Vec::new();
+        let outcome = run(
+            &tool,
+            &section_settings(&allow, &signals, Format::Json),
+            Analysis {
+                entries: Vec::new(),
+                diagnostics: Some(empty_test_diag()),
+                scope: &AllFiles,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            None,
+            &[&section],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(section.calls.get(), 1);
+        assert_eq!(doc["summary"]["changed_failures"], 2);
+        assert_eq!(outcome.section_failures, 2);
+        assert!(outcome.tripped);
+    }
+
+    #[test]
+    fn section_failure_count_overflow_errors_before_writing() {
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let max = NonJsonSection {
+            label: "a",
+            placement: Placement::Lead,
+            failures: Some(usize::MAX),
+            forbid_write: true,
+        };
+        let one = NonJsonSection {
+            label: "b",
+            placement: Placement::Trail,
+            failures: Some(1),
+            forbid_write: true,
+        };
+        let mut out = Vec::new();
+        let err = run(
+            &tool,
+            &section_settings(&allow, &signals, Format::Human),
+            Analysis {
+                entries: crate::report::test_support::sample(),
+                diagnostics: None,
+                scope: &AllFiles,
+                coverage_kind: None,
+                notices: &[],
+            },
+            None,
+            &[&max, &one],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("overflow"), "{err}");
+        assert_eq!(out, [] as [u8; 0]);
+    }
+
+    #[test]
+    fn cargo_crap_json_section_rejection_runs_before_summary_dispatch() {
+        use crate::policy::Policy;
+        use crate::report::test_support::{FixedSection, SECOND_TOOL};
+        let tool = Tool {
+            policy: Policy {
+                envelope: EnvelopeKind::CargoCrapV1,
+                summary_formats: &[Format::Json],
+                ..SECOND_TOOL.policy
+            },
+            ..SECOND_TOOL
+        };
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let settings = Settings {
+            summary: true,
+            ..section_settings(&allow, &signals, Format::Json)
+        };
+        let prepared = BaselineFilter::new(&AllFiles, &allow).prepare(Baseline {
+            entries: crate::report::test_support::sample(),
+            try_weight: DEFAULT_TRY_WEIGHT,
+            duplicate_groups: None,
+        });
+        let section = FixedSection::failing(Some(1));
+        for base in [None, Some(&prepared)] {
+            let mut out = Vec::new();
+            let err = run(
+                &tool,
+                &settings,
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: None,
+                    scope: &AllFiles,
+                    coverage_kind: None,
+                    notices: &[],
+                },
+                base,
+                &[&section],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("changed") && err.contains("CargoCrapV1"),
+                "{err}"
+            );
+            assert_eq!(out, [] as [u8; 0]);
         }
     }
 }

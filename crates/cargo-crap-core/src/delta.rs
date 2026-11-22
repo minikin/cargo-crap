@@ -418,13 +418,47 @@ pub fn load_baseline(
     load_baseline_with_weight(path, tool).map(|baseline| baseline.entries)
 }
 
+struct TopLevelNameSchemeProbe(bool);
+
+impl<'de> serde::Deserialize<'de> for TopLevelNameSchemeProbe {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ProbeVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ProbeVisitor {
+            type Value = TopLevelNameSchemeProbe;
+
+            fn expecting(
+                &self,
+                formatter: &mut std::fmt::Formatter<'_>,
+            ) -> std::fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut has_name_scheme = false;
+                while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+                    if key == "name_scheme" {
+                        has_name_scheme = true;
+                    }
+                    let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                }
+                Ok(TopLevelNameSchemeProbe(has_name_scheme))
+            }
+        }
+
+        deserializer.deserialize_map(ProbeVisitor)
+    }
+}
+
 fn reject_foreign_name_scheme(
     raw: &str,
     path: &Path,
     tool: &Tool,
 ) -> Result<()> {
-    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(raw)
-        && map.contains_key("name_scheme")
+    if let Ok(TopLevelNameSchemeProbe(true)) = serde_json::from_str::<TopLevelNameSchemeProbe>(raw)
     {
         bail!(
             "{} cannot read {} with a top-level name_scheme. Use the tool that wrote the baseline.",
@@ -4386,6 +4420,7 @@ mod crapts_admission_tests {
             r#"{"version":"0.9.0","name_scheme":1,"entries":[]}"#,
             r#"{"version":"0.9.0","name_scheme":2,"entries":[]}"#,
             r#"{"version":"0.9.0","name_scheme":null,"entries":[]}"#,
+            r#"{"version":"0.9.0","entries":[],"name_scheme":1e400}"#,
         ] {
             let path = dir.path().join("base.json");
             std::fs::write(&path, raw).unwrap();
@@ -4404,6 +4439,13 @@ mod crapts_admission_tests {
                 expected
             );
         }
+        assert!(
+            serde_json::from_str::<TopLevelNameSchemeProbe>("[]")
+                .err()
+                .expect("array is not a JSON object")
+                .to_string()
+                .contains("a JSON object")
+        );
 
         let nested = dir.path().join("nested.json");
         std::fs::write(

@@ -2026,17 +2026,22 @@ fn a_foreign_baseline_diagnostic_names_the_callers_tool() {
         ..cargo_crap::tool::CARGO_CRAP
     };
     let path = dir.path().join("base.json");
-    std::fs::write(&path, r#"{"version":"0.9.0","name_scheme":1,"entries":[]}"#).unwrap();
     let expected = format!(
         "audit cannot read {} with a top-level name_scheme. Use the tool that wrote the baseline.",
         path.display()
     );
-    let err_entries = cargo_crap_core::delta::load_baseline(&path, &audit)
-        .expect_err("load_baseline must reject top-level name_scheme");
-    let err_weighted = cargo_crap_core::delta::load_baseline_with_weight(&path, &audit)
-        .expect_err("load_baseline_with_weight must reject top-level name_scheme");
-    assert_eq!(err_entries.to_string(), expected);
-    assert_eq!(err_weighted.to_string(), expected);
+    for raw in [
+        r#"{"version":"0.9.0","name_scheme":1,"entries":[]}"#,
+        r#"{"version":"0.9.0","entries":[],"name_scheme":1e400}"#,
+    ] {
+        std::fs::write(&path, raw).unwrap();
+        let err_entries = cargo_crap_core::delta::load_baseline(&path, &audit)
+            .expect_err("load_baseline must reject top-level name_scheme");
+        let err_weighted = cargo_crap_core::delta::load_baseline_with_weight(&path, &audit)
+            .expect_err("load_baseline_with_weight must reject top-level name_scheme");
+        assert_eq!(err_entries.to_string(), expected);
+        assert_eq!(err_weighted.to_string(), expected);
+    }
 }
 
 struct TestSection {

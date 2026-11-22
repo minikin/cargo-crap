@@ -4886,18 +4886,22 @@ fn cargo_crap_recognizes_the_foreign_discriminator_by_key_presence() {
         serde_json::from_slice(&base_out.stdout).expect("valid baseline JSON");
 
     let expected_stderr = "Error: cargo-crap cannot read base.json with a top-level name_scheme. Use the tool that wrote the baseline.\n";
-    for value in [
+    let mut foreign_raws: Vec<String> = [
         serde_json::json!(1),
         serde_json::json!(2),
         serde_json::json!(null),
-    ] {
+    ]
+    .into_iter()
+    .map(|value| {
         let mut foreign = original.clone();
         foreign["name_scheme"] = value;
-        std::fs::write(
-            dir.path().join("base.json"),
-            serde_json::to_string_pretty(&foreign).expect("serialize"),
-        )
-        .expect("write");
+        serde_json::to_string_pretty(&foreign).expect("serialize")
+    })
+    .collect();
+    foreign_raws.push(r#"{"version":"0.9.0","entries":[],"name_scheme":1e400}"#.to_owned());
+
+    for raw in foreign_raws {
+        std::fs::write(dir.path().join("base.json"), raw).expect("write");
 
         let out = cmd()
             .current_dir(dir.path())
@@ -4978,7 +4982,7 @@ fn the_foreign_key_probe_preserves_cargo_craps_original_parse_errors() {
         .expect("truncated JSON must fail")
         .to_string();
     let expected_bad_stderr = format!(
-        "Error: parsing baseline bad.json — must be JSON from `cargo crap --format json`\n\nCaused by:\n    {expected_cause}\n"
+        "Error: parsing baseline bad.json \u{2014} must be JSON from `cargo crap --format json`\n\nCaused by:\n    {expected_cause}\n"
     );
 
     let bad_out = cmd()

@@ -456,10 +456,11 @@ fn ensure_json_object(
 }
 
 pub(crate) fn extract_crapts_changed(
-    sections: &[&dyn Section]
+    sections: &[&dyn Section],
+    failures: &[Option<usize>],
 ) -> Result<Option<CraptsChangedSection>> {
     let mut changed: Option<CraptsChangedSection> = None;
-    for section in sections {
+    for (section, &count) in sections.iter().zip(failures) {
         let key = section.json_key();
         if key != "changed" {
             bail!("crapts v1 JSON envelope has no section slot for {key:?}");
@@ -471,7 +472,7 @@ pub(crate) fn extract_crapts_changed(
         ensure_json_object(key, &raw)?;
         changed = Some(CraptsChangedSection {
             raw,
-            failures: section.failures(),
+            failures: count,
         });
     }
     Ok(changed)
@@ -1558,12 +1559,14 @@ mod tests {
             placement: Placement::Lead,
             failures: Some(0),
         };
-        assert!(extract_crapts_changed(&[]).unwrap().is_none());
-        let extracted = extract_crapts_changed(&[&valid]).unwrap().unwrap();
+        assert!(extract_crapts_changed(&[], &[]).unwrap().is_none());
+        let extracted = extract_crapts_changed(&[&valid], &[Some(0)])
+            .unwrap()
+            .unwrap();
         assert_eq!(extracted.raw.get(), valid.raw);
         assert_eq!(extracted.failures, Some(0));
 
-        let dup_err = extract_crapts_changed(&[&valid, &valid])
+        let dup_err = extract_crapts_changed(&[&valid, &valid], &[Some(0), Some(0)])
             .err()
             .expect("duplicate changed must fail")
             .to_string();
@@ -1571,7 +1574,7 @@ mod tests {
 
         for key in ["entries", "extra"] {
             let bad_key = FixedSection { key, ..valid };
-            let err = extract_crapts_changed(&[&bad_key])
+            let err = extract_crapts_changed(&[&bad_key], &[Some(0)])
                 .err()
                 .expect("disallowed key must fail")
                 .to_string();
@@ -1580,7 +1583,7 @@ mod tests {
 
         for raw in ["[]", "null"] {
             let non_obj = FixedSection { raw, ..valid };
-            let err = extract_crapts_changed(&[&non_obj])
+            let err = extract_crapts_changed(&[&non_obj], &[Some(0)])
                 .err()
                 .expect("non-object changed must fail")
                 .to_string();
@@ -1607,7 +1610,9 @@ mod tests {
             placement: Placement::Lead,
             failures: Some(0),
         };
-        let extracted = extract_crapts_changed(&[&valid]).unwrap().unwrap();
+        let extracted = extract_crapts_changed(&[&valid], &[Some(0)])
+            .unwrap()
+            .unwrap();
         let diag = empty_diagnostics();
         let tool = Tool {
             version: "0.2.3",
