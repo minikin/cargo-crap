@@ -182,8 +182,72 @@ jobs:
           docker run --rm -v "$PWD:/source:ro" node:24-alpine node /source/scripts/release/smoke.mjs \
             --npm --version "$VERSION" --expect-package @minikin/crapts-linux-x64-musl
 
-  promote-npm:
+  crapts-action-smoke:
+    name: Tagged crapts Action (${{ matrix.os }})
     needs: [preflight, npm-smoke]
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Prepare push and shallow PR
+        id: fixture
+        run: python scripts/action/crapts/tests/smoke.py setup "$RUNNER_TEMP/crapts-smoke"
+      - uses: ./actions/crapts
+        id: push-score
+        with:
+          working-directory: ${{ runner.temp }}/crapts-smoke/push
+          base: ''
+          coverage: hits.info
+          comment: 'false'
+          github-token: fixture-token
+      - name: Check push report and launcher
+        env:
+          CRAPPY: ${{ steps.push-score.outputs.crappy }}
+          REGRESSED: ${{ steps.push-score.outputs.regressed }}
+          CHANGED: ${{ steps.push-score.outputs.changed }}
+          REPORT: ${{ steps.push-score.outputs.report }}
+          OUTCOME: ${{ steps.push-score.outcome }}
+        run: LAUNCHER_VERSION="$(crapts --version)" python scripts/action/crapts/tests/smoke.py push "$RUNNER_TEMP/crapts-smoke"
+      - uses: ./actions/crapts
+        id: pr-score
+        continue-on-error: true
+        env:
+          TRACE: ${{ runner.temp }}/crapts-smoke/trace
+          CRAPTS_TEST_PR_NUMBER: '42'
+        with:
+          working-directory: ${{ runner.temp }}/crapts-smoke/checkout/packages/shop
+          base: ${{ steps.fixture.outputs.base }}
+          install-command: bash "scripts with spaces/install deps.sh"
+          coverage-command: bash "scripts with spaces/run coverage.sh"
+          coverage-file: coverage.info
+          comment: 'false'
+          github-token: fixture-token
+      - name: Check PR gate and restored checkout
+        env:
+          CRAPPY: ${{ steps.pr-score.outputs.crappy }}
+          REGRESSED: ${{ steps.pr-score.outputs.regressed }}
+          CHANGED: ${{ steps.pr-score.outputs.changed }}
+          REPORT: ${{ steps.pr-score.outputs.report }}
+          OUTCOME: ${{ steps.pr-score.outcome }}
+        run: python scripts/action/crapts/tests/smoke.py pr "$RUNNER_TEMP/crapts-smoke"
+
+  promote-npm:
+    needs: [preflight, npm-smoke, crapts-action-smoke]
     if: needs.preflight.outputs.is_prerelease == 'false'
     runs-on: ubuntu-latest
     permissions:
@@ -203,3 +267,14 @@ jobs:
           for package in $packages @minikin/crapts; do
             npm dist-tag add "$package@$VERSION" latest
           done
+
+  move-crapts-v1:
+    needs: [preflight, npm-smoke, crapts-action-smoke]
+    if: needs.preflight.outputs.is_prerelease == 'false' && (needs.preflight.outputs.major == '0' || needs.preflight.outputs.major == '1')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Point crapts-v1 at crapts-v${{ needs.preflight.outputs.version }}
+        run: bash scripts/release/move-tag.sh "$GITHUB_SHA"

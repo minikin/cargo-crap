@@ -109,4 +109,5 @@ python3 -m py_compile "$here"/*.py "$here"/tests/*.py || exit 1
 python3 -B "$here/tests/core.py" || exit 1
 python3 -B "$here/tests/prep.py" || exit 1
 ruby "$here/tests/workflows.rb" || exit 1
+python3 -B "$here/tests/promotions.py" || exit 1
 echo "all passed"
