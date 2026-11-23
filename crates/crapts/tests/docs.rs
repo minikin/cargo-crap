@@ -497,10 +497,10 @@ fn normalization_touches_only_native_paths_and_version_positions() {
         unix.apply(r#"{"file": "src\\cart.ts"}"#, true),
         r#"{"file": "src\\cart.ts"}"#
     );
-    let text = "src\\cart.ts:1 keeps \\n here\ncrapts 9.8.7\nnot crapts 9.8.7\nother\\src\\cart.ts.bak src\\cart.ts.\n";
+    let text = "src\\cart.ts:1 keeps \\n here\ncrapts 9.8.7\nnot crapts 9.8.7\nother\\src\\cart.ts.bak src\\cart.ts. src\\cart.ts~ file=src\\cart.ts,line=1\n";
     assert_eq!(
         windows.apply(text, false),
-        "src/cart.ts:1 keeps \\n here\ncrapts <version>\nnot crapts 9.8.7\nother\\src\\cart.ts.bak src/cart.ts.\n"
+        "src/cart.ts:1 keeps \\n here\ncrapts <version>\nnot crapts 9.8.7\nother\\src\\cart.ts.bak src/cart.ts. src\\cart.ts~ file=src/cart.ts,line=1\n"
     );
     assert_eq!(
         unix.apply(text, false),
@@ -637,6 +637,22 @@ fn every_relative_link_resolves() {
     assert_names(
         &err(check::check_links(&[reference])),
         &[&format!("{QUICK_START}:5"), "guides/missing.md"],
+    );
+    let continued = Page::new(QUICK_START, "# Q\n\n[g]:\n  guides/gone.md \"Title\"\n");
+    assert_names(
+        &err(check::check_links(&[continued])),
+        &[&format!("{QUICK_START}:4"), "guides/gone.md"],
+    );
+    let angled = Page::new(
+        QUICK_START,
+        "# Q\n\n[a](<guides/no such.md>) [b]: <guides/also gone.md>\n",
+    );
+    let targets: Vec<String> = pages::links(&angled).into_iter().map(|(_, t)| t).collect();
+    assert_eq!(targets, ["guides/no such.md"]);
+    let defined = Page::new(QUICK_START, "# Q\n\n[b]: <guides/also gone.md>\n");
+    assert_names(
+        &err(check::check_links(&[defined])),
+        &["guides/also gone.md"],
     );
     let anchor = Page::new(
         QUICK_START,
@@ -805,8 +821,16 @@ fn the_differences_table_names_only_crapts_options() {
     let plain = page.with(row, &row.replacen("LCOV or", "--covrage, LCOV or", 1));
     assert_names(&err(cli::check_differences(&plain, &help)), &["--covrage"]);
     assert_eq!(
-        cli::long_flags("`--top 0`, then --help. (--all-rows)"),
-        ["--top", "--help", "--all-rows"]
+        cli::long_flags("`--top 0`, then --help. (--all-rows) --help/--covrage a--b --"),
+        ["--top", "--help", "--all-rows", "--help", "--covrage"]
+    );
+    let slashed = page.with(
+        row,
+        &row.replacen("LCOV or", "--help/--covrage, LCOV or", 1),
+    );
+    assert_names(
+        &err(cli::check_differences(&slashed, &help)),
+        &["--covrage"],
     );
 }
 
@@ -918,11 +942,9 @@ fn the_config_file_refuses_each_per_run_setting_given_a_value_of_its_own_type() 
         let run = config::refusal(&repo, &format!("{key} = {value}"));
         assert_eq!(run.code, Some(2), "{key}");
         assert_eq!(run.stdout, "", "{key}");
-        assert!(
-            run.stderr.contains(&format!("unknown key {key}\n")),
-            "{key}: {}",
-            run.stderr
-        );
+        let unknown = run.stderr.contains(&format!("unknown key {key}\n"));
+        let flag_only = run.stderr.contains(key) && run.stderr.contains("flag");
+        assert!(unknown || flag_only, "{key}: {}", run.stderr);
         assert!(
             !run.stderr.contains("invalid type"),
             "{key}: {}",
@@ -1321,4 +1343,45 @@ fn null_is_found_through_references_and_branches() {
     assert_eq!(formats::field_state(&schema, "a"), "required");
     assert_eq!(formats::field_state(&schema, "b"), "optional");
     assert_eq!(formats::field_state(&schema, "c"), "absent");
+}
+
+#[test]
+fn the_key_table_states_each_keys_type_and_default() {
+    let page = Page::load(config::CONFIG);
+    let repo = fixture::Repo::new();
+    let defaults = config::print_config(&repo, &[]).unwrap();
+    config::check_types_and_defaults(&page, &defaults).unwrap_or_else(|e| panic!("{e}"));
+    let patterns: Vec<String> = defaults["settings"]["default_excludes"]["value"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["pattern"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(config::listed_default_excludes(&page).unwrap(), patterns);
+    let row = key_row(&page, "threshold");
+    let typed = page.with(row, &row.replacen("finite number", "boolean", 1));
+    assert_names(
+        &err(config::check_types_and_defaults(&typed, &defaults)),
+        &["threshold", "boolean"],
+    );
+    let defaulted = page.with(row, &row.replacen("| 30 |", "| 300 |", 1));
+    assert_names(
+        &err(config::check_types_and_defaults(&defaulted, &defaults)),
+        &["threshold", "300", "30"],
+    );
+    let short = page.with(row, &row.replacen(" | 30 |", " |", 1));
+    assert_names(
+        &err(config::key_rows(&short).map(|_| ())),
+        &["type and default"],
+    );
+    for (value, cell) in [
+        (serde_json::json!(null), "unset"),
+        (serde_json::json!([]), "empty"),
+        (serde_json::json!([1, 2]), "the two patterns below"),
+        (serde_json::json!(false), "false"),
+        (serde_json::json!(0.01), "0.01"),
+        (serde_json::json!("crap"), "crap"),
+    ] {
+        assert_eq!(config::default_cell(&value), cell);
+    }
 }

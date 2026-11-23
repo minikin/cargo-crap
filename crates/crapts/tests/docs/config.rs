@@ -110,15 +110,34 @@ pub struct KeyRow {
     pub key: String,
     pub alias: Option<String>,
     pub flag: Option<String>,
+    pub kind: String,
+    pub default: String,
 }
+
+const KINDS: [(&str, &[&str]); 14] = [
+    ("threshold", &["finite number"]),
+    ("fail-above", &["boolean"]),
+    ("missing", &["`pessimistic`", "`optimistic`", "`skip`"]),
+    ("exclude", &["list of globs"]),
+    ("default-excludes", &["list of globs"]),
+    ("allow", &["list of globs"]),
+    ("min", &["finite number"]),
+    ("top", &["integer", "1", "9007199254740991"]),
+    ("sort", &["`crap`", "`file`"]),
+    ("epsilon", &["finite number", "at least 0"]),
+    ("fail-regression", &["boolean"]),
+    ("show-unchanged", &["boolean"]),
+    ("fail-changed", &["boolean"]),
+    ("uncovered-hints", &["boolean"]),
+];
 
 pub fn key_rows(page: &Page) -> Result<Vec<KeyRow>, String> {
     let section = pages::section(page, "Keys")?;
     let mut rows = Vec::new();
     for (line, cells) in pages::table_rows(&section) {
-        if cells.len() < 3 {
+        if cells.len() != 5 {
             return Err(format!(
-                "{}: a key row needs key, alias and flag cells",
+                "{}: a key row needs key, alias, flag, type and default cells",
                 page.at(line)
             ));
         }
@@ -129,6 +148,8 @@ pub fn key_rows(page: &Page) -> Result<Vec<KeyRow>, String> {
             key: pages::unquote(&cells[0]).to_owned(),
             alias: (alias != "none").then(|| alias.to_owned()),
             flag: (flag != "config only").then(|| flag.to_owned()),
+            kind: cells[3].clone(),
+            default: pages::unquote(&cells[4]).to_owned(),
         });
     }
     Ok(rows)
@@ -300,4 +321,65 @@ pub fn refusal(
     let run = repo.crapts(&["--print-config"]);
     std::fs::remove_file(file).unwrap();
     run
+}
+
+const COUNTS: [&str; 12] = [
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+    "twelve",
+];
+
+pub fn default_cell(value: &Value) -> String {
+    match value {
+        Value::Null => "unset".to_owned(),
+        Value::Array(items) if items.is_empty() => "empty".to_owned(),
+        Value::Array(items) => format!(
+            "the {} patterns below",
+            COUNTS.get(items.len() - 1).copied().unwrap_or("many")
+        ),
+        Value::Number(n) => n.as_f64().map_or_else(|| n.to_string(), |f| f.to_string()),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+pub fn check_types_and_defaults(
+    page: &Page,
+    defaults: &Value,
+) -> Result<(), String> {
+    for row in key_rows(page)? {
+        let words = KINDS
+            .iter()
+            .find(|(key, _)| *key == row.key)
+            .map(|(_, words)| *words)
+            .ok_or_else(|| format!("{}: {} is not a config key", page.at(row.line), row.key))?;
+        if let Some(word) = words.iter().find(|w| !row.kind.contains(**w)) {
+            return Err(format!(
+                "{}: the type of {} reads {}, which lacks {word}",
+                page.at(row.line),
+                row.key,
+                row.kind
+            ));
+        }
+        let setting = &defaults["settings"][row.key.replace('-', "_")]["value"];
+        let expected = default_cell(setting);
+        if row.default != expected {
+            return Err(format!(
+                "{}: the default of {} reads {}, the binary uses {expected}",
+                page.at(row.line),
+                row.key,
+                row.default
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn listed_default_excludes(page: &Page) -> Result<Vec<String>, String> {
+    let section = pages::section(page, "Keys")?;
+    let block = section
+        .blocks()
+        .into_iter()
+        .find(|b| b.info == "text")
+        .ok_or_else(|| format!("{}: no list of default excludes", page.path))?;
+    Ok(block.body.lines().map(str::to_owned).collect())
 }

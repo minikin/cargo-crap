@@ -74,12 +74,13 @@ impl Normalizer<'_> {
     }
 }
 
-fn path_char(c: char) -> bool {
-    c.is_alphanumeric() || "_-\\/".contains(c)
-}
+/// The characters a report prints around a location: table borders,
+/// backticks, `file=`, `path:line` and the like.
+const OPENS: &str = " \t`(=\"'[|<";
+const CLOSES: &str = " \t\n:`,)\"']|>";
 
-/// Replaces `native` only where it stands as a whole path, so a longer
-/// name that merely contains it keeps its bytes.
+/// Replaces `native` only where a report delimits it, so a longer name
+/// that merely contains it keeps its bytes.
 fn replace_path(
     text: &str,
     native: &str,
@@ -88,18 +89,21 @@ fn replace_path(
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
     for (at, _) in text.match_indices(native) {
-        let before = text[..at].chars().next_back();
+        let opens = text[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| OPENS.contains(c));
         let rest = &text[at + native.len()..];
-        let mut after = rest.chars();
-        let next = after.next();
-        let continues = next.is_some_and(path_char)
-            || (next == Some('.') && after.next().is_some_and(char::is_alphanumeric));
-        if before.is_some_and(|c| path_char(c) || c == '.') || continues {
-            continue;
+        let closes = match rest.chars().next() {
+            None => true,
+            Some('.') => rest[1..].chars().next().is_none_or(char::is_whitespace),
+            Some(c) => CLOSES.contains(c),
+        };
+        if opens && closes {
+            out.push_str(&text[copied..at]);
+            out.push_str(portable);
+            copied = at + native.len();
         }
-        out.push_str(&text[copied..at]);
-        out.push_str(portable);
-        copied = at + native.len();
     }
     out.push_str(&text[copied..]);
     out

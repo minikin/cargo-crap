@@ -432,7 +432,8 @@ pub fn command_runs(args: &[String]) -> Vec<Vec<String>> {
 
 pub fn links(page: &Page) -> Vec<(usize, String)> {
     let mut found = Vec::new();
-    for line in page.lines() {
+    let lines = page.lines();
+    for (i, line) in lines.iter().enumerate() {
         if line.fenced || line.fence {
             continue;
         }
@@ -445,26 +446,47 @@ pub fn links(page: &Page) -> Vec<(usize, String)> {
         let mut rest = prose.as_str();
         while let Some(at) = rest.find("](") {
             rest = &rest[at + 2..];
-            let Some(end) = rest.find(')') else { break };
-            let target = rest[..end].split_whitespace().next().unwrap_or_default();
-            if !target.contains("://") && !target.starts_with("mailto:") {
+            let target = destination(rest);
+            if local(target) {
                 found.push((line.number, target.to_owned()));
             }
-            rest = &rest[end..];
+            rest = &rest[target.len().min(rest.len())..];
         }
-        if let Some(target) = reference_definition(line.text) {
-            found.push((line.number, target.to_owned()));
+        if let Some(after) = reference_definition(line.text) {
+            let next = lines[i + 1..].iter().find(|l| !l.text.trim().is_empty());
+            let (number, text) = match (after.trim(), next) {
+                ("", Some(next)) => (next.number, next.text.trim()),
+                (text, _) => (line.number, text),
+            };
+            let target = destination(text);
+            if local(target) {
+                found.push((number, target.to_owned()));
+            }
         }
     }
     found
 }
 
+fn local(target: &str) -> bool {
+    !target.is_empty() && !target.contains("://") && !target.starts_with("mailto:")
+}
+
+/// A link destination: `<...>` may hold spaces, a bare one ends at
+/// whitespace or the closing parenthesis.
+fn destination(text: &str) -> &str {
+    if let Some(inner) = text.strip_prefix('<') {
+        return inner.split('>').next().unwrap_or_default();
+    }
+    let end = text
+        .find(|c: char| c.is_whitespace() || c == ')')
+        .unwrap_or(text.len());
+    &text[..end]
+}
+
 fn reference_definition(line: &str) -> Option<&str> {
     let rest = line.trim_start().strip_prefix('[')?;
-    let (label, target) = rest.split_once("]:")?;
-    let target = target.split_whitespace().next()?;
-    let local = !label.is_empty() && !target.contains("://") && !target.starts_with("mailto:");
-    local.then_some(target.trim_start_matches('<').trim_end_matches('>'))
+    let (label, after) = rest.split_once("]:")?;
+    (!label.is_empty() && !label.contains(']')).then_some(after)
 }
 
 /// GitHub's anchor for a heading.

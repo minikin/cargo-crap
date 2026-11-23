@@ -4,11 +4,11 @@
 
 ## Scored functions
 
-Every function with a body is a row: function declarations and expressions, arrow functions, class and object methods, getters, setters and constructors. A function nested in another is its own row, and its decisions and statements leave the parent. Instance field initializers belong to the class's constructor row, which exists even when the class declares no constructor. A static field initializer and a static block are rows of their own.
+Every function with a body is a row: function declarations and expressions, arrow functions, class and object methods, getters, setters and constructors. A function nested in another is its own row, and its decisions and statements leave the parent. Instance field initializers belong to the class's constructor row, which exists even when the class declares no constructor. A static field whose value is a function or a class names that function or class and adds no row of its own. Any other static field initializer, and each static block, is a row.
 
 Declarations without a body score nothing: overload signatures, `declare function`, abstract methods and ambient declarations.
 
-crapts reads files ending in `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs` and `.cjs`, matched case-sensitively. A row's name joins its ancestors with `::`, such as `Cart::total` or `outer::<return>` for an arrow returned from `outer`.
+crapts reads files ending in `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs` and `.cjs`, matched case-sensitively. Declaration files ending in `.d.ts`, `.d.mts` or `.d.cts` are skipped. A row's name joins its ancestors with `::`, such as `Cart::total` or `outer::<return>` for an arrow returned from `outer`.
 
 ## Decision points
 
@@ -24,7 +24,7 @@ A function starts at cyclomatic complexity 1. Each of these adds 1:
 | short-circuit operator | `&&`, `\|\|`, `??` |
 | logical assignment | `&&=`, `\|\|=`, `??=` |
 
-Optional chaining (`?.`) and conditional types add nothing. The example below has one function of each:
+Optional chaining (`?.`) and conditional types add nothing. `firstTag` uses optional chaining. `titleOf` uses nullish coalescing.
 
 ```typescript
 export function firstTag(post?: { tags?: string[] }) {
@@ -53,6 +53,6 @@ With every line covered, `firstTag` scores CC 1 despite two `?.`, and `titleOf` 
 
 A row's coverage counts only the statements its own body regions contain. A callback's lines belong to the callback, not to the function that creates it, so a covered parent does not hide an uncovered callback.
 
-With Istanbul input each statement goes to the innermost row whose body contains its start position, so a one-line callback is measured apart from the call that creates it. LCOV gives one count per line. A row counts each line on which one of its own statements starts, so a line holding both a call and its one-line callback counts for both rows.
+With Istanbul input each statement goes to the innermost row whose body contains its start position, so a one-line callback is measured apart from the call that creates it. LCOV gives one count per line. For each row, LCOV counts each distinct owned statement-start line that has a `DA` record once. A recorded shared line can count for both rows.
 
 A row whose file has no coverage entry reports coverage `null`. `--missing pessimistic`, the default, scores it as 0% covered, `optimistic` as 100%, and `skip` leaves it out. A row in a covered file with no observations of its own reports coverage 0.

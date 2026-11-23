@@ -29,16 +29,16 @@ An unknown key, a key written twice through its alias, or a value of the wrong t
 
 | Key | Alias | Flag | Type | Default |
 |---|---|---|---|---|
-| `threshold` | none | `--threshold` | number | 30 |
+| `threshold` | none | `--threshold` | finite number | 30 |
 | `fail-above` | none | `--fail-above` | boolean | false |
 | `missing` | none | `--missing` | `pessimistic`, `optimistic` or `skip` | `pessimistic` |
 | `exclude` | none | `--exclude` | list of globs | empty |
 | `default-excludes` | `default_excludes` | `--no-default-excludes` | list of globs | the ten patterns below |
 | `allow` | none | `--allow` | list of globs | empty |
-| `min` | none | `--min` | number | unset |
-| `top` | none | `--top` | integer, at least 1 | unset |
+| `min` | none | `--min` | finite number | unset |
+| `top` | none | `--top` | integer from 1 to 9007199254740991 | unset |
 | `sort` | none | `--sort` | `crap` or `file` | `crap` |
-| `epsilon` | none | `--epsilon` | number, at least 0 | 0.01 |
+| `epsilon` | none | `--epsilon` | finite number, at least 0 | 0.01 |
 | `fail-regression` | none | `--fail-regression` | boolean | false |
 | `show-unchanged` | `show_unchanged` | `--show-unchanged` | boolean | false |
 | `fail-changed` | none | `--fail-changed` | boolean | false |
@@ -61,7 +61,7 @@ An unknown key, a key written twice through its alias, or a value of the wrong t
 
 Patterns in `exclude`, `default-excludes` and `allow` are relative to the directory that holds `.crapts.toml`. Patterns given as flags are relative to the working directory. An `allow` pattern matches a source path or a function name.
 
-`uncovered-hints = true` adds the uncovered line ranges of each function above the threshold to the text, markdown and pr-comment tables. A cell lists three ranges and counts the rest.
+`uncovered-hints = true` adds an Uncovered column to the text, markdown and pr-comment tables. Each displayed row lists up to three of its uncovered line ranges and counts the rest. The text table leaves the column out when the terminal is too narrow for it.
 
 ## Per-run settings
 
@@ -83,7 +83,9 @@ These settings describe one invocation, so they exist only as flags and argument
 
 ## Precedence
 
-A flag overrides `.crapts.toml`, and `.crapts.toml` overrides the built-in default. `--print-config` prints every effective setting with its origin, `default`, `config` or `flag`, and reads no source or coverage file:
+A scalar flag overrides `.crapts.toml`, and `.crapts.toml` overrides the built-in default. `--exclude` and `--allow` do not replace the lists from the file: their patterns are added after the configured ones, in argument order, and each pattern keeps its own origin. `--all-rows` clears `min` and `top` wherever they were set.
+
+`--print-config` prints every effective setting with its origin, `default`, `config` or `flag`, and reads no source or coverage file:
 
 ```bash
 crapts --print-config --threshold 25

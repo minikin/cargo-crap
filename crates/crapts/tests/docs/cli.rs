@@ -146,15 +146,20 @@ pub fn check_differences(
 }
 
 pub fn long_flags(text: &str) -> Vec<String> {
-    text.split(|c: char| c.is_whitespace() || c == '`')
-        .filter_map(|word| {
-            let flag: String = word
-                .trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-')
-                .strip_prefix("--")?
+    text.match_indices("--")
+        .filter(|(at, _)| {
+            text[..*at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '-')
+        })
+        .filter_map(|(at, _)| {
+            let name: String = text[at + 2..]
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
                 .collect();
-            (!flag.is_empty()).then(|| format!("--{flag}"))
+            name.starts_with(|c: char| c.is_ascii_alphanumeric())
+                .then(|| format!("--{name}"))
         })
         .collect()
 }

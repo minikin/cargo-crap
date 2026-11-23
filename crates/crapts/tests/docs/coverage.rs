@@ -14,8 +14,6 @@ pub fn coverage_argument(args: &[String]) -> Option<String> {
         })
 }
 
-/// The file a section says its producer writes: the inline code after
-/// the word "writes" in its prose.
 fn stated_file(section: &Page) -> Option<String> {
     section
         .lines()
