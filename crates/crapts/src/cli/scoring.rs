@@ -199,9 +199,7 @@ pub(super) fn score(
     let (coverage, baseline) = read_inputs(cwd, options, coverage, &discovery, err)?;
     let result = measure(cwd, options, &coverage, &discovery, err)?;
     let scope = ScoringScope::new(&discovery.scope);
-    if prepare(baseline, &scope, &options.allow_set)?.is_some() {
-        return Err(InputError::message("--baseline is not implemented yet"));
-    }
+    let prepared = prepare(baseline, &scope, &options.allow_set)?;
     let output = options.output.value.as_deref();
     let to_stdout = output.is_none();
     let color = color_enabled(
@@ -226,10 +224,10 @@ pub(super) fn score(
         epsilon: options.epsilon.value,
         signals: &SignalSettings::default(),
         fail_above: options.fail_above.value,
-        fail_regression: false,
+        fail_regression: options.fail_regression.value,
         format: options.format.value,
         summary: options.summary.value,
-        show_unchanged: false,
+        show_unchanged: options.show_unchanged.value,
         uncovered_hints: options.uncovered_hints.value,
         width: if to_stdout {
             sink.width
@@ -257,14 +255,31 @@ pub(super) fn score(
             &TOOL,
             &settings,
             report,
-            None,
+            prepared.as_ref(),
             &[],
             &RenderExtras::default(),
             out,
         )
     })
     .map_err(|e| InputError::at(destination, format!("{e:#}")))?;
+    machine_notice(err, options.format.value, prepared.as_ref())?;
     Ok(verdict.exit_code())
+}
+
+/// Text formats render the notice in the report body, so only formats
+/// whose stdout must stay machine-readable repeat it on stderr.
+fn machine_notice(
+    err: &mut dyn Write,
+    format: Format,
+    prepared: Option<&PreparedBaseline>,
+) -> Result<()> {
+    let notice = prepared.and_then(PreparedBaseline::notice);
+    match notice {
+        Some(text) if matches!(format, Format::Json | Format::GitHub | Format::Shields) => {
+            writeln!(err, "{text}").map_err(|e| InputError::at(Path::new("stderr"), e))
+        },
+        _ => Ok(()),
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -515,18 +530,28 @@ mod baseline_tests {
     }
 
     #[test]
-    fn an_admitted_baseline_is_held_at_the_render_boundary() {
+    fn an_admitted_baseline_reaches_the_delta_renderer() {
         let d = tree();
         fs::write(
             d.path().join("base.json"),
             report("lines", &[("src/app.ts", "hot")]).to_string(),
         )
         .unwrap();
-        let err = refused(
+        let (code, out, err) = invoke(
             d.path(),
-            &["--coverage", "hits.info", "--baseline", "base.json"],
+            &[
+                "--coverage",
+                "hits.info",
+                "--baseline",
+                "base.json",
+                "--format",
+                "json",
+                "--fail-regression",
+            ],
         );
-        assert_eq!(err, "error: --baseline is not implemented yet\n");
+        assert_eq!((code, err.as_str()), (ExitCode::from(1), ""));
+        let doc: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(doc["entries"][0]["status"], "regressed");
     }
 
     fn prepared(

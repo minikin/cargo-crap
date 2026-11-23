@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `crapts::coverage::Coverage::unit(&self) -> CoverageUnit` (additive,
+  non-breaking) so callers can inspect the measured coverage unit before
+  source parsing and attribution. `--baseline` is now active in the `crapts`
+  CLI.
 - Added original-string path matching, UTF-16-ordered stray-file examples and
   strict LCOV reading to cargo-crap-core and its cargo-crap re-exports. The
   crapts library now reads Istanbul and LCOV reports and returns scored rows,

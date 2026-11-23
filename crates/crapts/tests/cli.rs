@@ -2212,7 +2212,7 @@ fn companion_checks_and_sarif_restrictions_precede_comparison_io() {
 }
 
 #[test]
-fn an_admitted_baseline_comparison_is_reserved() {
+fn an_admitted_baseline_runs_the_comparison() {
     let d = fixture();
     let saved = invoke(
         d.path(),
@@ -2226,10 +2226,18 @@ fn an_admitted_baseline_comparison_is_reserved() {
         ],
     );
     check(&saved, 0);
-    let mut args = vec!["--coverage", "hits.data", "--baseline", "b.json"];
-    before_render(d.path(), &args, &["--baseline is not implemented yet"]);
-    args.push("--fail-regression");
-    before_render(d.path(), &args, &["--baseline is not implemented yet"]);
+    for gate in [&[][..], &["--fail-regression"]] {
+        let args = [
+            &["--coverage", "hits.data", "--baseline", "b.json"][..],
+            gate,
+        ]
+        .concat();
+        let out = invoke(d.path(), &args);
+        check(&out, 0);
+        assert_eq!(out.stderr.as_slice(), b"");
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.starts_with("No changes since baseline.\n"), "{text}");
+    }
 }
 
 #[test]

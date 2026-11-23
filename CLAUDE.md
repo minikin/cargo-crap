@@ -165,7 +165,16 @@ summary. `Settings` carries the invocation's `pr_comment_marker` and
 `repo_prefix` to `RenderOptions`. The prefix projects cwd-relative paths
 into repository paths for source links, GitHub annotations and SARIF locations.
 JSON rows and visible path labels stay relative to the invocation.
-`--baseline` and `--base` are reserved for comparison modes.
+
+`--baseline <file>` is read after the coverage input and before any source is
+parsed. Core `delta::load_crapts_baseline` admits it against the measured
+coverage unit, and `BaselineFilter::prepare_crapts` drops rows outside
+`Discovery.scope` or matching an allow pattern. A failed scope lookup is an
+input error, so a function still in scope is never reported as removed.
+`run::run` then renders the delta and evaluates `--fail-regression`. A
+cross-minor baseline's notice appears in the text, markdown and pr-comment
+body. For json, github and shields it is written to stderr after the report
+flushes. `--base` stays reserved for Git comparison.
 
 ## Key design decisions
 
