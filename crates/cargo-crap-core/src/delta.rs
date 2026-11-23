@@ -470,16 +470,13 @@ fn reject_foreign_name_scheme(
     Ok(())
 }
 
-/// [`load_baseline`], keeping the `?` weight the baseline was recorded under
-/// so a caller can tell when the current run scores under a different one.
-pub fn load_baseline_with_weight(
+fn parse_cargo_crap_baseline(
+    raw: &str,
     path: &Path,
     tool: &Tool,
 ) -> Result<Baseline> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("reading baseline {}", path.display()))?;
-    reject_foreign_name_scheme(&raw, path, tool)?;
-    let envelope: crate::report::Envelope = serde_json::from_str(&raw).with_context(|| {
+    reject_foreign_name_scheme(raw, path, tool)?;
+    let envelope: crate::report::Envelope = serde_json::from_str(raw).with_context(|| {
         format!(
             "parsing baseline {} — must be JSON from `{}`",
             path.display(),
@@ -498,6 +495,17 @@ pub fn load_baseline_with_weight(
                 .collect()
         }),
     })
+}
+
+/// [`load_baseline`], keeping the `?` weight the baseline was recorded under
+/// so a caller can tell when the current run scores under a different one.
+pub fn load_baseline_with_weight(
+    path: &Path,
+    tool: &Tool,
+) -> Result<Baseline> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading baseline {}", path.display()))?;
+    parse_cargo_crap_baseline(&raw, path, tool)
 }
 
 #[derive(Debug, Clone)]
