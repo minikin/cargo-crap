@@ -1244,6 +1244,217 @@ fn offline_packaging_and_windows_line_ending_invariants_hold() {
     );
 }
 
+fn is_checkout_relative(path: &str) -> bool {
+    let has_drive =
+        path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':';
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !has_drive
+        && !path.split('/').any(|part| part == "..")
+}
+
+fn assert_no_leaked_prefixes(
+    label: &str,
+    text: &str,
+) {
+    let mut forbidden = vec![
+        "/Users/".to_owned(),
+        "/home/".to_owned(),
+        "/private/var/folders/".to_owned(),
+        "/tmp/".to_owned(),
+        "C:\\".to_owned(),
+        "C:/".to_owned(),
+    ];
+    forbidden.extend(path_variants(&workspace_root()));
+    forbidden.extend(path_variants(&std::env::temp_dir()));
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        forbidden.extend(path_variants(Path::new(&home)));
+    }
+    for needle in forbidden {
+        assert!(
+            !text.contains(&needle),
+            "{label} contains forbidden path prefix {needle:?}"
+        );
+    }
+}
+
+fn assert_coverage_archive_relative(gz_path: &Path) {
+    let decompressed = decompress_coverage(gz_path).expect("decompress coverage-final.json.gz");
+    let istanbul_raw = fs::read_to_string(decompressed.path()).expect("read decompressed coverage");
+    let istanbul: Value =
+        serde_json::from_str(&istanbul_raw).expect("parse decompressed Istanbul JSON");
+    let map = istanbul
+        .as_object()
+        .expect("Istanbul coverage must be a JSON object");
+    assert!(!map.is_empty(), "Istanbul coverage map must be non-empty");
+    for (key, entry) in map {
+        assert!(
+            is_checkout_relative(key),
+            "coverage map key is not checkout-relative: {key:?}"
+        );
+        let inner_path = entry
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("coverage entry {key:?} missing string path"));
+        assert!(
+            is_checkout_relative(inner_path),
+            "coverage inner path is not checkout-relative: {inner_path:?}"
+        );
+        assert_eq!(key, inner_path, "coverage map key differs from inner path");
+    }
+}
+
+fn assert_coverage_meta(
+    fixture_dir: &Path,
+    gz_path: &Path,
+    golden_json_path: &Path,
+    golden_stderr_path: &Path,
+) {
+    let meta: Value = serde_json::from_str(
+        &fs::read_to_string(fixture_dir.join("coverage-meta.json"))
+            .expect("read coverage-meta.json"),
+    )
+    .expect("parse coverage-meta.json");
+    assert_eq!(meta["commit"], PINNED_SHA);
+    let command = meta["command"]
+        .as_str()
+        .expect("coverage-meta.json string command");
+    for token in [
+        "vitest run",
+        "--coverage",
+        "--coverage.reporter=json",
+        "--coverage.provider=",
+        "--coverage.reportOnFailure=true",
+    ] {
+        assert!(
+            command.contains(token),
+            "coverage-meta.json command missing {token:?}: {command}"
+        );
+    }
+    assert!(
+        meta["provider"]
+            .as_str()
+            .is_some_and(|provider| !provider.is_empty()),
+        "coverage-meta.json missing provider"
+    );
+    assert_eq!(meta["reportOnFailure"], json!(true));
+    for tool in ["node", "yarn", "vitest"] {
+        assert!(
+            meta["versions"][tool]
+                .as_str()
+                .is_some_and(|version| !version.is_empty()),
+            "coverage-meta.json missing versions.{tool}"
+        );
+    }
+    assert_eq!(
+        meta["artifacts"]["coverage_final_json_gz_bytes"].as_u64(),
+        Some(fs::metadata(gz_path).expect("stat gz").len())
+    );
+    assert_eq!(
+        meta["artifacts"]["golden_json_bytes"].as_u64(),
+        Some(
+            fs::metadata(golden_json_path)
+                .expect("stat golden.json")
+                .len()
+        )
+    );
+    assert_eq!(
+        meta["artifacts"]["golden_stderr_bytes"].as_u64(),
+        Some(
+            fs::metadata(golden_stderr_path)
+                .expect("stat golden.stderr")
+                .len()
+        )
+    );
+}
+
+#[test]
+fn offline_coverage_provenance_and_golden_hygiene_invariants_hold() {
+    let fixture_dir = workspace_root().join("crates/crapts/tests/fixtures/corpus/excalidraw");
+    let gz_path = fixture_dir.join("coverage-final.json.gz");
+    let golden_json_path = fixture_dir.join("golden.json");
+    let golden_stderr_path = fixture_dir.join("golden.stderr");
+
+    assert_coverage_archive_relative(&gz_path);
+    assert_coverage_meta(
+        &fixture_dir,
+        &gz_path,
+        &golden_json_path,
+        &golden_stderr_path,
+    );
+
+    let golden_json_raw = fs::read_to_string(&golden_json_path).expect("read golden.json");
+    let golden_stderr_raw = fs::read_to_string(&golden_stderr_path).expect("read golden.stderr");
+    assert_no_leaked_prefixes("golden.json", &golden_json_raw);
+    assert_no_leaked_prefixes("golden.stderr", &golden_stderr_raw);
+
+    assert!(golden_json_raw.ends_with('\n'));
+    assert!(golden_json_raw.starts_with("{\n  \""));
+    let golden: Value = serde_json::from_str(&golden_json_raw).expect("parse golden.json");
+    assert_eq!(golden["version"], VERSION_PLACEHOLDER);
+    assert_eq!(
+        golden["$schema"],
+        "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v1.json"
+    );
+    let entries = golden["entries"]
+        .as_array()
+        .expect("golden.json entries array");
+    assert!(!entries.is_empty(), "golden.json entries must be non-empty");
+    for row in entries {
+        let file = row["file"].as_str().expect("row file");
+        assert!(
+            is_checkout_relative(file),
+            "golden.json entry file is not checkout-relative: {file:?}"
+        );
+    }
+    for bucket in ["source_only", "coverage_only"] {
+        let examples = golden["diagnostics"][bucket]["examples"]
+            .as_array()
+            .expect("diagnostics examples array");
+        for example in examples {
+            let path = example.as_str().expect("example path string");
+            assert!(
+                is_checkout_relative(path),
+                "golden.json diagnostics.{bucket} example is not checkout-relative: {path:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn offline_test_suite_skips_the_live_corpus_checkout_without_touches_to_fixtures() {
+    let exe = std::env::current_exe().expect("current test binary");
+    let output = Command::new(&exe)
+        .args(["--list", "--ignored"])
+        .output()
+        .expect("list ignored tests");
+    assert!(output.status.success());
+    let ignored = String::from_utf8(output.stdout).expect("utf-8 test list");
+    assert!(
+        ignored.lines().any(|line| {
+            line.starts_with("pinned_excalidraw_corpus_matches_the_committed_golden:")
+        }),
+        "Excalidraw corpus test must be #[ignore]:\n{ignored}"
+    );
+}
+
+#[test]
+#[ignore = "requires a local Excalidraw checkout specified by CRAPTS_CORPUS_DIR"]
+fn pinned_excalidraw_corpus_matches_the_committed_golden() {
+    let raw_dir = std::env::var("CRAPTS_CORPUS_DIR").ok();
+    let corpus_dir = parse_corpus_dir(raw_dir.as_deref()).unwrap_or_else(|err| panic!("{err}"));
+    let raw_update = std::env::var("CRAPTS_CORPUS_UPDATE").ok();
+    let mode = parse_update_mode(raw_update.as_deref()).unwrap_or_else(|err| panic!("{err}"));
+    let fixture_dir = workspace_root().join("crates/crapts/tests/fixtures/corpus/excalidraw");
+    let raw_pin = fs::read_to_string(fixture_dir.join("pin.txt"))
+        .unwrap_or_else(|e| panic!("read pin.txt: {e}"));
+    let expected_pin = parse_pin(&raw_pin).unwrap_or_else(|err| panic!("{err}"));
+    if let Err(err) = run_corpus(&corpus_dir, &fixture_dir, &expected_pin, mode) {
+        panic!("{err}");
+    }
+}
+
 #[test]
 fn row_level_outer_member_duplicate_key_and_stderr_drift_fails_with_a_named_diff() {
     let coverage = istanbul_for_a(1, 0);

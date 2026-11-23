@@ -1,0 +1,1 @@
+warning: The coverage producer appears to write one statement per line. These callbacks will score 0% while their parents absorb the line.
