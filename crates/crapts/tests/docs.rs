@@ -8,6 +8,8 @@ mod config;
 mod coverage;
 #[path = "docs/fixture.rs"]
 mod fixture;
+#[path = "docs/formats.rs"]
+mod formats;
 #[path = "docs/guides.rs"]
 mod guides;
 #[path = "docs/install.rs"]
@@ -1188,4 +1190,135 @@ fn the_changed_gate_guide_shows_an_edited_function_failing_the_pull_request() {
         )),
         &[guides::CHANGED_GATE, "expected exit 0"],
     );
+}
+
+fn without_sample(
+    page: &Page,
+    format: &str,
+) -> Page {
+    let sample = pages::samples(page)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.marker.effective_format().as_deref() == Some(format))
+        .unwrap_or_else(|| panic!("a {format} sample"));
+    let marker = sample.marker.to_string();
+    page.with(&format!("{marker}\n"), "")
+        .with(&sample.block, "")
+}
+
+#[test]
+fn each_output_format_has_a_marked_absolute_sample() {
+    let page = Page::load(formats::OUTPUT_FORMATS);
+    formats::check_output_formats(&page).unwrap_or_else(|e| panic!("{e}"));
+    let removed = without_sample(&page, "sarif");
+    assert_names(
+        &err(formats::check_output_formats(&removed)),
+        &[formats::OUTPUT_FORMATS, "sarif"],
+    );
+    let compared = Page::new(
+        formats::OUTPUT_FORMATS,
+        "<!-- crapts-output: --coverage coverage/lcov.info --baseline crapts-baseline.json -->\n```text\n```\n",
+    );
+    assert_names(
+        &err(formats::check_output_formats(&compared)),
+        &["--baseline"],
+    );
+}
+
+#[test]
+fn each_marked_json_shaped_sample_carries_the_schema_of_its_format() {
+    let page = Page::load(formats::JSON);
+    let ids = formats::schema_ids();
+    assert_eq!(ids.len(), 3);
+    formats::check_cited(&page, &ids).unwrap_or_else(|e| panic!("{e}"));
+    let samples = all_samples();
+    assert!(formats::check_shapes(&samples, &ids).unwrap_or_else(|e| panic!("{e}")) > 0);
+    for format in ["json", "sarif", "shields"] {
+        assert!(
+            samples
+                .iter()
+                .any(|s| s.marker.effective_format().as_deref() == Some(format)),
+            "{format}"
+        );
+    }
+    let v2 =
+        "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v2.json";
+    let cited = Page::new(&page.path, &format!("{}\nSee `{v2}`.\n", page.text));
+    assert_names(
+        &err(formats::check_cited(&cited, &ids)),
+        &[formats::JSON, v2],
+    );
+    let json = samples
+        .iter()
+        .find(|s| s.marker.effective_format().as_deref() == Some("json"))
+        .unwrap();
+    let mut swapped = json.clone();
+    let id = ids
+        .iter()
+        .find(|id| json.block.contains(id.as_str()))
+        .unwrap();
+    swapped.block = json.block.replacen(id.as_str(), formats::SARIF_SCHEMA, 1);
+    assert_names(
+        &err(formats::check_shape(&swapped, &ids)),
+        &[&json.marker.to_string()],
+    );
+}
+
+#[test]
+fn the_json_reference_tables_the_top_level_fields() {
+    let page = Page::load(formats::JSON);
+    let (report, delta) = (
+        formats::schema("report-v1.json"),
+        formats::schema("delta-v1.json"),
+    );
+    formats::check_fields(&page, &report, &delta).unwrap_or_else(|e| panic!("{e}"));
+    let rows: Vec<String> = formats::field_rows(&page)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.field)
+        .collect();
+    assert!(rows.contains(&"regression_gate".to_owned()) && rows.contains(&"changed".to_owned()));
+    assert!(
+        pages::links(&page)
+            .iter()
+            .any(|(_, t)| t.starts_with("../guides/changed-gate.md")),
+        "the combined sample link"
+    );
+    let row = page
+        .text
+        .lines()
+        .find(|l| l.starts_with("| `regression_gate`"))
+        .expect("the regression_gate row");
+    let drifted = page.with(row, &row.replacen("| absent |", "| required |", 1));
+    assert_names(
+        &err(formats::check_fields(&drifted, &report, &delta)),
+        &["regression_gate"],
+    );
+    let doubled = page.with(row, &format!("{row}\n{row}"));
+    assert_names(
+        &err(formats::check_fields(&doubled, &report, &delta)),
+        &["regression_gate", "second row"],
+    );
+}
+
+#[test]
+fn null_is_found_through_references_and_branches() {
+    let root = serde_json::json!({"definitions": {"S": {"oneOf": [{"type": "null"}, {"type": "object"}]}}});
+    for (node, expected) in [
+        (serde_json::json!({"$ref": "#/definitions/S"}), true),
+        (serde_json::json!({"type": ["integer", "null"]}), true),
+        (serde_json::json!({"type": "null"}), true),
+        (serde_json::json!({"const": null}), true),
+        (serde_json::json!({"type": "object"}), false),
+        (
+            serde_json::json!({"$ref": "https://example.invalid/x.json"}),
+            false,
+        ),
+    ] {
+        assert_eq!(formats::admits_null(&root, &node), expected, "{node}");
+    }
+    let schema = serde_json::json!({"required": ["a"], "properties": {"a": {}, "b": {}}});
+    assert_eq!(formats::field_state(&schema, "a"), "required");
+    assert_eq!(formats::field_state(&schema, "b"), "optional");
+    assert_eq!(formats::field_state(&schema, "c"), "absent");
 }
