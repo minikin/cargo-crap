@@ -1,3 +1,5 @@
+#[path = "docs/action.rs"]
+mod action;
 #[path = "docs/check.rs"]
 mod check;
 #[path = "docs/cli.rs"]
@@ -1384,4 +1386,170 @@ fn the_key_table_states_each_keys_type_and_default() {
     ] {
         assert_eq!(config::default_cell(&value), cell);
     }
+}
+
+fn action_yml() -> action::ActionYml {
+    action::read_action(&pages::read("actions/crapts/action.yml"))
+}
+
+#[test]
+fn the_action_reader_finds_inputs_defaults_and_outputs() {
+    let parsed = action::read_action(
+        "name: x\ninputs:\n  a:\n    description: A.\n    default: \"1\"\n  b:\n    description: B.\noutputs:\n  c:\n    value: x\nruns:\n  using: composite\n",
+    );
+    assert_eq!(parsed.inputs["a"].as_deref(), Some("1"));
+    assert_eq!(parsed.inputs["b"], None);
+    assert_eq!(parsed.outputs, BTreeSet::from(["c".to_owned()]));
+    let real = action_yml();
+    assert!(real.inputs.contains_key("coverage") && real.inputs.contains_key("coverage-command"));
+    assert_eq!(action::default_cell(None), "none");
+    assert_eq!(action::default_cell(Some("")), "none");
+    assert_eq!(action::default_cell(Some(VERSION)), "<version>");
+    assert_eq!(action::default_cell(Some("true")), "true");
+}
+
+#[test]
+fn the_action_guide_matches_actions_crapts_action_yml() {
+    let page = Page::load(action::ACTION_GUIDE);
+    let declared = action_yml();
+    action::check_tables(&page, &declared).unwrap_or_else(|e| panic!("{e}"));
+    action::check_with_keys(&page, &declared).unwrap_or_else(|e| panic!("{e}"));
+    let row = page
+        .text
+        .lines()
+        .find(|l| l.starts_with("| `fail-changed`"))
+        .expect("the fail-changed row");
+    let removed = page.with(&format!("{row}\n"), "");
+    assert_names(
+        &err(action::check_tables(&removed, &declared)),
+        &["fail-changed"],
+    );
+    let defaulted = page.with(row, &row.replacen("| `true` |", "| `false` |", 1));
+    assert_names(
+        &err(action::check_tables(&defaulted, &declared)),
+        &["fail-changed", "false", "true"],
+    );
+    let output = page
+        .text
+        .lines()
+        .find(|l| l.starts_with("| `regressed`"))
+        .expect("the regressed row");
+    let no_output = page.with(&format!("{output}\n"), "");
+    assert_names(
+        &err(action::check_tables(&no_output, &declared)),
+        &["regressed"],
+    );
+    let with = page
+        .text
+        .lines()
+        .find(|l| {
+            l.trim_start().starts_with("coverage:")
+                || l.trim_start().starts_with("coverage-command:")
+        })
+        .expect("a coverage input");
+    let indent = &with[..with.len() - with.trim_start().len()];
+    let typo = page.with(with, &format!("{with}\n{indent}covrage: x"));
+    assert_names(
+        &err(action::check_with_keys(&typo, &declared)),
+        &[action::ACTION_GUIDE, "covrage"],
+    );
+    let depth = page
+        .text
+        .lines()
+        .find(|l| l.trim() == "fetch-depth: 0")
+        .expect("fetch-depth on the checkout step");
+    assert!(action::check_with_keys(&page.with(depth, depth), &declared).is_ok());
+}
+
+#[test]
+fn the_action_guide_has_a_complete_pull_request_workflow() {
+    let page = Page::load(action::ACTION_GUIDE);
+    action::check_complete_workflow(&page).unwrap_or_else(|e| panic!("{e}"));
+    let full = page
+        .blocks()
+        .into_iter()
+        .find(|b| {
+            let single = Page::new(&page.path, &format!("```yaml\n{}```\n", b.body));
+            b.info == "yaml" && action::check_complete_workflow(&single).is_ok()
+        })
+        .expect("a complete workflow block");
+    let guide = Page::new(
+        &page.path,
+        &format!("# Guide\n\n```yaml\n{}```\n", full.body),
+    );
+    action::check_complete_workflow(&guide).unwrap();
+    let source = guide
+        .text
+        .lines()
+        .find(|l| {
+            let t = l.trim_start();
+            t.starts_with("coverage:") || t.starts_with("coverage-command:")
+        })
+        .unwrap();
+    let starved = guide.with(&format!("{source}\n"), "");
+    assert_names(
+        &err(action::check_complete_workflow(&starved)),
+        &["coverage", "coverage-command"],
+    );
+    let write = guide
+        .text
+        .lines()
+        .find(|l| l.trim() == "pull-requests: write")
+        .unwrap();
+    let silent = guide.with(&format!("{write}\n"), "");
+    assert_names(
+        &err(action::check_complete_workflow(&silent)),
+        &["pull-requests"],
+    );
+}
+
+#[test]
+fn the_workflow_reader_reads_the_subset_and_refuses_the_rest() {
+    let nodes = action::parse_yaml(
+        "on:\n  pull_request:\n    branches:\n      - main\npermissions:\n  contents: read\njobs:\n  a:\n    steps:\n      - uses: x@1\n        with:\n          k: \"v\"\n      - run: |\n          echo hi: there\n",
+        1,
+    )
+    .unwrap();
+    let flow = action::workflow(&nodes, 1);
+    assert_eq!(flow.triggers, ["pull_request"]);
+    assert_eq!(flow.permissions["contents"], "read");
+    assert_eq!(flow.steps.len(), 2);
+    assert_eq!(flow.steps[0].with, [(12, "k".to_owned(), "v".to_owned())]);
+    let flat = action::workflow(
+        &action::parse_yaml("on: [push, pull_request]\n", 1).unwrap(),
+        1,
+    );
+    assert_eq!(flat.triggers, ["push", "pull_request"]);
+    assert!(
+        action::parse_yaml("a: b\n  c: d\n", 1)
+            .unwrap_err()
+            .contains("line 2")
+    );
+    assert!(
+        action::parse_yaml("just text\n", 1)
+            .unwrap_err()
+            .contains("line 1")
+    );
+}
+
+#[test]
+fn every_reference_to_the_crapts_action_uses_its_own_path_and_tag() {
+    let pages = pages::checked_pages();
+    let named: usize = pages
+        .iter()
+        .map(|p| action::check_uses_lines(p).unwrap_or_else(|e| panic!("{e}")))
+        .sum();
+    assert!(named > 0);
+    let page = Page::load(action::ACTION_GUIDE);
+    let wrong = Page::new(
+        &page.path,
+        &format!(
+            "{}\n```yaml\n      - uses: minikin/cargo-crap@v1\n```\n",
+            page.text
+        ),
+    );
+    assert_names(
+        &err(action::check_uses_lines(&wrong)),
+        &[action::ACTION_GUIDE, "minikin/cargo-crap@v1"],
+    );
 }
