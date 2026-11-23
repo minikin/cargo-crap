@@ -2212,8 +2212,20 @@ fn companion_checks_and_sarif_restrictions_precede_comparison_io() {
 }
 
 #[test]
-fn baseline_comparison_is_reserved() {
+fn an_admitted_baseline_comparison_is_reserved() {
     let d = fixture();
+    let saved = invoke(
+        d.path(),
+        &[
+            "--coverage",
+            "hits.data",
+            "--format",
+            "json",
+            "--output",
+            "b.json",
+        ],
+    );
+    check(&saved, 0);
     let mut args = vec!["--coverage", "hits.data", "--baseline", "b.json"];
     before_render(d.path(), &args, &["--baseline is not implemented yet"]);
     args.push("--fail-regression");
@@ -2380,18 +2392,15 @@ fn a_destination_failure_takes_precedence_at_the_process_boundary() {
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config { cases: 24, ..support::proptest_config() })]
     #[test]
-    fn a_reserved_comparison_precedes_coverage_and_preserves_the_destination(
-        revision in "[A-Za-z0-9]{1,16}", baseline in proptest::bool::ANY, gate in proptest::bool::ANY,
+    fn a_reserved_git_base_precedes_coverage_and_preserves_the_destination(
+        revision in "[A-Za-z0-9]{1,16}", gate in proptest::bool::ANY,
     ) {
         let d = tempfile::tempdir().unwrap();
-        let selector = if baseline { "--baseline" } else { "--base" };
-        let companion = if baseline { "--fail-regression" } else { "--fail-changed" };
-        let mut args = vec!["--coverage", "absent.info", selector, &revision];
+        let mut args = vec!["--coverage", "absent.info", "--base", &revision];
         if gate {
-            args.push(companion);
+            args.push("--fail-changed");
         }
-        let expected = format!("{selector} is not implemented yet");
-        before_render(d.path(), &args, &[&expected]);
+        before_render(d.path(), &args, &["--base is not implemented yet"]);
     }
 }
 

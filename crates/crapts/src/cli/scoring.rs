@@ -1,13 +1,17 @@
 use super::{Effective, Format, InputError, Result, StdoutSink};
 use crate::attribute::{Attribution, attribute};
-use crate::coverage::{CoverageUnit, read_coverage};
+use crate::coverage::{Coverage, CoverageUnit, read_coverage};
 use crate::discover::{Worktree, discover_probed};
 use crate::{Discovery, DiscoveryScope, Mode, analyze};
 use cargo_crap_core::coverage::CoverageKind;
+use cargo_crap_core::delta::{CraptsBaseline, load_crapts_baseline};
+use cargo_crap_core::filter::AllowSet;
 use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
 use cargo_crap_core::report::{self, Schemas, SourceLinks, Tool};
 use cargo_crap_core::run::{self, Analysis, RenderExtras, Scope, Settings};
+use cargo_crap_core::run::{BaselineFilter, PreparedBaseline};
 use cargo_crap_core::signals::SignalSettings;
+use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufWriter, Write};
@@ -34,14 +38,36 @@ const TOOL: Tool = Tool {
     baseline_hint: "crapts --format json",
 };
 
-struct ScoringScope<'a>(&'a DiscoveryScope);
+/// The core predicate cannot fail, so the first lookup error is held here
+/// and surfaced after preparation; dropping the row instead would report a
+/// function that is still in scope as removed.
+struct ScoringScope<'a> {
+    scope: &'a DiscoveryScope,
+    error: RefCell<Option<InputError>>,
+}
+
+impl<'a> ScoringScope<'a> {
+    fn new(scope: &'a DiscoveryScope) -> Self {
+        Self {
+            scope,
+            error: RefCell::new(None),
+        }
+    }
+
+    fn checked(&self) -> Result<()> {
+        self.error.take().map_or(Ok(()), Err)
+    }
+}
 
 impl Scope for ScoringScope<'_> {
     fn keeps(
         &self,
         file: &Path,
     ) -> bool {
-        self.0.keeps(file).unwrap_or(false)
+        self.scope.keeps(file).unwrap_or_else(|error| {
+            self.error.borrow_mut().get_or_insert(error);
+            false
+        })
     }
 }
 
@@ -59,17 +85,36 @@ fn warn(
     writeln!(err, "warning: {message}").map_err(|e| InputError::at(Path::new("stderr"), e))
 }
 
-fn measure(
+fn read_inputs(
     cwd: &Path,
     settings: &Effective,
     coverage: &Path,
     discovery: &Discovery,
     err: &mut dyn Write,
-) -> Result<Attribution> {
+) -> Result<(Coverage, Option<CraptsBaseline>)> {
     for rule in &discovery.unused_excludes {
         warn(err, &rule.unused_warning())?;
     }
     let coverage = read_coverage(cwd, coverage)?;
+    let baseline = settings
+        .baseline
+        .value
+        .as_deref()
+        .map(|path| {
+            load_crapts_baseline(&cwd.join(path), &TOOL, coverage_kind(coverage.unit()))
+                .map_err(|e| InputError::reported(path, format!("{e:#}")))
+        })
+        .transpose()?;
+    Ok((coverage, baseline))
+}
+
+fn measure(
+    cwd: &Path,
+    settings: &Effective,
+    coverage: &Coverage,
+    discovery: &Discovery,
+    err: &mut dyn Write,
+) -> Result<Attribution> {
     let mut files = Vec::with_capacity(discovery.files.len());
     for file in &discovery.files {
         let bytes = fs::read(cwd.join(file)).map_err(|e| InputError::at(file, e))?;
@@ -79,11 +124,24 @@ fn measure(
         }
         files.push(analysis);
     }
-    let result = attribute(cwd, &files, &coverage, settings.missing.value);
+    let result = attribute(cwd, &files, coverage, settings.missing.value);
     for message in &result.warnings {
         warn(err, message)?;
     }
     Ok(result)
+}
+
+fn prepare(
+    baseline: Option<CraptsBaseline>,
+    scope: &ScoringScope<'_>,
+    allow: &AllowSet,
+) -> Result<Option<PreparedBaseline>> {
+    let Some(baseline) = baseline else {
+        return Ok(None);
+    };
+    let prepared = BaselineFilter::new(scope, allow).prepare_crapts(baseline);
+    scope.checked()?;
+    Ok(Some(prepared))
 }
 
 fn analysis(
@@ -138,7 +196,12 @@ pub(super) fn score(
         cwd.to_owned(),
         worktree,
     )?;
-    let result = measure(cwd, options, coverage, &discovery, err)?;
+    let (coverage, baseline) = read_inputs(cwd, options, coverage, &discovery, err)?;
+    let result = measure(cwd, options, &coverage, &discovery, err)?;
+    let scope = ScoringScope::new(&discovery.scope);
+    if prepare(baseline, &scope, &options.allow_set)?.is_some() {
+        return Err(InputError::message("--baseline is not implemented yet"));
+    }
     let output = options.output.value.as_deref();
     let to_stdout = output.is_none();
     let color = color_enabled(
@@ -188,7 +251,6 @@ pub(super) fn score(
     } else {
         (stdout, Path::new("stdout"))
     };
-    let scope = ScoringScope(&discovery.scope);
     let report = analysis(result, &scope);
     let verdict = report::with_color(color, || {
         run::run(
@@ -243,11 +305,14 @@ mod tests {
         std::fs::write(d.path().join("f.ts"), "").unwrap();
         let found = crate::discover(&[], &crate::DiscoveryOptions::new(d.path())).unwrap();
         for kept in ["f.ts", "removed.ts"] {
-            assert!(Scope::keeps(&ScoringScope(&found.scope), Path::new(kept)));
+            assert!(Scope::keeps(
+                &ScoringScope::new(&found.scope),
+                Path::new(kept)
+            ));
         }
         for rejected in ["dist/now.ts", "readme.md"] {
             assert!(!Scope::keeps(
-                &ScoringScope(&found.scope),
+                &ScoringScope::new(&found.scope),
                 Path::new(rejected)
             ));
         }
@@ -311,5 +376,227 @@ mod presentation_tests {
                 proptest::prop_assert!(super::super::marker(&invalid).is_err());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod baseline_tests {
+    use super::*;
+    use cargo_crap_core::delta::load_crapts_baseline;
+    use cargo_crap_core::filter::AllowSet;
+    use serde_json::{Value, json};
+    use std::ffi::OsString;
+
+    const SOURCE: &str = "export function hot(a: boolean) {\n  if (a) return 1\n  return 0\n}\n";
+
+    fn tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/app.ts"), SOURCE).unwrap();
+        fs::write(
+            dir.path().join("hits.info"),
+            "SF:src/app.ts\nDA:1,1\nDA:2,1\nDA:3,0\nDA:4,1\nend_of_record\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    fn report(
+        kind: &str,
+        rows: &[(&str, &str)],
+    ) -> Value {
+        let entries = rows
+            .iter()
+            .map(|(file, function)| {
+                json!({"file": file, "function": function, "line": 1, "cyclomatic": 1, "coverage": 100.0, "crap": 1.0})
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "$schema": TOOL.schemas.report,
+            "version": TOOL.version,
+            "name_scheme": 1,
+            "coverage_kind": kind,
+            "threshold": 10.0,
+            "selection": null,
+            "notices": [],
+            "summary": {"total": rows.len(), "crappy": 0, "regressed": null, "improved": null, "new": null, "moved": null, "unchanged": null, "removed": null, "changed_failures": null},
+            "entries": entries,
+            "diagnostics": {"analyzed_files": 1, "coverage_files": 1, "matched_files": 1, "source_only": {"count": 0, "examples": []}, "coverage_only": {"count": 0, "examples": []}},
+        })
+    }
+
+    fn invoke(
+        cwd: &Path,
+        args: &[&str],
+    ) -> (ExitCode, String, String) {
+        let args = args.iter().map(OsString::from).collect::<Vec<_>>();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = super::super::run(cwd, &args, &mut out, &mut err);
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    fn refused(
+        cwd: &Path,
+        args: &[&str],
+    ) -> String {
+        let mut args = args.to_vec();
+        args.extend(["--output", "fresh.json"]);
+        let (code, out, err) = invoke(cwd, &args);
+        assert_eq!(code, ExitCode::from(2), "{err}");
+        assert_eq!(out, "");
+        assert!(!cwd.join("fresh.json").exists(), "{err}");
+        err
+    }
+
+    #[test]
+    fn an_inadmissible_baseline_is_refused_before_the_output_is_opened() {
+        let d = tree();
+        fs::write(d.path().join("broken.json"), "{").unwrap();
+        fs::write(
+            d.path().join("kind.json"),
+            report("statements", &[("src/app.ts", "hot")]).to_string(),
+        )
+        .unwrap();
+        for (path, details) in [
+            ("absent.json", &["absent.json"][..]),
+            ("broken.json", &["broken.json", "crapts --format json"][..]),
+            (
+                "kind.json",
+                &["kind.json", "coverage_kind", "statements", "lines"][..],
+            ),
+        ] {
+            let err = refused(d.path(), &["--coverage", "hits.info", "--baseline", path]);
+            for detail in details {
+                assert!(err.contains(detail), "{path}: {err}");
+            }
+            assert!(err.starts_with("error: ") && err.ends_with('\n'), "{err}");
+            assert_eq!(err.lines().count(), 1, "{err}");
+        }
+    }
+
+    #[test]
+    fn baseline_admission_follows_coverage_and_precedes_source_analysis() {
+        let d = tree();
+        fs::write(d.path().join("broken.json"), "{").unwrap();
+        fs::write(
+            d.path().join("src/warn.ts"),
+            "const x; let [a]; function kept() { if (x) go() }",
+        )
+        .unwrap();
+        let err = refused(
+            d.path(),
+            &["--coverage", "bad.info", "--baseline", "broken.json"],
+        );
+        assert!(
+            err.contains("bad.info") && !err.contains("broken.json"),
+            "{err}"
+        );
+        let err = refused(
+            d.path(),
+            &[
+                "src/warn.ts",
+                "--coverage",
+                "hits.info",
+                "--baseline",
+                "broken.json",
+            ],
+        );
+        assert!(
+            err.contains("broken.json") && !err.contains("warning: "),
+            "{err}"
+        );
+        let (_, _, warned) = invoke(d.path(), &["src/warn.ts", "--coverage", "hits.info"]);
+        assert!(warned.contains("warning: "), "{warned}");
+    }
+
+    #[test]
+    fn an_admitted_baseline_is_held_at_the_render_boundary() {
+        let d = tree();
+        fs::write(
+            d.path().join("base.json"),
+            report("lines", &[("src/app.ts", "hot")]).to_string(),
+        )
+        .unwrap();
+        let err = refused(
+            d.path(),
+            &["--coverage", "hits.info", "--baseline", "base.json"],
+        );
+        assert_eq!(err, "error: --baseline is not implemented yet\n");
+    }
+
+    fn prepared(
+        cwd: &Path,
+        rows: &[(&str, &str)],
+        allow: &[&str],
+    ) -> Result<Vec<(String, String)>> {
+        let found = crate::discover(&[], &crate::DiscoveryOptions::new(cwd)).unwrap();
+        let path = cwd.join("base.json");
+        fs::write(&path, report("lines", rows).to_string()).unwrap();
+        let raw = load_crapts_baseline(&path, &TOOL, CoverageKind::Lines).unwrap();
+        let bases = allow.iter().map(|p| (*p, cwd)).collect::<Vec<_>>();
+        let allow = AllowSet::compile_with_bases(cwd, &bases).unwrap();
+        let scope = ScoringScope::new(&found.scope);
+        let prepared = prepare(Some(raw), &scope, &allow)?.unwrap();
+        Ok(prepared
+            .as_baseline()
+            .entries
+            .iter()
+            .map(|e| (e.file.display().to_string(), e.function.clone()))
+            .collect())
+    }
+
+    #[test]
+    fn baseline_rows_outside_the_scope_or_allowed_are_dropped_before_pairing() {
+        let d = tree();
+        let kept = prepared(
+            d.path(),
+            &[
+                ("src/app.ts", "gone"),
+                ("src/deleted.ts", "old"),
+                ("src/app.test.ts", "case"),
+                ("dist/app.ts", "built"),
+                ("src/secret.ts", "secret"),
+                ("src/hidden.ts", "hidden"),
+                ("readme.md", "doc"),
+            ],
+            &["secret", "src/hidden.ts"],
+        )
+        .unwrap();
+        assert_eq!(
+            kept,
+            [
+                ("src/app.ts".to_owned(), "gone".to_owned()),
+                ("src/deleted.ts".to_owned(), "old".to_owned()),
+            ]
+        );
+        let found = crate::discover(&[], &crate::DiscoveryOptions::new(d.path())).unwrap();
+        let scope = ScoringScope::new(&found.scope);
+        let none = AllowSet::compile_with_bases(d.path(), &[]).unwrap();
+        assert!(prepare(None, &scope, &none).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_failed_scope_lookup_is_an_input_error_not_a_removal() {
+        let d = tree();
+        let long = format!("src/{}.ts", "a".repeat(300));
+        let error = prepared(d.path(), &[("src/app.ts", "gone"), (&long, "lost")], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&long), "{error}");
+        fs::write(
+            d.path().join("base.json"),
+            report("lines", &[(&long, "lost")]).to_string(),
+        )
+        .unwrap();
+        let err = refused(
+            d.path(),
+            &["--coverage", "hits.info", "--baseline", "base.json"],
+        );
+        assert!(err.contains(&long), "{err}");
     }
 }

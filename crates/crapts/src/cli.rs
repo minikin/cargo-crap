@@ -395,12 +395,14 @@ fn validate_comparisons(
         .into_iter()
         .find(|(_, selected)| *selected)
     {
-        let message = if settings.format.value == Format::Sarif {
-            format!("SARIF does not support --{selector}")
-        } else {
-            format!("--{selector} is not implemented yet")
-        };
-        return Err(InputError::message(message));
+        if settings.format.value == Format::Sarif {
+            return Err(InputError::message(format!(
+                "SARIF does not support --{selector}"
+            )));
+        }
+        if selector == "base" {
+            return Err(InputError::message("--base is not implemented yet"));
+        }
     }
     Ok(())
 }

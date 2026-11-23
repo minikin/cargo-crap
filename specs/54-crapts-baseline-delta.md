@@ -336,7 +336,7 @@ And   JSON summary counts and removed entries are identical across all valid --t
   Scenarios: _Companion checks and print-config still guard baseline flags without baseline I/O_, _SARIF refuses baseline before reading it or creating output_.
   Tests: unit + acceptance (`crates/crapts/tests/{cli,baseline}.rs`).
 
-- [ ] **T2 - Add `Coverage::unit`, admit crapts baselines, and scope-filter entries before opening output.** Needs: T1.
+- [x] **T2 - Add `Coverage::unit`, admit crapts baselines, and scope-filter entries before opening output.** Needs: T1.
   Add `pub fn unit(&self) -> CoverageUnit` on `crapts::coverage::Coverage` in `crates/crapts/src/coverage/mod.rs`. Resolve `--baseline` against `cwd`, map `coverage.unit()` to `CoverageKind`, call `cargo_crap_core::delta::load_crapts_baseline` after `read_coverage` and before source parsing or opening `--output`, surface admission failures with exit 2 and intact `--output`, and filter admitted entries through `BaselineFilter::new(&discovery.scope, &allow).prepare_crapts`. Keep Spec 53's `--baseline is not implemented yet` refusal at the `main.rs` render boundary until T3 wires `run::run`, testing `Coverage::unit`, admission errors, input-order precedence, and scope/allow filtering in unit tests in T2 and enabling the CLI checks in `crates/crapts/tests/baseline.rs` in T3.
   Scenarios: _Baseline admission errors exit 2 before creating or modifying output_, _Baseline admission takes its place in the input order_, _Baseline entries are filtered by current scope and allow rules before pairing_.
   Tests: unit in T2 (`crates/crapts/src/`), CLI acceptance enabled in T3 (`crates/crapts/tests/baseline.rs`).
