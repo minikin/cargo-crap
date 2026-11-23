@@ -45,7 +45,7 @@ class Install(ActionTest):
 
     def test_old_node(self):
         shim = self.temp / "node"
-        shim.write_text('#!/usr/bin/env bash\necho v22.0.0\n')
+        shim.write_bytes(b'#!/usr/bin/env bash\necho v22.0.0\n')
         shim.chmod(0o755)
         result = self.install(2, PATH=str(self.temp) + os.pathsep + self.env["PATH"])
         self.assertRegex(result.stderr, "actions/setup-node.*node-version.*24")

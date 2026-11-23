@@ -2,7 +2,7 @@
 set -euo pipefail
 dir=$1
 mkdir -p "$dir"
-if command -v python3 >/dev/null; then python=python3; else python=python; fi
+if [[ ${RUNNER_OS:-} == Windows ]]; then python=python; else python=python3; fi
 "$python" "$(dirname "$0")/tests/registry.py" "$dir" > "$dir/registry.log" 2>&1 &
 pid=$!
 for ((i=0; i<300; i++)); do

@@ -623,6 +623,8 @@ fn cargo_crap_s_published_package_holds_no_core_and_no_gate_script() {
         .iter()
         .filter(|p| {
             p.starts_with("crates/")
+                || p.starts_with("actions/")
+                || p.starts_with("scripts/action/crapts/")
                 || p.starts_with("scripts/gates/")
                 || p.starts_with("scripts/release/")
                 || p.starts_with("npm/")

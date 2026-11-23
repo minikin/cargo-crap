@@ -56,12 +56,14 @@ class ActionTest(unittest.TestCase):
                         npm_config_fetch_retries="0")
 
     def command(self, args, status=0, **env):
+        if args[0] == "bash":
+            args = [self.env.get("CRAPTS_TEST_BASH", "bash"), *args[1:]]
         result = subprocess.run(args, cwd=self.project, env={**self.env, **env}, capture_output=True, text=True)
         self.assertEqual(result.returncode, status, result.stdout + result.stderr)
         return result
 
     def install(self, status=0, **env):
-        return self.command(["bash", str(SCRIPTS / "install.sh")], status, **env)
+        return self.command(["bash", (SCRIPTS / "install.sh").as_posix()], status, **env)
 
     def prepare(self, status=0, **env):
         bash = self.env.get("CRAPTS_TEST_BASH") or shutil.which("bash")
