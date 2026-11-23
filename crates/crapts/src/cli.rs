@@ -449,7 +449,6 @@ fn execute(
     finish_stdout(out)
 }
 
-#[must_use]
 pub fn run(
     cwd: &Path,
     args: &[OsString],
@@ -467,7 +466,6 @@ pub fn run(
 }
 
 #[doc(hidden)]
-#[must_use]
 pub fn run_with_stdout(
     cwd: &Path,
     args: &[OsString],
