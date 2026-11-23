@@ -468,8 +468,6 @@ mod tests {
         );
     }
 
-    // --- changed-only output (spec 16) -------------------------------------
-
     fn delta_entry(
         function: &str,
         status: crate::delta::DeltaStatus,
@@ -576,8 +574,6 @@ mod tests {
             "stats line still printed with full counts:\n{s}"
         );
     }
-
-    // --- uncovered hints ----------------------------------------------------
 
     #[test]
     fn uncovered_hints_extend_header_and_rows() {

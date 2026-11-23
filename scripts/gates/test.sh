@@ -52,7 +52,7 @@ check "the core inherits the root's pedantic lints: one error, must_use_candidat
     "clippy::must_use_candidate crates/cargo-crap-core/src/lib.rs $double_line pub fn double(x: u32) -> u32 {" \
     "$errors"
 
-for tool in just cargo-mutants; do
+for tool in just cargo-mutants cargo-nextest; do
     command -v "$tool" > /dev/null || { echo "FAIL $tool is not installed"; exit 1; }
 done
 real_cargo="$(command -v cargo)"
@@ -273,6 +273,40 @@ check "just mutants and just mutants-all reach the core: both exit 0" "0 0" "$fi
 check "just mutants and just mutants-all reach the core: mutants FILE" \
     "[mutants][--workspace][--file][crates/cargo-crap-core/src/lib.rs]" "$first"
 check "just mutants and just mutants-all reach the core: mutants-all" "[mutants][--workspace]" "$calls"
+
+dir="$scratch/consumer"
+{
+    mkdir -p "$dir/src" "$dir/tests" "$dir/crates/core/src" "$dir/.cargo" &&
+        cp "$repo/.cargo/mutants.toml" "$dir/.cargo/" &&
+        {
+            printf '[package]\nname = "consumer-root"\nversion = "0.1.0"\nedition = "2024"\n\n'
+            printf '[dependencies]\nconsumer-core = { path = "crates/core" }\n\n'
+            printf '[workspace]\nmembers = ["crates/core"]\n\n'
+            awk '/^\[profile\.mutants\]$/ { keep = 1; print; next } /^\[/ { keep = 0 } keep' "$repo/Cargo.toml"
+        } > "$dir/Cargo.toml" &&
+        printf '[package]\nname = "consumer-core"\nversion = "0.1.0"\nedition = "2024"\n' > "$dir/crates/core/Cargo.toml" &&
+        printf 'pub fn double(x: u32) -> u32 {\n    x + x\n}\n' > "$dir/crates/core/src/lib.rs" &&
+        : > "$dir/src/lib.rs" &&
+        printf '#[test]\nfn double_of_three_is_six() {\n    assert_eq!(consumer_core::double(3), 6);\n}\n' > "$dir/tests/double.rs" &&
+        printf 'target/\nmutants.out*/\n' > "$dir/.gitignore" &&
+        (cd "$dir" && fixture_git init -q -b main && fixture_git add -A && fixture_git commit -q -m init) &&
+        printf 'pub fn double(x: u32) -> u32 {\n    x * 2\n}\n' > "$dir/crates/core/src/lib.rs" &&
+        (cd "$dir" && fixture_git diff > "$scratch/consumer.diff")
+} > /dev/null 2>&1 || { echo "FAIL building the consumer fixture"; exit 1; }
+out="$(cd "$dir" && CARGO_TARGET_DIR="$scratch/consumer-target" "$real_cargo" nextest run --workspace 2>&1)"
+status=$?
+[ "$status" -eq 0 ] || printf '%s\n' "$out"
+check "a root consumer test can catch a core mutant: the root test passes on x * 2" "0" "$status"
+# cargo-mutants baselines only the core, where nextest finds zero tests.
+out="$(cd "$dir" && CARGO_TARGET_DIR="$scratch/consumer-target" NEXTEST_NO_TESTS=pass \
+    "$real_cargo" mutants --workspace --in-diff "$scratch/consumer.diff" 2>&1)"
+status=$?
+[ "$status" -eq 0 ] || printf '%s\n' "$out"
+check "a root consumer test can catch a core mutant: cargo mutants exits 0" "0" "$status"
+check "a root consumer test can catch a core mutant: replace * with + in double is caught" "1" \
+    "$(grep -q '^crates/core/src/lib.rs:.*replace \* with + in double$' "$dir/mutants.out/caught.txt" 2> /dev/null && echo 1 || echo 0)"
+check "a root consumer test can catch a core mutant: none missed" "" \
+    "$(cat "$dir/mutants.out/missed.txt" 2> /dev/null || echo 'no missed.txt')"
 
 # The parser guard on recorded trees: $1 holds one `<package>.tree` per
 # package. A package with no file reads as a `cargo tree` that failed.

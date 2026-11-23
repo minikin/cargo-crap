@@ -19,6 +19,10 @@ all_features = true
 test_tool = "nextest"
 profile = "mutants"
 
+# Some core code is tested only through cargo-crap: its CLI, golden and
+# acceptance suites.
+test_workspace = true
+
 # Prevent RUSTFLAGS="-D warnings" (set in CI) from failing mutants on warnings
 # rather than on actual test failures, which would make results unreliable.
 cap_lints = true

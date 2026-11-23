@@ -61,6 +61,8 @@ jobs:
               - 'deny.toml'
               - 'schemas/**'
               - 'proptest-regressions/**'
+              - 'crates/*/proptest-regressions/**'
+              - 'crates/*/tests/fixtures/**'
               - '.github/workflows/ci.yml'
               # tests/golden/gates.rs reads the Action workflow's paths.
               - '.github/workflows/action.yml'
@@ -114,7 +116,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants,just
+          tool: cargo-mutants,cargo-nextest,just
       # The feature-gated guard case resolves offline against the cache.
       - name: Fetch dependencies
         run: cargo fetch --locked

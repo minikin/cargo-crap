@@ -1,12 +1,9 @@
 //! Structural duplicate detection: normalize, fingerprint, compare, report.
 
-pub mod compare;
+pub use cargo_crap_core::duplicates::{compare, group, model, novelty, verdict};
+
 pub mod extract;
 pub mod fingerprint;
-pub mod group;
-pub mod model;
 pub mod normalize;
-pub mod novelty;
 pub mod scan;
 pub mod triage;
-pub mod verdict;

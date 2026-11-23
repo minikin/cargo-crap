@@ -145,7 +145,10 @@ fn the_flags_table_states_the_default_the_code_uses() {
 /// read from the field lists of `Config` and the tables nested in it.
 fn config_keys() -> BTreeSet<String> {
     let mut structs = BTreeMap::new();
-    for source in ["src/config.rs", "src/signals/config.rs"] {
+    for source in [
+        "src/config.rs",
+        "crates/cargo-crap-core/src/signals/config.rs",
+    ] {
         for item in syn::parse_file(&read(source)).unwrap().items {
             if let syn::Item::Struct(item) = item {
                 let previous = structs.insert(item.ident.to_string(), struct_fields(&item));

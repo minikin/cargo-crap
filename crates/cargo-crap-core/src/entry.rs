@@ -109,8 +109,7 @@ pub struct StrayFiles {
 
 impl StrayFiles {
     pub(crate) fn new(mut files: Vec<PathBuf>) -> Self {
-        // Component ordering equates distinct raw spellings such as a/./b and a/b.
-        files.sort_by(|a, b| a.cmp(b).then_with(|| a.as_os_str().cmp(b.as_os_str())));
+        files.sort_by(components_then_spelling);
         let count = files.len();
         files.truncate(SCOPE_EXAMPLE_CAP);
         Self {
@@ -118,6 +117,19 @@ impl StrayFiles {
             examples: files,
         }
     }
+}
+
+/// Component ordering equates distinct raw spellings such as a/./b and a/b,
+/// so the raw spelling breaks the tie.
+#[expect(
+    clippy::ptr_arg,
+    reason = "Vec<PathBuf>::sort_by takes the comparator by its element type"
+)]
+fn components_then_spelling(
+    a: &PathBuf,
+    b: &PathBuf,
+) -> std::cmp::Ordering {
+    (a.as_path(), a.as_os_str()).cmp(&(b.as_path(), b.as_os_str()))
 }
 
 /// Source/LCOV scope diagnostics (spec 24): how well the analyzed source
@@ -138,6 +150,31 @@ pub struct ScopeDiagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stray_examples_are_capped_but_count_is_exact() {
+        let files: Vec<PathBuf> = (0..SCOPE_EXAMPLE_CAP + 3)
+            .map(|i| PathBuf::from(format!("src/f{i:02}.rs")))
+            .collect();
+        let strays = StrayFiles::new(files);
+        assert_eq!(strays.count, SCOPE_EXAMPLE_CAP + 3);
+        assert_eq!(strays.examples.len(), SCOPE_EXAMPLE_CAP);
+        assert_eq!(
+            strays.examples[0],
+            PathBuf::from("src/f00.rs"),
+            "examples are the sorted head, not an arbitrary subset"
+        );
+    }
+
+    #[test]
+    fn stray_examples_not_truncated_at_or_below_cap() {
+        let files: Vec<PathBuf> = (0..SCOPE_EXAMPLE_CAP)
+            .map(|i| PathBuf::from(format!("src/f{i:02}.rs")))
+            .collect();
+        let strays = StrayFiles::new(files);
+        assert_eq!(strays.count, SCOPE_EXAMPLE_CAP);
+        assert_eq!(strays.examples.len(), SCOPE_EXAMPLE_CAP);
+    }
 
     #[test]
     fn the_default_row_is_empty() {

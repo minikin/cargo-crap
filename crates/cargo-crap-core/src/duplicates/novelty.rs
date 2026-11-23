@@ -659,8 +659,6 @@ mod tests {
         assert_eq!(statuses(&[group(&now)], &[before]), [Novelty::Unchanged]);
     }
 
-    // ---- Spec 42 · the suffix pass ----
-
     #[test]
     fn same_named_functions_pair_by_their_directory() {
         // Pairing `fmt` in a.rs with the baseline's `fmt` in b.rs would make

@@ -1066,8 +1066,6 @@ mod tests {
         }
     }
 
-    // ---- Groups in the human section ----
-
     /// The human section over `groups`, untriaged.
     fn grouped(groups: &[DuplicateGroup]) -> String {
         let mut buf = Vec::new();
@@ -1201,8 +1199,6 @@ mod tests {
             assert!(result.is_err(), "a refused {refused:?} write is reported");
         }
     }
-
-    // ---- The GFM table (markdown and pr-comment) ----
 
     /// Render options for the GFM table, against `/work` as the working
     /// directory.
@@ -1439,8 +1435,6 @@ mod tests {
             }
         }
     }
-
-    // ---- The GFM table's verdict columns ----
 
     /// The GFM section with `triage`, rendered against `/work`.
     fn triaged_table(
@@ -1786,8 +1780,6 @@ mod tests {
             }
         }
     }
-
-    // ---- The GFM table over groups ----
 
     /// `n` functions of `src/g.rs`, `m00` on, as one group scoring 0.90.
     fn group_of(n: usize) -> DuplicateGroup {

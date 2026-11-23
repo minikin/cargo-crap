@@ -83,7 +83,7 @@ fn same_dir(
 }
 
 #[test]
-fn the_workspace_has_cargo_crap_and_an_empty_cargo_crap_core() {
+fn the_workspace_has_cargo_crap_and_cargo_crap_core() {
     let metadata = metadata(&root(), &["--locked"]);
 
     assert_eq!(member_names(&metadata), ["cargo-crap", "cargo-crap-core"]);
@@ -93,8 +93,6 @@ fn the_workspace_has_cargo_crap_and_an_empty_cargo_crap_core() {
     assert_eq!(core["edition"], "2024");
     assert_eq!(core["rust_version"], "1.88");
     assert_eq!(core["publish"], serde_json::json!([]), "publish = false");
-
-    assert_eq!(core["dependencies"], serde_json::json!([]));
 
     // And cargo-crap's version differs from the core's. The goldens record
     // the report version as a placeholder only when it equals cargo-crap's,
@@ -131,12 +129,58 @@ fn the_workspace_has_cargo_crap_and_an_empty_cargo_crap_core() {
 }
 
 #[test]
-fn the_lock_holds_the_core_with_no_dependencies() {
+fn the_root_resolves_exactly_the_local_core() {
+    let declared = metadata(&root(), &["--locked"]);
+    let core_edges: Vec<&Value> = package(&declared, "cargo-crap")["dependencies"]
+        .as_array()
+        .expect("dependencies array")
+        .iter()
+        .filter(|dep| dep["name"] == "cargo-crap-core")
+        .collect();
+
+    assert_eq!(core_edges.len(), 1, "{core_edges:#?}");
+    let edge = core_edges[0];
+    assert_eq!(edge["req"], "=0.1.0");
+    assert_eq!(edge["kind"], Value::Null, "a normal dependency");
+    assert_eq!(edge["optional"], false);
+
+    let resolved: Value = serde_json::from_str(&cargo(
+        &root(),
+        &["metadata", "--format-version", "1", "--locked"],
+    ))
+    .expect("cargo metadata prints JSON");
+    let core = package(&resolved, "cargo-crap-core");
+    assert_eq!(core["version"], "0.1.0");
+    assert_eq!(core["source"], Value::Null, "the core comes from a path");
+    assert!(same_dir(
+        Path::new(core["manifest_path"].as_str().expect("manifest path"))
+            .parent()
+            .expect("manifest directory"),
+        &root().join("crates/cargo-crap-core")
+    ));
+    let tool_id = &package(&resolved, "cargo-crap")["id"];
+    let tool_node = resolved["resolve"]["nodes"]
+        .as_array()
+        .expect("resolve nodes")
+        .iter()
+        .find(|node| node["id"] == *tool_id)
+        .expect("cargo-crap's resolve node");
+    let core_deps: Vec<&Value> = tool_node["deps"]
+        .as_array()
+        .expect("resolved deps")
+        .iter()
+        .filter(|dep| dep["pkg"] == core["id"])
+        .collect();
+    assert_eq!(core_deps.len(), 1, "{core_deps:#?}");
+    assert_eq!(
+        core_deps[0]["dep_kinds"],
+        serde_json::json!([{ "kind": null, "target": null }])
+    );
+
     let lock: toml::Table = std::fs::read_to_string(root().join("Cargo.lock"))
         .expect("reading Cargo.lock")
         .parse()
         .expect("Cargo.lock is TOML");
-
     let packages = lock["package"].as_array().expect("package array");
     let named = |name: &str| -> Vec<&toml::Table> {
         packages
@@ -145,19 +189,95 @@ fn the_lock_holds_the_core_with_no_dependencies() {
             .filter(|p| p["name"].as_str() == Some(name))
             .collect()
     };
-
-    let core = named("cargo-crap-core");
-    assert_eq!(core.len(), 1, "cargo-crap-core entries in Cargo.lock");
-    assert_eq!(core[0]["version"].as_str(), Some("0.1.0"));
+    let locked_core = named("cargo-crap-core");
+    assert_eq!(
+        locked_core.len(),
+        1,
+        "cargo-crap-core entries in Cargo.lock"
+    );
+    assert_eq!(locked_core[0]["version"].as_str(), Some("0.1.0"));
     assert!(
-        core[0].get("dependencies").is_none(),
-        "cargo-crap-core has dependencies in Cargo.lock: {:?}",
-        core[0].get("dependencies")
+        locked_core[0].get("source").is_none(),
+        "{:?}",
+        locked_core[0]
+    );
+    let core_dependencies = locked_core[0]
+        .get("dependencies")
+        .and_then(toml::Value::as_array)
+        .expect("cargo-crap-core lists its dependencies in Cargo.lock");
+    assert!(
+        core_dependencies.iter().any(|d| d.as_str() == Some("lcov")),
+        "{core_dependencies:?}"
     );
 
     let tool = named("cargo-crap");
     assert_eq!(tool.len(), 1, "cargo-crap entries in Cargo.lock");
     assert_eq!(tool[0]["version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
+    assert!(
+        tool[0]["dependencies"]
+            .as_array()
+            .expect("cargo-crap's locked dependencies")
+            .iter()
+            .any(|d| d.as_str() == Some("cargo-crap-core")),
+        "cargo-crap does not list cargo-crap-core in Cargo.lock"
+    );
+}
+
+/// Every file below `dir`, as its path relative to `dir` with `/` separators.
+fn files_under(dir: &Path) -> Vec<String> {
+    fn walk(
+        base: &Path,
+        dir: &Path,
+        found: &mut Vec<String>,
+    ) {
+        let entries =
+            std::fs::read_dir(dir).unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()));
+        for entry in entries {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                walk(base, &path, found);
+            } else {
+                let relative = path.strip_prefix(base).expect("under the base");
+                found.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(dir, dir, &mut found);
+    found.sort();
+    found
+}
+
+fn package_identity_reads(src: &Path) -> Vec<String> {
+    files_under(src)
+        .into_iter()
+        .filter(|file| {
+            std::fs::read_to_string(src.join(file))
+                .unwrap_or_else(|e| panic!("reading {file}: {e}"))
+                .contains("CARGO_PKG_")
+        })
+        .map(|file| format!("{file}: CARGO_PKG_"))
+        .collect()
+}
+
+#[test]
+fn core_source_cannot_read_cargo_s_package_identity() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("report")).expect("fixture directories");
+    std::fs::write(src.join("lib.rs"), "pub mod report;\n").expect("fixture lib.rs");
+    std::fs::write(
+        src.join("report/json.rs"),
+        "pub const VERSION: &str = env!(\"CARGO_PKG_VERSION\");\n",
+    )
+    .expect("fixture json.rs");
+
+    assert_eq!(package_identity_reads(&src), ["report/json.rs: CARGO_PKG_"]);
+
+    assert_eq!(
+        package_identity_reads(&root().join("crates/cargo-crap-core/src")),
+        Vec::<String>::new()
+    );
 }
 
 #[test]
@@ -200,4 +320,115 @@ fn cargo_crap_s_published_package_holds_no_core_and_no_gate_script() {
         .filter(|p| p.starts_with("crates/") || p.starts_with("scripts/gates/"))
         .collect();
     assert!(leaked.is_empty(), "packaged: {leaked:?}");
+}
+
+#[test]
+fn mutants_of_the_core_run_the_whole_workspace_s_tests() {
+    let path = root().join(".cargo/mutants.toml");
+    let config: toml::Table = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+        .parse()
+        .expect(".cargo/mutants.toml is TOML");
+    assert_eq!(
+        config.get("test_workspace"),
+        Some(&toml::Value::Boolean(true))
+    );
+}
+
+#[test]
+fn the_core_dependency_graph_excludes_language_parsers() {
+    let tree = cargo(
+        &root(),
+        &[
+            "tree",
+            "-p",
+            "cargo-crap-core",
+            "--all-features",
+            "-e",
+            "no-proc-macro",
+            "--prefix",
+            "none",
+            "--locked",
+        ],
+    );
+    let lines: Vec<&str> = tree.lines().collect();
+
+    assert!(
+        lines
+            .first()
+            .is_some_and(|l| l.starts_with("cargo-crap-core ")),
+        "{tree}"
+    );
+    for dependency in ["lcov ", "comfy-table "] {
+        assert!(
+            lines.iter().any(|l| l.starts_with(dependency)),
+            "no {dependency:?} line in:\n{tree}"
+        );
+    }
+    let parsers: Vec<&&str> = lines
+        .iter()
+        .filter(|l| l.starts_with("syn ") || l.starts_with("oxc_"))
+        .collect();
+    assert!(parsers.is_empty(), "{parsers:?}");
+}
+
+/// Every recorded seed file, by the package directory that replays it and
+/// its path under that package's `proptest-regressions/`. A new seed file
+/// joins this list in the change that records it.
+const SEEDS: &[(&str, &[&str])] = &[
+    (
+        "",
+        &[
+            "complexity.txt",
+            "duplicates/fingerprint.txt",
+            "duplicates/normalize.txt",
+            "duplicates/triage/budget.txt",
+            "duplicates/triage/cache.txt",
+            "signals/compute.txt",
+        ],
+    ),
+    (
+        "crates/cargo-crap-core",
+        &[
+            "duplicates/compare.txt",
+            "duplicates/group.txt",
+            "duplicates/novelty.txt",
+            "report/duplicates.txt",
+            "report/human.txt",
+            "report/pr_comment.txt",
+            "report/types.txt",
+        ],
+    ),
+];
+
+/// The module whose properties replay `seed` in the package rooted at
+/// `package`, when that module defines any.
+fn seed_owner(
+    package: &Path,
+    seed: &str,
+) -> Option<PathBuf> {
+    let module = package.join("src").join(seed).with_extension("rs");
+    std::fs::read_to_string(&module)
+        .is_ok_and(|source| source.contains("proptest!"))
+        .then_some(module)
+}
+
+#[test]
+fn recorded_property_test_seeds_follow_the_tests_that_replay_them() {
+    for (dir, seeds) in SEEDS {
+        let package = root().join(dir);
+        assert_eq!(
+            files_under(&package.join("proptest-regressions")),
+            *seeds,
+            "the seed files of {}",
+            package.display()
+        );
+        for seed in *seeds {
+            assert!(
+                seed_owner(&package, seed).is_some(),
+                "no module in {} replays {seed}",
+                package.display()
+            );
+        }
+    }
 }

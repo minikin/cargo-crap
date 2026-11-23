@@ -335,14 +335,10 @@ pub(crate) fn render_json(
     out: &mut dyn Write,
 ) -> Result<()> {
     let duplicate_groups = wire_groups(opts.groups, opts.triage);
-    let mut rows = entries.to_vec();
-    for row in &mut rows {
-        row.fingerprint = None;
-    }
     let envelope = Envelope {
         schema: Some(opts.tool.schemas.report.to_string()),
         version: opts.tool.version.to_string(),
-        entries: rows,
+        entries: entries.iter().cloned().map(without_fingerprint).collect(),
         diagnostics: opts.diagnostics.cloned(),
         duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
         untriaged_groups: recorded_untriaged(duplicate_groups.as_ref(), opts.untriaged),
@@ -379,12 +375,7 @@ pub(crate) fn render_delta_json(
         #[serde(skip_serializing_if = "Option::is_none")]
         try_weight: Option<f64>,
     }
-    let mut rows = std::borrow::Cow::Borrowed(report.entries.as_slice());
-    if rows.iter().any(|row| row.current.fingerprint.is_some()) {
-        for row in rows.to_mut() {
-            row.current.fingerprint = None;
-        }
-    }
+    let rows = delta_rows_without_fingerprints(&report.entries);
     let duplicate_groups = wire_delta_groups(opts);
     serde_json::to_writer_pretty(
         &mut *out,
@@ -402,6 +393,25 @@ pub(crate) fn render_delta_json(
     )?;
     out.write_all(b"\n")?;
     Ok(())
+}
+
+fn without_fingerprint(mut row: CrapEntry) -> CrapEntry {
+    row.fingerprint = None;
+    row
+}
+
+fn delta_rows_without_fingerprints(entries: &[DeltaEntry]) -> std::borrow::Cow<'_, [DeltaEntry]> {
+    if entries.iter().all(|row| row.current.fingerprint.is_none()) {
+        return std::borrow::Cow::Borrowed(entries);
+    }
+    entries
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            row.current = without_fingerprint(row.current);
+            row
+        })
+        .collect()
 }
 
 #[cfg(test)]

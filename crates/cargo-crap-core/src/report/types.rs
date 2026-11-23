@@ -605,8 +605,6 @@ mod tests {
         }
     }
 
-    // --- coverage_bar ---
-
     #[test]
     fn coverage_bar_is_all_empty_for_zero_percent() {
         // Kills: filled = pct * 10 replaced with 10 - pct * 10, or always 0.
@@ -650,8 +648,6 @@ mod tests {
         assert!(bar.contains("—"), "None must use — instead of a percentage");
     }
 
-    // --- Grade tiers ---
-
     #[test]
     fn grade_tier_boundaries_are_correct() {
         // With threshold=30, the three zones are:
@@ -682,8 +678,6 @@ mod tests {
         );
     }
 
-    // --- signed_delta ---
-
     #[test]
     fn signed_delta_uses_one_decimal_for_ordinary_deltas() {
         // Kills: starting the precision search above 1.
@@ -706,8 +700,6 @@ mod tests {
         // widening forever.
         assert_eq!(signed_delta(-0.0004), "-0.000");
     }
-
-    // --- uncovered_display ---
 
     #[test]
     fn uncovered_display_uses_en_dash_ranges_and_bare_singles() {
@@ -748,8 +740,6 @@ mod tests {
         );
     }
 
-    // --- uncovered_header_suffix / uncovered_cell_suffix ---
-
     #[test]
     fn uncovered_suffixes_are_empty_when_hints_are_off() {
         // Off must be byte-identical to the pre-hint output.
@@ -777,8 +767,6 @@ mod tests {
         assert_eq!(coverage_cell(Some(100.0), 0), "100.0%");
         assert_eq!(coverage_cell(None, 0), "—");
     }
-
-    // --- width ---------------------------------------------------------------
 
     #[test]
     fn a_terminal_uses_its_own_width_over_columns() {

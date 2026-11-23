@@ -25,8 +25,6 @@ use std::path::{Path, PathBuf};
 /// the comment stays under GitHub's 65,536-character body limit on huge PRs.
 pub(crate) const MAX_ROWS_PER_SECTION: usize = 25;
 
-// ─── Path-prefix stripping for visible Location text ────────────────────────
-
 /// Compute the longest common path-component prefix across the directories
 /// of `paths`.
 ///
@@ -93,8 +91,6 @@ fn strip_to_display(
     path.strip_prefix(prefix)
         .map_or_else(|_| path.display().to_string(), |p| p.display().to_string())
 }
-
-// ─── Row writers ────────────────────────────────────────────────────────────
 
 /// Write one delta row in PR-comment format (with Δ column).
 fn write_pr_comment_row(
@@ -169,8 +165,6 @@ fn write_truncation_if_capped(
     }
     Ok(())
 }
-
-// ─── Bucketing ──────────────────────────────────────────────────────────────
 
 /// Sort key for "biggest mover" — used for Regressed and Improved lists.
 fn abs_delta(de: &DeltaEntry) -> f64 {
@@ -268,8 +262,6 @@ impl<'a> DeltaBuckets<'a> {
         compute_render_prefix(&paths, cwd)
     }
 }
-
-// ─── Section writers ────────────────────────────────────────────────────────
 
 /// The headline, unless no CRAP score regressed while gating signal
 /// reasons (spec 43) fail the gate: then it says so instead.
@@ -452,8 +444,6 @@ fn write_pr_comment_removed_section(
     writeln!(out, "</details>")?;
     Ok(())
 }
-
-// ─── Top-level renderers ────────────────────────────────────────────────────
 
 pub(crate) fn render_delta_pr_comment(
     report: &DeltaReport,
@@ -684,8 +674,6 @@ mod tests {
         String::from_utf8(buf).unwrap()
     }
 
-    // --- Path-prefix helper -------------------------------------------------
-
     #[test]
     fn lcp_empty_for_fewer_than_two_paths() {
         assert_eq!(longest_common_path_prefix(&[]), PathBuf::new());
@@ -763,8 +751,6 @@ mod tests {
         assert_eq!(longest_common_path_prefix(&paths), PathBuf::new());
     }
 
-    // --- compute_render_prefix CWD fallback --------------------------------
-
     #[test]
     fn render_prefix_empty_paths_returns_empty() {
         // Kills: replacing `&&` with `||` in the CWD-fallback guard chain.
@@ -802,8 +788,6 @@ mod tests {
             "no cwd"
         );
     }
-
-    // --- pr-comment renderer (delta) ---------------------------------------
 
     #[test]
     fn pr_comment_starts_with_marker() {
@@ -1227,8 +1211,6 @@ mod tests {
         ));
     }
 
-    // --- pr-comment renderer (absolute, no baseline) -----------------------
-
     #[test]
     fn pr_comment_absolute_starts_with_marker() {
         let entries = vec![CrapEntry {
@@ -1270,8 +1252,6 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("## ✅ No CRAP threshold violations"));
     }
-
-    // --- Mutation-killing tests --------------------------------------------
 
     #[test]
     fn pr_comment_hot_spots_filter_is_strict_above_threshold() {
@@ -1437,8 +1417,6 @@ mod tests {
             "breakdown must report 3 unchanged, got:\n{s}"
         );
     }
-
-    // --- Source links (spec 12) --------------------------------------------
 
     #[test]
     fn pr_comment_no_links_when_links_arg_is_none() {
@@ -1694,8 +1672,6 @@ mod tests {
         );
     }
 
-    // --- uncovered hints ----------------------------------------------------
-
     #[test]
     fn uncovered_hints_extend_the_absolute_table() {
         // Kills: dropping the header suffix or cell suffix in the abs path.
@@ -1770,5 +1746,13 @@ mod tests {
             s.contains("| 60.0 | +10.0 | 3 | 0.0 |"),
             "integral CC:\n{s}"
         );
+    }
+
+    #[test]
+    fn empty_entries_renders_no_functions_found() {
+        let mut buf = Vec::new();
+        render(&[], &opts(30.0, Format::PrComment), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("_No functions found._"), "empty comment:\n{s}");
     }
 }

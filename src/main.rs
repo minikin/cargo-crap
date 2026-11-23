@@ -432,15 +432,24 @@ impl ScanRoot {
     ) -> Result<Self> {
         let mut member_only = excludes.defaults.clone();
         member_only.extend(nested);
+        let context = format!("analyzing {}", dir.display());
         let matcher = complexity::ExcludeMatcher::new(
             &member_only,
             &excludes.user,
             workspace_root.as_deref(),
         )
-        .with_context(|| format!("analyzing {}", dir.display()))?;
+        .context(context);
+        Self::from_matcher(dir, matcher, workspace_root)
+    }
+
+    fn from_matcher(
+        dir: PathBuf,
+        matcher: Result<complexity::ExcludeMatcher>,
+        workspace_root: Option<PathBuf>,
+    ) -> Result<Self> {
         Ok(Self {
             dir,
-            matcher: Arc::new(matcher),
+            matcher: Arc::new(matcher?),
             workspace_root,
         })
     }

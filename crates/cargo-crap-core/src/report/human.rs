@@ -917,8 +917,6 @@ mod tests {
         );
     }
 
-    // --- changed-only output (spec 16) -------------------------------------
-
     fn delta_entry(
         function: &str,
         status: DeltaStatus,
@@ -1080,8 +1078,6 @@ mod tests {
             "a removal is a change — must not print the quiet confirmation:\n{s}"
         );
     }
-
-    // --- uncovered hints ----------------------------------------------------
 
     #[test]
     fn uncovered_hints_append_column_with_ranges() {
