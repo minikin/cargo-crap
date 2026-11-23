@@ -11,7 +11,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/crapts"
 keywords = ["javascript", "typescript", "coverage", "complexity", "metrics"]
 categories = ["development-tools::testing"]
-exclude = ["tests/fixtures/corpus/"]
+exclude = ["tests/*.rs", "tests/support/", "tests/fixtures/corpus/", "proptest-regressions/"]
 
 [[bin]]
 name = "crapts"

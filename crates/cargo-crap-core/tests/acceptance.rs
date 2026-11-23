@@ -13,8 +13,8 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-const CARGO_CRAP_FIXTURE: Tool = include!("fixtures/cargo_crap_tool.inc.rs");
-const SECOND_TOOL: Tool = include!("fixtures/second_tool.inc.rs");
+const CARGO_CRAP_FIXTURE: Tool = include!("../src/report/cargo_crap_tool.inc");
+const SECOND_TOOL: Tool = include!("../src/report/second_tool.inc");
 
 struct OnlyFile(&'static str);
 

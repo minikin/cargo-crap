@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   mkdtempSync,
+  existsSync,
+  readdirSync,
   mkdirSync,
   readFileSync,
   writeFileSync,
@@ -16,6 +18,8 @@ import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
+
+import resolver from "../lib/resolve.js";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const release = join(root, "scripts/release");
@@ -92,6 +96,17 @@ test("staged npm packages declare platform filters, provenance metadata and zero
     Object.fromEntries(rows.map(([, suffix]) => [name(suffix), version])),
   );
   assert.equal(wrapper.bin.crapts, "bin/crapts.js");
+  assert.deepEqual(readdirSync(join(out, "crapts")).sort(), [
+    "LICENSE",
+    "README.md",
+    "bin",
+    "lib",
+    "package.json",
+  ]);
+  assert.deepEqual(
+    readFileSync(join(out, "crapts/LICENSE")),
+    readFileSync(join(root, "LICENSE")),
+  );
   for (const [target, suffix, os, arch, libc] of rows) {
     const folder = join(out, "crapts-" + suffix);
     const pkg = manifest(folder);
@@ -107,6 +122,11 @@ test("staged npm packages declare platform filters, provenance metadata and zero
         assert.equal(item.scripts?.[hook], undefined);
     }
     assert.equal(pkg.name, name(suffix));
+    assert.equal(
+      resolver.resolveTarget(pkg.os[0], pkg.cpu[0], pkg.libc?.[0] ?? "none")
+        .name,
+      pkg.name,
+    );
     assert.deepEqual(pkg.os, [os]);
     assert.deepEqual(pkg.cpu, [arch]);
     assert.deepEqual(pkg.libc, libc && [libc]);
@@ -135,6 +155,10 @@ test("wrapper forwards argv, stdio and exit codes 0, 1 and 2 without install scr
   const binary = resolve(
     process.env.CRAPTS_BINARY ||
       join(root, "target/debug", windows ? "crapts.exe" : "crapts"),
+  );
+  assert.ok(
+    existsSync(binary),
+    "Set CRAPTS_BINARY to the executable or run cargo build -p crapts",
   );
   const { dir, out } = fixture(t, { name: host.name, path: binary });
   const packed = ["crapts", host.name.split("/")[1]].map(
@@ -206,6 +230,10 @@ test("npm publish retry verifies integrity and provenance before skipping existi
   const server = createServer((req, res) => {
     const url = decodeURIComponent(req.url);
     const info = existing.get(url.split("/").slice(1, 3).join("/"));
+    if (info?.status) {
+      res.writeHead(info.status).end();
+      return;
+    }
     if (!info) {
       res.writeHead(404).end();
       return;
@@ -234,14 +262,16 @@ test("npm publish retry verifies integrity and provenance before skipping existi
         JSON.stringify({
           attestations: [
             {
-              predicateType: slsa,
-              bundle: {
-                dsseEnvelope: {
-                  payload: Buffer.from(JSON.stringify(statement)).toString(
-                    "base64",
-                  ),
-                },
-              },
+              predicateType: info.type ?? slsa,
+              bundle: info.missingBundle
+                ? null
+                : {
+                    dsseEnvelope: {
+                      payload: Buffer.from(JSON.stringify(statement)).toString(
+                        "base64",
+                      ),
+                    },
+                  },
             },
           ],
         }),
@@ -251,7 +281,11 @@ test("npm publish retry verifies integrity and provenance before skipping existi
         JSON.stringify({
           dist: {
             integrity: info.integrity,
-            attestations: { url: registry + "/" + info.name + "/attestation" },
+            attestations: info.noLink
+              ? undefined
+              : {
+                  url: info.url ?? registry + "/" + info.name + "/attestation",
+                },
           },
         }),
       );
@@ -287,10 +321,23 @@ test("npm publish retry verifies integrity and provenance before skipping existi
     });
     uploaded.push(pkg);
   };
+  let rejectSignature = false;
   const run = () =>
     publishRelease(
       { stagedDir: out, version, commit, repo, registry, tag: "next" },
-      { publish, verifyBundle: async () => {} },
+      {
+        publish,
+        verifyBundle: async (_, identity) => {
+          assert.equal(
+            identity,
+            "https://github.com/" +
+              repo +
+              "/.github/workflows/release-crapts.yml@refs/tags/crapts-v" +
+              version,
+          );
+          if (rejectSignature) throw Error("signature rejected");
+        },
+      },
     );
   await run();
   assert.equal(uploaded.length, 7);
@@ -301,6 +348,17 @@ test("npm publish retry verifies integrity and provenance before skipping existi
     ["integrity", "changed", /integrity/i],
     ["commit", "bad", /provenance/i],
     ["repo", "another", /provenance/i],
+    ["purl", "wrong subject", /provenance/i],
+    ["hex", "wrong digest", /provenance/i],
+    ["noLink", true, /missing provenance/i],
+    ["type", "wrong", /missing SLSA/i],
+    ["missingBundle", true, /missing SLSA/i],
+    ["status", 503, /HTTP 503/],
+    [
+      "url",
+      "https://example.invalid/attestations",
+      /unexpected provenance registry/i,
+    ],
   ]) {
     const saved = first[field];
     first[field] = wrong;
@@ -312,7 +370,29 @@ test("npm publish retry verifies integrity and provenance before skipping existi
     assert.deepEqual(uploaded, []);
     first[field] = saved;
   }
+  rejectSignature = true;
+  await assert.rejects(run, /signature rejected/);
+  assert.deepEqual(uploaded, []);
+  rejectSignature = false;
   existing.delete(first.name);
   await run();
   assert.deepEqual(uploaded, [first.name, "@minikin/crapts"]);
+});
+
+test("the release verifier rejects a malformed Sigstore bundle", async (t) => {
+  if (!existsSync(join(release, "node_modules/sigstore")))
+    return t.skip(
+      "npm ci --prefix scripts/release installs the release verifier",
+    );
+  const { verifyBundle } =
+    await import("../../../scripts/release/publish-npm.mjs");
+  const cache = mkdtempSync(join(tmpdir(), "crapts-trust-"));
+  t.after(() => rmSync(cache, { recursive: true, force: true }));
+  await assert.rejects(
+    verifyBundle({}, "https://github.com/minikin/cargo-crap", {
+      tufCachePath: cache,
+      tufForceCache: true,
+    }),
+    /bundle|media type|invalid enum/i,
+  );
 });

@@ -2,6 +2,7 @@ import {
   chmodSync,
   closeSync,
   cpSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -88,7 +89,11 @@ function stage({ archives, out, version }) {
       });
     }
     const wrapper = join(temp, "crapts");
-    cpSync(source, wrapper, { recursive: true });
+    mkdirSync(wrapper);
+    for (const dir of ["lib", "bin"])
+      cpSync(join(source, dir), join(wrapper, dir), { recursive: true });
+    copyFileSync(join(source, "README.md"), join(wrapper, "README.md"));
+    copyFileSync(join(source, "../../LICENSE"), join(wrapper, "LICENSE"));
     writeManifest(wrapper, {
       ...template,
       version,

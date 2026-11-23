@@ -15,9 +15,10 @@ function npm(args, options) {
   return execFileSync(process.execPath, [cli, ...args], options);
 }
 
-async function verifyBundle(bundle, identity) {
+export async function verifyBundle(bundle, identity, trustCache = {}) {
   const { verify } = await import("sigstore");
   await verify(bundle, {
+    ...trustCache,
     certificateIdentityURI: identity,
     certificateIssuer: "https://token.actions.githubusercontent.com",
   });
@@ -40,6 +41,7 @@ async function verifyExisting(
   const bundle = attestations.find((a) => a.predicateType === type)?.bundle;
   if (!bundle?.dsseEnvelope?.payload) throw Error("missing SLSA provenance");
   const source = "https://github.com/" + repo;
+  // A build from another ref can share this commit but lacks authority to issue the release.
   const ref = "refs/tags/crapts-v" + version;
   await verify(bundle, source + "/.github/workflows/release-crapts.yml@" + ref);
   const stmt = JSON.parse(Buffer.from(bundle.dsseEnvelope.payload, "base64"));

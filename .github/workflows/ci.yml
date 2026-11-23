@@ -64,6 +64,8 @@ jobs:
               - 'proptest-regressions/**'
               - 'crates/*/proptest-regressions/**'
               - 'crates/*/tests/fixtures/**'
+              - 'crates/cargo-crap-core/src/report/*.inc'
+              - 'crates/cargo-crap-core/src/coverage/*.info'
               - '.github/workflows/ci.yml'
               # tests/golden/gates.rs reads the Action workflow's paths.
               - '.github/workflows/action.yml'

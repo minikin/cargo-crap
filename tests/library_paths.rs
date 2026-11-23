@@ -297,7 +297,7 @@ mod cargo_crap_fixture {
     use cargo_crap::tool::CARGO_CRAP;
 
     const CARGO_CRAP_FIXTURE: Tool =
-        include!("../crates/cargo-crap-core/tests/fixtures/cargo_crap_tool.inc.rs");
+        include!("../crates/cargo-crap-core/src/report/cargo_crap_tool.inc");
 
     #[test]
     fn cargo_crap_fixture_matches_cargo_crap_but_its_version() {

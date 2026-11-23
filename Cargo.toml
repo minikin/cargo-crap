@@ -23,6 +23,7 @@ exclude = [
     "npm/",
     "reviews/",
     "scripts/gates/",
+    "scripts/release/",
     "specs/",
     "tests/",
     "clippy.toml",

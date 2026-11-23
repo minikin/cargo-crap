@@ -369,6 +369,7 @@ fn the_lock_retains_the_spec_45_ids_and_adds_only_the_crapts_closure() {
         package: Vec<LockedPackage>,
     }
 
+    // Both products release independently of the third-party versions recorded in this fixture.
     let base: BTreeSet<_> = include_str!("fixtures/spec45-package-ids.txt")
         .lines()
         .filter(|line| {
@@ -621,7 +622,10 @@ fn cargo_crap_s_published_package_holds_no_core_and_no_gate_script() {
     let leaked: Vec<&String> = paths
         .iter()
         .filter(|p| {
-            p.starts_with("crates/") || p.starts_with("scripts/gates/") || p.starts_with("npm/")
+            p.starts_with("crates/")
+                || p.starts_with("scripts/gates/")
+                || p.starts_with("scripts/release/")
+                || p.starts_with("npm/")
         })
         .collect();
     assert!(leaked.is_empty(), "packaged: {leaked:?}");

@@ -48,6 +48,7 @@ next="$major.$((minor + 1)).0"
 
 # A release bumps every place the version is written and dates the CHANGELOG.
 dir="$(fixture)"
+core_before="$(awk -F'"' '/^version = /{print $2; exit}' "$dir/crates/cargo-crap-core/Cargo.toml")"
 (cd "$dir" && bash "$prep" "$next" 2031-02-03 > /dev/null)
 check "it succeeds" "0" "$?"
 check "Cargo.toml" "$next" "$(awk -F'"' '/^version = /{print $2; exit}' "$dir/Cargo.toml")"
@@ -67,7 +68,7 @@ check "the new version's link compares the two tags" "1" \
     "$(grep -c "^\[$next\]: .*/compare/v$current\.\.\.v$next$" "$dir/CHANGELOG.md")"
 check "the old version's link is kept" "1" \
     "$(grep -c "^\[$current\]: " "$dir/CHANGELOG.md")"
-check "release prep bumps cargo-crap and leaves the core alone" "$(awk -F'"' '/^version = /{print $2; exit}' "$repo/crates/cargo-crap-core/Cargo.toml")" \
+check "release prep bumps cargo-crap and leaves the core alone" "$core_before" \
     "$(awk -F'"' '/^version = /{print $2; exit}' "$dir/crates/cargo-crap-core/Cargo.toml")"
 rm -rf "$dir"
 

@@ -57,6 +57,12 @@ test("platform resolution is total and injective across generated triples", () =
     }
   }
   assert.equal(names.size, 6);
+  const { randomBytes } = require("node:crypto");
+  for (let i = 0; i < 128; i++) {
+    const values = triples[i % triples.length].slice(0, 3);
+    values[i % 3] += "-" + randomBytes(4).toString("hex");
+    assert.throws(() => resolveTarget(...values), /unsupported/);
+  }
 });
 
 test("wrapper diagnoses unsupported platforms, unknown libc, missing packages and spawn errors with exit 2", () => {
@@ -71,10 +77,12 @@ test("wrapper diagnoses unsupported platforms, unknown libc, missing packages an
       "none",
       /@minikin\/crapts-darwin-arm64.*optional dependencies/i,
     ],
-    ["darwin", "x64", "none", /path to binary.*EACCES/i],
+    ["darwin", "x64", "none", /path to binary.*EACCES/i, "EACCES"],
+    ["darwin", "x64", "none", /path to binary.*ENOENT/i, "ENOENT"],
   ];
-  for (const [platform, arch, libc, message] of cases) {
+  for (const [platform, arch, libc, message, osError] of cases) {
     let stderr = "";
+    let spawned = false;
     const status = run(["--version"], {
       platform,
       arch,
@@ -84,19 +92,24 @@ test("wrapper diagnoses unsupported platforms, unknown libc, missing packages an
         if (arch === "x64") return "/path to binary";
         throw Object.assign(Error("missing"), { code: "MODULE_NOT_FOUND" });
       },
-      spawn: () => ({ error: Error("EACCES") }),
+      spawn() {
+        spawned = true;
+        if (!osError) throw Error("unexpected spawn");
+        return { error: Error(osError) };
+      },
       error: (line) => {
         stderr += line;
       },
     });
     assert.equal(status, 2);
     assert.match(stderr, message);
+    assert.equal(spawned, Boolean(osError));
   }
 });
 
 test("child signal is re-raised", () => {
   let signal;
-  run([], {
+  const status = run([], {
     platform: "darwin",
     arch: "arm64",
     libc: "none",
@@ -107,4 +120,5 @@ test("child signal is re-raised", () => {
     },
   });
   assert.equal(signal, "SIGTERM");
+  assert.equal(status, 2);
 });

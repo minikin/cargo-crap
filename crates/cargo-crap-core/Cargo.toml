@@ -11,17 +11,7 @@ homepage.workspace = true
 documentation = "https://docs.rs/cargo-crap-core"
 keywords = ["code-quality", "coverage", "complexity", "metrics"]
 categories = ["development-tools::testing"]
-exclude = [
-    "tests/*",
-    "!tests/fixtures/",
-    "tests/fixtures/*",
-    "!tests/fixtures/cargo_crap_tool.inc.rs",
-    "!tests/fixtures/second_tool.inc.rs",
-    "!tests/fixtures/lcov/",
-    "tests/fixtures/lcov/*",
-    "!tests/fixtures/lcov/p_bad_known.info",
-    "proptest-regressions/",
-]
+exclude = ["tests/", "proptest-regressions/"]
 
 [dependencies]
 anyhow.workspace = true
