@@ -320,7 +320,7 @@ fn normalize_flag<'a>(
     Ok(flag.into())
 }
 
-fn normalized(args: &[OsString]) -> Result<Vec<OsString>> {
+fn normalized_args(args: &[OsString]) -> Result<Vec<OsString>> {
     let mut result = Vec::with_capacity(args.len());
     let mut words = args.iter();
     while let Some(word) = words.next() {
@@ -340,7 +340,7 @@ fn normalized(args: &[OsString]) -> Result<Vec<OsString>> {
 
 fn parse(args: &[OsString]) -> Result<ArgMatches> {
     command()
-        .try_get_matches_from(normalized(args)?)
+        .try_get_matches_from(normalized_args(args)?)
         .map_err(|error| clap_error(&error))
 }
 

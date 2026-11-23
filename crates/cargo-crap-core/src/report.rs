@@ -558,15 +558,18 @@ fn duplicate_table(
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR
 /// comment. Used by both [`markdown`] and [`pr_comment`] renderers.
+fn selected_comment_marker<'a>(opts: &'a RenderOptions<'a>) -> &'a str {
+    match opts.format {
+        Format::PrComment => opts.pr_comment_marker.unwrap_or(opts.tool.comment_marker),
+        _ => opts.tool.comment_marker,
+    }
+}
+
 pub(crate) fn write_pr_comment_marker(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let marker = match opts.format {
-        Format::PrComment => opts.pr_comment_marker.unwrap_or(opts.tool.comment_marker),
-        _ => opts.tool.comment_marker,
-    };
-    writeln!(out, "{marker}")?;
+    writeln!(out, "{}", selected_comment_marker(opts))?;
     writeln!(out)?;
     Ok(())
 }

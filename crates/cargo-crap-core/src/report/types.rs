@@ -258,6 +258,13 @@ pub(crate) fn visible_delta_entries(
         .collect()
 }
 
+fn stdout_terminal_width() -> Option<u16> {
+    std::io::stdout()
+        .is_terminal()
+        .then(|| comfy_table::Table::new().width())
+        .flatten()
+}
+
 /// The width the human tables may use, in terminal columns, or `None` for
 /// no limit. A terminal's own width wins when the report goes to stdout
 /// (`writes_to_stdout`) and stdout is one. Without it a positive
@@ -266,16 +273,7 @@ pub(crate) fn visible_delta_entries(
 #[must_use]
 pub fn output_width(writes_to_stdout: bool) -> Option<usize> {
     let columns = std::env::var("COLUMNS").ok();
-    available_width(
-        writes_to_stdout,
-        || {
-            std::io::stdout()
-                .is_terminal()
-                .then(|| comfy_table::Table::new().width())
-                .flatten()
-        },
-        columns.as_deref(),
-    )
+    available_width(writes_to_stdout, stdout_terminal_width, columns.as_deref())
 }
 
 /// The width rule behind [`output_width`], with the terminal probe and

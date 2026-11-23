@@ -97,6 +97,19 @@ pub fn render_delta_counts(
     Ok(())
 }
 
+fn write_signal_regression_line(
+    signal_gates: usize,
+    hint: Option<&str>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    write!(out, "\u{2717} {signal_gates} signal regression(s)")?;
+    if let Some(hint) = hint {
+        write!(out, "; {hint}")?;
+    }
+    writeln!(out)?;
+    Ok(())
+}
+
 pub(crate) fn render_delta_summary_lines(
     counts: &DeltaCounts,
     signal_gates: usize,
@@ -105,11 +118,7 @@ pub(crate) fn render_delta_summary_lines(
 ) -> Result<()> {
     render_delta_counts(counts, out)?;
     if signal_gates > 0 {
-        write!(out, "\u{2717} {signal_gates} signal regression(s)")?;
-        if let Some(hint) = hint {
-            write!(out, "; {hint}")?;
-        }
-        writeln!(out)?;
+        write_signal_regression_line(signal_gates, hint, out)?;
     }
     Ok(())
 }
