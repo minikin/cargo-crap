@@ -59,17 +59,21 @@ function fixture(t, native, packageVersion = version) {
     if (native?.name === name(suffix))
       copyFileSync(native.path, join(dir, bin));
     else writeFileSync(join(dir, bin), target);
-    const archive = join(
-      archives,
-      "crapts-" + target + (os === "win32" ? ".zip" : ".tar.gz"),
-    );
+    const filename = "crapts-" + target + (os === "win32" ? ".zip" : ".tar.gz");
+    const archive = join(archives, filename);
     if (os === "win32")
       execFileSync(
         windows ? "python" : "python3",
         ["-m", "zipfile", "-c", archive, bin],
         { cwd: dir },
       );
-    else execFileSync("tar", ["czf", archive, bin], { cwd: dir });
+    else {
+      // Git Bash puts GNU tar first, which treats C:\ paths as remote hosts.
+      const tar = windows
+        ? join(process.env.SystemRoot, "System32", "tar.exe")
+        : "tar";
+      execFileSync(tar, ["czf", "archives/" + filename, bin], { cwd: dir });
+    }
   }
   const stage = () =>
     execFileSync(
