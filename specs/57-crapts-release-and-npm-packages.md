@@ -329,7 +329,7 @@ Record all results in the final task's review record (`reviews/57-crapts-release
 
 ## Tasks
 
-- [ ] **T1 - Prepare publishable crate metadata, binstall config and package changelogs.**
+- [x] **T1 - Prepare publishable crate metadata, binstall config and package changelogs.**
   Remove `publish = false` from `crates/cargo-crap-core/Cargo.toml`, fill crates.io metadata (`documentation`, `keywords`, `categories`, `exclude`), keep or move the two report fixture include files used by `crates/cargo-crap-core/src/report/test_support.rs` so the packaged core crate compiles and passes `cargo test --lib --offline`, add `[package.metadata.binstall]` and crates.io metadata to `crates/crapts/Cargo.toml`, add `"npm/"` to root `Cargo.toml`'s `exclude`, create `crates/crapts/CHANGELOG.md` and `crates/cargo-crap-core/CHANGELOG.md`, and update `tests/workspace.rs` (deriving expected core version from `crates/cargo-crap-core/Cargo.toml` and checking both front ends).
   Scenarios: _workspace crates carry publishable metadata and crapts binstall URLs_, _cargo-crap keeps its recorded reports and binstall URLs unchanged_.
   Tests: `tests/workspace.rs` acceptance (metadata, binstall keys, `cargo package --list`, offline `cargo package --locked --offline -p cargo-crap-core` plus unpacked `cargo test --lib --offline`) and Spec 44 golden suite under `INSTA_UPDATE=no`.

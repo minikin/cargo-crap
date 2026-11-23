@@ -67,7 +67,7 @@ check "the new version's link compares the two tags" "1" \
     "$(grep -c "^\[$next\]: .*/compare/v$current\.\.\.v$next$" "$dir/CHANGELOG.md")"
 check "the old version's link is kept" "1" \
     "$(grep -c "^\[$current\]: " "$dir/CHANGELOG.md")"
-check "release prep bumps cargo-crap and leaves the core alone" '0.1.0' \
+check "release prep bumps cargo-crap and leaves the core alone" "$(awk -F'"' '/^version = /{print $2; exit}' "$repo/crates/cargo-crap-core/Cargo.toml")" \
     "$(awk -F'"' '/^version = /{print $2; exit}' "$dir/crates/cargo-crap-core/Cargo.toml")"
 rm -rf "$dir"
 

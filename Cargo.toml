@@ -20,6 +20,7 @@ exclude = [
     ".github/",
     ".idea/",
     "docs/",
+    "npm/",
     "reviews/",
     "scripts/gates/",
     "specs/",

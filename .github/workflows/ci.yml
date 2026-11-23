@@ -152,6 +152,8 @@ jobs:
       # that is not tracked, then build against it with --locked.
       - name: Cargo.lock is tracked
         run: git ls-files --error-unmatch -- Cargo.lock
+      - name: Cache dependencies for offline packaging
+        run: cargo fetch --locked
       - name: Test (default features)
         run: cargo nextest run --workspace --all-targets --locked
       # The `triage` feature compiles the TypeSafe client (spec 30); its tests

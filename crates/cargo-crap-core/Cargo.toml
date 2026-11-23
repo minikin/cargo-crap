@@ -8,7 +8,20 @@ license.workspace = true
 description = "Language-neutral CRAP scoring, coverage reading, delta and reports shared by cargo-crap and crapts"
 repository.workspace = true
 homepage.workspace = true
-publish = false
+documentation = "https://docs.rs/cargo-crap-core"
+keywords = ["code-quality", "coverage", "complexity", "metrics"]
+categories = ["development-tools::testing"]
+exclude = [
+    "tests/*",
+    "!tests/fixtures/",
+    "tests/fixtures/*",
+    "!tests/fixtures/cargo_crap_tool.inc.rs",
+    "!tests/fixtures/second_tool.inc.rs",
+    "!tests/fixtures/lcov/",
+    "tests/fixtures/lcov/*",
+    "!tests/fixtures/lcov/p_bad_known.info",
+    "proptest-regressions/",
+]
 
 [dependencies]
 anyhow.workspace = true
