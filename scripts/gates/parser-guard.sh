@@ -20,6 +20,8 @@ rules=(
     "cargo-crap oxc_"
     "cargo-crap-core oxc_"
     "cargo-crap-core syn "
+    "crapts syn "
+    "crapts cargo-crap "
 )
 
 # `-` defaults: macOS's /bin/bash 3.2 reads an empty array as unbound

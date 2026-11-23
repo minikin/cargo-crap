@@ -1,0 +1,78 @@
+function load() {}	load
+export function load() {}	load
+export default function load() {}	load
+export default function () {}	default
+export default () => {}	default
+export default class { render() {} }	default::render
+const parse = (s) => {}	parse
+const retry = function again() {}	retry
+let f; f = () => {}	f
+module.exports = function () {}	module.exports
+module.exports.f = function () {}	module.exports.f
+exports.f = () => {}	exports.f
+X.prototype.y = function () {}	X.prototype.y
+module.exports = { run() {} }	module.exports::run
+export = function () {}	module.exports
+obj[key] = () => {}	obj.(key)
+obj["a-b"] = () => {}	obj."a-b"
+class Cart { add() {} }	Cart::add
+class Cart { constructor() {} static create() {}}	Cart::constructor	Cart::static create
+class Cart { constructor() {} #total() {}}	Cart::constructor	Cart::#total
+class Cart { constructor() {} static #seed() {}}	Cart::constructor	Cart::static #seed
+class Cart { constructor() {} get size() {} set size(v) {}}	Cart::constructor	Cart::get size	Cart::set size
+class Cart { constructor() {} static get empty() {}}	Cart::constructor	Cart::static get empty
+class Cart { constructor() {} get #secret() {}}	Cart::constructor	Cart::get #secret
+class Cart { constructor() {} async *rows() {}}	Cart::constructor	Cart::rows
+class Cart { constructor() { this.handle = () => {} }}	Cart::constructor	Cart::constructor::this.handle
+class Cart { constructor() {} items = xs.map((x) => x)}	Cart::constructor	Cart::items::xs.map()
+class Cart { constructor() {} onAdd = () => {}}	Cart::constructor	Cart::onAdd
+class Cart { constructor() {} static cache = build(() => x)}	Cart::constructor	Cart::static cache	Cart::static cache::build()
+class Cart { constructor() {} static {} static {}}	Cart::constructor	Cart::<static-block>	Cart::<static-block>#2
+class P { x = 1 }	P::constructor
+class Q { onAdd = () => {} }	Q::constructor	Q::onAdd
+const A = class B { go() {} }	A::go
+run(class { go() {} })	run()::go
+register([class { go() {} }])	register()::<class>::go
+foo({ bar() {} })	foo()::bar
+const api = { get() {}}	api::get
+const api = { get value() {}}	api::get value
+const api = { nested: { save: () => 1 } }	api::nested::save
+const api = { "content-type": () => {}}	api::"content-type"
+const api = { "valid"() {}}	api::valid
+const api = { 42() {}, 0x2A() {}, "42"() {}}	api::42	api::42#2	api::42#3
+const api = { [1.50]() {}}	api::1.5
+const api = { [Symbol.iterator]() {}}	api::(Symbol.iterator)
+const api = { "a*b"() {}}	api::"a%2Ab"
+const api = { "a::b"() {}}	api::"a%3A%3Ab"
+const api = { "line\nbreak"() {}}	api::"line%0Abreak"
+arr.map((x) => x * 2)	arr.map()
+Math.max(0, ...xs.map((x) => x))	Math.max(0)::xs.map()
+const ids = xs.map((x) => x.id)	ids::xs.map()
+promise.then((v) => v, (e) => e)	promise.then()	promise.then()#2
+fetch(u).then((r) => r.json())	then()
+useEffect(function sync() {})	useEffect()::sync
+emit(42, () => {})	emit(42)
+app.get("/orders", auth, (req, res) => {})	app.get("%2Forders")
+describe("Cart", () => { it("adds", () => {}) })	describe("Cart")	describe("Cart")::it("adds")
+it("returns the cached value when the key has not expired yet", () => {})	it("returns the cached value when the key ha"~e390cc88)
+it("returns the cached value when the key has expired already", () => {})	it("returns the cached value when the key ha"~9f8065a4)
+new Promise((resolve) => {})	new Promise()
+const Button = React.memo((props) => {})	Button::React.memo()
+function outer() { function inner() {} }	outer	outer::inner
+function make() { return () => {} }	make	make::<return>
+const add = (a) => (b) => a + b	add	add::<return>
+function make() { return { run() {} } }	make	make::run
+(function () {})()	<iife>
+const mod = (() => ({ run() {} }))()	mod::<iife>	mod::<iife>::run
+const handlers = [() => a, () => b]	handlers::<anonymous>	handlers::<anonymous>#2
+const pick = ok ? () => 1 : () => 2	pick::<anonymous>	pick::<anonymous>#2
+function f(cb = () => {}) {}	f	f::cb
+const { onError = () => {} } = opts	onError
+namespace NS { export function f() {} }	NS::f
+namespace A.B { function g() {} }	A::B::g
+function Toolbar() { return <Button onClick={() => save()} />}	Toolbar	Toolbar::<Button onClick>
+function Toolbar() { return <UI.Button onClick={() => go()} />}	Toolbar	Toolbar::<UI.Button onClick>
+function Toolbar() { return <List>{(item) => <li />}</List>}	Toolbar	Toolbar::<List children>
+function Toolbar() { return <>{() => x}</>}	Toolbar	Toolbar::<Fragment children>
+function dup() { function inner() {} } function dup() { function inner() {} }	dup	dup::inner	dup#2	dup::inner#2
+function parse(s: string): void; function parse(s) {}	parse

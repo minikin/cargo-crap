@@ -1,0 +1,30 @@
+[package]
+name = "crapts"
+version = "0.1.0"
+edition.workspace = true
+rust-version = "1.98"
+authors.workspace = true
+license.workspace = true
+description = "JavaScript and TypeScript source analysis for the CRAP metric"
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[dependencies]
+globset.workspace = true
+oxc_allocator.workspace = true
+oxc_ast.workspace = true
+oxc_ast_visit.workspace = true
+oxc_parser.workspace = true
+oxc_span.workspace = true
+oxc_str.workspace = true
+oxc_syntax = { workspace = true, features = ["to_js_string"] }
+sha2.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+regex-syntax.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

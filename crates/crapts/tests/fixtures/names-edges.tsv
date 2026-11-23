@@ -1,0 +1,29 @@
+const { server: local = function impl() {} } = opts	local
+let [f = () => 1] = xs	f
+const f = ((function inner() {}) as F)! satisfies F	f
+const f = <F>(() => 1)	f
+obj.k &&= () => 1	obj.k
+obj.k ??= () => 1	obj.k
+obj.k ||= () => 1	obj.k
+(obj!.next as X)?.on<T>("save", () => 1)	obj.next.on("save")
+(a + b)(() => 0)	<call>()
+new (function () {})()	<iife>
+tag`a${() => 1}b`	tag()
+useEffect(() => a, [a]); useEffect(() => b, [b])	useEffect()	useEffect()#2
+class C { #\u0061() {} }	C::#a
+const o = { "042"() {} }	o::"042"
+const o = { 0xan() {} }	o::10
+const o = { [1e21]() {} }	o::1e+21
+const o = { [KEYS /* ignored */ . save]() {} }	o::(KEYS.save)
+const o = { [x instanceof Thing]() {} }	o::(x instanceof Thing)
+const o = { [key(() => 1)]() {} }	o::(key(<function>))	o::(key(<function>))::key()
+const o = { [key(class Local {})]() {} }	o::(key(<class>))
+const o = { [x + 0x2A]() {} }	o::(x+0x2A)
+const o = { "a/%2F\"b"() {} }	o::"a%2F%252F%22b"
+const o = { "a\u0085\u00A0\u200Db"() {} }	o::"a%C2%85%C2%A0%E2%80%8Db"
+const o = { "\uD800"() {} }	o::"%uD800"
+const o = { "\u00e9"() {}, "e\u0301"() {} }	o::é	o::é
+const o = { [1e-7]() {} }	o::1e-7
+const o = { [10n]() {} }	o::10
+const o = { "\u{E0061}"() {} }	o::"%F3%A0%81%A1"
+const o = { "|`\x7f\\?[]{}"() {} }	o::"%7C%60%7F%5C%3F%5B%5D%7B%7D"
