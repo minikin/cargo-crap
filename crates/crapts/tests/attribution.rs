@@ -377,7 +377,14 @@ fn a_fractional_coverage_result_uses_the_cores_binary64_crap_score() {
         f.entry.crap.to_bits(),
         cargo_crap_core::score::crap(1.0, 100.0 / 9.0).to_bits()
     );
-    assert_eq!(f.entry.crap.to_bits(), 1.702_331_961_591_221_f64.to_bits());
+    // MSVC powi lowering can differ by 1 ULP from Unix libm.
+    assert!(
+        f.entry
+            .crap
+            .to_bits()
+            .abs_diff(1.702_331_961_591_221_f64.to_bits())
+            <= 1
+    );
 }
 
 #[test]

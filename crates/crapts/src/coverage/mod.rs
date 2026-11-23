@@ -164,7 +164,7 @@ mod tests {
             #[cfg(not(windows))]
             (&directory, io::ErrorKind::PermissionDenied, "EACCES"),
             (
-                &directory.join("file/child"),
+                &directory.join("file").join("child"),
                 io::ErrorKind::NotADirectory,
                 "ENOTDIR",
             ),
