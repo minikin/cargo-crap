@@ -1455,6 +1455,281 @@ fn pinned_excalidraw_corpus_matches_the_committed_golden() {
     }
 }
 
+fn yaml_block<'a>(
+    lines: &[&'a str],
+    header: &str,
+) -> Vec<&'a str> {
+    let depth = header.len() - header.trim_start().len();
+    let mut rest = lines.iter().copied().skip_while(|line| *line != header);
+    assert!(rest.next().is_some(), "missing YAML header {header:?}");
+    rest.take_while(|line| line.trim().is_empty() || (line.len() - line.trim_start().len()) > depth)
+        .collect()
+}
+
+fn filter_globs(
+    text: &str,
+    header: &str,
+) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    yaml_block(&lines, header)
+        .iter()
+        .filter_map(|line| line.trim().strip_prefix("- '")?.strip_suffix('\''))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn any_glob_matches(
+    globs: &[String],
+    path: &str,
+) -> bool {
+    globs.iter().any(|glob| {
+        globset::GlobBuilder::new(glob)
+            .literal_separator(true)
+            .build()
+            .unwrap_or_else(|e| panic!("glob {glob:?}: {e}"))
+            .compile_matcher()
+            .is_match(path)
+    })
+}
+
+fn contains_40_hex_sha(text: &str) -> bool {
+    let mut run = 0usize;
+    for byte in text.bytes() {
+        if byte.is_ascii_hexdigit() {
+            run += 1;
+            if run >= 40 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+fn assert_corpus_job_steps(corpus_job: &[&str]) {
+    assert!(
+        corpus_job.iter().any(|l| l.trim() == "needs: [changes]"),
+        "corpus job missing needs: [changes]"
+    );
+    assert!(
+        corpus_job.iter().any(|l| {
+            l.trim()
+                == "if: needs.changes.outputs.corpus == 'true' || github.event_name == 'workflow_dispatch'"
+        }),
+        "corpus job missing changes/workflow_dispatch if condition"
+    );
+    assert!(
+        corpus_job
+            .iter()
+            .any(|l| l.trim() == "runs-on: ubuntu-latest"),
+        "corpus job missing runs-on: ubuntu-latest"
+    );
+    assert!(
+        corpus_job.iter().any(|l| l.trim() == "timeout-minutes: 20"),
+        "corpus job missing timeout-minutes: 20"
+    );
+    assert!(
+        corpus_job
+            .iter()
+            .any(|l| l.trim().contains("uses: dtolnay/rust-toolchain")),
+        "corpus job missing dtolnay/rust-toolchain"
+    );
+
+    let runs: Vec<&str> = corpus_job
+        .iter()
+        .filter_map(|l| l.trim().strip_prefix("run: "))
+        .collect();
+    assert!(
+        runs.contains(&"shellcheck -x scripts/corpus/*.sh"),
+        "corpus job missing shellcheck step: {runs:?}"
+    );
+    assert!(
+        runs.iter()
+            .any(|cmd| cmd.contains("scripts/corpus/checkout.sh \"$RUNNER_TEMP/excalidraw\"")),
+        "corpus job missing checkout.sh \"$RUNNER_TEMP/excalidraw\": {runs:?}"
+    );
+    assert!(
+        runs.contains(&"cargo test --locked -p crapts --test corpus -- --ignored"),
+        "corpus job missing locked ignored corpus test: {runs:?}"
+    );
+    assert_eq!(
+        runs.last().copied(),
+        Some("git diff --exit-code -- crates/crapts/tests/fixtures/corpus"),
+        "corpus job must end with git diff --exit-code backstop: {runs:?}"
+    );
+    assert!(
+        corpus_job
+            .iter()
+            .any(|l| l.trim() == "CRAPTS_CORPUS_DIR: ${{ runner.temp }}/excalidraw"),
+        "corpus job missing CRAPTS_CORPUS_DIR pointing to runner.temp/excalidraw"
+    );
+    assert!(
+        corpus_job
+            .iter()
+            .any(|l| l.trim() == "CRAPTS_CORPUS_UPDATE: \"0\""),
+        "corpus job missing CRAPTS_CORPUS_UPDATE: \"0\""
+    );
+}
+
+#[test]
+fn corpus_workflow_is_branch_protection_compatible_and_pins_the_checkout_without_secrets_or_updates()
+ {
+    let root = workspace_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/corpus.yml"))
+        .expect("read .github/workflows/corpus.yml");
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))
+        .expect("read .github/workflows/ci.yml");
+    let checkout_sh = fs::read_to_string(root.join("scripts/corpus/checkout.sh"))
+        .expect("read scripts/corpus/checkout.sh");
+
+    assert!(
+        !contains_40_hex_sha(&workflow),
+        "corpus.yml must not hardcode a 40-hex commit SHA"
+    );
+    assert!(
+        !contains_40_hex_sha(&checkout_sh),
+        "checkout.sh must read pin.txt instead of hardcoding a 40-hex SHA"
+    );
+    assert!(
+        !workflow.contains("secrets."),
+        "corpus.yml must not use secrets"
+    );
+
+    let wf_lines: Vec<&str> = workflow.lines().collect();
+    let on_block = yaml_block(&wf_lines, "on:");
+    assert!(on_block.iter().any(|l| l.trim() == "pull_request:"));
+    assert!(on_block.iter().any(|l| l.trim() == "push:"));
+    assert!(on_block.iter().any(|l| l.trim() == "branches: [main]"));
+    assert!(on_block.iter().any(|l| l.trim() == "workflow_dispatch:"));
+    assert!(
+        on_block
+            .iter()
+            .all(|l| !l.trim().starts_with("paths:") && !l.trim().starts_with("paths-ignore:")),
+        "corpus.yml must have no top-level paths filter"
+    );
+
+    let perms = yaml_block(&wf_lines, "permissions:");
+    assert_eq!(
+        perms
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>(),
+        vec!["contents: read"]
+    );
+
+    let changes_job = yaml_block(&wf_lines, "  changes:");
+    assert!(
+        changes_job
+            .iter()
+            .any(|l| l.trim().contains("uses: dorny/paths-filter@")),
+        "changes job must use dorny/paths-filter"
+    );
+    let corpus_globs = filter_globs(&workflow, "            corpus:");
+    for expected_match in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/crapts/src/names.rs",
+        "crates/cargo-crap-core/src/entry.rs",
+        "crates/crapts/tests/fixtures/corpus/excalidraw/golden.json",
+        "rust-toolchain.toml",
+        "schemas/crapts/report-v1.json",
+        "scripts/corpus/checkout.sh",
+        ".gitattributes",
+        ".github/workflows/corpus.yml",
+    ] {
+        assert!(
+            any_glob_matches(&corpus_globs, expected_match),
+            "corpus filter misses {expected_match}: {corpus_globs:?}"
+        );
+    }
+    for unrelated in ["README.md", "docs/guide.md"] {
+        assert!(
+            !any_glob_matches(&corpus_globs, unrelated),
+            "corpus filter unexpectedly matches {unrelated}"
+        );
+    }
+
+    let corpus_job = yaml_block(&wf_lines, "  corpus:");
+    assert_corpus_job_steps(&corpus_job);
+
+    let ci_rust_globs = filter_globs(&ci, "            rust:");
+    assert!(
+        any_glob_matches(&ci_rust_globs, ".github/workflows/corpus.yml"),
+        "ci.yml rust filter misses .github/workflows/corpus.yml"
+    );
+    assert!(
+        any_glob_matches(
+            &ci_rust_globs,
+            "crates/crapts/tests/fixtures/corpus/excalidraw/golden.json"
+        ),
+        "ci.yml rust filter misses crates/*/tests/fixtures/**"
+    );
+}
+
+#[test]
+fn oxc_upgrade_drift_fails_until_golden_artifacts_are_updated_in_the_reviewed_diff() {
+    let workflow = fs::read_to_string(workspace_root().join(".github/workflows/corpus.yml"))
+        .expect("read .github/workflows/corpus.yml");
+    let corpus_globs = filter_globs(&workflow, "            corpus:");
+    for bumped in ["Cargo.toml", "Cargo.lock"] {
+        assert!(
+            any_glob_matches(&corpus_globs, bumped),
+            "corpus.yml filter misses Oxc upgrade file {bumped}"
+        );
+    }
+
+    let coverage = istanbul_for_a(1, 0);
+    let (corpus, base_pin) = TempCorpus::new(&[("src/a.ts", base_source_a())], &coverage);
+    corpus.record_baseline(&base_pin);
+    let golden_json_path = corpus.fixture_dir.path().join("golden.json");
+    let golden_stderr_path = corpus.fixture_dir.path().join("golden.stderr");
+    let before_json = fs::read(&golden_json_path).unwrap();
+    let before_stderr = fs::read(&golden_stderr_path).unwrap();
+
+    let drifted_src = format!(
+        "{}\nexport function oxc_new_branch(v: number) {{\n  return v > 0 ? v : -v;\n}}\n",
+        base_source_a()
+    );
+    let drifted_pin = corpus.commit_file("src/a.ts", &drifted_src);
+
+    let verify_mode = parse_update_mode(Some("0")).unwrap();
+    let err = run_corpus(
+        corpus.repo_dir.path(),
+        corpus.fixture_dir.path(),
+        &drifted_pin,
+        verify_mode,
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert_eq!(err.kind, FailureKind::Drift);
+    assert!(
+        msg.contains("added row src/a.ts::oxc_new_branch") && msg.contains("outer member summary"),
+        "{msg}"
+    );
+    assert_eq!(fs::read(&golden_json_path).unwrap(), before_json);
+    assert_eq!(fs::read(&golden_stderr_path).unwrap(), before_stderr);
+
+    let update_mode = parse_update_mode(Some("1")).unwrap();
+    run_corpus(
+        corpus.repo_dir.path(),
+        corpus.fixture_dir.path(),
+        &drifted_pin,
+        update_mode,
+    )
+    .expect("update writes refreshed golden artifacts");
+    assert_ne!(fs::read(&golden_json_path).unwrap(), before_json);
+
+    run_corpus(
+        corpus.repo_dir.path(),
+        corpus.fixture_dir.path(),
+        &drifted_pin,
+        verify_mode,
+    )
+    .expect("subsequent verify passes after golden update");
+}
+
 #[test]
 fn row_level_outer_member_duplicate_key_and_stderr_drift_fails_with_a_named_diff() {
     let coverage = istanbul_for_a(1, 0);
