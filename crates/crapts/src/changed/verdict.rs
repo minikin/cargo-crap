@@ -388,14 +388,15 @@ fn merged(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
 }
 
 /// The lines of `ranges` outside every range of `holes`, both sorted and
-/// merged. The holes slice only shrinks, so each hole is passed once.
+/// merged. The holes slice only shrinks, so the sweep passes each hole once.
 fn outside(
     ranges: &[(u32, u32)],
     mut holes: &[(u32, u32)],
 ) -> Vec<u32> {
     let mut lines = Vec::new();
     for &(start, end) in ranges {
-        holes = &holes[holes.partition_point(|&(_, last)| last < start)..];
+        let passed = holes.iter().take_while(|&&(_, last)| last < start).count();
+        holes = &holes[passed..];
         let mut next = Some(start);
         for &(first, last) in holes.iter().take_while(|&&(first, _)| first <= end) {
             let Some(line) = next else { break };
@@ -765,6 +766,27 @@ mod tests {
     }
 
     #[test]
+    fn a_constructor_owning_disjoint_initializers_keeps_each_boundary() {
+        let count: u32 = 300;
+        let mut source = String::from("class C {\n");
+        for i in 0..count {
+            writeln!(source, "  a{i} = () => {{\n    go()\n  }}\n  m{i}() {{}}").unwrap();
+        }
+        source.push_str("  constructor() {\n    go()\n  }\n}\n");
+        let rows = rows(&source);
+        let index = rows
+            .iter()
+            .position(|row| row.name == "C::constructor")
+            .unwrap();
+        let written = 2 + 4 * count;
+        let expected: BTreeSet<u32> = (0..count)
+            .flat_map(|i| [2 + 4 * i, 4 + 4 * i])
+            .chain([written, written + 1, written + 2])
+            .collect();
+        assert_eq!(own_lines(&rows, index), expected);
+    }
+
+    #[test]
     fn multiline_callbacks_lose_their_interiors_and_keep_their_boundaries() {
         let count: u32 = 2_000;
         let mut source = String::from("function outer() {\n");
@@ -793,6 +815,10 @@ mod tests {
         assert_eq!(outside(&[(1, 3)], &[(10, 12)]), [1, 2, 3]);
         assert_eq!(outside(&[(5, 8)], &[(3, 5)]), [6, 7, 8]);
         assert_eq!(outside(&[(1, 2), (6, 9)], &[(2, 7)]), [1, 8, 9]);
+        assert_eq!(
+            outside(&[(1, 2), (5, 6), (9, 10), (13, 14)], &[(6, 9), (14, 20)]),
+            [1, 2, 5, 10, 13]
+        );
     }
 
     #[test]

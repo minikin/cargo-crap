@@ -54,11 +54,12 @@ pub struct Presentation<'a> {
     pub fail_changed: bool,
     pub summary: bool,
     pub links: Option<&'a SourceLinks>,
-    /// Where the invocation sits in the repository, for annotation paths.
+    /// Where the invocation sits in the repository, for annotation paths and
+    /// source links.
     pub repo_prefix: Option<&'a Path>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ChangedSection {
     json: Box<RawValue>,
     failures: usize,
@@ -88,7 +89,7 @@ impl ChangedSection {
         presentation: Presentation<'_>,
     ) -> Self {
         let mut skipped: Vec<&Skipped> = skipped.iter().collect();
-        skipped.sort_by(|a, b| a.path.cmp(&b.path));
+        skipped.sort_by_key(|s| (&s.path, s.reason));
         let shown = shown(&judged.entries, presentation);
         let text = Text::new(&TextInputs {
             shown: &shown,
@@ -134,20 +135,41 @@ impl ChangedSection {
         }
     }
 
+    /// The same section with at most `limit` rows, and never more than
+    /// [`PR_COMMENT_ROWS`], in its PR-comment table.
     #[must_use]
     pub fn with_row_limit(
         &self,
         limit: usize,
-    ) -> Self {
-        let mut section = self.clone();
-        section.text.row_limit = limit;
-        section
+    ) -> RowLimited<'_> {
+        RowLimited {
+            section: self,
+            limit: limit.min(PR_COMMENT_ROWS),
+        }
     }
 
     /// The rows the text forms show before any row limit.
     #[must_use]
     pub fn shown_rows(&self) -> usize {
         self.text.rows()
+    }
+}
+
+impl ChangedSection {
+    fn write_limited(
+        &self,
+        format: Format,
+        limit: usize,
+        out: &mut dyn Write,
+    ) -> WriteResult {
+        match format {
+            Format::Human => self.text.human(out)?,
+            Format::Markdown => self.text.markdown(None, out)?,
+            Format::PrComment => self.text.markdown(Some(limit), out)?,
+            Format::GitHub => self.text.github(out)?,
+            Format::Json | Format::Sarif | Format::Shields => {},
+        }
+        Ok(())
     }
 }
 
@@ -165,14 +187,7 @@ impl Section for ChangedSection {
         format: Format,
         out: &mut dyn Write,
     ) -> WriteResult {
-        match format {
-            Format::Human => self.text.human(out)?,
-            Format::Markdown => self.text.markdown(None, out)?,
-            Format::PrComment => self.text.markdown(Some(self.text.row_limit), out)?,
-            Format::GitHub => self.text.github(out)?,
-            Format::Json | Format::Sarif | Format::Shields => {},
-        }
-        Ok(())
+        self.write_limited(format, PR_COMMENT_ROWS, out)
     }
 
     fn placement(&self) -> Placement {
@@ -181,6 +196,39 @@ impl Section for ChangedSection {
 
     fn failures(&self) -> Option<usize> {
         Some(self.failures)
+    }
+}
+
+/// A borrowed [`ChangedSection`] whose PR-comment table holds fewer rows.
+#[derive(Clone, Copy, Debug)]
+pub struct RowLimited<'s> {
+    section: &'s ChangedSection,
+    limit: usize,
+}
+
+impl Section for RowLimited<'_> {
+    fn json_key(&self) -> &'static str {
+        "changed"
+    }
+
+    fn json(&self) -> Box<RawValue> {
+        self.section.json()
+    }
+
+    fn write(
+        &self,
+        format: Format,
+        out: &mut dyn Write,
+    ) -> WriteResult {
+        self.section.write_limited(format, self.limit, out)
+    }
+
+    fn placement(&self) -> Placement {
+        self.section.placement()
+    }
+
+    fn failures(&self) -> Option<usize> {
+        self.section.failures()
     }
 }
 

@@ -1652,7 +1652,6 @@ fn report(
 
 #[test]
 fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
-    // Given a section built by crapts itself and a baseline for the delta envelope
     let report_schema = common::compile("schemas/crapts/report-v1.json");
     let delta_schema = common::compile("schemas/crapts/delta-v1.json");
     let base = format!("{}\n{}", func("legacy", 10), func("gone", 3));
@@ -1740,6 +1739,34 @@ fn top_breaks_score_ties_by_file_function_and_line_as_the_core_does() {
     let section = ChangedSection::presented(&comparison(), &judged, &[], presentation);
     let changed: Value = serde_json::from_str(section.json().get()).unwrap();
     assert_eq!(changed["entries"][0]["function"], "abe");
+}
+
+#[test]
+fn a_row_limit_never_lifts_the_pr_comment_cap() {
+    let head: Vec<String> = (1..=30).map(|i| func(&format!("f{i:02}"), 6)).collect();
+    let pair = Pair::new("src/many.ts", "", &head.join("\n"));
+    let judged = pair.judged(&pair.uncovered(), &[]);
+    let section = ChangedSection::new(&comparison(), &judged, &[]);
+    let rows = |section: &dyn Section, format| {
+        let mut out = Vec::new();
+        section.write(format, &mut out).unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("| fail"))
+            .count()
+    };
+    assert_eq!(section.shown_rows(), 30);
+    assert_eq!(rows(&section, Format::PrComment), 25);
+    assert_eq!(rows(&section.with_row_limit(30), Format::PrComment), 25);
+    let cut = section.with_row_limit(7);
+    assert_eq!(rows(&cut, Format::PrComment), 7);
+    assert_eq!(rows(&cut, Format::Markdown), 30);
+    assert_eq!(cut.json().get(), section.json().get());
+    assert_eq!(cut.json_key(), "changed");
+    assert_eq!(section.failures(), Some(30));
+    assert_eq!(cut.failures(), Some(30));
+    assert_eq!(cut.placement(), Placement::Lead);
 }
 
 #[test]
@@ -1964,8 +1991,6 @@ mod cli {
             self.git(&["commit", "-q", "--allow-empty", "-m", message]);
         }
 
-        /// LCOV that lists every line of every regular file with one of the
-        /// eight supported extensions, each with count 0.
         pub(super) fn uncovered(&self) {
             let mut text = String::new();
             let mut pending = vec![self.root()];
@@ -4204,7 +4229,23 @@ mod rendering {
                 "{format}: {body}"
             );
             if format == "pr-comment" {
-                assert_eq!(lines[1], "Changed functions: 2 touched, 1 fail.", "{body}");
+                assert_eq!(
+                    body.lines().nth(1),
+                    Some("Changed functions: 2 touched, 1 fail."),
+                    "{body}"
+                );
+            }
+            if format == "markdown" {
+                let head: Vec<&str> = body.lines().take(3).collect();
+                assert_eq!(
+                    head,
+                    [
+                        "<!-- crapts-report -->",
+                        "",
+                        "Changed functions: 2 touched, 1 fail."
+                    ],
+                    "{body}"
+                );
             }
         }
     }
@@ -4278,9 +4319,9 @@ mod rendering {
                         !summarized && flags.len() == 2 && flags[1] == "pessimistic",
                         "{format} {flags:?}: {body}"
                     );
-                    if has_table && format != "text" {
-                        for row in table_rows(&lines) {
-                            assert_eq!(cells(row)[4], DASH, "{body}");
+                    if has_table {
+                        for name in ["legacy", "fresh"] {
+                            assert_eq!(coverage_cell(&lines, format, name), DASH, "{body}");
                         }
                     }
                 }
@@ -4305,31 +4346,33 @@ mod rendering {
         assert!(!body.contains("Changed"), "{body}");
     }
 
-    /// GitHub's limit can be reached only with paths longer than macOS
-    /// allows, so these cases run where `PATH_MAX` is 4096.
+    /// These fixtures reach the limit through a path of about 2,500
+    /// characters, which macOS refuses and Linux, with `PATH_MAX` 4096, takes.
     #[cfg(target_os = "linux")]
     mod budget {
         use super::*;
 
-        /// A directory path of `length` characters under `src`, in components a
-        /// file system accepts, whose last character is `last`.
         fn long_dir(
             length: usize,
             last: char,
         ) -> String {
+            let rest = length - "src".len();
+            let parts = rest.div_ceil(201);
+            let mut names = vec![rest / parts - 1; parts];
+            for name in names.iter_mut().take(rest % parts) {
+                *name += 1;
+            }
             let mut dir = String::from("src");
-            while dir.len() + 1 < length {
-                let room = (length - dir.len() - 1).min(200);
+            for name in names {
                 dir.push('/');
-                dir.push_str(&"d".repeat(room));
+                dir.push_str(&"d".repeat(name));
             }
             dir.pop();
             dir.push(last);
+            assert_eq!(dir.chars().count(), length);
             dir
         }
 
-        /// The PR comment, its UTF-16 length and exit code for 30 new functions
-        /// below `dir`, with the exit code of the same run in JSON.
         fn sized(
             dir: &str,
             marker: &str,
@@ -4343,16 +4386,6 @@ mod rendering {
             (body, units, code, json_code)
         }
 
-        /// A 60-character marker whose first `wide` characters are supplementary,
-        /// two code units each.
-        fn marker(wide: usize) -> String {
-            let mut marker: String = "\u{1F600}".repeat(wide);
-            marker.push_str(&"m".repeat(60 - wide));
-            marker
-        }
-
-        /// A directory and marker whose complete comment has `target` units, with
-        /// one supplementary character ending the directory when `wide_path`.
         fn tuned(
             target: usize,
             wide_path: bool,
@@ -4404,20 +4437,8 @@ mod rendering {
             let (body, units, code, json_code) = sized(&long_dir(3_000, 'd'), &marker(0));
             assert!(units <= 65_536, "{units}");
             assert_eq!(code, json_code);
-            let lines = nonempty(&body);
-            assert!(lines.contains(&counts));
-            let rows = table_rows(&lines);
-            let kept = rows.len();
-            assert!(kept < 25, "{kept}");
-            let after = lines
-                .iter()
-                .position(|line| *line == *rows.last().unwrap())
-                .unwrap()
-                + 1;
-            assert_eq!(
-                lines[after],
-                format!("and {} more changed functions", 30 - kept)
-            );
+            assert!(nonempty(&body).contains(&counts));
+            assert_longest_prefix(&body);
         }
     }
 
@@ -4443,21 +4464,15 @@ mod rendering {
             "the core report is in its summary form"
         );
         let lines = nonempty(&body);
-        let rows = table_rows(&lines);
-        let kept = rows.len();
-        assert!(kept > 0 && kept < 25, "{kept}");
-        assert!(rows.iter().all(|row| row.contains(&reference)));
-        let after = lines
-            .iter()
-            .position(|line| *line == *rows.last().unwrap())
-            .unwrap()
-            + 1;
-        assert_eq!(
-            lines[after],
-            format!("and {} more changed functions", 30 - kept)
+        assert!(
+            table_rows(&lines)
+                .iter()
+                .all(|row| row.contains(&reference))
         );
+        assert_longest_prefix(&body);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_pr_comment_that_cannot_fit_even_without_changed_rows_exits_2() {
         let repo = Repo::standard();
@@ -4486,5 +4501,163 @@ mod rendering {
         assert_eq!(out.stdout.as_slice(), b"");
         assert!(!repo.root().join("out.md").exists());
         assert!(String::from_utf8_lossy(&out.stderr).contains("65536"));
+    }
+
+    /// Windows limits a whole command line to 32,767 characters, so the
+    /// oversized marker goes through the library entry point here.
+    #[test]
+    fn an_oversized_marker_is_refused_before_the_output_is_touched() {
+        let repo = Repo::standard();
+        repo.write(
+            "src/app.ts",
+            format!("{}{}", app(6, 2, 1), func("fresh", 6)),
+        );
+        repo.uncovered();
+        let marker = "m".repeat(65_536);
+        let cases: [&[&str]; 3] = [&["--base", "main"], &[], &["--base", "main", "--summary"]];
+        for base in cases {
+            repo.write("out.md", "keep");
+            let args: Vec<std::ffi::OsString> = [
+                &["--coverage", "cov.info", "--format", "pr-comment"][..],
+                base,
+                &["--comment-marker", &marker, "--output", "out.md"],
+            ]
+            .concat()
+            .into_iter()
+            .map(Into::into)
+            .collect();
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let code = crapts::cli::run(&repo.root(), &args, &mut out, &mut err);
+            assert_eq!(code, std::process::ExitCode::from(2), "{base:?}");
+            assert_eq!(out.as_slice(), b"");
+            assert_eq!(repo.read("out.md"), "keep");
+            assert!(String::from_utf8_lossy(&err).contains("65536"));
+        }
+    }
+
+    fn marker(wide: usize) -> String {
+        let mut marker: String = "\u{1F600}".repeat(wide);
+        marker.push_str(&"m".repeat(60 - wide));
+        marker
+    }
+
+    fn coverage_cell(
+        lines: &[&str],
+        format: &str,
+        name: &str,
+    ) -> String {
+        if format == "text" {
+            let row = lines
+                .iter()
+                .find(|line| line.split_whitespace().nth(1) == Some(name))
+                .unwrap_or_else(|| panic!("no {name} row"));
+            let cells: Vec<&str> = row
+                .split("  ")
+                .map(str::trim)
+                .filter(|cell| !cell.is_empty())
+                .collect();
+            return cells[4].to_owned();
+        }
+        let span = format!("`{name}`");
+        let row = table_rows(lines)
+            .into_iter()
+            .find(|row| cells(row)[1] == span)
+            .unwrap_or_else(|| panic!("no {name} row"));
+        cells(row)[4].to_owned()
+    }
+
+    /// Checks that the changed table keeps f01 onward in order and that one
+    /// more row, with its omission line adjusted, would pass the limit.
+    fn assert_longest_prefix(body: &str) {
+        let lines = nonempty(body);
+        let rows = table_rows(&lines);
+        let kept = rows.len();
+        assert!(kept > 0 && kept < 25, "{kept}");
+        for (i, row) in rows.iter().enumerate() {
+            assert!(cells(row)[1].contains(&format!("`f{:02}`", i + 1)), "{row}");
+        }
+        let omitted = 30 - kept;
+        let omission = format!("and {omitted} more changed functions");
+        let after = lines
+            .iter()
+            .position(|line| *line == rows[kept - 1])
+            .unwrap()
+            + 1;
+        assert_eq!(lines[after], omission);
+        let line = |i: usize| 9 * (i - 1) + 1;
+        let next = rows[kept - 1]
+            .replace(&format!("`f{kept:02}`"), &format!("`f{:02}`", kept + 1))
+            .replace(
+                &format!(":{}`", line(kept)),
+                &format!(":{}`", line(kept + 1)),
+            )
+            .replace(
+                &format!("#L{})", line(kept)),
+                &format!("#L{})", line(kept + 1)),
+            );
+        let noun = if omitted == 2 {
+            "function"
+        } else {
+            "functions"
+        };
+        let fewer = format!("and {} more changed {noun}", omitted - 1);
+        let units = |text: &str| text.encode_utf16().count();
+        let grown = units(body) + units(&next) + 1 + units(&fewer) - units(&omission);
+        assert!(grown > 65_536, "{grown}");
+    }
+
+    fn plain_comment(
+        reference: usize,
+        marker: &str,
+    ) -> (String, i32) {
+        let repo = Repo::standard();
+        repo.write("src/many.ts", many(30));
+        repo.uncovered();
+        let reference = "r".repeat(reference);
+        let out = repo.run_in(
+            &repo.root(),
+            &[
+                "--coverage",
+                "cov.info",
+                "--format",
+                "pr-comment",
+                "--comment-marker",
+                marker,
+                "--repo-url",
+                "https://example.invalid/o/r",
+                "--commit-ref",
+                &reference,
+            ],
+        );
+        (
+            String::from_utf8(out.stdout).unwrap(),
+            out.status.code().unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_comment_without_base_is_fitted_to_the_limit_as_well() {
+        let units = |body: &str| body.encode_utf16().count();
+        let (short, _) = plain_comment(100, &marker(0));
+        let (longer, _) = plain_comment(101, &marker(0));
+        let per_char = units(&longer) - units(&short);
+        assert!(per_char <= 61, "{per_char}");
+        let room = 65_536 - units(&short);
+        let (body, code) = plain_comment(100 + room / per_char, &marker(room % per_char));
+        assert_eq!(units(&body), 65_536);
+        assert_eq!(code, 0);
+        assert!(
+            body.contains("| CRAP | CC |"),
+            "the core report is complete"
+        );
+        let (body, code) = plain_comment(100 + room / per_char, &marker(room % per_char + 1));
+        assert!(units(&body) <= 65_536);
+        assert_eq!(code, 0);
+        assert!(
+            !body.contains("| CRAP | CC |"),
+            "the core report is in its summary form"
+        );
+        assert!(!body.contains("## Changed functions"));
     }
 }

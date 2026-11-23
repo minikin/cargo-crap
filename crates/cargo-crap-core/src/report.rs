@@ -61,7 +61,7 @@ pub use section::{Placement, Section, WriteResult};
 pub(crate) use summary::render_delta_summary_lines;
 pub use summary::{render_delta_counts, render_delta_summary, render_summary};
 pub use tool::{Schemas, Tool};
-pub use types::{output_width, set_color_enabled, with_color};
+pub use types::{display_width, output_width, set_color_enabled, with_color};
 
 /// Output format for the report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

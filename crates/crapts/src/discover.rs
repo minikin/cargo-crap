@@ -142,7 +142,25 @@ impl DiscoveryScope {
             self.worktree.root.as_deref(),
             path,
         );
-        Ok(self.place(&absolute, true)? == Placement::Scored)
+        let name = relative(&self.cwd, &absolute);
+        if self.selected.contains(&name) {
+            return Ok(true);
+        }
+        let local = Path::new(&name);
+        if self.rejection(local, &absolute, false).is_some() || file_type(&absolute)?.is_some() {
+            return Ok(false);
+        }
+        if !self.worktree.indexed {
+            return Ok(!local.iter().any(pruned));
+        }
+        if absolute
+            .ancestors()
+            .skip(1)
+            .any(|parent| self.leaves.contains(parent))
+        {
+            return Ok(false);
+        }
+        git_allows(&self.cwd, &name)
     }
 
     pub(crate) fn display(
@@ -178,40 +196,6 @@ impl DiscoveryScope {
         }
         self.rejection(Path::new(&name), absolute, true)
             .unwrap_or(Placement::Scored)
-    }
-
-    fn place(
-        &self,
-        absolute: &Path,
-        present_rejects: bool,
-    ) -> Result<Placement, InputError> {
-        let name = relative(&self.cwd, absolute);
-        if self.selected.contains(&name) {
-            return Ok(Placement::Scored);
-        }
-        let local = Path::new(&name);
-        if let Some(rejected) = self.rejection(local, absolute, false) {
-            return Ok(rejected);
-        }
-        if present_rejects && file_type(absolute)?.is_some() {
-            return Ok(Placement::Excluded);
-        }
-        let allowed = if !self.worktree.indexed {
-            !local.iter().any(pruned)
-        } else if absolute
-            .ancestors()
-            .skip(1)
-            .any(|parent| self.leaves.contains(parent))
-        {
-            false
-        } else {
-            git_allows(&self.cwd, &name)?
-        };
-        Ok(if allowed {
-            Placement::Scored
-        } else {
-            Placement::Excluded
-        })
     }
 
     fn rejection(

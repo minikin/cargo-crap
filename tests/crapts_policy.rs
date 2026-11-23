@@ -3178,7 +3178,6 @@ fn pr_comment_markers_and_links_belong_to_the_invocation() {
 
 #[test]
 fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
-    // Given a baseline so the delta envelope is exercised as well
     let dir = tempfile::tempdir().unwrap();
     let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
     let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
@@ -3226,7 +3225,6 @@ fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
         };
         let mut with = render(&[&section]);
         let without = render(&[]);
-        // Then both validate, since a run without --base writes no changed member
         assert!(schema.is_valid(&with), "{with:#}");
         assert!(schema.is_valid(&without));
         with["changed"].as_object_mut().unwrap().remove("counts");

@@ -35,29 +35,32 @@ pub(crate) struct Selection {
 }
 
 #[derive(Debug)]
-struct Eligible {
+struct BaseSide {
     path: PathBuf,
     display: PathBuf,
-    /// A head side's bytes, read once for both the binary test and analysis.
-    bytes: Option<Vec<u8>>,
 }
 
-enum Fate {
-    Eligible(Option<Vec<u8>>),
-    Skipped(SkipReason),
+/// The bytes read once for both the binary test and strict analysis.
+#[derive(Debug)]
+struct HeadSide {
+    display: PathBuf,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug)]
 struct Planned {
-    base: Option<Eligible>,
-    head: Option<Eligible>,
+    base: Option<BaseSide>,
+    head: Option<HeadSide>,
     change: Option<Change>,
 }
 
 impl Planned {
     fn key(&self) -> &Path {
-        let side = self.head.as_ref().or(self.base.as_ref());
-        side.map_or(Path::new(""), |side| side.display.as_path())
+        match (&self.head, &self.base) {
+            (Some(head), _) => &head.display,
+            (None, Some(base)) => &base.display,
+            (None, None) => Path::new(""),
+        }
     }
 }
 
@@ -70,6 +73,12 @@ pub(crate) fn select(
     rev: &str,
 ) -> Result<Selection, InputError> {
     let repo = Repo::open(cwd).map_err(|e| base_error(&e))?;
+    // Discovery holds canonical paths, which on Windows carry a verbatim
+    // prefix that Git's own spelling of the root lacks.
+    let root = repo
+        .root()
+        .canonicalize()
+        .map_err(|e| InputError::at(repo.root(), e))?;
     let head = repo.head().map_err(|e| base_error(&e))?;
     let commit = repo.resolve_commit(rev).map_err(|e| base_error(&e))?;
     let merge_base = repo
@@ -77,7 +86,7 @@ pub(crate) fn select(
         .map_err(|e| base_error(&e))?;
     let unmerged = repo.unmerged().map_err(|e| base_error(&e))?;
     if !unmerged.is_empty() {
-        return Err(unresolved(scope, repo.root(), &unmerged));
+        return Err(unresolved(scope, &root, &unmerged));
     }
     let dirty = repo.is_dirty().map_err(|e| base_error(&e))?;
     let changes = repo
@@ -89,7 +98,7 @@ pub(crate) fn select(
     for change in changes {
         plan(
             scope,
-            repo.root(),
+            &root,
             change,
             &mut Outcome {
                 planned: &mut planned,
@@ -155,105 +164,103 @@ struct Outcome<'a> {
     skipped_heads: &'a mut BTreeSet<PathBuf>,
 }
 
+impl Outcome<'_> {
+    fn skip(
+        &mut self,
+        display: PathBuf,
+        reason: SkipReason,
+        is_head: bool,
+    ) {
+        self.skipped
+            .insert((display.to_string_lossy().into_owned(), reason));
+        if is_head {
+            self.skipped_heads.insert(display);
+        }
+    }
+}
+
 fn plan(
     scope: &DiscoveryScope,
     root: &Path,
     change: Change,
     outcome: &mut Outcome<'_>,
 ) -> Result<(), InputError> {
-    let base = match &change.old {
-        Some(side) => eligible(scope, root, side, false, outcome)?,
-        None => None,
-    };
+    let base = change
+        .old
+        .as_ref()
+        .and_then(|side| base_side(scope, root, side, outcome));
     let head = match &change.new {
-        Some(side) => eligible(scope, root, side, true, outcome)?,
+        Some(side) => head_side(scope, root, side, outcome)?,
         None => None,
     };
     match (base, head) {
-        (Some(base), Some(head)) => {
-            outcome.planned.push(Planned {
-                base: Some(base),
-                head: Some(head),
-                change: Some(change),
-            });
-        },
-        (base, head) => {
-            for (base, head) in [(base, None), (None, head)] {
-                if base.is_some() || head.is_some() {
-                    outcome.planned.push(Planned {
-                        base,
-                        head,
-                        change: None,
-                    });
-                }
-            }
-        },
+        (None, None) => {},
+        (Some(base), Some(head)) => outcome.planned.push(Planned {
+            base: Some(base),
+            head: Some(head),
+            change: Some(change),
+        }),
+        (base, head) => outcome.planned.push(Planned {
+            base,
+            head,
+            change: None,
+        }),
     }
     Ok(())
 }
 
-fn eligible(
+fn base_side(
     scope: &DiscoveryScope,
     root: &Path,
     side: &Side,
-    is_head: bool,
     outcome: &mut Outcome<'_>,
-) -> Result<Option<Eligible>, InputError> {
+) -> Option<BaseSide> {
     let absolute = root.join(&side.path);
     let display = scope.display(&absolute);
-    let reason = match fate(scope, side, &absolute, &display, is_head)? {
-        Fate::Eligible(bytes) => {
-            return Ok(Some(Eligible {
-                path: side.path.clone(),
-                display,
-                bytes,
-            }));
-        },
-        Fate::Skipped(reason) => reason,
-    };
-    if is_head {
-        outcome.skipped_heads.insert(display.clone());
+    let placement = scope.place_historical(&absolute);
+    if let Some(reason) = skip_reason(side, placement) {
+        outcome.skip(display, reason, false);
+        return None;
     }
-    outcome
-        .skipped
-        .insert((display.to_string_lossy().into_owned(), reason));
-    Ok(None)
+    Some(BaseSide {
+        path: side.path.clone(),
+        display,
+    })
 }
 
-fn fate(
+fn head_side(
     scope: &DiscoveryScope,
+    root: &Path,
     side: &Side,
-    absolute: &Path,
-    display: &Path,
-    is_head: bool,
-) -> Result<Fate, InputError> {
+    outcome: &mut Outcome<'_>,
+) -> Result<Option<HeadSide>, InputError> {
+    let absolute = root.join(&side.path);
+    let display = scope.display(&absolute);
+    let placement = scope.place_present(&absolute);
+    if let Some(reason) = skip_reason(side, placement) {
+        outcome.skip(display, reason, true);
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&absolute).map_err(|e| InputError::at(&display, e))?;
+    // The file may have changed since the reader looked at it.
+    if bytes.iter().take(8000).any(|&byte| byte == 0) {
+        outcome.skip(display, SkipReason::Binary, true);
+        return Ok(None);
+    }
+    Ok(Some(HeadSide { display, bytes }))
+}
+
+fn skip_reason(
+    side: &Side,
+    placement: Placement,
+) -> Option<SkipReason> {
     match side.mode {
         mode if mode.is_regular() => {},
-        Mode::SYMLINK => return Ok(Fate::Skipped(SkipReason::Symlink)),
-        Mode::GITLINK => return Ok(Fate::Skipped(SkipReason::Submodule)),
-        _ => return Ok(Fate::Skipped(SkipReason::Unsupported)),
+        Mode::SYMLINK => return Some(SkipReason::Symlink),
+        Mode::GITLINK => return Some(SkipReason::Submodule),
+        _ => return Some(SkipReason::Unsupported),
     }
-    let placement = if is_head {
-        scope.place_present(absolute)
-    } else {
-        scope.place_historical(absolute)
-    };
-    if let Some(reason) = placement_reason(placement) {
-        return Ok(Fate::Skipped(reason));
-    }
-    if !is_head {
-        return Ok(if side.binary {
-            Fate::Skipped(SkipReason::Binary)
-        } else {
-            Fate::Eligible(None)
-        });
-    }
-    let bytes = std::fs::read(absolute).map_err(|e| InputError::at(display, e))?;
-    Ok(if bytes.iter().take(8000).any(|&byte| byte == 0) {
-        Fate::Skipped(SkipReason::Binary)
-    } else {
-        Fate::Eligible(Some(bytes))
-    })
+    placement_reason(placement).or_else(|| side.binary.then_some(SkipReason::Binary))
 }
 
 fn placement_reason(placement: Placement) -> Option<SkipReason> {
@@ -304,7 +311,7 @@ fn read_sides(
                 .transpose()?;
             let head = planned.head.map(|side| ReadSide {
                 display: side.display,
-                bytes: side.bytes.unwrap_or_default(),
+                bytes: side.bytes,
             });
             Ok(Read { base, head, edits })
         })

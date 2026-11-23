@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
-use cargo_crap_core::report::SourceLinks;
+use cargo_crap_core::report::{SourceLinks, display_width};
 
 use crate::changed::verdict::{Change, Counts, Entry, Verdict};
 
@@ -39,7 +39,6 @@ pub(super) struct Text {
     pub(super) fail_changed: bool,
     pub(super) summary: bool,
     links: Option<SourceLinks>,
-    pub(super) row_limit: usize,
 }
 
 pub(super) struct TextInputs<'a> {
@@ -81,7 +80,6 @@ impl Text {
             fail_changed: inputs.fail_changed,
             summary: inputs.summary,
             links: inputs.links.cloned(),
-            row_limit: PR_COMMENT_ROWS,
         }
     }
 
@@ -90,7 +88,10 @@ impl Text {
     }
 
     fn pass(&self) -> usize {
-        self.counts.touched - self.counts.fail - self.counts.over
+        self.counts
+            .touched
+            .saturating_sub(self.counts.fail)
+            .saturating_sub(self.counts.over)
     }
 
     fn counts_line(&self) -> String {
@@ -212,17 +213,20 @@ impl Text {
                 ]
             })
             .collect();
-        let mut widths = header.each_ref().map(|cell| cell.chars().count());
+        let mut widths = header.each_ref().map(|cell| display_width(cell));
         for row in &rows {
             for (width, cell) in widths.iter_mut().zip(row) {
-                *width = (*width).max(cell.chars().count());
+                *width = (*width).max(display_width(cell));
             }
         }
         let line = |cells: &[String; 7]| {
             let padded: Vec<String> = cells
                 .iter()
                 .zip(widths)
-                .map(|(cell, width)| format!("{cell:<width$}"))
+                .map(|(cell, width)| {
+                    let pad = width.saturating_sub(display_width(cell));
+                    format!("{cell}{}", " ".repeat(pad))
+                })
                 .collect();
             padded.join("  ").trim_end().to_owned()
         };
@@ -294,8 +298,8 @@ impl Text {
                 out,
                 "| {} | {} | {} | {} | {} | {:.1} | {} |",
                 verdict_word(row.verdict),
-                self.linked(format!("`{}`", row.function), row),
-                self.linked(format!("`{}:{}`", row.file, row.line), row),
+                cell(&self.linked(code_span(&row.function), row)),
+                cell(&self.linked(code_span(&format!("{}:{}", row.file, row.line)), row)),
                 row.cc(),
                 row.coverage
                     .map_or_else(|| DASH.to_owned(), |p| format!("{p:.1}")),
@@ -405,6 +409,25 @@ fn repository_path(
     parts.join("/")
 }
 
+/// A code span that holds `text` whatever backticks it contains: the fence
+/// is one backtick longer than the longest run inside, padded by a space
+/// when the text starts or ends with one.
+fn code_span(text: &str) -> String {
+    let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest + 1);
+    let pad = if text.starts_with('`') || text.ends_with('`') {
+        " "
+    } else {
+        ""
+    };
+    format!("{fence}{pad}{text}{pad}{fence}")
+}
+
+/// GFM ends a table cell at an unescaped pipe, even inside a code span.
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|")
+}
+
 fn verdict_word(verdict: Verdict) -> &'static str {
     match verdict {
         Verdict::Fail => "fail",
@@ -469,6 +492,24 @@ mod tests {
                 worse: false,
                 reason: String::new(),
             },
+        }
+    }
+
+    fn inputs<'a>(
+        shown: &'a [&'a Entry<'a>],
+        counts: Counts,
+    ) -> TextInputs<'a> {
+        TextInputs {
+            shown,
+            counts,
+            removed: 0,
+            skipped: 0,
+            rev: "main",
+            merge_base: "0123456789abcdef",
+            fail_changed: false,
+            summary: false,
+            links: None,
+            repo_prefix: None,
         }
     }
 
@@ -583,6 +624,94 @@ mod tests {
             "packages/app/src/x.ts"
         );
         assert_eq!(repository_path(None, Path::new("src/x.ts")), "src/x.ts");
+    }
+
+    #[test]
+    fn markdown_cells_survive_pipes_and_backticks() {
+        assert_eq!(code_span("src/a.ts:1"), "`src/a.ts:1`");
+        assert_eq!(code_span("a`b"), "``a`b``");
+        assert_eq!(code_span("`x"), "`` `x ``");
+        assert_eq!(code_span("x``"), "``` x`` ```");
+        assert_eq!(cell("`src/a|b.ts:1`"), "`src/a\\|b.ts:1`");
+        assert_eq!(
+            cell("[`a|b`](https://h.invalid/a|b#L1)"),
+            "[`a\\|b`](https://h.invalid/a\\|b#L1)"
+        );
+    }
+
+    #[test]
+    fn markdown_rows_escape_linked_and_unlinked_locations() {
+        let rows = analyze(
+            Path::new("src/a|b.ts"),
+            b"function f() {}\n",
+            Mode::Strict(Side::Head),
+        )
+        .unwrap()
+        .rows;
+        let entries = [entry(&rows[0], Verdict::Pass)];
+        let shown: Vec<&Entry<'_>> = entries.iter().collect();
+        let counts = Counts {
+            touched: 1,
+            ..Counts::default()
+        };
+        let links = SourceLinks::new("https://h.invalid/o/r".to_owned(), "abc".to_owned());
+        for linked in [None, Some(&links)] {
+            let text = Text::new(&TextInputs {
+                links: linked,
+                ..inputs(&shown, counts)
+            });
+            let mut out = Vec::new();
+            text.markdown(None, &mut out).unwrap();
+            let body = String::from_utf8(out).unwrap();
+            let row = body
+                .lines()
+                .find(|line| line.starts_with("| pass"))
+                .unwrap();
+            assert_eq!(row.matches(" | ").count(), 6, "{row}");
+            assert!(row.contains("`src/a\\|b.ts:1`"), "{row}");
+        }
+    }
+
+    #[test]
+    fn the_human_table_pads_by_display_width() {
+        let rows = analyze(
+            Path::new("src/x.ts"),
+            "function f() {}\nfunction \u{540d}() {}\nfunction e\u{301}() {}\n".as_bytes(),
+            Mode::Strict(Side::Head),
+        )
+        .unwrap()
+        .rows;
+        let entries: Vec<Entry<'_>> = rows.iter().map(|row| entry(row, Verdict::Pass)).collect();
+        let shown: Vec<&Entry<'_>> = entries.iter().collect();
+        let counts = Counts {
+            touched: 3,
+            ..Counts::default()
+        };
+        let text = Text::new(&inputs(&shown, counts));
+        let mut out = Vec::new();
+        text.human(&mut out).unwrap();
+        let body = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        let column = |line: &str, needle: &str| {
+            let at = line
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {line}"));
+            display_width(&line[..at])
+        };
+        let location = column(lines[1], "Location");
+        for row in &lines[3..6] {
+            assert_eq!(column(row, "src/"), location, "{body}");
+        }
+        assert_eq!(
+            column(lines[3], "\u{2192}"),
+            column(lines[4], "\u{2192}"),
+            "{body}"
+        );
+        assert_eq!(
+            column(lines[3], "\u{2192}"),
+            column(lines[5], "\u{2192}"),
+            "{body}"
+        );
     }
 
     #[test]
