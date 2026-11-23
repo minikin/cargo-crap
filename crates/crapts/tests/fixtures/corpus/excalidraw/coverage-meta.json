@@ -12,7 +12,7 @@
   },
   "artifacts": {
     "coverage_final_json_gz_bytes": 2247874,
-    "golden_json_bytes": 1897818,
+    "golden_json_bytes": 2533812,
     "golden_stderr_bytes": 139
   }
 }

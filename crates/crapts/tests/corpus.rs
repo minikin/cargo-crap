@@ -7,13 +7,14 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use proptest::prelude::*;
 use serde_json::{Map, Value, json};
+use sha2::{Digest as _, Sha256};
 use tempfile::NamedTempFile;
 
 const PINNED_SHA: &str = "2c3dcc06ec807e81ab9437eceb1a8f7a3c590743";
@@ -637,11 +638,37 @@ fn finalize_corpus_output(
     }
 }
 
+fn log_elapsed_duration(
+    elapsed: Duration,
+    step_summary_path: Option<&Path>,
+) {
+    let line = format!("crapts corpus elapsed: {:.2}s", elapsed.as_secs_f64());
+    println!("{line}");
+    if let Some(summary_path) = step_summary_path
+        && let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(summary_path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 fn run_corpus(
     corpus_dir: &Path,
     fixture_dir: &Path,
     expected_pin: &str,
     mode: CorpusMode,
+) -> Result<(), CorpusFailure> {
+    run_corpus_with_summary(corpus_dir, fixture_dir, expected_pin, mode, None)
+}
+
+fn run_corpus_with_summary(
+    corpus_dir: &Path,
+    fixture_dir: &Path,
+    expected_pin: &str,
+    mode: CorpusMode,
+    step_summary_path: Option<&Path>,
 ) -> Result<(), CorpusFailure> {
     verify_checkout(corpus_dir, expected_pin)?;
     let temp_coverage = decompress_coverage(&fixture_dir.join("coverage-final.json.gz"))?;
@@ -671,8 +698,7 @@ fn run_corpus(
             format!("failed to execute crapts in {}: {e}", corpus_dir.display()),
         )
     })?;
-    let elapsed = started.elapsed();
-    println!("crapts corpus elapsed: {:.2}s", elapsed.as_secs_f64());
+    log_elapsed_duration(started.elapsed(), step_summary_path);
 
     let raw_stdout = String::from_utf8(output.stdout).map_err(|e| {
         CorpusFailure::new(
@@ -930,10 +956,7 @@ fn assert_source_and_coverage_drift(
     );
     let msg = corpus.verify_err(&restored_pin).to_string();
     assert!(
-        msg.contains("src/a.ts::kept")
-            && msg.contains("coverage")
-            && msg.contains("50")
-            && msg.contains("100"),
+        msg.contains("changed row src/a.ts::kept field coverage: expected 50.0, actual 100.0"),
         "{msg}"
     );
     write_gz_json(
@@ -971,25 +994,36 @@ fn assert_row_and_outer_golden_drift(
         "{msg}"
     );
 
-    let mut with_fp = baseline_golden.clone();
-    find_row_mut(&mut with_fp, "src/a.ts", "kept")["fingerprint"] = json!("deadbeef");
-    corpus.write_golden_json(&with_fp);
+    let mut mutated_fp = baseline_golden.clone();
+    find_row_mut(&mut mutated_fp, "src/a.ts", "kept")["fingerprint"] = json!("deadbeef");
+    corpus.write_golden_json(&mutated_fp);
+    let msg_v = corpus.verify_err(restored_pin).to_string();
+    assert!(
+        msg_v.contains("src/a.ts::kept")
+            && msg_v.contains("fingerprint")
+            && msg_v.contains("deadbeef"),
+        "{msg_v}"
+    );
+    let mut without_fp = baseline_golden.clone();
+    find_row_mut(&mut without_fp, "src/a.ts", "kept")
+        .as_object_mut()
+        .unwrap()
+        .remove("fingerprint");
+    corpus.write_golden_json(&without_fp);
     let msg_g = corpus.verify_err(restored_pin).to_string();
     assert!(
         msg_g.contains("src/a.ts::kept")
             && msg_g.contains("fingerprint")
-            && msg_g.contains("deadbeef")
             && msg_g.contains("<missing>"),
         "{msg_g}"
     );
-    let msg_a = compare_reports(baseline_golden, &with_fp, "", "")
+    let msg_a = compare_reports(baseline_golden, &without_fp, "", "")
         .unwrap_err()
         .to_string();
     assert!(
         msg_a.contains("src/a.ts::kept")
             && msg_a.contains("fingerprint")
-            && msg_a.contains("<missing>")
-            && msg_a.contains("deadbeef"),
+            && msg_a.contains("<missing>"),
         "{msg_a}"
     );
 
@@ -1074,7 +1108,7 @@ fn assert_stderr_order_and_duplicate_drift(
     ] {
         let msg = err.to_string();
         assert!(
-            msg.contains("duplicate key src/a.ts::dup") && msg.contains('1') && msg.contains('5'),
+            msg.contains("duplicate key src/a.ts::dup at lines 1, 5"),
             "{msg}"
         );
     }
@@ -1221,7 +1255,15 @@ fn offline_packaging_and_windows_line_ending_invariants_hold() {
 
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let output = Command::new(&cargo)
-        .args(["package", "--list", "-p", "crapts", "--allow-dirty"])
+        .args([
+            "package",
+            "--list",
+            "-p",
+            "crapts",
+            "--allow-dirty",
+            "--locked",
+            "--offline",
+        ])
         .current_dir(&root)
         .output()
         .expect("run cargo package --list");
@@ -1254,17 +1296,32 @@ fn is_checkout_relative(path: &str) -> bool {
         && !path.split('/').any(|part| part == "..")
 }
 
+fn is_path_char(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '/' | '\\' | '.' | '_' | '-' | '~')
+}
+
+fn mentions_path(
+    text: &str,
+    path: &str,
+) -> bool {
+    text.match_indices(path).any(|(at, _)| {
+        let head = &text[..at];
+        let before = head.chars().next_back();
+        let starts = !before.is_some_and(is_path_char) || head.ends_with("file://");
+        let after = text[at + path.len()..].chars().next();
+        starts && after.is_none_or(|ch| matches!(ch, '/' | '\\') || !is_path_char(ch))
+    })
+}
+
 fn assert_no_leaked_prefixes(
     label: &str,
     text: &str,
 ) {
     let mut forbidden = vec![
-        "/Users/".to_owned(),
-        "/home/".to_owned(),
-        "/private/var/folders/".to_owned(),
-        "/tmp/".to_owned(),
-        "C:\\".to_owned(),
-        "C:/".to_owned(),
+        "/Users".to_owned(),
+        "/home".to_owned(),
+        "/private/var/folders".to_owned(),
+        "/tmp".to_owned(),
     ];
     forbidden.extend(path_variants(&workspace_root()));
     forbidden.extend(path_variants(&std::env::temp_dir()));
@@ -1273,8 +1330,18 @@ fn assert_no_leaked_prefixes(
     }
     for needle in forbidden {
         assert!(
-            !text.contains(&needle),
+            !mentions_path(text, &needle),
             "{label} contains forbidden path prefix {needle:?}"
+        );
+    }
+    for drive in ["C:\\", "C:/"] {
+        let has_drive = text.match_indices(drive).any(|(at, _)| {
+            let before = text[..at].chars().next_back();
+            !before.is_some_and(is_path_char)
+        });
+        assert!(
+            !has_drive,
+            "{label} contains Windows drive prefix {drive:?}"
         );
     }
 }
@@ -1369,8 +1436,7 @@ fn assert_coverage_meta(
     );
 }
 
-#[test]
-fn offline_coverage_provenance_and_golden_hygiene_invariants_hold() {
+fn verify_offline_corpus_fixtures() {
     let fixture_dir = workspace_root().join("crates/crapts/tests/fixtures/corpus/excalidraw");
     let gz_path = fixture_dir.join("coverage-final.json.gz");
     let golden_json_path = fixture_dir.join("golden.json");
@@ -1388,6 +1454,8 @@ fn offline_coverage_provenance_and_golden_hygiene_invariants_hold() {
     let golden_stderr_raw = fs::read_to_string(&golden_stderr_path).expect("read golden.stderr");
     assert_no_leaked_prefixes("golden.json", &golden_json_raw);
     assert_no_leaked_prefixes("golden.stderr", &golden_stderr_raw);
+    assert!(!mentions_path("\"/tmpl/foo\"", "/tmp"));
+    assert!(mentions_path("\"/tmp/foo\"", "/tmp"));
 
     assert!(golden_json_raw.ends_with('\n'));
     assert!(golden_json_raw.starts_with("{\n  \""));
@@ -1397,6 +1465,19 @@ fn offline_coverage_provenance_and_golden_hygiene_invariants_hold() {
         golden["$schema"],
         "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v1.json"
     );
+
+    let mut schema_probe = golden.clone();
+    schema_probe["version"] = Value::String(env!("CARGO_PKG_VERSION").to_owned());
+    let schema_errors: Vec<String> = report_v1_validator()
+        .iter_errors(&schema_probe)
+        .map(|err| err.to_string())
+        .collect();
+    assert!(
+        schema_errors.is_empty(),
+        "golden.json fails schemas/crapts/report-v1.json:\n{}",
+        schema_errors.join("\n")
+    );
+
     let entries = golden["entries"]
         .as_array()
         .expect("golden.json entries array");
@@ -1422,8 +1503,43 @@ fn offline_coverage_provenance_and_golden_hygiene_invariants_hold() {
     }
 }
 
+fn snapshot_tree_hashes(root: &Path) -> BTreeMap<String, [u8; 32]> {
+    fn walk(
+        base: &Path,
+        dir: &Path,
+        out: &mut BTreeMap<String, [u8; 32]>,
+    ) {
+        for entry in fs::read_dir(dir).expect("read fixture dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(base, &path, out);
+            } else {
+                let rel = path
+                    .strip_prefix(base)
+                    .expect("under fixture root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let bytes = fs::read(&path).expect("read fixture file");
+                let digest: [u8; 32] = Sha256::digest(&bytes).into();
+                out.insert(rel, digest);
+            }
+        }
+    }
+    let mut hashes = BTreeMap::new();
+    walk(root, root, &mut hashes);
+    hashes
+}
+
+#[test]
+fn offline_coverage_provenance_and_golden_hygiene_invariants_hold() {
+    verify_offline_corpus_fixtures();
+}
+
 #[test]
 fn offline_test_suite_skips_the_live_corpus_checkout_without_touches_to_fixtures() {
+    let corpus_fixtures = workspace_root().join("crates/crapts/tests/fixtures/corpus");
+    let before = snapshot_tree_hashes(&corpus_fixtures);
+
     let exe = std::env::current_exe().expect("current test binary");
     let output = Command::new(&exe)
         .args(["--list", "--ignored"])
@@ -1436,6 +1552,21 @@ fn offline_test_suite_skips_the_live_corpus_checkout_without_touches_to_fixtures
             line.starts_with("pinned_excalidraw_corpus_matches_the_committed_golden:")
         }),
         "Excalidraw corpus test must be #[ignore]:\n{ignored}"
+    );
+
+    verify_offline_corpus_fixtures();
+
+    let summary_file = NamedTempFile::new().expect("temp step summary");
+    log_elapsed_duration(Duration::from_millis(1250), Some(summary_file.path()));
+    assert_eq!(
+        fs::read_to_string(summary_file.path()).expect("read step summary"),
+        "crapts corpus elapsed: 1.25s\n"
+    );
+
+    let after = snapshot_tree_hashes(&corpus_fixtures);
+    assert_eq!(
+        before, after,
+        "offline corpus checks created or modified fixture files"
     );
 }
 
@@ -1450,7 +1581,16 @@ fn pinned_excalidraw_corpus_matches_the_committed_golden() {
     let raw_pin = fs::read_to_string(fixture_dir.join("pin.txt"))
         .unwrap_or_else(|e| panic!("read pin.txt: {e}"));
     let expected_pin = parse_pin(&raw_pin).unwrap_or_else(|err| panic!("{err}"));
-    if let Err(err) = run_corpus(&corpus_dir, &fixture_dir, &expected_pin, mode) {
+    let step_summary = std::env::var_os("GITHUB_STEP_SUMMARY")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    if let Err(err) = run_corpus_with_summary(
+        &corpus_dir,
+        &fixture_dir,
+        &expected_pin,
+        mode,
+        step_summary.as_deref(),
+    ) {
         panic!("{err}");
     }
 }

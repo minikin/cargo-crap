@@ -26,7 +26,7 @@ if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
     die "invalid commit SHA in $pin_file: '$sha'"
 fi
 
-for tool in git node yarn gzip; do
+for tool in git node yarn gzip cargo; do
     command -v "$tool" > /dev/null 2>&1 || die "required tool not found: $tool"
 done
 
@@ -109,6 +109,14 @@ node_version="$(node --version)"
 yarn_version="$(yarn --version)"
 vitest_version="$(node -e 'console.log(require(process.argv[1]).version)' "$checkout_dir/node_modules/vitest/package.json")"
 
+rm -rf "$checkout_dir/node_modules" "$checkout_dir/coverage"
+(
+    cd "$repo_root"
+    CRAPTS_CORPUS_DIR="$checkout_dir" \
+        CRAPTS_CORPUS_UPDATE=1 \
+        cargo test --locked -p crapts --test corpus -- --ignored
+)
+
 node - \
     "$fixture_dir/coverage-meta.json" \
     "$repo_url" \
@@ -139,8 +147,11 @@ const [
   goldenStderrPath,
 ] = process.argv.slice(2);
 
-function fileSizeOrNull(filePath) {
-  return fs.existsSync(filePath) ? fs.statSync(filePath).size : null;
+function requireFileSize(filePath) {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`missing corpus artifact: ${filePath}`);
+  }
+  return fs.statSync(filePath).size;
 }
 
 const meta = {
@@ -156,9 +167,9 @@ const meta = {
     vitest: vitestVersion,
   },
   artifacts: {
-    coverage_final_json_gz_bytes: fileSizeOrNull(gzPath),
-    golden_json_bytes: fileSizeOrNull(goldenJsonPath),
-    golden_stderr_bytes: fileSizeOrNull(goldenStderrPath),
+    coverage_final_json_gz_bytes: requireFileSize(gzPath),
+    golden_json_bytes: requireFileSize(goldenJsonPath),
+    golden_stderr_bytes: requireFileSize(goldenStderrPath),
   },
 };
 
