@@ -97,6 +97,15 @@ pub struct Discovery {
     pub unused_excludes: Vec<ExcludePattern>,
 }
 
+/// Where a path falls against the scored file set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Placement {
+    Scored,
+    Unsupported,
+    OutsidePath,
+    Excluded,
+}
+
 #[derive(Debug)]
 pub struct DiscoveryScope {
     cwd: PathBuf,
@@ -133,29 +142,90 @@ impl DiscoveryScope {
             self.worktree.root.as_deref(),
             path,
         );
-        let name = relative(&self.cwd, &absolute);
+        Ok(self.place(&absolute, true)? == Placement::Scored)
+    }
+
+    /// The spelling discovery and the reports give an absolute path.
+    pub(crate) fn display(
+        &self,
+        absolute: &Path,
+    ) -> PathBuf {
+        PathBuf::from(relative(&self.cwd, absolute))
+    }
+
+    /// A working-tree file is scored exactly when discovery selected it.
+    pub(crate) fn place_present(
+        &self,
+        absolute: &Path,
+    ) -> Placement {
+        let name = relative(&self.cwd, absolute);
         if self.selected.contains(&name) {
-            return Ok(true);
+            return Placement::Scored;
+        }
+        self.rejection(Path::new(&name), absolute)
+            .unwrap_or(Placement::Excluded)
+    }
+
+    /// Judges the path alone, so a file that no longer exists, or that a
+    /// symbolic link has replaced, is placed as its own rules say.
+    ///
+    /// # Errors
+    /// A Git ignore check can fail.
+    pub(crate) fn place_historical(
+        &self,
+        absolute: &Path,
+    ) -> Result<Placement, InputError> {
+        self.place(absolute, false)
+    }
+
+    fn place(
+        &self,
+        absolute: &Path,
+        present_rejects: bool,
+    ) -> Result<Placement, InputError> {
+        let name = relative(&self.cwd, absolute);
+        if self.selected.contains(&name) {
+            return Ok(Placement::Scored);
         }
         let local = Path::new(&name);
-        if !self.eligible(local) || self.extras.is_match(local) || !self.below_directory(&absolute)
-        {
-            return Ok(false);
+        if let Some(rejected) = self.rejection(local, absolute) {
+            return Ok(rejected);
         }
-        if file_type(&absolute)?.is_some() {
-            return Ok(false);
+        if present_rejects && file_type(absolute)?.is_some() {
+            return Ok(Placement::Excluded);
         }
-        if !self.worktree.indexed {
-            return Ok(!local.iter().any(pruned));
-        }
-        if absolute
+        let allowed = if !self.worktree.indexed {
+            !local.iter().any(pruned)
+        } else if absolute
             .ancestors()
             .skip(1)
             .any(|parent| self.leaves.contains(parent))
         {
-            return Ok(false);
+            false
+        } else {
+            git_allows(&self.cwd, &name)?
+        };
+        Ok(if allowed {
+            Placement::Scored
+        } else {
+            Placement::Excluded
+        })
+    }
+
+    fn rejection(
+        &self,
+        local: &Path,
+        absolute: &Path,
+    ) -> Option<Placement> {
+        if source_extension(local).is_none() {
+            Some(Placement::Unsupported)
+        } else if !self.below_directory(absolute) {
+            Some(Placement::OutsidePath)
+        } else if self.defaults.is_match(local) || self.extras.is_match(local) {
+            Some(Placement::Excluded)
+        } else {
+            None
         }
-        git_allows(&self.cwd, &name)
     }
 
     fn eligible(
@@ -172,7 +242,7 @@ impl DiscoveryScope {
         path.parent().is_some_and(|parent| {
             self.directories
                 .iter()
-                .any(|root| parent.starts_with(root) && !through_symlink(path, root))
+                .any(|root| parent.starts_with(root) && !through_symlink(parent, root))
         })
     }
 

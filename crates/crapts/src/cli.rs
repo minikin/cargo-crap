@@ -400,8 +400,15 @@ fn validate_comparisons(
             "SARIF does not support --{selector}"
         )));
     }
-    if base {
-        return Err(InputError::message("--base is not implemented yet"));
+    if let Some(rev) = settings
+        .base
+        .value
+        .as_deref()
+        .filter(|rev| rev.starts_with('-'))
+    {
+        return Err(InputError::message(format!(
+            "--base: revision {rev} must not start with -"
+        )));
     }
     Ok(())
 }

@@ -1,20 +1,25 @@
 use super::{Effective, Format, InputError, Result, StdoutSink};
 use crate::attribute::{Attribution, attribute};
+use crate::changed::matching::{ChangedFile, classify};
+use crate::changed::section::ChangedSection;
+use crate::changed::select::{FileEdits, Selection, select};
+use crate::changed::verdict::{Edits, Inputs, Threshold, evaluate};
 use crate::coverage::{Coverage, CoverageUnit, read_coverage};
 use crate::discover::{Worktree, discover_probed};
-use crate::{Discovery, DiscoveryScope, Mode, analyze};
+use crate::{Discovery, DiscoveryScope, FileAnalysis, Mode, analyze};
 use cargo_crap_core::coverage::CoverageKind;
 use cargo_crap_core::delta::{CraptsBaseline, load_crapts_baseline};
 use cargo_crap_core::filter::AllowSet;
 use cargo_crap_core::policy::{
     EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder,
 };
-use cargo_crap_core::report::{self, Schemas, SourceLinks, Tool};
+use cargo_crap_core::report::{self, Schemas, Section, SourceLinks, Tool};
 use cargo_crap_core::run::{
     self, Analysis, BaselineFilter, PreparedBaseline, RenderExtras, Scope, Settings,
 };
 use cargo_crap_core::signals::SignalSettings;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufWriter, Write};
@@ -115,15 +120,33 @@ fn read_inputs(
     Ok((coverage, baseline))
 }
 
+/// A changed file's strict head analysis stands in for its ordinary one,
+/// and a changed file whose head side was skipped, as a binary one is, is
+/// not decoded at all.
 fn measure(
     cwd: &Path,
     settings: &Effective,
     coverage: &Coverage,
     discovery: &Discovery,
+    selection: Option<&mut Selection>,
     err: &mut dyn Write,
-) -> Result<Attribution> {
+) -> Result<(Vec<FileAnalysis>, Attribution)> {
+    let (mut strict, skipped) = match selection {
+        Some(selection) => (
+            std::mem::take(&mut selection.heads),
+            Some(&selection.skipped_heads),
+        ),
+        None => (HashMap::new(), None),
+    };
     let mut files = Vec::with_capacity(discovery.files.len());
     for file in &discovery.files {
+        if skipped.is_some_and(|skipped| skipped.contains(file)) {
+            continue;
+        }
+        if let Some(analysis) = strict.remove(file) {
+            files.push(analysis);
+            continue;
+        }
         let bytes = fs::read(cwd.join(file)).map_err(|e| InputError::at(file, e))?;
         let analysis = analyze(file, &bytes, Mode::Ordinary)?;
         for message in &analysis.warnings {
@@ -135,7 +158,56 @@ fn measure(
     for message in &result.warnings {
         warn(err, message)?;
     }
-    Ok(result)
+    Ok((files, result))
+}
+
+fn changed_section(
+    selection: &Selection,
+    files: &[FileAnalysis],
+    result: &Attribution,
+    options: &Effective,
+) -> Result<ChangedSection> {
+    let threshold = Threshold::new(options.threshold.value)
+        .ok_or_else(|| InputError::message("--threshold must be a finite number"))?;
+    let by_path: HashMap<&Path, &FileAnalysis> = files
+        .iter()
+        .filter_map(|file| file.rows.first().map(|row| (row.file.as_path(), file)))
+        .collect();
+    let changed: Vec<ChangedFile<'_>> = selection
+        .files
+        .iter()
+        .map(|file| ChangedFile {
+            base: file.base.as_ref().map_or(&[][..], |base| &base.rows),
+            head: file
+                .head
+                .as_deref()
+                .and_then(|path| by_path.get(path))
+                .map_or(&[][..], |head| &head.rows),
+        })
+        .collect();
+    let edits: Vec<Edits<'_>> = selection
+        .files
+        .iter()
+        .map(|file| match &file.edits {
+            FileEdits::Added => Edits::Added,
+            FileEdits::Hunks(hunks) => Edits::Hunks(hunks),
+        })
+        .collect();
+    let scores: Vec<_> = result.rows.iter().map(|row| row.entry.clone()).collect();
+    let matching = classify(&changed);
+    let judged = evaluate(&Inputs {
+        files: &changed,
+        edits: &edits,
+        matching: &matching,
+        scores: &scores,
+        allow: &options.allow_set,
+        threshold,
+    });
+    Ok(ChangedSection::new(
+        &selection.comparison,
+        &judged,
+        &selection.skipped,
+    ))
 }
 
 fn prepare(
@@ -204,9 +276,20 @@ pub(super) fn score(
         worktree,
     )?;
     let (coverage, baseline) = read_inputs(cwd, options, coverage, &discovery, err)?;
-    let result = measure(cwd, options, &coverage, &discovery, err)?;
+    let mut selection = options
+        .base
+        .value
+        .as_deref()
+        .map(|rev| select(&discovery.scope, cwd, rev))
+        .transpose()?;
+    let (files, result) = measure(cwd, options, &coverage, &discovery, selection.as_mut(), err)?;
     let scope = ScoringScope::new(&discovery.scope);
     let prepared = prepare(baseline, &scope, &options.allow_set)?;
+    let section = selection
+        .as_ref()
+        .map(|selection| changed_section(selection, &files, &result, options))
+        .transpose()?;
+    drop(files);
     let output = options.output.value.as_deref();
     let to_stdout = output.is_none();
     let color = color_enabled(
@@ -248,29 +331,48 @@ pub(super) fn score(
         workspace_root: None,
         fail_sections: false,
     };
-    let mut file;
-    let (out, destination): (&mut dyn Write, &Path) = if let Some(path) = output {
-        file =
-            BufWriter::new(fs::File::create(cwd.join(path)).map_err(|e| InputError::at(path, e))?);
-        (&mut file, path)
-    } else {
-        (stdout, Path::new("stdout"))
-    };
+    let sections: Vec<&dyn Section> = section.iter().map(|s| s as &dyn Section).collect();
     let report = analysis(result, &scope);
+    let mut rendered = Vec::new();
     let verdict = report::with_color(color, || {
         run::run(
             &TOOL,
             &settings,
             report,
             prepared.as_ref(),
-            &[],
+            &sections,
             &RenderExtras::default(),
-            out,
+            &mut rendered,
         )
     })
-    .map_err(|e| InputError::at(destination, format!("{e:#}")))?;
+    .map_err(|e| InputError::at(output.unwrap_or(Path::new("stdout")), format!("{e:#}")))?;
+    write_destination(cwd, output, stdout, &rendered)?;
     machine_notice(err, options.format.value, prepared.as_ref())?;
     Ok(verdict.exit_code())
+}
+
+/// The report is rendered in memory first, so a failure before this point
+/// leaves `--output` as it was.
+fn write_destination(
+    cwd: &Path,
+    output: Option<&Path>,
+    stdout: &mut dyn Write,
+    rendered: &[u8],
+) -> Result<()> {
+    match output {
+        Some(path) => {
+            let mut file = BufWriter::new(
+                fs::File::create(cwd.join(path)).map_err(|e| InputError::at(path, e))?,
+            );
+            file.write_all(rendered)
+                .and_then(|()| file.flush())
+                .map_err(|e| InputError::at(path, e))
+        },
+        None => stdout
+            .write_all(rendered)
+            .and_then(|()| stdout.flush())
+            .map_err(|e| InputError::at(Path::new("stdout"), e)),
+    }
 }
 
 /// Text formats render the notice in the report body, so only formats

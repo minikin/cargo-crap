@@ -2254,36 +2254,6 @@ fn an_admitted_baseline_runs_the_comparison() {
     assert_eq!(doc["summary"]["unchanged"], 3);
 }
 
-#[test]
-fn a_git_base_stays_reserved_beside_a_baseline() {
-    let d = fixture();
-    for gate in [&[][..], &["--fail-regression"]] {
-        let args = [
-            &[
-                "--coverage",
-                "absent.info",
-                "--baseline",
-                "b.json",
-                "--base",
-                "HEAD",
-            ][..],
-            gate,
-        ]
-        .concat();
-        let err = before_render(d.path(), &args, &[]);
-        assert_eq!(err, "error: --base is not implemented yet\n");
-    }
-}
-
-#[test]
-fn git_base_comparison_is_reserved() {
-    let d = fixture();
-    let mut args = vec!["--coverage", "hits.data", "--base", "HEAD"];
-    before_render(d.path(), &args, &["--base is not implemented yet"]);
-    args.push("--fail-changed");
-    before_render(d.path(), &args, &["--base is not implemented yet"]);
-}
-
 fn warning_fixture() -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     let cwd = d.path();
@@ -2429,21 +2399,6 @@ fn a_destination_failure_takes_precedence_at_the_process_boundary() {
                 "{diagnostic}"
             );
         }
-    }
-}
-
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config { cases: 24, ..support::proptest_config() })]
-    #[test]
-    fn a_reserved_git_base_precedes_coverage_and_preserves_the_destination(
-        revision in "[A-Za-z0-9]{1,16}", gate in proptest::bool::ANY,
-    ) {
-        let d = tempfile::tempdir().unwrap();
-        let mut args = vec!["--coverage", "absent.info", "--base", &revision];
-        if gate {
-            args.push("--fail-changed");
-        }
-        before_render(d.path(), &args, &["--base is not implemented yet"]);
     }
 }
 

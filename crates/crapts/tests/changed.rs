@@ -1711,3 +1711,1358 @@ fn the_published_threshold_is_the_one_the_verdicts_used() {
         assert_eq!(Threshold::new(value), None);
     }
 }
+
+/// The real command against scratch repositories.
+mod cli {
+    use std::fmt::Write as _;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Output};
+
+    use serde_json::{Value, json};
+    use tempfile::TempDir;
+
+    use super::{callback, common, element, func, keys, member};
+
+    const SIDE_FILES: &str =
+        "cov.info\nbase.json\n.crapts.toml\nout.json\nreport.json\nfresh.json\nout.sarif\n";
+
+    const GIT_OVERRIDES: [&str; 6] = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ];
+
+    pub(super) fn app(
+        hot: usize,
+        edge: usize,
+        cold: usize,
+    ) -> String {
+        format!(
+            "{}\n{}\n{}\n",
+            func("hot", hot),
+            func("edge", edge),
+            func("cold", cold)
+        )
+    }
+
+    pub(super) fn line_of(
+        source: &str,
+        name: &str,
+    ) -> usize {
+        let needle = format!("function {name}(");
+        source
+            .lines()
+            .position(|line| line.contains(&needle))
+            .unwrap_or_else(|| panic!("no {name} in {source}"))
+            + 1
+    }
+
+    /// A scratch repository whose git calls, and the command's, read no user
+    /// or system configuration.
+    pub(super) struct Repo {
+        dir: TempDir,
+        empty: PathBuf,
+    }
+
+    impl Repo {
+        pub(super) fn bare() -> Self {
+            let dir = TempDir::new().unwrap();
+            let empty = dir.path().join("empty.gitconfig");
+            fs::write(&empty, "").unwrap();
+            fs::create_dir(dir.path().join("repo")).unwrap();
+            Self { dir, empty }
+        }
+
+        pub(super) fn init() -> Self {
+            let repo = Self::bare();
+            repo.git(&["init", "-q", "-b", "main"]);
+            repo.exclude_side_files();
+            repo
+        }
+
+        /// `main` at B with `src/app.ts`, and `feat` checked out at B.
+        pub(super) fn standard() -> Self {
+            Self::with(&[("src/app.ts", &app(6, 2, 1))])
+        }
+
+        pub(super) fn with(files: &[(&str, &str)]) -> Self {
+            let repo = Self::init();
+            for (path, text) in files {
+                repo.write(path, text);
+            }
+            repo.commit("B");
+            repo.git(&["checkout", "-q", "-b", "feat"]);
+            repo
+        }
+
+        fn exclude_side_files(&self) {
+            let info = self.root().join(".git/info");
+            fs::create_dir_all(&info).unwrap();
+            fs::write(info.join("exclude"), SIDE_FILES).unwrap();
+        }
+
+        pub(super) fn root(&self) -> PathBuf {
+            self.dir.path().join("repo")
+        }
+
+        fn command(
+            &self,
+            program: &Path,
+            dir: &Path,
+        ) -> Command {
+            let mut command = Command::new(program);
+            for name in GIT_OVERRIDES {
+                command.env_remove(name);
+            }
+            command
+                .current_dir(dir)
+                .env("GIT_CONFIG_GLOBAL", &self.empty)
+                .env("GIT_CONFIG_SYSTEM", &self.empty)
+                .env("GIT_AUTHOR_NAME", "fixture")
+                .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+                .env("GIT_COMMITTER_NAME", "fixture")
+                .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid");
+            command
+        }
+
+        pub(super) fn git_in(
+            &self,
+            dir: &Path,
+            args: &[&str],
+        ) -> String {
+            let output = self
+                .command(Path::new("git"), dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        }
+
+        pub(super) fn git(
+            &self,
+            args: &[&str],
+        ) -> String {
+            self.git_in(&self.root(), args)
+        }
+
+        /// A git command allowed to fail, such as a merge that conflicts.
+        pub(super) fn git_status(
+            &self,
+            args: &[&str],
+        ) -> bool {
+            self.command(Path::new("git"), &self.root())
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        }
+
+        pub(super) fn rev(
+            &self,
+            rev: &str,
+        ) -> String {
+            self.git(&["rev-parse", rev]).trim().to_owned()
+        }
+
+        pub(super) fn write(
+            &self,
+            path: &str,
+            contents: impl AsRef<[u8]>,
+        ) {
+            let path = self.root().join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+
+        pub(super) fn read(
+            &self,
+            path: &str,
+        ) -> String {
+            fs::read_to_string(self.root().join(path)).unwrap()
+        }
+
+        pub(super) fn remove(
+            &self,
+            path: &str,
+        ) {
+            fs::remove_file(self.root().join(path)).unwrap();
+        }
+
+        #[cfg(unix)]
+        pub(super) fn symlink(
+            &self,
+            target: &str,
+            path: &str,
+        ) {
+            let path = self.root().join(path);
+            if path.symlink_metadata().is_ok() {
+                fs::remove_file(&path).unwrap();
+            }
+            std::os::unix::fs::symlink(target, path).unwrap();
+        }
+
+        pub(super) fn commit(
+            &self,
+            message: &str,
+        ) {
+            self.git(&["add", "-A"]);
+            self.git(&["commit", "-q", "--allow-empty", "-m", message]);
+        }
+
+        /// LCOV that lists every line of every regular source file with count 0.
+        pub(super) fn uncovered(&self) {
+            let mut text = String::new();
+            let mut pending = vec![self.root()];
+            while let Some(dir) = pending.pop() {
+                for entry in fs::read_dir(dir).unwrap() {
+                    let entry = entry.unwrap();
+                    let kind = entry.file_type().unwrap();
+                    let path = entry.path();
+                    if kind.is_dir() && entry.file_name() != ".git" {
+                        pending.push(path);
+                    } else if kind.is_file()
+                        && path.extension().is_some_and(|e| e == "ts" || e == "tsx")
+                    {
+                        let bytes = fs::read(&path).unwrap();
+                        let lines = bytes.split(|&b| b == b'\n').count();
+                        let name = path.strip_prefix(self.root()).unwrap();
+                        writeln!(text, "SF:{}", name.display()).unwrap();
+                        for line in 1..=lines {
+                            writeln!(text, "DA:{line},0").unwrap();
+                        }
+                        text.push_str("end_of_record\n");
+                    }
+                }
+            }
+            self.write("cov.info", text);
+        }
+
+        pub(super) fn run_in(
+            &self,
+            dir: &Path,
+            args: &[&str],
+        ) -> Output {
+            let mut command = self.command(Path::new(env!("CARGO_BIN_EXE_crapts")), dir);
+            for key in [
+                "GITHUB_REPOSITORY",
+                "GITHUB_SERVER_URL",
+                "GITHUB_SHA",
+                "NO_COLOR",
+                "FORCE_COLOR",
+                "COLUMNS",
+            ] {
+                command.env_remove(key);
+            }
+            command.args(args).output().unwrap()
+        }
+
+        /// The command with the scenario's flags, against fresh coverage.
+        pub(super) fn run(
+            &self,
+            extra: &[&str],
+        ) -> Output {
+            self.uncovered();
+            let args = [
+                &[
+                    "--coverage",
+                    "cov.info",
+                    "--base",
+                    "main",
+                    "--format",
+                    "json",
+                ][..],
+                extra,
+            ]
+            .concat();
+            self.run_in(&self.root(), &args)
+        }
+
+        pub(super) fn report(
+            &self,
+            extra: &[&str],
+            code: i32,
+        ) -> Value {
+            let out = self.run(extra);
+            common::check(&out, code);
+            report_of(&out.stdout)
+        }
+
+        pub(super) fn changed(
+            &self,
+            extra: &[&str],
+        ) -> Value {
+            self.report(extra, 0)["changed"].clone()
+        }
+    }
+
+    pub(super) fn report_of(stdout: &[u8]) -> Value {
+        let doc: Value = serde_json::from_slice(stdout).unwrap();
+        if doc.get("regression_gate").is_some() {
+            common::validated_delta(stdout)
+        } else {
+            common::validated_report(stdout)
+        }
+    }
+
+    pub(super) fn names(entries: &Value) -> Vec<String> {
+        entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                format!(
+                    "{}::{}",
+                    e["file"].as_str().unwrap(),
+                    e["function"].as_str().unwrap()
+                )
+            })
+            .collect()
+    }
+
+    fn stderr(out: &Output) -> String {
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    }
+
+    fn refused(out: &Output) -> String {
+        common::check(out, 2);
+        assert_eq!(out.stdout.as_slice(), b"", "{}", stderr(out));
+        stderr(out)
+    }
+
+    fn contains_all(
+        text: &str,
+        words: &[&str],
+    ) {
+        for word in words {
+            assert!(text.contains(word), "{word:?} not in {text}");
+        }
+    }
+
+    #[test]
+    fn the_base_reservation_is_gone() {
+        let repo = Repo::standard();
+        repo.uncovered();
+        for gate in [&[][..], &["--fail-changed"]] {
+            let args = [&["--coverage", "cov.info", "--base", "HEAD"][..], gate].concat();
+            let out = repo.run_in(&repo.root(), &args);
+            common::check(&out, 0);
+            assert_ne!(out.stdout.len(), 0);
+            assert!(!stderr(&out).contains("--base is not implemented yet"));
+        }
+    }
+
+    #[test]
+    fn only_the_pull_requests_own_edits_select_functions() {
+        let repo = Repo::standard();
+        let b = repo.rev("HEAD");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.write("src/app.ts", app(6, 2, 3));
+        repo.commit("T");
+        repo.git(&["checkout", "-q", "feat"]);
+        repo.write("src/app.ts", app(6, 3, 1));
+        repo.commit("edge");
+        repo.write("src/app.ts", app(7, 2, 1));
+        repo.write("src/extra.ts", func("extra", 2));
+        let changed = repo.changed(&[]);
+        assert_eq!(
+            names(&changed["entries"]),
+            ["src/app.ts::hot", "src/extra.ts::extra"]
+        );
+        let hot = &changed["entries"][0];
+        assert_eq!(
+            (&hot["change"], &hot["base_cyclomatic"], &hot["cyclomatic"]),
+            (&json!("modified"), &json!(6), &json!(7))
+        );
+        assert_eq!(changed["entries"][1]["change"], "new");
+        assert_eq!(changed["base"]["merge_base"], b);
+        assert_eq!(changed["head"]["dirty"], true);
+    }
+
+    #[test]
+    fn a_revision_that_descends_from_head_compares_only_working_tree_edits() {
+        let repo = Repo::standard();
+        repo.git(&["checkout", "-q", "-b", "ahead"]);
+        repo.write("src/app.ts", app(6, 2, 2));
+        repo.commit("ahead");
+        repo.git(&["checkout", "-q", "feat"]);
+        repo.write("src/app.ts", app(7, 2, 1));
+        repo.uncovered();
+        let out = repo.run_in(
+            &repo.root(),
+            &[
+                "--coverage",
+                "cov.info",
+                "--base",
+                "ahead",
+                "--format",
+                "json",
+            ],
+        );
+        common::check(&out, 0);
+        let changed = &report_of(&out.stdout)["changed"];
+        assert_eq!(changed["base"]["merge_base"], repo.rev("HEAD"));
+        assert_eq!(names(&changed["entries"]), ["src/app.ts::hot"]);
+    }
+
+    #[test]
+    fn a_merge_checkout_is_compared_and_scored_as_checked_out() {
+        let repo = Repo::standard();
+        repo.write("src/app.ts", app(7, 2, 1));
+        repo.commit("P");
+        let p = repo.rev("HEAD");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.write("src/app.ts", app(6, 2, 3));
+        repo.commit("T");
+        repo.git(&["checkout", "-q", "--detach", &p]);
+        repo.git(&["merge", "-q", "--no-ff", "-m", "X", "main"]);
+        let x = repo.rev("HEAD");
+        let report = repo.report(&[], 0);
+        let changed = &report["changed"];
+        assert_eq!(changed["base"]["merge_base"], repo.rev("main"));
+        assert_eq!(changed["head"]["commit"], x);
+        assert_ne!(x, p);
+        assert_eq!(changed["head"]["dirty"], false);
+        assert_eq!(names(&changed["entries"]), ["src/app.ts::hot"]);
+        assert_eq!(changed["entries"][0]["base_cyclomatic"], 6);
+        assert_eq!(changed["entries"][0]["cyclomatic"], 7);
+        let cold = report["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["function"] == "cold")
+            .unwrap();
+        assert_eq!(cold["cyclomatic"], 3);
+        let at_p = repo.git(&["show", &format!("{p}:src/app.ts")]);
+        assert_eq!(at_p, app(7, 2, 1));
+    }
+
+    fn outside_case(
+        setup: impl FnOnce(&Repo),
+        display: &str,
+        reason: &str,
+    ) {
+        let repo = Repo::standard();
+        setup(&repo);
+        repo.uncovered();
+        let out = repo.run_in(
+            &repo.root(),
+            &[
+                "src",
+                "--coverage",
+                "cov.info",
+                "--base",
+                "main",
+                "--format",
+                "json",
+            ],
+        );
+        common::check(&out, 0);
+        let changed = &report_of(&out.stdout)["changed"];
+        let record = json!({"path": display, "reason": reason});
+        assert!(
+            changed["skipped"].as_array().unwrap().contains(&record),
+            "{display}: {changed:#}"
+        );
+        for list in ["entries", "removed"] {
+            for row in changed[list].as_array().unwrap() {
+                assert_ne!(row["file"], display, "{display}: {changed:#}");
+            }
+        }
+        assert_eq!(changed["counts"]["fail"], 0, "{display}");
+    }
+
+    fn committed(
+        repo: &Repo,
+        path: &str,
+        base: impl AsRef<[u8]>,
+        head: impl AsRef<[u8]>,
+    ) {
+        repo.git(&["checkout", "-q", "main"]);
+        repo.write(path, base);
+        repo.commit("more at B");
+        repo.git(&["checkout", "-q", "-B", "feat"]);
+        repo.write(path, head);
+    }
+
+    #[test]
+    fn paths_outside_the_scored_file_set_are_skipped_with_a_reason() {
+        let edited = |path: &'static str| {
+            move |repo: &Repo| committed(repo, path, func("f", 2), func("f", 3))
+        };
+        outside_case(edited("src/dist/out.ts"), "src/dist/out.ts", "excluded");
+        outside_case(edited("src/app.test.ts"), "src/app.test.ts", "excluded");
+        outside_case(edited("lib/other.ts"), "lib/other.ts", "outside-path");
+        outside_case(
+            |repo| committed(repo, "src/notes.md", "# a\n", "# b\n"),
+            "src/notes.md",
+            "unsupported",
+        );
+        outside_case(
+            |repo| committed(repo, "src/blob.ts", "const a = 1\n", b"const a = 1\n\0\n"),
+            "src/blob.ts",
+            "binary",
+        );
+        outside_case(
+            |repo| repo.write("src/raw.ts", b"const a = 1\0\n"),
+            "src/raw.ts",
+            "binary",
+        );
+        outside_case(
+            |repo| {
+                let one = repo.rev("HEAD");
+                repo.git(&["commit", "-q", "--allow-empty", "-m", "two"]);
+                let two = repo.rev("HEAD");
+                repo.git(&["checkout", "-q", "main"]);
+                repo.git(&[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    &format!("160000,{one},src/vendor"),
+                ]);
+                repo.git(&["commit", "-q", "-m", "vendor"]);
+                repo.git(&["checkout", "-q", "-B", "feat"]);
+                repo.git(&[
+                    "update-index",
+                    "--cacheinfo",
+                    &format!("160000,{two},src/vendor"),
+                ]);
+                fs::create_dir_all(repo.root().join("src/vendor")).unwrap();
+            },
+            "src/vendor",
+            "submodule",
+        );
+        #[cfg(unix)]
+        outside_case(
+            |repo| {
+                repo.git(&["checkout", "-q", "main"]);
+                repo.symlink("app.ts", "src/link.ts");
+                repo.commit("link");
+                repo.git(&["checkout", "-q", "-B", "feat"]);
+                repo.write("src/other.ts", func("other", 1));
+                repo.symlink("other.ts", "src/link.ts");
+            },
+            "src/link.ts",
+            "symlink",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_crossing_the_scope_boundary_enters_as_an_addition_and_leaves_as_a_deletion() {
+        let repo = Repo::with(&[
+            ("src/app.ts", &app(6, 2, 1)),
+            ("src/gen/a.ts", &func("alpha", 2)),
+            ("src/b.ts", &func("beta", 6)),
+            ("src/c.ts", &func("gamma", 3)),
+        ]);
+        repo.git(&["mv", "src/gen/a.ts", "src/a.ts"]);
+        repo.git(&["mv", "src/b.ts", "src/gen/b.ts"]);
+        repo.symlink("app.ts", "src/c.ts");
+        let changed = repo.changed(&["--exclude", "src/gen/**"]);
+        assert_eq!(names(&changed["entries"]), ["src/a.ts::alpha"]);
+        assert_eq!(changed["entries"][0]["change"], "new");
+        assert_eq!(
+            names(&changed["removed"]),
+            ["src/b.ts::beta", "src/c.ts::gamma"]
+        );
+        let skipped = changed["skipped"].as_array().unwrap();
+        for record in [
+            json!({"path": "src/gen/a.ts", "reason": "excluded"}),
+            json!({"path": "src/gen/b.ts", "reason": "excluded"}),
+            json!({"path": "src/c.ts", "reason": "symlink"}),
+        ] {
+            assert!(skipped.contains(&record), "{record}: {changed:#}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_type_change_between_a_regular_file_and_a_symbolic_link_scopes_each_side_by_its_own_mode() {
+        let link = json!([{"path": "src/c.ts", "reason": "symlink"}]);
+        let repo = Repo::with(&[
+            ("src/app.ts", &app(6, 2, 1)),
+            ("src/c.ts", &func("gamma", 3)),
+        ]);
+        repo.symlink("app.ts", "src/c.ts");
+        let report = repo.report(&[], 0);
+        let changed = &report["changed"];
+        let plain = repo.run_in(
+            &repo.root(),
+            &["--coverage", "cov.info", "--format", "json"],
+        );
+        common::check(&plain, 0);
+        assert_eq!(report["entries"], report_of(&plain.stdout)["entries"]);
+        assert_eq!(
+            changed["removed"],
+            json!([{"file": "src/c.ts", "function": "gamma", "base_line": 1, "base_cyclomatic": 3}])
+        );
+        assert_eq!(changed["entries"], json!([]));
+        assert_eq!(changed["skipped"], link);
+
+        let repo = Repo::init();
+        repo.write("src/app.ts", app(6, 2, 1));
+        repo.symlink("app.ts", "src/c.ts");
+        repo.commit("B");
+        repo.git(&["checkout", "-q", "-b", "feat"]);
+        repo.remove("src/c.ts");
+        repo.write("src/c.ts", func("gamma", 3));
+        let changed = repo.changed(&[]);
+        assert_eq!(names(&changed["entries"]), ["src/c.ts::gamma"]);
+        let gamma = &changed["entries"][0];
+        assert_eq!(
+            (&gamma["change"], &gamma["crap"], &gamma["verdict"]),
+            (&json!("new"), &json!(12.0), &json!("pass"))
+        );
+        assert_eq!(changed["removed"], json!([]));
+        assert_eq!(changed["skipped"], link);
+    }
+
+    fn assert_nothing_selected(
+        changed: &Value,
+        case: &str,
+    ) {
+        for list in ["entries", "removed", "skipped"] {
+            assert_eq!(changed[list], json!([]), "{case}: {changed:#}");
+        }
+        assert_eq!(changed["counts"]["touched"], 0, "{case}");
+    }
+
+    #[test]
+    fn edits_that_preserve_a_functions_identity_and_tokens_select_nothing() {
+        type Rewrite<'a> = Box<dyn Fn(&Repo) + 'a>;
+        let (hot, edge, cold) = (func("hot", 6), func("edge", 2), func("cold", 1));
+        let rewrites: [(&str, Rewrite<'_>); 7] = [
+            (
+                "move within the file",
+                Box::new(|r: &Repo| r.write("src/app.ts", format!("{hot}\n{cold}\n{edge}\n"))),
+            ),
+            (
+                "rename",
+                Box::new(|r: &Repo| {
+                    r.write(
+                        "src/app.ts",
+                        app(6, 2, 1).replace("function edge(", "function edgeCase("),
+                    );
+                }),
+            ),
+            (
+                "move to an untracked file",
+                Box::new(|r: &Repo| {
+                    r.write("src/app.ts", format!("{hot}\n{cold}\n"));
+                    r.write("src/moved.ts", &edge);
+                }),
+            ),
+            (
+                "file rename",
+                Box::new(|r: &Repo| drop(r.git(&["mv", "src/app.ts", "src/main.ts"]))),
+            ),
+            (
+                "comment and indent",
+                Box::new(|r: &Repo| {
+                    let body = hot.lines().skip(1).fold(String::new(), |mut body, line| {
+                        writeln!(body, "    {line}").unwrap();
+                        body
+                    });
+                    let head = format!("export function hot(x: number) {{\n  // note\n{body}");
+                    r.write("src/app.ts", format!("{head}\n{edge}\n{cold}\n"));
+                }),
+            ),
+            (
+                "CRLF",
+                Box::new(|r: &Repo| r.write("src/app.ts", app(6, 2, 1).replace('\n', "\r\n"))),
+            ),
+            (
+                "blank line removed",
+                Box::new(|r: &Repo| r.write("src/app.ts", format!("{hot}{edge}\n{cold}\n"))),
+            ),
+        ];
+        for (case, rewrite) in rewrites {
+            let repo = Repo::standard();
+            rewrite(&repo);
+            assert_nothing_selected(&repo.changed(&[]), case);
+        }
+    }
+
+    #[test]
+    fn the_changed_object_records_the_comparison_and_every_touched_row() {
+        let repo = recorded_tree();
+        let b = repo.rev("main");
+        let out = repo.run(&[]);
+        common::check(&out, 0);
+        let report = report_of(&out.stdout);
+        let raw = String::from_utf8(out.stdout).unwrap();
+        let changed_raw = member(&raw, "changed");
+        assert_eq!(
+            keys(&changed_raw),
+            [
+                "$schema",
+                "version",
+                "name_scheme",
+                "threshold",
+                "base",
+                "head",
+                "entries",
+                "removed",
+                "skipped",
+                "counts"
+            ]
+        );
+        let changed = &report["changed"];
+        assert_eq!(
+            changed["$schema"],
+            "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/changed-v1.json"
+        );
+        assert_eq!(changed["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(changed["name_scheme"], 1);
+        assert_eq!(changed["threshold"].as_f64(), Some(30.0));
+        assert_eq!(
+            changed["base"],
+            json!({"rev": "main", "commit": b, "merge_base": b, "merge_base_count": 1, "shallow": false})
+        );
+        assert_eq!(
+            changed["head"],
+            json!({"commit": repo.rev("HEAD"), "dirty": true})
+        );
+        assert_eq!(
+            names(&changed["entries"]),
+            ["src/app.ts::legacy", "src/app.ts::fresh"]
+        );
+        let entries = member(&changed_raw, "entries");
+        assert_eq!(
+            keys(&element(&entries, 0)),
+            [
+                "file",
+                "function",
+                "line",
+                "end_line",
+                "cyclomatic",
+                "coverage",
+                "crap",
+                "change",
+                "base_line",
+                "base_cyclomatic",
+                "cyclomatic_delta",
+                "verdict",
+                "reason"
+            ]
+        );
+        assert_eq!(
+            keys(&element(&entries, 1)),
+            [
+                "file",
+                "function",
+                "line",
+                "end_line",
+                "cyclomatic",
+                "coverage",
+                "crap",
+                "change",
+                "verdict",
+                "reason"
+            ]
+        );
+        assert_recorded_entries(changed);
+        let base = repo.git(&["show", "main:src/app.ts"]);
+        assert_eq!(
+            changed["removed"],
+            json!([{"file": "src/app.ts", "function": "gone", "base_line": line_of(&base, "gone"), "base_cyclomatic": 3}])
+        );
+        assert_eq!(
+            changed["skipped"],
+            json!([{"path": "src/dist/x.ts", "reason": "excluded"}])
+        );
+        assert_eq!(
+            changed["counts"],
+            json!({"touched": 2, "new": 1, "ambiguous": 0, "modified": 1, "worse": 1, "fail": 1, "over": 0, "allowed": 0, "missing_skipped": 0, "coverage_null": 0})
+        );
+        assert_eq!(report["summary"]["changed_failures"], 1);
+        let schema = common::compile("schemas/crapts/changed-v1.json");
+        assert!(schema.is_valid(changed), "{changed:#}");
+    }
+
+    fn assert_recorded_entries(changed: &Value) {
+        let legacy = &changed["entries"][0];
+        assert_eq!(legacy["change"], "modified");
+        assert_eq!(
+            (
+                &legacy["cyclomatic"],
+                &legacy["base_cyclomatic"],
+                &legacy["cyclomatic_delta"]
+            ),
+            (&json!(11), &json!(10), &json!(1))
+        );
+        assert_eq!(legacy["verdict"], "fail");
+        assert_eq!(
+            legacy["reason"],
+            "complexity rose from 10 to 11, CRAP 132.0 above 30"
+        );
+        let fresh = &changed["entries"][1];
+        assert_eq!(
+            (&fresh["change"], &fresh["verdict"]),
+            (&json!("new"), &json!("pass"))
+        );
+        assert_eq!(fresh["reason"], "CRAP 6.0 at or below 30");
+    }
+
+    /// The working tree of the scenario that records every touched row.
+    pub(super) fn recorded_tree() -> Repo {
+        let repo = Repo::with(&[
+            (
+                "src/app.ts",
+                &format!("{}\n{}", func("legacy", 10), func("gone", 3)),
+            ),
+            ("src/dist/x.ts", &func("bundled", 1)),
+        ]);
+        repo.write(
+            "src/app.ts",
+            format!("{}\n{}", func("legacy", 11), func("fresh", 2)),
+        );
+        repo.write("src/dist/x.ts", func("bundled", 2));
+        repo
+    }
+
+    #[test]
+    fn an_empty_diff_writes_a_zero_touched_changed_object() {
+        let repo = Repo::standard();
+        let report = repo.report(&["--fail-changed"], 0);
+        let changed = &report["changed"];
+        for list in ["entries", "removed", "skipped"] {
+            assert_eq!(changed[list], json!([]));
+        }
+        for (name, count) in changed["counts"].as_object().unwrap() {
+            assert_eq!(count, 0, "{name}");
+        }
+        assert_eq!(changed["head"]["dirty"], false);
+        assert_eq!(report["summary"]["changed_failures"], 0);
+    }
+
+    #[test]
+    fn sarif_refuses_base_before_any_git_or_output_work() {
+        let repo = Repo::bare();
+        repo.write("out.sarif", "keep");
+        let out = repo.run_in(
+            &repo.root(),
+            &[
+                "--coverage",
+                "absent.info",
+                "--base",
+                "nope",
+                "--format",
+                "sarif",
+                "--output",
+                "out.sarif",
+            ],
+        );
+        let err = refused(&out);
+        assert_eq!(repo.read("out.sarif"), "keep");
+        assert!(err.contains("SARIF does not support --base"), "{err}");
+        assert!(
+            !err.contains("nope") && !err.contains("absent.info"),
+            "{err}"
+        );
+    }
+
+    fn conflicted(resolve: bool) -> Repo {
+        let repo = Repo::standard();
+        repo.write("src/app.ts", app(7, 2, 1));
+        repo.commit("feat hot");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.write(
+            "src/app.ts",
+            app(6, 2, 1).replace(
+                "return 0\n}\n\nexport function edge",
+                "return -1\n}\n\nexport function edge",
+            ),
+        );
+        repo.commit("main hot");
+        repo.git(&["checkout", "-q", "feat"]);
+        assert!(!repo.git_status(&["merge", "-q", "main"]));
+        if resolve {
+            repo.write("src/app.ts", app(7, 2, 1));
+        }
+        repo
+    }
+
+    fn git_failure(
+        repo: &Repo,
+        rev: &str,
+        path: Option<&str>,
+        detail: &[&str],
+    ) {
+        repo.uncovered();
+        repo.write("out.json", "keep");
+        let base = format!("--base={rev}");
+        for output in ["out.json", "fresh.json"] {
+            let mut command = repo.command(Path::new(env!("CARGO_BIN_EXE_crapts")), &repo.root());
+            if let Some(path) = path {
+                command.env("PATH", path);
+            }
+            let out = command
+                .args(["--coverage", "cov.info", &base, "--output", output])
+                .output()
+                .unwrap();
+            let err = refused(&out);
+            contains_all(&err, detail);
+            assert_eq!(repo.read("out.json"), "keep");
+            assert!(!repo.root().join("fresh.json").exists());
+        }
+    }
+
+    #[test]
+    fn git_failures_exit_2_before_the_report_is_opened() {
+        let outside = Repo::bare();
+        outside.write("src/app.ts", app(6, 2, 1));
+        git_failure(&outside, "main", None, &["--base needs a Git worktree"]);
+        git_failure(
+            &Repo::standard(),
+            "-main",
+            None,
+            &["--base", "must not start with -"],
+        );
+        git_failure(
+            &Repo::standard(),
+            "nope",
+            None,
+            &["nope", "is not a commit"],
+        );
+        let orphan = Repo::standard();
+        orphan.git(&["checkout", "-q", "--orphan", "other"]);
+        orphan.git(&["rm", "-q", "-rf", "."]);
+        orphan.write("src/other.ts", func("other", 1));
+        orphan.commit("other");
+        orphan.git(&["checkout", "-q", "feat"]);
+        git_failure(
+            &orphan,
+            "other",
+            None,
+            &["no merge base", "unrelated histories"],
+        );
+        let source = Repo::standard();
+        source.git(&["checkout", "-q", "main"]);
+        source.write("src/app.ts", app(6, 2, 2));
+        source.commit("T");
+        source.git(&["checkout", "-q", "feat"]);
+        source.write("src/app.ts", app(7, 2, 1));
+        source.commit("P");
+        let shallow = Repo::bare();
+        fs::remove_dir(shallow.root()).unwrap();
+        let url = format!("file://{}", source.root().display());
+        shallow.git_in(
+            shallow.dir.path(),
+            &[
+                "clone",
+                "-q",
+                "--depth",
+                "1",
+                "--no-single-branch",
+                &url,
+                "repo",
+            ],
+        );
+        shallow.git(&["checkout", "-q", "feat"]);
+        shallow.exclude_side_files();
+        git_failure(
+            &shallow,
+            "origin/main",
+            None,
+            &["shallow clone", "fetch-depth: 0", "git fetch --deepen"],
+        );
+        git_failure(
+            &conflicted(false),
+            "main",
+            None,
+            &["src/app.ts", "unresolved merge"],
+        );
+        git_failure(
+            &conflicted(true),
+            "main",
+            None,
+            &["src/app.ts", "unresolved merge"],
+        );
+        #[cfg(unix)]
+        {
+            let empty = tempfile::tempdir().unwrap();
+            git_failure(
+                &Repo::standard(),
+                "main",
+                empty.path().to_str(),
+                &["git executable not found"],
+            );
+        }
+        let unborn = Repo::init();
+        unborn.write("src/app.ts", app(6, 2, 1));
+        git_failure(&unborn, "main", None, &["HEAD has no commit"]);
+    }
+
+    const RECOVERABLE: &str = "const x; let [a]; function kept() { if (x) go() }";
+    const FATAL: &str = "function partial() { if (x) {";
+    const INVALID_UTF8: &[u8] = b"\x66\x80\x0a";
+
+    fn bad_side(
+        base: &[u8],
+        head: &[u8],
+    ) -> Repo {
+        let repo = Repo::init();
+        repo.write("src/app.ts", base);
+        repo.commit("B");
+        repo.git(&["checkout", "-q", "-b", "feat"]);
+        repo.write("src/app.ts", head);
+        repo
+    }
+
+    #[test]
+    fn a_parse_or_decoding_error_on_either_side_of_a_changed_file_exits_2() {
+        let valid = app(6, 2, 1);
+        for content in [RECOVERABLE.as_bytes(), FATAL.as_bytes(), INVALID_UTF8] {
+            for (side, repo) in [
+                ("base", bad_side(content, valid.as_bytes())),
+                ("head", bad_side(valid.as_bytes(), content)),
+            ] {
+                let out = repo.run(&["--fail-changed", "--output", "out.json"]);
+                let err = refused(&out);
+                contains_all(&err, &[side, "src/app.ts"]);
+                assert!(!repo.root().join("out.json").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn a_recoverable_parse_in_an_unchanged_file_stays_a_warning() {
+        let repo = Repo::with(&[("src/app.ts", &app(6, 2, 1)), ("src/old.ts", RECOVERABLE)]);
+        repo.write(
+            "src/app.ts",
+            format!("{}{}", app(6, 2, 1), func("fresh", 2)),
+        );
+        let out = repo.run(&[]);
+        common::check(&out, 0);
+        let err = stderr(&out);
+        assert_eq!(err.lines().count(), 1, "{err}");
+        assert!(
+            err.starts_with("warning: ") && err.contains("src/old.ts"),
+            "{err}"
+        );
+        assert_eq!(
+            names(&report_of(&out.stdout)["changed"]["entries"]),
+            ["src/app.ts::fresh"]
+        );
+    }
+
+    #[test]
+    fn comparison_inputs_take_their_place_in_the_input_order() {
+        let order = |repo: &Repo, args: &[&str]| {
+            if !args.contains(&"gone.info") && !args.contains(&"broken.info") {
+                repo.uncovered();
+            }
+            let args = [args, &["--format", "json", "--output", "out.json"]].concat();
+            let out = repo.run_in(&repo.root(), &args);
+            let err = refused(&out);
+            assert!(
+                !repo.root().join("out.json").exists() || repo.root().join("out.json").is_dir()
+            );
+            err
+        };
+        let err = order(&Repo::standard(), &["--coverage", "gone.info", "--base=-x"]);
+        assert!(
+            err.contains("--base") && !err.contains("gone.info"),
+            "{err}"
+        );
+
+        let repo = Repo::standard();
+        repo.write("broken.info", "SF:src/app.ts\nDA:x\n");
+        let err = order(&repo, &["--coverage", "broken.info", "--base", "nope"]);
+        assert!(
+            err.contains("broken.info") && !err.contains("nope"),
+            "{err}"
+        );
+
+        let repo = Repo::standard();
+        repo.write("broken.json", "{");
+        let err = order(
+            &repo,
+            &[
+                "--coverage",
+                "cov.info",
+                "--baseline",
+                "broken.json",
+                "--base",
+                "nope",
+            ],
+        );
+        assert!(
+            err.contains("broken.json") && !err.contains("nope"),
+            "{err}"
+        );
+
+        let err = order(
+            &Repo::standard(),
+            &[
+                "--coverage",
+                "cov.info",
+                "--exclude",
+                "gone/**",
+                "--base",
+                "nope",
+            ],
+        );
+        let unused = err
+            .find("excluded no file")
+            .unwrap_or_else(|| panic!("{err}"));
+        let named = err.find("nope").unwrap_or_else(|| panic!("{err}"));
+        assert!(unused < named, "{err}");
+
+        let repo = bad_side(FATAL.as_bytes(), app(6, 2, 1).as_bytes());
+        let err = order(&repo, &["--coverage", "cov.info", "--base", "nope"]);
+        assert!(err.contains("nope") && !err.contains("src/app.ts"), "{err}");
+
+        let repo = Repo::with(&[("src/app.ts", &app(6, 2, 1)), ("src/old.ts", RECOVERABLE)]);
+        repo.write("src/app.ts", FATAL);
+        let err = order(&repo, &["--coverage", "cov.info", "--base", "main"]);
+        contains_all(&err, &["head", "src/app.ts"]);
+        assert!(!err.contains("src/old.ts"), "{err}");
+
+        let repo = bad_side(FATAL.as_bytes(), app(6, 2, 1).as_bytes());
+        fs::create_dir(repo.root().join("out.json")).unwrap();
+        let err = order(&repo, &["--coverage", "cov.info", "--base", "main"]);
+        contains_all(&err, &["base", "src/app.ts"]);
+        assert!(!err.contains("out.json"), "{err}");
+        assert!(repo.root().join("out.json").is_dir());
+    }
+
+    const BINARY: &[u8] = b"\x00\xff\x0a";
+
+    pub(super) fn binary_transition(
+        base: &[u8],
+        head: &[u8],
+    ) -> Repo {
+        let repo = Repo::init();
+        repo.write("src/app.ts", app(6, 2, 1));
+        repo.write("src/a.ts", base);
+        repo.commit("B");
+        repo.git(&["checkout", "-q", "-b", "feat"]);
+        repo.write("src/a.ts", head);
+        repo
+    }
+
+    #[test]
+    fn each_side_of_a_binary_transition_is_judged_by_its_own_bytes() {
+        let binary = json!([{"path": "src/a.ts", "reason": "binary"}]);
+        let repo = binary_transition(BINARY, func("fresh", 6).as_bytes());
+        let out = repo.run(&[]);
+        common::check(&out, 0);
+        assert_eq!(stderr(&out), "");
+        let changed = &report_of(&out.stdout)["changed"];
+        assert_eq!(changed["skipped"], binary);
+        let entry = only_entry(changed);
+        assert_eq!(entry["function"], "fresh");
+        assert_eq!(
+            (&entry["change"], &entry["verdict"]),
+            (&json!("new"), &json!("fail"))
+        );
+        assert_eq!(changed["removed"], json!([]));
+
+        let repo = binary_transition(func("gone", 3).as_bytes(), BINARY);
+        let out = repo.run(&[]);
+        common::check(&out, 0);
+        assert_eq!(stderr(&out), "");
+        let report = report_of(&out.stdout);
+        let changed = &report["changed"];
+        assert_eq!(changed["skipped"], binary);
+        assert_eq!(changed["entries"], json!([]));
+        assert_eq!(names(&changed["removed"]), ["src/a.ts::gone"]);
+        assert!(
+            names(&report["entries"])
+                .iter()
+                .all(|name| !name.starts_with("src/a.ts::"))
+        );
+    }
+
+    fn only_entry(changed: &Value) -> &Value {
+        let entries = changed["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "{changed:#}");
+        &entries[0]
+    }
+
+    #[test]
+    fn inserting_a_sibling_callback_shifts_ordinals_without_touching_the_old_ones() {
+        let base = "useEffect(() => { if (a) load() })\nuseEffect(() => { if (b) save() })\n";
+        let repo = Repo::with(&[("src/hooks.ts", base)]);
+        repo.write(
+            "src/hooks.ts",
+            format!("useEffect(() => {{ track() }})\n{base}"),
+        );
+        let changed = repo.changed(&[]);
+        let entry = only_entry(&changed);
+        assert_eq!(
+            (&entry["file"], &entry["function"], &entry["line"]),
+            (&json!("src/hooks.ts"), &json!("useEffect()"), &json!(1))
+        );
+        assert_eq!(
+            (&entry["change"], &entry["verdict"], &entry["crap"]),
+            (&json!("new"), &json!("pass"), &json!(2.0))
+        );
+        assert_eq!(changed["removed"], json!([]));
+    }
+
+    #[test]
+    fn deleting_the_first_of_two_callbacks_and_appending_another_leaves_the_new_one_ambiguous() {
+        let repo = Repo::with(&[(
+            "src/hooks.ts",
+            &format!("{}{}", callback(5, "a"), callback(30, "b")),
+        )]);
+        repo.write(
+            "src/hooks.ts",
+            format!("{}{}", callback(30, "b"), callback(2, "c")),
+        );
+        let changed = repo.changed(&[]);
+        let entry = only_entry(&changed);
+        assert_eq!(entry["function"], "useEffect()#2");
+        assert_eq!(
+            (&entry["change"], &entry["verdict"]),
+            (&json!("ambiguous"), &json!("pass"))
+        );
+        assert_eq!(entry["reason"], "CRAP 6.0 at or below 30");
+        assert_eq!(
+            entry["candidates"],
+            json!([{"function": "useEffect()", "line": 1, "cyclomatic": 5}])
+        );
+        assert_eq!(changed["removed"].as_array().unwrap().len(), 1);
+        assert_eq!(changed["removed"][0]["function"], "useEffect()");
+        assert_eq!(changed["removed"][0]["base_cyclomatic"], 5);
+    }
+
+    #[test]
+    fn a_copy_is_new_and_the_original_keeps_its_partner() {
+        let repo = Repo::standard();
+        let copy = func("edge", 2).replace("function edge(", "function edgeCopy(");
+        repo.write("src/app.ts", format!("{}{copy}", app(6, 2, 1)));
+        let changed = repo.changed(&[]);
+        let entry = only_entry(&changed);
+        assert_eq!(entry["function"], "edgeCopy");
+        assert_eq!(
+            (&entry["change"], &entry["verdict"], &entry["crap"]),
+            (&json!("new"), &json!("pass"), &json!(6.0))
+        );
+        assert_eq!(changed["removed"], json!([]));
+    }
+
+    #[test]
+    fn a_rename_with_an_edit_is_new_and_its_base_row_is_removed() {
+        let repo = Repo::standard();
+        repo.write(
+            "src/app.ts",
+            app(6, 3, 1).replace("function edge(", "function edgeCase("),
+        );
+        let changed = repo.changed(&[]);
+        let entry = only_entry(&changed);
+        assert_eq!(entry["function"], "edgeCase");
+        assert_eq!(
+            (
+                &entry["change"],
+                &entry["cyclomatic"],
+                &entry["crap"],
+                &entry["verdict"]
+            ),
+            (&json!("new"), &json!(3), &json!(12.0), &json!("pass"))
+        );
+        assert_eq!(
+            changed["removed"],
+            json!([{"file": "src/app.ts", "function": "edge", "base_line": line_of(&app(6, 2, 1), "edge"), "base_cyclomatic": 2}])
+        );
+    }
+
+    #[test]
+    fn identical_trivial_functions_renamed_together_are_new() {
+        let repo = Repo::with(&[(
+            "src/t.ts",
+            &format!("{}\n{}", func("one", 1), func("uno", 1)),
+        )]);
+        repo.write(
+            "src/t.ts",
+            format!("{}\n{}", func("first", 1), func("primero", 1)),
+        );
+        let changed = repo.changed(&[]);
+        assert_eq!(
+            names(&changed["entries"]),
+            ["src/t.ts::first", "src/t.ts::primero"]
+        );
+        for entry in changed["entries"].as_array().unwrap() {
+            assert_eq!(
+                (&entry["change"], &entry["crap"], &entry["verdict"]),
+                (&json!("new"), &json!(2.0), &json!("pass"))
+            );
+        }
+        assert_eq!(
+            names(&changed["removed"]),
+            ["src/t.ts::one", "src/t.ts::uno"]
+        );
+    }
+
+    #[test]
+    fn an_edit_inside_a_nested_row_touches_only_the_nested_row() {
+        let source = |branches: &str| {
+            format!(
+                "function outer() {{\n  function inner() {{\n{branches}    return 0\n  }}\n  return inner()\n}}\n"
+            )
+        };
+        let repo = Repo::with(&[("src/n.ts", &source("    if (x) return 1\n"))]);
+        repo.write(
+            "src/n.ts",
+            source("    if (x) return 1\n    if (y) return 2\n"),
+        );
+        let changed = repo.changed(&[]);
+        let entry = only_entry(&changed);
+        assert_eq!(entry["function"], "outer::inner");
+        assert_eq!(
+            (
+                &entry["change"],
+                &entry["base_cyclomatic"],
+                &entry["cyclomatic"]
+            ),
+            (&json!("modified"), &json!(2), &json!(3))
+        );
+    }
+
+    #[test]
+    fn a_new_field_initializer_touches_the_implied_constructor() {
+        let repo = Repo::with(&[(
+            "src/c.ts",
+            "class Cart {\n  items = []\n  add(x: number) { this.items.push(x) }\n}\n",
+        )]);
+        repo.write("src/c.ts", "class Cart {\n  items = []\n  mode = a ? 1 : 2\n  add(x: number) { this.items.push(x) }\n}\n");
+        let changed = repo.changed(&[]);
+        let entry = only_entry(&changed);
+        assert_eq!(entry["function"], "Cart::constructor");
+        assert_eq!(
+            (
+                &entry["change"],
+                &entry["base_cyclomatic"],
+                &entry["cyclomatic"]
+            ),
+            (&json!("modified"), &json!(1), &json!(2))
+        );
+    }
+
+    #[test]
+    fn renaming_a_class_leaves_its_unchanged_methods_out_of_the_gate() {
+        let body = "  m() { return 1 }\n  n() { return 1 }\n}\n";
+        let repo = Repo::with(&[("src/k.ts", &format!("class A {{\n{body}"))]);
+        repo.write("src/k.ts", format!("class B {{\n{body}"));
+        let changed = repo.changed(&[]);
+        assert_eq!(changed["entries"], json!([]));
+        assert_eq!(changed["counts"]["touched"], 0);
+        assert_eq!(
+            names(&changed["removed"]),
+            ["src/k.ts::A::m", "src/k.ts::A::n"]
+        );
+    }
+}
