@@ -18,7 +18,20 @@ pub const FORMATS: [&str; 7] = [
 pub const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
 const SCHEMA_PREFIX: &str =
     "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/";
-const SCHEMA_FILES: [&str; 3] = ["report-v1.json", "delta-v1.json", "changed-v1.json"];
+pub fn schema_files() -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(pages::repo_root().join("schemas/crapts"))
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let json = path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+            json.then(|| path.file_name()?.to_str().map(str::to_owned))?
+        })
+        .collect();
+    files.sort();
+    files
+}
 
 pub fn check_output_formats(page: &Page) -> Result<(), String> {
     let mut found = BTreeSet::new();
@@ -58,7 +71,7 @@ pub fn schema(file: &str) -> Value {
 }
 
 pub fn schema_ids() -> BTreeSet<String> {
-    SCHEMA_FILES
+    schema_files()
         .iter()
         .filter_map(|f| schema(f)["$id"].as_str().map(str::to_owned))
         .collect()
@@ -156,7 +169,7 @@ pub fn field_state(
 
 /// Checked-in schemas by `$id`, so an external `$ref` resolves offline.
 pub fn schemas_by_id() -> BTreeMap<String, Value> {
-    SCHEMA_FILES
+    schema_files()
         .iter()
         .map(|f| schema(f))
         .filter_map(|s| Some((s["$id"].as_str()?.to_owned(), s)))
@@ -282,8 +295,6 @@ pub fn check_fields(
     }
 }
 
-/// Validates a report or delta sample against the schema its `$schema`
-/// names, with `<version>` read back as the package version.
 pub fn check_against_schema(sample: &Sample) -> Result<(), String> {
     let text = sample
         .block
@@ -291,9 +302,9 @@ pub fn check_against_schema(sample: &Sample) -> Result<(), String> {
     let value: Value =
         serde_json::from_str(&text).map_err(|e| format!("{}: {e}", sample.label()))?;
     let id = value["$schema"].as_str().unwrap_or_default();
-    let file = SCHEMA_FILES
-        .iter()
-        .find(|f| id == format!("{SCHEMA_PREFIX}{f}"))
+    let file = schema_files()
+        .into_iter()
+        .find(|f| schema(f)["$id"] == id)
         .ok_or_else(|| format!("{}: {id} is not a report schema", sample.label()))?;
     let validator = crate::common::compile(&format!("schemas/crapts/{file}"));
     let errors: Vec<String> = validator

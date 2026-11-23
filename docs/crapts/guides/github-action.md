@@ -1,14 +1,12 @@
 # GitHub Action
 
-The [crapts](../README.md) Action installs crapts from npm, scores the pull request, writes the report to the job summary and posts it as a pull request comment. It lives in this repository under `actions/crapts`, tagged `crapts-v1`:
+The [crapts](../README.md) Action installs crapts from npm, scores the pull request, writes the report to the job summary and posts it as a pull request comment. It lives in this repository under `actions/crapts`, tagged `crapts-v1`, so a step names it as `uses: minikin/cargo-crap/actions/crapts@crapts-v1`.
 
-```yaml
-- uses: minikin/cargo-crap/actions/crapts@crapts-v1
-```
+The Action's scripts need Node.js 24 or later and stop with exit 2 on an older one. Set it up with `actions/setup-node` before the crapts step, as both workflows below do.
 
 ## A pull request workflow
 
-This workflow runs the tests once on the head commit and once on the base, and gates both regressions and changed functions:
+This workflow runs the tests twice and gates both regressions and changed functions. On a `pull_request` event `actions/checkout` checks out the merge of the branch into its base, so the head run scores that merge result. The base run scores the base commit:
 
 ```yaml
 name: crapts
@@ -25,7 +23,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - uses: minikin/cargo-crap/actions/crapts@crapts-v1
         with:
           install-command: npm ci
@@ -41,9 +39,9 @@ jobs:
 
 - **A base run.** With `coverage-command` and no `baseline`, the Action checks out the base commit in a separate worktree, runs `install-command` and `coverage-command` there, and scores it as the baseline. The head run then gates regressions with `--fail-regression` and changed functions with `--fail-changed`. The workflow above does this.
 - **A supplied baseline.** `baseline` names a saved JSON report, such as one committed on `main`. No base run happens. See [Gate regressions against a baseline](baseline.md) for how to write it.
-- **The changed gate alone.** With `coverage` and no `baseline`, there is no way to score the base, so only the changed-function gate runs, and the job log says so. See [Gate the functions a pull request changes](changed-gate.md).
+- **The changed gate alone.** With `coverage`, no `coverage-command` and no `baseline`, there is no way to score the base, so only the changed-function gate runs, and the job log says so. See [Gate the functions a pull request changes](changed-gate.md).
 
-A baseline committed on the base branch, read from Git, with an existing coverage file:
+A baseline committed on the base branch, read from Git at the same base commit the changed gate uses, with an existing coverage file:
 
 ```yaml
 on: pull_request
@@ -57,7 +55,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: git show "origin/$GITHUB_BASE_REF:crapts-baseline.json" > "$RUNNER_TEMP/crapts-baseline.json"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: git show "${{ github.event.pull_request.base.sha }}:crapts-baseline.json" > "$RUNNER_TEMP/crapts-baseline.json"
       - run: npm ci && npx vitest run --coverage --coverage.reporter=lcov
       - uses: minikin/cargo-crap/actions/crapts@crapts-v1
         with:

@@ -400,7 +400,8 @@ fn word() -> impl Strategy<Value = String> {
         "--[a-z]{1,8}",
         "[a-z]{1,4}--[a-z]{1,4}",
         "[a-z]{1,4}( [a-z<>!-]{1,4}){1,3}",
-        "[a-z'\"#]{1,6}",
+        "[a-z'\"#&]{1,6}",
+        "[a-z]{1,3}&&[a-z]{1,3}",
     ]
 }
 
@@ -502,10 +503,10 @@ fn normalization_touches_only_native_paths_and_version_positions() {
         unix.apply(r#"{"file": "src\\cart.ts"}"#, true),
         r#"{"file": "src\\cart.ts"}"#
     );
-    let text = "src\\cart.ts:1 keeps \\n here\ncrapts 9.8.7\nnot crapts 9.8.7\nother\\src\\cart.ts.bak src\\cart.ts. src\\cart.ts~ file=src\\cart.ts,line=1\n";
+    let text = "src\\cart.ts:1 keeps \\n here\ncrapts 9.8.7\nnot crapts 9.8.7\nother\\src\\cart.ts.bak src\\cart.ts. src\\cart.ts~ file=src\\cart.ts,line=1\nsrc\\cart.ts:10 at the start\nends src\\cart.ts\r\n";
     assert_eq!(
         windows.apply(text, false),
-        "src/cart.ts:1 keeps \\n here\ncrapts <version>\nnot crapts 9.8.7\nother\\src\\cart.ts.bak src/cart.ts. src\\cart.ts~ file=src/cart.ts,line=1\n"
+        "src/cart.ts:1 keeps \\n here\ncrapts <version>\nnot crapts 9.8.7\nother\\src\\cart.ts.bak src/cart.ts. src\\cart.ts~ file=src/cart.ts,line=1\nsrc/cart.ts:10 at the start\nends src/cart.ts\r\n"
     );
     assert_eq!(
         unix.apply(text, false),
@@ -948,7 +949,7 @@ fn the_config_file_refuses_each_per_run_setting_given_a_value_of_its_own_type() 
         assert_eq!(run.code, Some(2), "{key}");
         assert_eq!(run.stdout, "", "{key}");
         let unknown = run.stderr.contains(&format!("unknown key {key}\n"));
-        let flag_only = run.stderr.contains(key) && run.stderr.contains("flag");
+        let flag_only = run.stderr.contains(&format!("flag-only key {key}"));
         assert!(unknown || flag_only, "{key}: {}", run.stderr);
         assert!(
             !run.stderr.contains("invalid type"),
@@ -1170,12 +1171,12 @@ fn the_baseline_guide_shows_a_regression_tripping_the_gate() {
     let samples = guide_samples(&page);
     let sample = guides::find_sample(&page, &samples, &guides::REGRESSION_ARGS, 1)
         .unwrap_or_else(|e| panic!("{e}"));
-    guides::check_regression_sample(&page, sample).unwrap_or_else(|e| panic!("{e}"));
+    guides::check_regression_sample(sample).unwrap_or_else(|e| panic!("{e}"));
     assert!(guides::check_baseline_writer(&page).unwrap_or_else(|e| panic!("{e}")) > 0);
     let mut drifted = sample.clone();
     drifted.block = sample.block.replacen("+30.0", "+29.0", 1);
     assert_names(
-        &err(guides::check_regression_sample(&page, &drifted)),
+        &err(guides::check_regression_sample(&drifted)),
         &[guides::BASELINE, "checkout"],
     );
     let writer = pages::command_lines(&page)
@@ -1423,6 +1424,11 @@ fn the_action_reader_finds_inputs_defaults_and_outputs() {
     assert_eq!(parsed.inputs["a"].as_deref(), Some("1"));
     assert_eq!(parsed.inputs["b"], None);
     assert_eq!(parsed.outputs, BTreeSet::from(["c".to_owned()]));
+    let commented = action::read_action(
+        "# lead\ninputs:\n  # a note\n  a:\n    default: x\n\n# between\n  b:\n    default: y\noutputs:\n  # none here\n  c:\n    value: x\n",
+    );
+    assert_eq!(commented.inputs.keys().collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(commented.outputs, BTreeSet::from(["c".to_owned()]));
     let real = action_yml();
     assert!(real.inputs.contains_key("coverage") && real.inputs.contains_key("coverage-command"));
     assert_eq!(action::default_cell(None), "none");
@@ -1446,6 +1452,11 @@ fn the_action_guide_matches_actions_crapts_action_yml() {
     assert_names(
         &err(action::check_tables(&removed, &declared)),
         &["fail-changed"],
+    );
+    let doubled = page.with(row, &format!("{row}\n{row}"));
+    assert_names(
+        &err(action::check_tables(&doubled, &declared)),
+        &["fail-changed", "second row"],
     );
     let defaulted = page.with(row, &row.replacen("| `true` |", "| `false` |", 1));
     assert_names(
@@ -1533,25 +1544,116 @@ fn the_workflow_reader_reads_the_subset_and_refuses_the_rest() {
         1,
     )
     .unwrap();
-    let flow = action::workflow(&nodes, 1);
+    let flow = action::workflow(&nodes, 1).unwrap();
     assert_eq!(flow.triggers, ["pull_request"]);
-    assert_eq!(flow.permissions["contents"], "read");
-    assert_eq!(flow.steps.len(), 2);
-    assert_eq!(flow.steps[0].with, [(12, "k".to_owned(), "v".to_owned())]);
-    let flat = action::workflow(
-        &action::parse_yaml("on: [push, pull_request]\n", 1).unwrap(),
+    assert_eq!(flow.permissions.unwrap()["contents"], "read");
+    assert_eq!(flow.jobs.len(), 1);
+    assert_eq!(flow.jobs[0].steps.len(), 2);
+    assert_eq!(
+        flow.jobs[0].steps[0].with,
+        [(12, "k".to_owned(), "v".to_owned())]
+    );
+    let flat = action::parse_yaml("on: [push, pull_request]\n", 1).unwrap();
+    assert_eq!(
+        action::workflow(&flat, 1).unwrap().triggers,
+        ["push", "pull_request"]
+    );
+    assert_eq!(action::parse_yaml("a: b\n  c: d\n", 1).unwrap_err().0, 2);
+    assert_eq!(action::parse_yaml("just text\n", 1).unwrap_err().0, 1);
+    assert_eq!(
+        action::parse_yaml("on: [pull_request\n", 1).unwrap_err().0,
+        1
+    );
+    assert_eq!(action::parse_yaml("a: {b: c}\n", 1).unwrap_err().0, 1);
+    let listed = action::parse_yaml(
+        "jobs:\n  a:\n    steps:\n      - uses: x@1\n        with:\n          coverage-command: [a, b]\n",
         1,
+    )
+    .unwrap();
+    let (line, message) = action::workflow(&listed, 1).err().unwrap();
+    assert_eq!(line, 6);
+    assert!(message.contains("coverage-command"), "{message}");
+    let page = Page::new(
+        action::ACTION_GUIDE,
+        "# G\n\n```yaml\non: [pull_request\n```\n",
     );
-    assert_eq!(flat.triggers, ["push", "pull_request"]);
-    assert!(
-        action::parse_yaml("a: b\n  c: d\n", 1)
-            .unwrap_err()
-            .contains("line 2")
+    assert_names(
+        &err(action::workflows(&page).map(|_| ())),
+        &[&format!("{}:4", action::ACTION_GUIDE)],
     );
-    assert!(
-        action::parse_yaml("just text\n", 1)
-            .unwrap_err()
-            .contains("line 1")
+}
+
+const TWO_JOBS: &str = "```yaml
+on: pull_request
+jobs:
+  setup:
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+  score:
+    permissions:
+      contents: read
+    steps:
+      - uses: minikin/cargo-crap/actions/crapts@crapts-v1
+        with:
+          coverage: coverage/lcov.info
+```
+";
+
+#[test]
+fn a_complete_workflow_is_judged_per_job() {
+    let split = Page::new(action::ACTION_GUIDE, TWO_JOBS);
+    assert_names(
+        &err(action::check_complete_workflow(&split)),
+        &["pull-requests: write"],
+    );
+    let granted = Page::new(
+        action::ACTION_GUIDE,
+        &TWO_JOBS.replace(
+            "      contents: read\n    steps:\n      - uses: minikin",
+            "      contents: read\n      pull-requests: write\n    steps:\n      - uses: minikin",
+        ),
+    );
+    assert_names(
+        &err(action::check_complete_workflow(&granted)),
+        &["actions/checkout"],
+    );
+    let inherited = Page::new(
+        action::ACTION_GUIDE,
+        "```yaml\non: pull_request\npermissions:\n  contents: read\n  pull-requests: write\njobs:\n  a:\n    permissions:\n      contents: read\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 24\n      - uses: minikin/cargo-crap/actions/crapts@crapts-v1\n        with:\n          coverage: c\n```\n",
+    );
+    assert_names(
+        &err(action::check_complete_workflow(&inherited)),
+        &["pull-requests: write"],
+    );
+    let whole = inherited.with("    permissions:\n      contents: read\n", "");
+    action::check_complete_workflow(&whole).unwrap();
+}
+
+#[test]
+fn the_action_guide_sets_up_the_node_the_action_needs() {
+    let page = Page::load(action::ACTION_GUIDE);
+    assert!(action::check_node_versions(&page).unwrap_or_else(|e| panic!("{e}")) >= 2);
+    let line = page
+        .text
+        .lines()
+        .find(|l| l.trim() == format!("node-version: {}", action::MIN_NODE))
+        .expect("a node-version line");
+    let old = page.with(line, &line.replace("24", "22"));
+    assert_names(
+        &err(action::check_node_versions(&old)),
+        &[action::ACTION_GUIDE, "22", "24"],
+    );
+    assert_names(
+        &err(action::check_complete_workflow(
+            &old.with(line, &line.replace("24", "22")),
+        )),
+        &["22"],
     );
 }
 
@@ -1575,6 +1677,38 @@ fn every_reference_to_the_crapts_action_uses_its_own_path_and_tag() {
         &err(action::check_uses_lines(&wrong)),
         &[action::ACTION_GUIDE, "minikin/cargo-crap@v1"],
     );
+    let quoted = Page::new(
+        &page.path,
+        "# G\n\n```yaml\n      - uses: \"minikin/cargo-crap@v1\"\n```\n",
+    );
+    assert_names(
+        &err(action::check_uses_lines(&quoted)),
+        &[
+            &format!("{}:4", action::ACTION_GUIDE),
+            "minikin/cargo-crap@v1",
+        ],
+    );
+    let right = Page::new(
+        &page.path,
+        &format!("```yaml\n- uses: '{}'\n```\n", action::ACTION_USES),
+    );
+    assert_eq!(action::check_uses_lines(&right), Ok(1));
+}
+
+#[test]
+fn quoted_arguments_with_shell_operators_survive_a_round_trip() {
+    for word in ["a&&b", "x && y", "a|b", "a#b", "it's \"q\""] {
+        let marker = Marker::Run {
+            stream: Stream::Stdout,
+            exit: 0,
+            args: vec!["--comment-marker".to_owned(), word.to_owned()],
+        };
+        assert_eq!(
+            markers::parse(&marker.to_string()),
+            Ok(marker.clone()),
+            "{marker}"
+        );
+    }
 }
 
 #[test]
@@ -1710,41 +1844,103 @@ fn the_root_docs_check_passes_with_docs_crapts_present() {
 #[test]
 fn a_change_to_the_crapts_docs_or_their_sources_runs_the_crapts_docs_check() {
     let ci = pages::read(index::CI);
-    let (docs, rust) = (
-        index::filter_globs(&ci, "docs"),
-        index::filter_globs(&ci, "rust"),
-    );
-    assert!(!docs.is_empty() && !rust.is_empty());
-    assert!(index::matches(&docs, "docs/crapts/guides/baseline.md"));
-    assert!(!index::matches(&rust, "docs/crapts/guides/baseline.md"));
-    let action = "actions/crapts/action.yml";
-    assert!(index::matches(&docs, action) || index::matches(&rust, action));
-    assert!(index::matches(&docs, "README.md"));
-    let docs_job = index::job_runs(&ci, "docs");
+    let filters = ["docs", "rust", "workflow"].map(|name| (name, index::filter_globs(&ci, name)));
+    assert!(filters.iter().all(|(_, globs)| !globs.is_empty()));
+    let jobs = ["docs", "test"].map(|job| {
+        let runs = index::job_runs(&ci, job);
+        (index::job_condition(&ci, job), runs)
+    });
+    let targets_run = |path: &str| {
+        let set: BTreeSet<&str> = filters
+            .iter()
+            .filter(|(_, globs)| index::matches(globs, path))
+            .map(|(name, _)| *name)
+            .collect();
+        let mut crapts = false;
+        let mut root = false;
+        for (condition, runs) in &jobs {
+            let on = index::evaluate(condition, &set).unwrap_or_else(|| panic!("{condition}"));
+            crapts |= on && runs.iter().any(|r| index::runs_crapts_docs(r));
+            root |= on && runs.iter().any(|r| index::runs_root_docs(r));
+        }
+        (set, crapts, root)
+    };
+    let (set, crapts, root) = targets_run("docs/crapts/guides/baseline.md");
+    assert!(set.contains("docs") && !set.contains("rust"), "{set:?}");
+    assert!(crapts && root);
+    let (set, crapts, _) = targets_run("actions/crapts/action.yml");
+    assert!(set.contains("docs") || set.contains("rust"), "{set:?}");
+    assert!(crapts);
+    let (_, _, root) = targets_run("README.md");
+    assert!(root);
+    let docs_job = &jobs[0].1;
     assert!(
         docs_job.iter().any(|r| index::runs_crapts_docs(r)),
         "{docs_job:?}"
     );
-    assert!(
-        docs_job.iter().any(|r| index::runs_root_docs(r)),
-        "{docs_job:?}"
-    );
-    let test_job = index::job_runs(&ci, "test");
-    assert!(
-        test_job.iter().any(|r| index::runs_crapts_docs(r)),
-        "{test_job:?}"
-    );
-    assert!(index::runs_crapts_docs(
-        "cargo nextest run --workspace --test docs"
-    ));
-    assert!(index::runs_crapts_docs(
-        "cargo nextest run -p cargo-crap -p crapts --test docs"
-    ));
+    for command in [
+        "cargo nextest run --workspace --test docs",
+        "cargo nextest run -p cargo-crap -p crapts --test docs",
+    ] {
+        assert!(
+            index::runs_crapts_docs(command) && index::runs_root_docs(command),
+            "{command}"
+        );
+    }
     assert!(!index::runs_crapts_docs("cargo nextest run --test docs"));
-    assert!(index::runs_root_docs("cargo nextest run --test docs"));
+    assert!(!index::runs_crapts_docs(
+        "echo cargo nextest run --workspace --test docs"
+    ));
     assert!(!index::runs_root_docs(
         "cargo nextest run -p crapts --test docs"
     ));
+    let none = BTreeSet::new();
+    let docs_only = BTreeSet::from(["docs"]);
+    let docs_condition = &jobs[0].0;
+    assert_eq!(index::evaluate(docs_condition, &docs_only), Some(true));
+    assert_eq!(index::evaluate(docs_condition, &none), Some(false));
+    assert_eq!(index::evaluate("false", &none), None);
+    assert_eq!(
+        index::evaluate("(needs.changes.outputs.docs == 'true'", &docs_only),
+        None
+    );
+}
+
+#[test]
+fn the_index_counts_only_links_a_reader_can_follow() {
+    let pages = pages::crapts_pages();
+    let index = Page::load(index::INDEX);
+    let line = index
+        .text
+        .lines()
+        .find(|l| l.contains("(reference/complexity.md)"))
+        .expect("the complexity link");
+    let unused = index.with(
+        line,
+        &format!(
+            "{}\n\n[unused]: reference/complexity.md",
+            line.replace("(reference/complexity.md)", "")
+        ),
+    );
+    assert_names(
+        &err(index::check_index(&unused, &pages)),
+        &["docs/crapts/reference/complexity.md"],
+    );
+    let used = index.with(
+        line,
+        &format!(
+            "{}\n\n[what gets a score]: reference/complexity.md",
+            line.replace("(reference/complexity.md)", "")
+        ),
+    );
+    index::check_index(&used, &pages).unwrap();
+}
+
+#[test]
+fn a_multibyte_angle_link_is_read_whole() {
+    let page = Page::new(QUICK_START, "# Q\n\n[x](<\u{e9}.md>) and [y](<b c.md>)\n");
+    let targets: Vec<String> = pages::links(&page).into_iter().map(|(_, t)| t).collect();
+    assert_eq!(targets, ["\u{e9}.md", "b c.md"]);
 }
 
 #[test]

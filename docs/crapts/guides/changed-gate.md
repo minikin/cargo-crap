@@ -12,9 +12,9 @@ In a CI checkout where the base branch exists only as a remote branch, pass `--b
 
 `--base <rev>` compares the working tree with the merge base of `<rev>` and `HEAD`. Staged, unstaged and untracked edits count as part of the head. The base side is read only as source: crapts needs no base coverage and no base report.
 
-crapts first pairs each head function with one base function: by file and name, then by a fingerprint of its source, so a function that moved or was renamed keeps its pair. A paired function is touched when its fingerprint or its CC differs from its base, so a move or a formatting change alone touches nothing. Its change is `modified`.
+crapts first pairs each head function with one base function: by file and name, then by a fingerprint of its source when exactly one function on each side has that fingerprint. A function that moved or was renamed keeps its pair only when its body is unique. A paired function is touched when its fingerprint or its CC differs from its base, so a move or a formatting change alone touches nothing. Its change is `modified`.
 
-A function left without a pair is touched when a diff hunk reaches its own lines. Its change is `new` when no unpaired base function shares its name, and `ambiguous` when no unique pairing exists, for example when two head functions compete for one base candidate.
+A function left without a pair is touched when a diff hunk reaches its own lines. Its change is `ambiguous` when an unpaired base function in the same file pair shares its name stem, so no unique pairing exists, as when two head functions compete for one base candidate. Otherwise it is `new`.
 
 Each touched function that is scored and not exempted by an `--allow` pattern gets a verdict. The `counts` object records the exempted and unscored ones:
 

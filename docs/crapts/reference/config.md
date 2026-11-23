@@ -83,7 +83,7 @@ These settings describe one invocation, so they exist only as flags and argument
 
 ## Precedence
 
-A scalar flag overrides `.crapts.toml`, and `.crapts.toml` overrides the built-in default. `--exclude` and `--allow` do not replace the lists from the file: their patterns are added after the configured ones, in argument order, and each pattern keeps its own origin. `--all-rows` clears `min` and `top` wherever they were set.
+A scalar flag overrides `.crapts.toml`, and `.crapts.toml` overrides the built-in default. `--exclude` and `--allow` do not replace the lists from the file: their patterns are added after the configured ones, in argument order, and each pattern keeps its own origin. `--all-rows` clears `min` and `top` wherever they were set, and `--print-config` keeps the origin of each, `config` or `flag`, beside its cleared value.
 
 `--print-config` prints every effective setting with its origin, `default`, `config` or `flag`, and reads no source or coverage file:
 

@@ -21,7 +21,7 @@ fn normalized(path: &Path) -> String {
 }
 
 pub fn linked_files(page: &Page) -> BTreeSet<String> {
-    pages::links(page)
+    pages::clickable_links(page)
         .into_iter()
         .filter_map(|(_, target)| {
             let file = target.split('#').next()?;
@@ -143,8 +143,17 @@ pub fn job_runs(
         .collect()
 }
 
-pub fn runs_crapts_docs(command: &str) -> bool {
+fn cargo_test(command: &str) -> Option<Vec<&str>> {
     let words: Vec<&str> = command.split_whitespace().collect();
+    let runs =
+        words.first() == Some(&"cargo") && matches!(words.get(1), Some(&("test" | "nextest")));
+    runs.then_some(words)
+}
+
+pub fn runs_crapts_docs(command: &str) -> bool {
+    let Some(words) = cargo_test(command) else {
+        return false;
+    };
     let docs = words.windows(2).any(|w| w == ["--test", "docs"]);
     let all_targets = words.contains(&"--all-targets");
     let crapts = words.contains(&"--workspace") || words.windows(2).any(|w| w == ["-p", "crapts"]);
@@ -152,10 +161,94 @@ pub fn runs_crapts_docs(command: &str) -> bool {
 }
 
 pub fn runs_root_docs(command: &str) -> bool {
-    let words: Vec<&str> = command.split_whitespace().collect();
-    let scoped = words
-        .windows(2)
-        .any(|w| w[0] == "-p" && w[1] != "cargo-crap");
-    let docs = words.windows(2).any(|w| w == ["--test", "docs"]);
-    docs && !scoped
+    let Some(words) = cargo_test(command) else {
+        return false;
+    };
+    let docs =
+        words.windows(2).any(|w| w == ["--test", "docs"]) || words.contains(&"--all-targets");
+    let root = !words.contains(&"-p") || words.windows(2).any(|w| w == ["-p", "cargo-crap"]);
+    docs && root
+}
+
+pub fn job_condition(
+    ci: &str,
+    job: &str,
+) -> String {
+    let header = format!("  {job}:");
+    let mut lines = ci
+        .lines()
+        .skip_while(|l| *l != header)
+        .skip(1)
+        .take_while(|l| l.is_empty() || l.starts_with("    "));
+    let Some(first) = lines.find_map(|l| l.trim().strip_prefix("if:")) else {
+        return String::new();
+    };
+    let mut condition = first.trim().trim_start_matches(">-").trim().to_owned();
+    for more in lines.take_while(|l| l.starts_with("      ")) {
+        condition.push(' ');
+        condition.push_str(more.trim());
+    }
+    condition.trim().to_owned()
+}
+
+/// Evaluates the `needs.changes.outputs.X == / != 'true'` comparisons
+/// joined by `&&`, `||` and parentheses that the CI conditions use.
+pub fn evaluate(
+    condition: &str,
+    set: &BTreeSet<&str>,
+) -> Option<bool> {
+    let spaced = condition.replace('(', " ( ").replace(')', " ) ");
+    let tokens: Vec<&str> = spaced.split_whitespace().collect();
+    let mut at = 0;
+    let value = disjunction(&tokens, &mut at, set)?;
+    (at == tokens.len()).then_some(value)
+}
+
+fn disjunction(
+    tokens: &[&str],
+    at: &mut usize,
+    set: &BTreeSet<&str>,
+) -> Option<bool> {
+    let mut value = conjunction(tokens, at, set)?;
+    while tokens.get(*at) == Some(&"||") {
+        *at += 1;
+        value |= conjunction(tokens, at, set)?;
+    }
+    Some(value)
+}
+
+fn conjunction(
+    tokens: &[&str],
+    at: &mut usize,
+    set: &BTreeSet<&str>,
+) -> Option<bool> {
+    let mut value = comparison(tokens, at, set)?;
+    while tokens.get(*at) == Some(&"&&") {
+        *at += 1;
+        value &= comparison(tokens, at, set)?;
+    }
+    Some(value)
+}
+
+fn comparison(
+    tokens: &[&str],
+    at: &mut usize,
+    set: &BTreeSet<&str>,
+) -> Option<bool> {
+    if tokens.get(*at) == Some(&"(") {
+        *at += 1;
+        let value = disjunction(tokens, at, set)?;
+        (tokens.get(*at) == Some(&")")).then_some(())?;
+        *at += 1;
+        return Some(value);
+    }
+    let output = tokens.get(*at)?.strip_prefix("needs.changes.outputs.")?;
+    let equal = match *tokens.get(*at + 1)? {
+        "==" => true,
+        "!=" => false,
+        _ => return None,
+    };
+    (tokens.get(*at + 2) == Some(&"'true'")).then_some(())?;
+    *at += 3;
+    Some(set.contains(output) == equal)
 }

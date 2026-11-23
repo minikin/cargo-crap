@@ -76,8 +76,8 @@ impl Normalizer<'_> {
 
 /// The characters a report prints around a location: table borders,
 /// backticks, `file=`, `path:line` and the like.
-const OPENS: &str = " \t`(=\"'[|<";
-const CLOSES: &str = " \t\n:`,)\"']|>";
+const OPENS: &str = " \t\n\r`(=\"'[|<";
+const CLOSES: &str = " \t\n\r:`,)\"']|>";
 
 /// Replaces `native` only where a report delimits it, so a longer name
 /// that merely contains it keeps its bytes.

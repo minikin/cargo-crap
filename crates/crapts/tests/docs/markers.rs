@@ -1,6 +1,20 @@
 use std::fmt;
 
 pub const PREFIX: &str = "<!-- crapts-";
+pub const INFORMATIONAL: [&str; 5] = ["-h", "--help", "-V", "--version", "--print-config"];
+
+pub fn option_value<'a>(
+    args: &'a [String],
+    flag: &str,
+) -> Option<&'a str> {
+    args.iter()
+        .enumerate()
+        .find_map(|(i, a)| match a.strip_prefix(flag) {
+            Some("") => args.get(i + 1).map(String::as_str),
+            Some(rest) => rest.strip_prefix('='),
+            None => None,
+        })
+}
 const CLOSE: &str = "-->";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,24 +59,11 @@ impl Marker {
         let Marker::Run { args, .. } = self else {
             return None;
         };
-        let informational = ["--help", "-h", "--version", "-V", "--print-config"];
-        if args.iter().any(|a| informational.contains(&a.as_str())) {
+        if args.iter().any(|a| INFORMATIONAL.contains(&a.as_str())) {
             return None;
         }
-        let format = args
-            .iter()
-            .enumerate()
-            .find_map(|(i, a)| match a.strip_prefix("--format") {
-                Some("") => args.get(i + 1).cloned(),
-                Some(rest) => rest.strip_prefix('=').map(str::to_owned),
-                None => None,
-            })
-            .unwrap_or_else(|| "text".to_owned());
-        Some(if format == "human" {
-            "text".to_owned()
-        } else {
-            format
-        })
+        let format = option_value(args, "--format").unwrap_or("text");
+        Some(if format == "human" { "text" } else { format }.to_owned())
     }
 }
 

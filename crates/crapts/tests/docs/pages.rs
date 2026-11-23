@@ -414,16 +414,16 @@ pub fn crapts_arguments(line: &str) -> Result<Option<Vec<String>>, String> {
     Ok(Some(words[skip..].to_vec()))
 }
 
-pub const INFORMATIONAL: [&str; 5] = ["-h", "--help", "-V", "--version", "--print-config"];
-
 pub fn command_runs(args: &[String]) -> Vec<Vec<String>> {
     let mut probe = vec!["--print-config".to_owned()];
     probe.extend(
         args.iter()
-            .filter(|a| !INFORMATIONAL.contains(&a.as_str()))
+            .filter(|a| !markers::INFORMATIONAL.contains(&a.as_str()))
             .cloned(),
     );
-    let informational = args.iter().any(|a| INFORMATIONAL.contains(&a.as_str()));
+    let informational = args
+        .iter()
+        .any(|a| markers::INFORMATIONAL.contains(&a.as_str()));
     if informational && args != probe.as_slice() {
         vec![probe, args.to_vec()]
     } else {
@@ -431,63 +431,108 @@ pub fn command_runs(args: &[String]) -> Vec<Vec<String>> {
     }
 }
 
-pub fn links(page: &Page) -> Vec<(usize, String)> {
-    let mut found = Vec::new();
+struct Links {
+    inline: Vec<(usize, String)>,
+    defined: Vec<(usize, String, String)>,
+    prose: String,
+}
+
+fn prose_of(text: &str) -> String {
+    text.split('`').step_by(2).collect::<Vec<_>>().join(" ")
+}
+
+fn scan_links(page: &Page) -> Links {
+    let mut found = Links {
+        inline: Vec::new(),
+        defined: Vec::new(),
+        prose: String::new(),
+    };
     let lines = page.lines();
     for (i, line) in lines.iter().enumerate() {
         if line.fenced || line.fence {
             continue;
         }
-        let prose: String = line
-            .text
-            .split('`')
-            .step_by(2)
-            .collect::<Vec<_>>()
-            .join(" ");
-        let mut rest = prose.as_str();
-        while let Some(at) = rest.find("](") {
-            rest = &rest[at + 2..];
-            let target = destination(rest);
-            if local(target) {
-                found.push((line.number, target.to_owned()));
-            }
-            rest = &rest[target.len().min(rest.len())..];
-        }
-        if let Some(after) = reference_definition(line.text) {
+        if let Some((label, after)) = reference_definition(line.text) {
             let next = lines[i + 1..].iter().find(|l| !l.text.trim().is_empty());
             let (number, text) = match (after.trim(), next) {
                 ("", Some(next)) => (next.number, next.text.trim()),
                 (text, _) => (line.number, text),
             };
-            let target = destination(text);
+            let (target, _) = destination(text);
             if local(target) {
-                found.push((number, target.to_owned()));
+                found
+                    .defined
+                    .push((number, label.to_lowercase(), target.to_owned()));
             }
+            continue;
         }
+        let prose = prose_of(line.text);
+        let mut rest = prose.as_str();
+        while let Some(at) = rest.find("](") {
+            rest = &rest[at + 2..];
+            let (target, consumed) = destination(rest);
+            if local(target) {
+                found.inline.push((line.number, target.to_owned()));
+            }
+            rest = &rest[consumed..];
+        }
+        found.prose.push_str(&prose.to_lowercase());
+        found.prose.push('\n');
     }
     found
+}
+
+/// Every relative link target, unused reference definitions included.
+pub fn links(page: &Page) -> Vec<(usize, String)> {
+    let found = scan_links(page);
+    let mut all = found.inline;
+    all.extend(
+        found
+            .defined
+            .into_iter()
+            .map(|(line, _, target)| (line, target)),
+    );
+    all
+}
+
+/// The targets a reader can follow: inline links and the reference
+/// definitions some link uses.
+pub fn clickable_links(page: &Page) -> Vec<(usize, String)> {
+    let found = scan_links(page);
+    let mut all = found.inline;
+    for (line, label, target) in found.defined {
+        let shortcut = format!("[{label}]");
+        let used = found
+            .prose
+            .match_indices(&shortcut)
+            .any(|(at, _)| !found.prose[at + shortcut.len()..].starts_with(['(', ':']));
+        if used {
+            all.push((line, target));
+        }
+    }
+    all
 }
 
 fn local(target: &str) -> bool {
     !target.is_empty() && !target.contains("://") && !target.starts_with("mailto:")
 }
 
-/// A link destination: `<...>` may hold spaces, a bare one ends at
-/// whitespace or the closing parenthesis.
-fn destination(text: &str) -> &str {
+/// The destination and the bytes of `text` it spans.
+fn destination(text: &str) -> (&str, usize) {
     if let Some(inner) = text.strip_prefix('<') {
-        return inner.split('>').next().unwrap_or_default();
+        let target = inner.split('>').next().unwrap_or_default();
+        return (target, (1 + target.len() + 1).min(text.len()));
     }
     let end = text
         .find(|c: char| c.is_whitespace() || c == ')')
         .unwrap_or(text.len());
-    &text[..end]
+    (&text[..end], end)
 }
 
-fn reference_definition(line: &str) -> Option<&str> {
+fn reference_definition(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim_start().strip_prefix('[')?;
     let (label, after) = rest.split_once("]:")?;
-    (!label.is_empty() && !label.contains(']')).then_some(after)
+    (!label.is_empty() && !label.contains(']')).then_some((label, after))
 }
 
 /// GitHub's anchor for a heading.
@@ -540,6 +585,19 @@ pub fn check_link(
         )),
         _ => Ok(()),
     }
+}
+
+pub fn box_rows(block: &str) -> Vec<Vec<String>> {
+    block
+        .lines()
+        .filter(|l| l.starts_with('\u{2502}'))
+        .map(|l| {
+            l.trim_matches('\u{2502}')
+                .split('\u{2506}')
+                .map(|c| c.trim().to_owned())
+                .collect()
+        })
+        .collect()
 }
 
 pub fn inline_code(text: &str) -> Vec<&str> {

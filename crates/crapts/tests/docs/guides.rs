@@ -1,4 +1,5 @@
 use crate::coverage;
+use crate::markers;
 use crate::pages::{self, Page, Sample};
 use serde_json::Value;
 
@@ -53,25 +54,8 @@ pub fn find_sample<'a>(
         })
 }
 
-pub fn table_cells(block: &str) -> Vec<Vec<String>> {
-    block
-        .lines()
-        .filter(|l| l.starts_with('\u{2502}'))
-        .map(|l| {
-            let inner = l.trim_matches('\u{2502}');
-            inner
-                .split('\u{2506}')
-                .map(|c| c.trim().to_owned())
-                .collect()
-        })
-        .collect()
-}
-
-pub fn check_regression_sample(
-    page: &Page,
-    sample: &Sample,
-) -> Result<(), String> {
-    let rows = table_cells(&sample.block);
+pub fn check_regression_sample(sample: &Sample) -> Result<(), String> {
+    let rows = pages::box_rows(&sample.block);
     let header = rows
         .first()
         .ok_or_else(|| format!("{}: no table", sample.label()))?;
@@ -92,8 +76,7 @@ pub fn check_regression_sample(
     let total = row("total").map(|r| (r[crap].as_str(), r[delta].as_str()));
     if checkout != Some(("42.0", "+30.0")) || total != Some(("1.0", "")) {
         return Err(format!(
-            "{}: {}: expected checkout 42.0 regressed by +30.0 from 12 and total unchanged, got {checkout:?} and {total:?}",
-            page.path,
+            "{}: expected checkout 42.0 regressed by +30.0 from 12 and total unchanged, got {checkout:?} and {total:?}",
             sample.label()
         ));
     }
@@ -111,15 +94,15 @@ pub fn check_regression_sample(
 pub fn check_baseline_writer(page: &Page) -> Result<usize, String> {
     let mut writers = 0;
     for (line, text) in pages::command_lines(page) {
-        let Some(args) = pages::crapts_arguments(&text)? else {
+        let Some(args) =
+            pages::crapts_arguments(&text).map_err(|e| format!("{}: {e}", page.at(line)))?
+        else {
             continue;
         };
-        if !args.iter().any(|a| a == "--output") {
+        if markers::option_value(&args, "--output").is_none() {
             continue;
         }
-        let json = args
-            .windows(2)
-            .any(|w| w[0] == "--format" && w[1] == "json");
+        let json = markers::option_value(&args, "--format") == Some("json");
         if !json || !args.iter().any(|a| a == "--all-rows") {
             return Err(format!(
                 "{}: `{text}` writes a baseline without --format json and --all-rows",
@@ -138,9 +121,9 @@ pub fn check_changed_entry(sample: &Sample) -> Result<Value, String> {
     let report = coverage::sample_json(sample)?;
     let entries = report["changed"]["entries"]
         .as_array()
-        .cloned()
+        .map(Vec::as_slice)
         .unwrap_or_default();
-    let [entry] = entries.as_slice() else {
+    let [entry] = entries else {
         return Err(format!(
             "{}: the changed section has {} entries, expected checkout alone",
             sample.label(),

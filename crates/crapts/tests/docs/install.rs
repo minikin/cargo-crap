@@ -28,19 +28,16 @@ pub fn check_install(
     package: &Value,
     rust_version: &str,
 ) -> Result<(), String> {
-    let lines: Vec<String> = pages::command_lines(page)
-        .into_iter()
-        .map(|(_, l)| l)
-        .collect();
+    let lines = pages::command_lines(page);
     for command in COMMANDS {
-        if !lines.iter().any(|l| l == command) {
+        if !lines.iter().any(|(_, l)| l == command) {
             return Err(format!("{}: no command line `{command}`", page.path));
         }
     }
     let name = package["name"].as_str().unwrap_or_default();
-    for line in lines
+    for (number, line) in lines
         .iter()
-        .filter(|l| l.starts_with("npm ") || l.starts_with("npx "))
+        .filter(|(_, l)| l.starts_with("npm ") || l.starts_with("npx "))
     {
         let Some(named) = line.split_whitespace().find(|w| w.starts_with('@')) else {
             continue;
@@ -52,7 +49,7 @@ pub fn check_install(
         if named != name {
             return Err(format!(
                 "{}: `{line}` names {named}, package.json names {name}",
-                page.path
+                page.at(*number)
             ));
         }
     }
