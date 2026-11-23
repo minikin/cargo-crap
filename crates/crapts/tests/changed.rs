@@ -10,7 +10,9 @@ use cargo_crap_core::entry::SortOrder;
 use cargo_crap_core::entry::{CrapEntry, ScopeDiagnostics, StrayFiles};
 use cargo_crap_core::filter::AllowSet;
 use cargo_crap_core::git::{CommitId, Hunk, MergeBase};
-use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+use cargo_crap_core::policy::{
+    EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder,
+};
 use cargo_crap_core::report::{Format, Placement, Schemas, Section, Tool};
 use cargo_crap_core::run::{
     self, Analysis, BaselineFilter, PreparedBaseline, RenderExtras, Scope, Settings,
@@ -1560,7 +1562,9 @@ const CRAPTS: Tool = Tool {
         pairing: PairPolicy::FileFunction,
         fail_above_counts: Population::All,
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
+        signal_detail_hint: None,
         tie_order: TieOrder::FileFunctionLine,
+        notice_spacing: NoticeSpacing::Adjacent,
     },
     name: "crapts",
     version: env!("CARGO_PKG_VERSION"),
@@ -1606,6 +1610,8 @@ fn report(
         uncovered_hints: false,
         width: None,
         links: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         cwd: Path::new(""),
         workspace_root: None,
         fail_sections: false,
