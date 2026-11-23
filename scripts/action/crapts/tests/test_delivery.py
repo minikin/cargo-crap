@@ -10,7 +10,7 @@ from test_baseline import function, coverage
 class Delivery(ActionTest):
     def setUp(self):
         super().setUp()
-        self.requests, self.comments, self.refusal = [], [], None
+        self.requests, self.comments, self.refusals = [], [], {}
         owner = self
         class API(BaseHTTPRequestHandler):
             def handle_request(self):
@@ -22,12 +22,12 @@ class Delivery(ActionTest):
                 status, reply = 200, {}
                 if self.headers.get("Authorization") != "Bearer fixture-token":
                     status = 401
+                elif self.command in owner.refusals:
+                    status, reply = owner.refusals[self.command]
                 elif self.command == "GET" and parsed.path == collection:
                     page = int(query["page"][0])
                     assert query["per_page"] == ["100"]
                     reply = owner.comments[100 * (page - 1):100 * page]
-                elif owner.refusal:
-                    status, reply = owner.refusal, {"message": "write refused"}
                 elif self.command == "POST" and parsed.path == collection:
                     owner.comments.append({"id": len(owner.comments) + 1, **body})
                     status = 201
@@ -95,26 +95,32 @@ class Delivery(ActionTest):
             self.assertEqual((out["crappy"], out["regressed"], out["changed"], out["status"]), ("1", "", "", str(int(fail))))
             report = Path(out["report"]).read_text()
             self.assertIn(report, Path(self.env["GITHUB_STEP_SUMMARY"]).read_text())
-            self.refusal = None
+            self.refusals.clear()
             self.stage("comment")
             self.assertEqual(self.comments[0]["body"], report)
             for status in [403, 404]:
-                self.refusal = status
-                for existing in [False, True]:
-                    self.comments[:] = [{"id": 1, "body": report}] if existing else []
+                for method in ["GET", "POST", "PATCH"]:
+                    self.refusals = {method: (status, {"message": "permission denied"})}
+                    self.comments[:] = [{"id": 1, "body": report}] if method == "PATCH" else []
+                    self.requests.clear()
                     result = self.stage("comment")
                     self.assertEqual(result.stdout.count("::warning::"), 1)
                     self.assertRegex(result.stdout, f"{status}.*job summary")
-                    self.assertEqual(self.requests[-1][0], "PATCH" if existing else "POST")
+                    self.assertEqual([r[0] for r in self.requests], ["GET"] if method == "GET" else ["GET", method])
                     self.assertEqual(out, self.outputs())
                     self.command(["bash", "-c", 'exit "$STATUS"'], int(fail), STATUS=out["status"])
         (self.project / ".crapts.toml").write_text("fail-above=false\n")
         self.stage("score")
         self.assertEqual(self.outputs()["status"], "0")
         self.assertIn(report.splitlines()[0], Path(self.env["GITHUB_STEP_SUMMARY"]).read_text())
-        self.refusal = 500
-        result = self.stage("comment", 1)
-        self.assertIn("500", result.stderr)
+        self.comments.clear()
+        for method in ["GET", "POST"]:
+            self.refusals = {method: (500, {"message": "fixture service unavailable"})}
+            result = self.stage("comment", 1)
+            self.assertIn("HTTP 500", result.stderr)
+            self.assertIn("fixture service unavailable", result.stderr)
+            self.refusals = {method: (502, {})}
+            self.assertIn("HTTP 502", self.stage("comment", 1).stderr)
 
     def test_links_settings_and_disabled_comment(self):
         self.history({}, {"packages/shop/src/fee.ts": function("fee", 6)})

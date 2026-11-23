@@ -1,5 +1,6 @@
 name: Action
 
+# No job reads untrusted event text: outputs reach `run:` through `env:`.
 on:
   pull_request:
     paths:
@@ -866,7 +867,7 @@ jobs:
         with:
           node-version: '24'
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p cargo-crap -p crapts
+      - run: cargo build --locked -p cargo-crap -p crapts
       - name: Prepare mixed PR and local services
         shell: bash
         run: |

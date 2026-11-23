@@ -36,8 +36,8 @@ function baseOutput(name, root, worktree) {
 }
 
 function generate(base, temp, bash) {
-  const root = realpathSync(git("rev-parse", "--show-toplevel"));
-  const head = realpathSync(process.cwd());
+  const root = realpathSync.native(git("rev-parse", "--show-toplevel"));
+  const head = realpathSync.native(process.cwd());
   const project = relative(root, head);
   const worktree = join(temp, "base-worktree");
   const config = configPaths(root, head).find(path => statSync(path, { throwIfNoEntry: false })?.isFile());
@@ -49,8 +49,8 @@ function generate(base, temp, bash) {
       console.log("::notice::Missing base directory " + project + " at " + base);
       return "";
     }
-    const realTree = realpathSync(worktree);
-    const realCwd = realpathSync(cwd);
+    const realTree = realpathSync.native(worktree);
+    const realCwd = realpathSync.native(cwd);
     if (realCwd !== realTree && !realCwd.startsWith(realTree + sep)) throw Error("base directory leaves detached worktree");
     for (const path of configPaths(realTree, realCwd)) rmSync(path, { force: true });
     if (config) copyFileSync(config, join(worktree, relative(root, config)));

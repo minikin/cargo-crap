@@ -15,13 +15,14 @@ ROOT = Path(__file__).resolve().parents[3]
 RELEASE = ROOT / "scripts/release"
 WRAPPER = Path("npm/crapts/package.json")
 ACTION = Path("actions/crapts/action.yml")
+YAML_1_1_ON_KEY = "true"
 
 
 class Promotions(unittest.TestCase):
     def test_remote_tag_and_all_npm_dist_tags_follow_release_eligibility(self):
         source = ROOT / ".github/workflows/release-crapts.yml"
         workflow = json.loads(subprocess.check_output(
-            ["ruby", "-ryaml", "-rjson", "-e", "puts YAML.safe_load_file(ARGV[0]).to_json", str(source)]))
+            ["ruby", "-ryaml", "-rjson", "-e", "puts YAML.safe_load(File.read(ARGV[0])).to_json", str(source)]))
         jobs = workflow["jobs"]
         tag_job, npm_job = jobs["move-crapts-v1"], jobs["promote-npm"]
         wrapper = json.loads((ROOT / WRAPPER).read_text())
@@ -102,7 +103,7 @@ class Promotions(unittest.TestCase):
         for path in [WRAPPER, ACTION, Path("crates/crapts/Cargo.toml"), Path("scripts/release/move-tag.sh")]:
             (repo / path).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(RELEASE / "move-tag.sh", repo / "scripts/release/move-tag.sh")
-        pattern, = workflow["true"]["push"]["tags"]
+        pattern, = workflow[YAML_1_1_ON_KEY]["push"]["tags"]
         moved, latest = first, "0.0.8"
         for (version, npm, smoke, move, promote), commit in zip(cases, commits, strict=True):
             with self.subTest(version=version, npm=npm, smoke=smoke):
