@@ -1,5 +1,7 @@
 #[path = "docs/check.rs"]
 mod check;
+#[path = "docs/cli.rs"]
+mod cli;
 #[path = "docs/fixture.rs"]
 mod fixture;
 #[path = "docs/markers.rs"]
@@ -617,4 +619,183 @@ fn headings_give_github_anchors() {
     );
     let anchors = pages::anchors("# A\n\n```md\n# Not\n```\n\n## A\n");
     assert_eq!(anchors, BTreeSet::from(["a".to_owned(), "a-1".to_owned()]));
+}
+
+fn help_text() -> String {
+    let run = fixture::Repo::new().crapts(&["--help"]);
+    assert_eq!(run.code, Some(0));
+    run.stdout
+}
+
+fn help_sample(page: &Page) -> pages::Sample {
+    pages::samples(page)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.marker == Marker::Help)
+        .expect("a crapts-help marker")
+}
+
+#[test]
+fn the_marked_help_block_equals_crapts_help() {
+    let page = Page::load(cli::CLI);
+    let repo = fixture::Repo::new();
+    let sample = help_sample(&page);
+    check::check_sample(&sample, &repo.crapts(&sample.marker.args()))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let top = sample
+        .block
+        .lines()
+        .find(|l| l.trim_start().starts_with("--top "))
+        .expect("the --top line");
+    let drifted = page.with(&format!("{top}\n"), "");
+    let sample = help_sample(&drifted);
+    let message = err(check::check_sample(
+        &sample,
+        &repo.crapts(&sample.marker.args()),
+    ));
+    assert_names(&message, &[cli::CLI, "crapts-help", "--top"]);
+}
+
+#[test]
+fn the_flags_table_lists_every_option_in_help_once() {
+    let page = Page::load(cli::CLI);
+    let help = help_text();
+    cli::check_flag_rows(&page, &help).unwrap_or_else(|e| panic!("{e}"));
+    let rows = cli::flags_table(&page).unwrap();
+    assert!(
+        rows.iter()
+            .all(|(long, _, _)| long != "--help" && long != "--version")
+    );
+    let all_rows = page
+        .text
+        .lines()
+        .find(|l| l.starts_with("| `--all-rows`"))
+        .expect("the --all-rows row");
+    let removed = page.with(&format!("{all_rows}\n"), "");
+    assert_names(
+        &err(cli::check_flag_rows(&removed, &help)),
+        &[cli::CLI, "--all-rows"],
+    );
+    let doubled = page.with(
+        &format!("{all_rows}\n"),
+        &format!("{all_rows}\n{all_rows}\n"),
+    );
+    assert_names(
+        &err(cli::check_flag_rows(&doubled, &help)),
+        &["--all-rows", "second row"],
+    );
+}
+
+#[test]
+fn the_help_reader_finds_long_flags_and_clap_defaults() {
+    let help = "Options:\n      --top <N>\n          Rows\n\n          [default: 5]\n  -q, --quiet\n          Less\n  -h, --help\n          Help\n";
+    let options = cli::help_options(help);
+    let found: Vec<_> = options
+        .iter()
+        .map(|o| (o.long.as_str(), o.default.as_deref()))
+        .collect();
+    assert_eq!(found, [("--top", Some("5")), ("--quiet", None)]);
+    let config = serde_json::json!({"settings": {"top": {"value": 9}, "quiet": {"value": true}}});
+    let expected = cli::expected_defaults(help, &config);
+    assert_eq!(expected["--top"], "5");
+    assert_eq!(expected["--quiet"], "on");
+}
+
+#[test]
+fn the_flags_table_states_the_defaults_the_binary_uses() {
+    let page = Page::load(cli::CLI);
+    let repo = fixture::Repo::new();
+    let help = help_text();
+    let printed = repo.crapts(&["--print-config"]);
+    assert_eq!(printed.code, Some(0), "{}", printed.stderr);
+    let config: serde_json::Value = serde_json::from_str(&printed.stdout).unwrap();
+    let expected = cli::expected_defaults(&help, &config);
+    for (flag, cell) in [
+        ("--threshold", "30"),
+        ("--epsilon", "0.01"),
+        ("--format", "text"),
+        ("--missing", "pessimistic"),
+        ("--sort", "crap"),
+        ("--top", "none"),
+        ("--comment-marker", "<!-- crapts-report -->"),
+        ("--all-rows", "off"),
+        ("--no-default-excludes", "off"),
+        ("--print-config", "off"),
+    ] {
+        assert_eq!(expected[flag], cell, "{flag}");
+    }
+    cli::check_defaults(&page, &expected).unwrap_or_else(|e| panic!("{e}"));
+    let row = page
+        .text
+        .lines()
+        .find(|l| l.starts_with("| `--threshold"))
+        .expect("the --threshold row");
+    let drifted = page.with(row, &row.replacen("| 30 |", "| 15 |", 1));
+    assert_names(
+        &err(cli::check_defaults(&drifted, &expected)),
+        &["--threshold", "15", "30"],
+    );
+    for (value, cell) in [
+        (serde_json::json!(null), "none"),
+        (serde_json::json!([]), "none"),
+        (serde_json::json!(false), "off"),
+        (serde_json::json!(true), "on"),
+        (serde_json::json!(30.0), "30"),
+        (serde_json::json!(0.01), "0.01"),
+        (serde_json::json!("crap"), "crap"),
+    ] {
+        assert_eq!(cli::default_cell(&value), cell);
+    }
+}
+
+#[test]
+fn the_differences_table_names_only_crapts_options() {
+    let page = Page::load(cli::CLI);
+    let help = help_text();
+    assert!(cli::check_differences(&page, &help).unwrap_or_else(|e| panic!("{e}")) > 0);
+    let row = page
+        .text
+        .lines()
+        .find(|l| l.contains("`--coverage") && l.contains("`--lcov"))
+        .expect("the --coverage row");
+    let drifted = page.with(row, &row.replacen("`--coverage", "`--covrage", 1));
+    assert_names(
+        &err(cli::check_differences(&drifted, &help)),
+        &["--covrage"],
+    );
+}
+
+fn all_samples() -> Vec<pages::Sample> {
+    pages::crapts_pages()
+        .iter()
+        .flat_map(|p| pages::samples(p).unwrap_or_else(|e| panic!("{e}")))
+        .collect()
+}
+
+#[test]
+fn every_exit_code_in_the_table_is_demonstrated() {
+    let page = Page::load(cli::EXIT_CODES);
+    let samples = all_samples();
+    let codes: Vec<u8> = cli::exit_codes(&page)
+        .unwrap()
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect();
+    assert_eq!(codes, [0, 1, 2]);
+    cli::check_exit_codes(&page, &samples).unwrap_or_else(|e| panic!("{e}"));
+    let row = page
+        .text
+        .lines()
+        .find(|l| l.starts_with("| `2`"))
+        .expect("the row for code 2");
+    let added = page.with(row, &format!("{row}\n| `3` | Never. |"));
+    assert_names(
+        &err(cli::check_exit_codes(&added, &samples)),
+        &[cli::EXIT_CODES, "3"],
+    );
+    let no_stderr: Vec<_> = samples
+        .into_iter()
+        .filter(|s| s.marker.stream() == Stream::Stdout)
+        .collect();
+    assert_names(&err(cli::check_exit_codes(&page, &no_stderr)), &["2"]);
 }

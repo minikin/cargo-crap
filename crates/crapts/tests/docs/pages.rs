@@ -102,14 +102,17 @@ pub fn crapts_pages() -> Vec<Page> {
     pages
 }
 
-pub fn readme_sections(readme: &Page) -> Vec<Page> {
-    let lines = readme.lines();
-    let mut sections = Vec::new();
+pub fn sections(
+    page: &Page,
+    title: &str,
+) -> Vec<Page> {
+    let lines = page.lines();
+    let mut found = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let Some((level, title)) = line.heading() else {
+        let Some((level, heading)) = line.heading() else {
             continue;
         };
-        if title != README_SECTION {
+        if heading != title {
             continue;
         }
         let end = lines[i + 1..]
@@ -117,13 +120,64 @@ pub fn readme_sections(readme: &Page) -> Vec<Page> {
             .position(|l| l.heading().is_some_and(|(other, _)| other <= level))
             .map_or(lines.len(), |offset| i + 1 + offset);
         let text: Vec<&str> = lines[i..end].iter().map(|l| l.text).collect();
-        sections.push(Page {
-            path: readme.path.clone(),
+        found.push(Page {
+            path: page.path.clone(),
             first_line: line.number,
             text: text.join("\n") + "\n",
         });
     }
-    sections
+    found
+}
+
+pub fn section(
+    page: &Page,
+    title: &str,
+) -> Result<Page, String> {
+    let mut found = sections(page, title);
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        n => Err(format!(
+            "{}: {n} sections headed \"{title}\", expected one",
+            page.path
+        )),
+    }
+}
+
+pub fn readme_sections(readme: &Page) -> Vec<Page> {
+    sections(readme, README_SECTION)
+}
+
+/// Body rows of every table outside fenced blocks, as trimmed cells with
+/// their line numbers. A table's first row is its header and is skipped.
+pub fn table_rows(page: &Page) -> Vec<(usize, Vec<String>)> {
+    let mut rows = Vec::new();
+    let mut in_table = false;
+    for line in page.lines() {
+        let row = !line.fenced && !line.fence && line.text.trim_start().starts_with('|');
+        if !row {
+            in_table = false;
+            continue;
+        }
+        let cells: Vec<String> = line
+            .text
+            .trim()
+            .trim_matches('|')
+            .split('|')
+            .map(|c| c.trim().to_owned())
+            .collect();
+        let separator = cells
+            .iter()
+            .all(|c| !c.is_empty() && c.chars().all(|ch| matches!(ch, '-' | ':')));
+        if in_table && !separator {
+            rows.push((line.number, cells));
+        }
+        in_table = true;
+    }
+    rows
+}
+
+pub fn unquote(cell: &str) -> &str {
+    cell.trim().trim_matches('`')
 }
 
 pub fn checked_pages() -> Vec<Page> {
