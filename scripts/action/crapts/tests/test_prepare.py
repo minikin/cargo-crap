@@ -104,6 +104,7 @@ class History(ActionTest):
         self.assertEqual(self.git("merge-base", base, "HEAD"), self.git("-C", str(remote), "merge-base", base, ref))
         full_tree = self.temp / "full"
         self.git("clone", "-q", "-b", ref, str(remote), str(full_tree))
+
         def count(cwd):
             result = subprocess.run([str(BINARY), "--base", base, "--format", "json", "--coverage",
                                      self.prepared()["coverage"]], cwd=cwd, capture_output=True, text=True, check=True)

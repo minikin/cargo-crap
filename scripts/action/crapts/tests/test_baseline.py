@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 from pathlib import Path
 from support import ActionTest, BINARY
 
@@ -109,6 +111,30 @@ done > coverage/coverage-final.json
         self.assertEqual(self.head_coverage.read_bytes(), original)
         doc = json.loads(Path(self.prepared()["baseline"]).read_text())
         self.assertEqual(next(row["crap"] for row in doc["entries"] if row["function"] == "fee"), 8)
+
+    def test_symlinked_output_parent_stays_in_base(self):
+        self.project_pair()
+        alias = self.temp / "linked-project"
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(self.project)], check=True)
+        else:
+            alias.symlink_to(self.project, target_is_directory=True)
+        before = self.head_coverage.read_bytes()
+        for name in ["coverage/coverage-final.json", "not-created/nested/base.info"]:
+            self.prepare()
+            self.stage("baseline", INPUT_COVERAGE_FILE=str(alias / name),
+                       INPUT_COVERAGE_COMMAND='mkdir -p "$(dirname "$INPUT_COVERAGE_FILE")"; echo "SF:fee.ts\nDA:1,1\nend_of_record" > "$INPUT_COVERAGE_FILE"')
+            self.assertEqual(self.head_coverage.read_bytes(), before)
+            self.assertFalse((self.project / "not-created").exists())
+            doc = json.loads(Path(self.prepared()["baseline"]).read_text())
+            self.assertEqual(next(r["crap"] for r in doc["entries"] if r["function"] == "fee"), 8)
+
+    def test_cleanup_error_preserves_command_status(self):
+        self.project_pair()
+        self.prepare()
+        result = self.stage("baseline", 2, INPUT_COVERAGE_COMMAND="exit 7", INJECT_CLEANUP_ERROR="true")
+        self.assertIn("coverage command failed with status 7", result.stderr)
+        self.assertIn("cleanup failed", result.stderr)
 
     def test_base_config_gate_keeps_a_complete_report(self):
         self.project_pair()

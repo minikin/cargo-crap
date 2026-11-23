@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { generateCoverage } from "./prepare.mjs";
 import { withOptions, writeReport } from "./cli.mjs";
 
@@ -17,6 +17,24 @@ function configPaths(root, cwd) {
   }
 }
 
+function realDirectory(path) {
+  try {
+    return realpathSync.native(path);
+  } catch (error) {
+    if (error.code !== "ENOENT" || path === dirname(path)) throw error;
+    return join(realDirectory(dirname(path)), basename(path));
+  }
+}
+
+function baseOutput(name, root, worktree) {
+  if (!isAbsolute(name)) return name;
+  // Clearing stale coverage unlinks the directory entry, even when the file itself is a symlink.
+  const path = join(realDirectory(dirname(name)), basename(name));
+  const part = relative(root, path);
+  if (isAbsolute(part) || part === ".." || part.startsWith(".." + sep)) return name;
+  return join(worktree, part);
+}
+
 function generate(base, temp, bash) {
   const root = realpathSync(git("rev-parse", "--show-toplevel"));
   const head = realpathSync(process.cwd());
@@ -24,6 +42,7 @@ function generate(base, temp, bash) {
   const worktree = join(temp, "base-worktree");
   const config = configPaths(root, head).find(path => statSync(path, { throwIfNoEntry: false })?.isFile());
   git("worktree", "add", "--detach", worktree, base);
+  let originalError;
   try {
     const cwd = join(worktree, project);
     if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
@@ -36,7 +55,7 @@ function generate(base, temp, bash) {
     for (const path of configPaths(realTree, realCwd)) rmSync(path, { force: true });
     if (config) copyFileSync(config, join(worktree, relative(root, config)));
     const name = process.env.INPUT_COVERAGE_FILE;
-    const output = name.startsWith(root + sep) ? join(worktree, relative(root, name)) : name;
+    const output = baseOutput(name, root, worktree);
     const coverage = generateCoverage(cwd, "base " + base, bash, output);
     const args = JSON.parse(readFileSync(join(temp, "args.json")));
     const flags = new Set(["--fail-above", "--fail-regression", "--fail-changed"]);
@@ -45,8 +64,16 @@ function generate(base, temp, bash) {
     const report = join(temp, "baseline.json");
     writeReport(cwd, withOptions(scoring, ["--coverage", coverage, "--format", "json", "--all-rows"]), report, "base " + base);
     return report;
+  } catch (error) {
+    originalError = error;
+    throw error;
   } finally {
-    git("worktree", "remove", "--force", worktree);
+    try {
+      git("worktree", "remove", "--force", worktree);
+    } catch (error) {
+      if (!originalError) throw error;
+      console.error("Could not remove base worktree: " + error.message);
+    }
   }
 }
 

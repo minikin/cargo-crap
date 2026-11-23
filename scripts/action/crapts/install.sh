@@ -6,6 +6,7 @@ major=${version%%.*}
 if ! [[ ${major#v} =~ ^[0-9]+$ ]] || (( ${major#v} < 24 )); then
     fail "Use actions/setup-node with node-version 24 or later"
 fi
+[[ -n ${RUNNER_TEMP:-} ]] || fail "RUNNER_TEMP is required to install crapts"
 temp=$(mktemp -d "$RUNNER_TEMP/crapts.XXXXXXXX") || exit 2
 node "$(dirname "$0")/inputs.mjs" > "$temp/args.json"
 if [[ -n $INPUT_PACKAGE ]]; then

@@ -2,8 +2,8 @@ import io
 import json
 import os
 from pathlib import Path
-import subprocess
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -48,8 +48,10 @@ class ActionTest(unittest.TestCase):
                         GITHUB_OUTPUT=str(self.temp / "outputs"), GITHUB_STEP_SUMMARY=str(self.temp / "summary"),
                         CRAPTS_TEMP=str(self.run_dir), CRAPTS_BINARY=str(BINARY), ARG_TRACE=str(self.temp / "args.log"),
                         INPUT_BASELINE="", INPUT_BASE="", INPUT_COVERAGE="", INPUT_COVERAGE_COMMAND="",
-                        INPUT_INSTALL_COMMAND="", INPUT_COVERAGE_FILE="coverage/coverage-final.json", INPUT_ARGS="", INPUT_FAIL_ABOVE="false", INPUT_FAIL_CHANGED="true",
-                        INPUT_FAIL_REGRESSION="true", INPUT_COMMENT="true", INPUT_COMMENT_MARKER="<!-- crapts-report -->",
+                        INPUT_INSTALL_COMMAND="", INPUT_COVERAGE_FILE="coverage/coverage-final.json", INPUT_ARGS="",
+                        INPUT_FAIL_ABOVE="false", INPUT_FAIL_CHANGED="true",
+                        INPUT_FAIL_REGRESSION="true", INPUT_COMMENT="true",
+                        INPUT_COMMENT_MARKER="<!-- crapts-report -->",
                         INPUT_VERSION=VERSION, INPUT_PACKAGE="", npm_config_cache=str(self.temp / "cache"),
                         npm_config_fetch_retries="0")
 
@@ -62,8 +64,8 @@ class ActionTest(unittest.TestCase):
         return self.command(["bash", str(SCRIPTS / "install.sh")], status, **env)
 
     def prepare(self, status=0, **env):
-        return self.command(["node", str(SCRIPTS / "prepare.mjs"), self.env.get("CRAPTS_TEST_BASH") or shutil.which("bash")],
-                            status, **env)
+        bash = self.env.get("CRAPTS_TEST_BASH") or shutil.which("bash")
+        return self.command(["node", str(SCRIPTS / "prepare.mjs"), bash], status, **env)
 
     def prepared(self):
         return json.loads((self.run_dir / "prepared.json").read_text())

@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import re
 import threading
@@ -38,11 +39,14 @@ class Install(ActionTest):
         self.assertRegex(self.install(2, INPUT_FAIL_CHANGED="yes").stderr, "fail-changed.*true or false.*yes")
         self.assertIn("packs/missing.tgz", self.install(2, INPUT_PACKAGE="packs/missing.tgz").stderr)
 
+    def test_missing_runner_temp(self):
+        del self.env["RUNNER_TEMP"]
+        self.assertIn("RUNNER_TEMP is required", self.install(2).stderr)
+
     def test_old_node(self):
         shim = self.temp / "node"
         shim.write_text('#!/usr/bin/env bash\necho v22.0.0\n')
         shim.chmod(0o755)
-        import os
         result = self.install(2, PATH=str(self.temp) + os.pathsep + self.env["PATH"])
         self.assertRegex(result.stderr, "actions/setup-node.*node-version.*24")
 
