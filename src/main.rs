@@ -14,27 +14,25 @@ use cargo_crap::{
     },
     complexity,
     coverage::{self, FileCoverage},
-    delta::{Baseline, compute_delta, load_baseline_with_weight},
+    delta::{Baseline, load_baseline_with_weight},
     duplicates,
     duplicates::compare::DuplicatePair,
-    duplicates::extract::Location,
     duplicates::triage::provider::{Provider, default_provider},
     duplicates::triage::verdict::Assessment,
-    merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge, sort_entries},
-    report::{
-        self, Format, RenderOptions, SourceLinks, TriagedBy, crappy_count, output_width, render,
-        render_delta, render_delta_counts, render_summary, set_color_enabled,
-    },
+    filter::AllowSet,
+    merge::{MissingCoveragePolicy, ScopeDiagnostics, SortOrder, merge},
+    report::{Format, SourceLinks, TriagedBy, output_width, set_color_enabled},
+    run::{self, BaselineFilter, PreparedBaseline, RenderExtras, Scope},
     score::DEFAULT_THRESHOLD,
 };
 use clap::{Parser, ValueEnum};
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
@@ -401,73 +399,6 @@ fn strip_cargo_subcommand(mut args: Vec<String>) -> Vec<String> {
     args
 }
 
-/// True when an `--allow` entry should be treated as a path glob rather than a
-/// function-name glob. The rule is intentionally simple: contains `/` or `**`.
-/// This is documented in the `--allow` help text so users can predict the
-/// classification.
-fn is_path_allow_pattern(pattern: &str) -> bool {
-    pattern.contains('/') || pattern.contains("**")
-}
-
-/// Build a `GlobSet` for matching function names from allow-list patterns.
-///
-/// Unlike file-path exclusions, we do NOT set `literal_separator` — this lets
-/// `*` match across `::` so that `"Foo::*"` suppresses all methods on `Foo`.
-fn build_allow_set(patterns: &[&str]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pat in patterns {
-        let glob = GlobBuilder::new(pat)
-            .build()
-            .with_context(|| format!("invalid allow pattern: {pat:?}"))?;
-        builder.add(glob);
-    }
-    builder.build().context("building allow glob set")
-}
-
-/// Build a `GlobSet` for matching file paths. `what` names the option in
-/// error messages (`"allow"` / `"exclude"`).
-///
-/// Mirrors `analyze_tree`'s exclude build (`literal_separator(true)` so `*`
-/// stays within one path component and `**` is required to cross directories).
-fn build_path_set(
-    patterns: &[&str],
-    what: &str,
-) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pat in patterns {
-        let glob = GlobBuilder::new(pat)
-            .literal_separator(true)
-            .build()
-            .with_context(|| format!("invalid {what} pattern: {pat:?}"))?;
-        builder.add(glob);
-    }
-    builder
-        .build()
-        .with_context(|| format!("building {what} path glob set"))
-}
-
-/// True if any path-glob in `set` matches a component-suffix of `path`.
-///
-/// Walking suffixes lets a relative pattern like `src/generated/**` match an
-/// absolute file path like `/home/u/project/src/generated/foo.rs` without the
-/// caller having to know which form `entry.file` takes.
-fn path_set_matches_suffix(
-    set: &GlobSet,
-    path: &Path,
-) -> bool {
-    if set.is_empty() {
-        return false;
-    }
-    let components: Vec<_> = path.components().collect();
-    for i in 0..components.len() {
-        let suffix: PathBuf = components[i..].iter().collect();
-        if set.is_match(&suffix) {
-            return true;
-        }
-    }
-    false
-}
-
 /// One Cargo workspace member: package name + the directory containing its
 /// `Cargo.toml`.
 #[derive(Debug, Clone)]
@@ -484,10 +415,8 @@ struct WorkspaceMember {
 #[derive(Debug, Clone)]
 struct ScanRoot {
     dir: PathBuf,
-    /// The defaults and the nested-member excludes: matched below `dir` only.
-    member_only: Vec<String>,
-    /// Config and CLI globs: matched below `dir` and below `workspace_root`.
-    user: Vec<String>,
+    /// Shared with the baseline scope after the walk has captured its match counts.
+    matcher: Arc<complexity::ExcludeMatcher>,
     /// `None` outside workspace mode, where `dir` is the only base.
     workspace_root: Option<PathBuf>,
 }
@@ -500,24 +429,20 @@ impl ScanRoot {
         excludes: &Excludes,
         nested: Vec<String>,
         workspace_root: Option<PathBuf>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut member_only = excludes.defaults.clone();
         member_only.extend(nested);
-        Self {
-            dir,
-            member_only,
-            user: excludes.user.clone(),
-            workspace_root,
-        }
-    }
-
-    fn matcher(&self) -> Result<complexity::ExcludeMatcher> {
-        complexity::ExcludeMatcher::new(
-            &self.member_only,
-            &self.user,
-            self.workspace_root.as_deref(),
+        let matcher = complexity::ExcludeMatcher::new(
+            &member_only,
+            &excludes.user,
+            workspace_root.as_deref(),
         )
-        .with_context(|| format!("analyzing {}", self.dir.display()))
+        .with_context(|| format!("analyzing {}", dir.display()))?;
+        Ok(Self {
+            dir,
+            matcher: Arc::new(matcher),
+            workspace_root,
+        })
     }
 }
 
@@ -562,8 +487,8 @@ fn analyze_sources(
             .with_context(|| format!("configuring rayon thread pool to {n} threads"))?;
     }
     if !workspace && packages.is_empty() {
-        let root = ScanRoot::new(path.to_path_buf(), excludes, Vec::new(), None);
-        let (fns, user_globs_matched, target) = analyze_path(&root, knobs)?;
+        let root = ScanRoot::new(path.to_path_buf(), excludes, Vec::new(), None)?;
+        let (fns, user_globs_matched, target) = analyze_path(&root, knobs);
         return Ok(AnalyzedSources {
             fns,
             roots: vec![root],
@@ -582,11 +507,11 @@ fn analyze_sources(
 fn analyze_path(
     root: &ScanRoot,
     knobs: &AnalysisKnobs,
-) -> Result<(
+) -> (
     Vec<complexity::FunctionComplexity>,
     Vec<bool>,
     Option<PathBuf>,
-)> {
+) {
     let path = &root.dir;
     let config_dir = knobs.config_dir.as_deref();
     let target = target_dir(None, path, config_dir, &knobs.cwd, |name| {
@@ -597,11 +522,11 @@ fn analyze_path(
         .filter(|_| knobs.cache)
         .and_then(|target| Session::open(target, knobs.try_weight));
     let mut records = Vec::new();
-    let (fns, matched) = analyze_root(root, knobs.try_weight, session.as_ref(), &mut records)?;
+    let (fns, matched) = analyze_root(root, knobs.try_weight, session.as_ref(), &mut records);
     if let Some(session) = session {
         session.save(std::slice::from_ref(path), records);
     }
-    Ok((fns, matched, target))
+    (fns, matched, target)
 }
 
 /// Walk one root, through `session`'s cache when there is one, adding the
@@ -612,17 +537,17 @@ fn analyze_root(
     try_weight: f64,
     session: Option<&Session>,
     records: &mut Vec<FileRecord>,
-) -> Result<(Vec<complexity::FunctionComplexity>, Vec<bool>)> {
-    let excludes = root.matcher()?;
+) -> (Vec<complexity::FunctionComplexity>, Vec<bool>) {
+    let excludes = &root.matcher;
     let fns = session.map_or_else(
-        || complexity::analyze_tree_matching(&root.dir, &excludes, try_weight),
+        || complexity::analyze_tree_matching(&root.dir, excludes, try_weight),
         |session| {
-            let analysis = complexity::analyze_tree_cached(&root.dir, &excludes, session.cache());
+            let analysis = complexity::analyze_tree_cached(&root.dir, excludes, session.cache());
             records.extend(analysis.records);
             analysis.functions
         },
     );
-    Ok((fns, excludes.user_globs_matched()))
+    (fns, excludes.user_globs_matched())
 }
 
 /// Mark in `all` every user glob `root` says matched under one more root.
@@ -673,8 +598,8 @@ fn analyze_workspace_members(
             excludes,
             nested_member_excludes(&m.dir, &discovered),
             Some(workspace_root.clone()),
-        );
-        let (member_fns, matched) = analyze_root(&root, knobs.try_weight, cache, &mut records)?;
+        )?;
+        let (member_fns, matched) = analyze_root(&root, knobs.try_weight, cache, &mut records);
         fns.extend(member_fns);
         add_matches(&mut user_globs_matched, &matched);
         roots.push(root);
@@ -901,101 +826,24 @@ fn assign_crate_names(
     }
 }
 
-/// Apply allow-list, min-score, and top-N filters to the entry list in place.
-///
-/// `--allow` entries split into two buckets via [`is_path_allow_pattern`]:
-/// path globs match the entry's source file, function-name globs match the
-/// entry's function name. An entry is dropped when either set matches.
-fn apply_filters(
-    entries: &mut Vec<cargo_crap::merge::CrapEntry>,
-    allow_patterns: &[String],
-) -> Result<()> {
-    if !allow_patterns.is_empty() {
-        let (path_pats, name_pats): (Vec<&str>, Vec<&str>) = allow_patterns
-            .iter()
-            .map(String::as_str)
-            .partition(|p| is_path_allow_pattern(p));
-        let name_set = build_allow_set(&name_pats)?;
-        let path_set = build_path_set(&path_pats, "allow")?;
-        entries.retain(|e| {
-            !name_set.is_match(&e.function) && !path_set_matches_suffix(&path_set, &e.file)
-        });
-    }
-    Ok(())
+/// The exclude globs and selected workspace members of cargo-crap's source walk.
+struct CargoScope {
+    /// Deepest root first, so a nested member owns its files.
+    roots: Vec<(PathBuf, Arc<complexity::ExcludeMatcher>)>,
+    members: Option<MemberScope>,
 }
 
-/// The rows a run shows, in the requested order. Without `min` or `top`
-/// every entry is shown, so `entries` is sorted in place and `None` comes
-/// back: the run keeps one list. With a slice, `entries` stays whole and in
-/// CRAP order for the baseline comparison, and the slice is a sorted copy.
-fn shown_rows(
-    entries: &mut [cargo_crap::merge::CrapEntry],
-    min: Option<f64>,
-    top: Option<usize>,
-    order: SortOrder,
-) -> Option<Vec<cargo_crap::merge::CrapEntry>> {
-    if !is_sliced(min, top) {
-        sort_entries(entries, order);
-        return None;
-    }
-    let mut shown = slice_of(entries, min, top);
-    sort_entries(&mut shown, order);
-    Some(shown)
-}
-
-/// The rows `min` and `top` select: scores at or above the cutoff, then the
-/// N highest. `entries` must be in descending CRAP order, as `merge` leaves
-/// them.
-fn slice_of(
-    entries: &[cargo_crap::merge::CrapEntry],
-    min: Option<f64>,
-    top: Option<usize>,
-) -> Vec<cargo_crap::merge::CrapEntry> {
-    entries
-        .iter()
-        .filter(|e| min.is_none_or(|cutoff| e.crap >= cutoff))
-        .take(top.unwrap_or(usize::MAX))
-        .cloned()
-        .collect()
-}
-
-/// Drops baseline entries that the current run's identity-based filters
-/// would have dropped (spec 18): exclude globs (default + user, matched
-/// relative to the analyzed roots, exactly as the walk applies them) and
-/// `--allow` patterns (same path/name split as [`apply_filters`]).
-///
-/// Without this, changing the exclusion set between the baseline run and the
-/// current run floods `removed` with functions that were not deleted — and
-/// leaves those stale entries eligible for the delta's pass-2 name matcher,
-/// which can pair them with unrelated new functions as phantom moves.
-struct BaselineFilter {
-    /// Each analyzed root with the exclude matcher its walk used, sorted
-    /// longest-first so the deepest root claims the prefix — the same
-    /// longest-match rule as [`assign_crate_names`].
-    roots: Vec<(PathBuf, complexity::ExcludeMatcher)>,
-    name_allow: GlobSet,
-    path_allow: GlobSet,
-}
-
-impl BaselineFilter {
+impl CargoScope {
     fn new(
         roots: &[ScanRoot],
-        allow_patterns: &[String],
-    ) -> Result<Self> {
-        let (path_pats, name_pats): (Vec<&str>, Vec<&str>) = allow_patterns
+        members: Option<MemberScope>,
+    ) -> Self {
+        let mut roots: Vec<_> = roots
             .iter()
-            .map(String::as_str)
-            .partition(|p| is_path_allow_pattern(p));
-        let mut roots = roots
-            .iter()
-            .map(|root| Ok((root.dir.clone(), root.matcher()?)))
-            .collect::<Result<Vec<_>>>()?;
+            .map(|root| (root.dir.clone(), Arc::clone(&root.matcher)))
+            .collect();
         roots.sort_by_key(|(dir, _)| std::cmp::Reverse(dir.as_os_str().len()));
-        Ok(Self {
-            roots,
-            name_allow: build_allow_set(&name_pats)?,
-            path_allow: build_path_set(&path_pats, "allow")?,
-        })
+        Self { roots, members }
     }
 
     /// True when the walk would have excluded `file`, normalized to forward
@@ -1018,38 +866,18 @@ impl BaselineFilter {
             });
         owner.is_some_and(|(dir, excludes)| excludes.check(dir, &normalized).excluded)
     }
+}
 
-    /// Drop every duplicate group member the current run's duplicate scan
-    /// would not have seen: the exclude globs only, since the scan never
-    /// reads the `--allow` patterns.
-    fn retain_members(
-        &self,
-        groups: &mut [Vec<Location>],
-    ) {
-        for members in groups {
-            members.retain(|m| !self.is_excluded(&m.file));
-        }
-    }
-
-    /// True when the current run would produce `function` in `file`.
+impl Scope for CargoScope {
     fn keeps(
         &self,
         file: &Path,
-        function: &str,
     ) -> bool {
         !self.is_excluded(file)
-            && !self.name_allow.is_match(function)
-            && !path_set_matches_suffix(&self.path_allow, file)
-    }
-
-    /// Drop every entry the current run would not have produced. Filtered
-    /// entries vanish for delta purposes: they appear in no bucket
-    /// (`removed` included) and cannot pair in the name-fallback pass.
-    fn retain(
-        &self,
-        entries: &mut Vec<cargo_crap::merge::CrapEntry>,
-    ) {
-        entries.retain(|e| self.keeps(&e.file, &e.function));
+            && self
+                .members
+                .as_ref()
+                .is_none_or(|scope| !scope.is_out_of_scope(file))
     }
 }
 
@@ -1301,15 +1129,6 @@ fn resolve_missing(
         .unwrap_or(MissingCoveragePolicy::Pessimistic)
 }
 
-/// Whether the user asked for a slice of the entries with `top` or `min`,
-/// which turns off the human table's cap. Keeps the `||` out of `run`.
-fn is_sliced(
-    min: Option<f64>,
-    top: Option<usize>,
-) -> bool {
-    min.is_some() || top.is_some()
-}
-
 /// Bail when `flag` is set but `--baseline` is absent. Keeps the per-flag
 /// `&& baseline.is_none()` checks out of [`validate_args`].
 fn require_baseline(
@@ -1414,45 +1233,10 @@ fn validate_args(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Bundles the render-time options threaded into [`do_render`]. Bundling
-/// keeps the helper's signature under clippy's argument-count limit and makes
-/// call sites readable as "what to render" + "where to render it".
-struct RenderOpts<'a> {
-    /// Everything the report renderers consume, passed through verbatim.
-    render: RenderOptions<'a>,
-    epsilon: f64,
-    summary: bool,
-    /// Final entry ordering (spec 17). Applied to the `DeltaReport` so
-    /// `removed` ordering is deterministic too.
-    sort: SortOrder,
-    /// The resolved `[signals]` table (spec 43), for reasons and the gate.
-    signals: &'a cargo_crap::signals::SignalSettings,
-}
-
-/// Whether `--summary` replaces the selected report format's output.
-///
-/// JSON and GitHub workflow commands are machine-readable formats, so their
-/// full output remains available even when `--summary` is present (the
-/// documented contract on the `--summary` flag). The `&&` lives here rather
-/// than at the call site so `do_render` keeps its baseline CC.
-fn effective_summary(
-    summary: bool,
-    format: Format,
-) -> bool {
-    summary && !matches!(format, Format::Json | Format::GitHub)
-}
-
-/// Load the `--baseline` file (if any) and filter it through the current
-/// run's identity-based filters (spec 18) before delta computation. The
-/// analyzed roots are the workspace member dirs, or the single `--path`
-/// root outside `--workspace` mode. A baseline scored under a different `?`
-/// weight than `try_weight` gets one stderr warning; the comparison still
-/// proceeds.
-fn load_filtered_baseline(
+/// Load the baseline, issue compatibility warnings and resolve recorded paths before preparation.
+fn load_report_baseline(
     baseline: Option<&PathBuf>,
-    allow_patterns: &[String],
-    roots: &[ScanRoot],
-    member_scope: Option<&MemberScope>,
+    workspace_root: Option<&Path>,
     try_weight: f64,
     signals_enabled: bool,
 ) -> Result<Option<Baseline>> {
@@ -1463,17 +1247,7 @@ fn load_filtered_baseline(
     warn_on_try_weight_mismatch(baseline.try_weight, try_weight);
     warn_on_missing_signals(&baseline.entries, signals_enabled);
     let mut baseline = baseline;
-    // A run with signals off must not show a baseline's signals either.
-    keep_signals(&mut baseline.entries, signals_enabled);
-    resolve_relative_paths(&mut baseline, workspace_root(roots));
-    let filter = BaselineFilter::new(roots, allow_patterns)?;
-    filter.retain(&mut baseline.entries);
-    apply_member_scope(&mut baseline.entries, member_scope);
-    // At most one record: `for_each` filters it when the baseline has one.
-    baseline
-        .duplicate_groups
-        .iter_mut()
-        .for_each(|groups| filter_duplicate_record(groups, &filter, member_scope));
+    resolve_relative_paths(&mut baseline, workspace_root);
     Ok(Some(baseline))
 }
 
@@ -1487,8 +1261,8 @@ fn resolve_relative_paths(
     let Some(root) = workspace_root else {
         return;
     };
-    // `join` keeps an absolute path as it is. Separators are unified first,
-    // as `BaselineFilter` does, so a baseline written on Windows resolves.
+    // Normalize separators so paths recorded on Windows resolve. Joining an absolute
+    // path preserves it, so both path forms can use the same operation.
     let resolve = |file: &mut PathBuf| *file = root.join(file.to_string_lossy().replace('\\', "/"));
     for entry in &mut baseline.entries {
         resolve(&mut entry.file);
@@ -1547,41 +1321,6 @@ fn missing_signals_warning(
          with [signals] enabled to compare them"
             .to_owned()
     })
-}
-
-/// Drop baseline entries owned by unselected members (spec 25): a `-p` run
-/// never walked them, so they must vanish rather than flood `removed`.
-/// No-op without a scope (single-root and `--workspace` runs).
-fn apply_member_scope(
-    data: &mut Vec<cargo_crap::merge::CrapEntry>,
-    member_scope: Option<&MemberScope>,
-) {
-    retain_in_scope(data, member_scope, |e| &e.file);
-}
-
-/// Keep the `items` whose file `member_scope` covers, or every item without
-/// a scope.
-fn retain_in_scope<T>(
-    items: &mut Vec<T>,
-    member_scope: Option<&MemberScope>,
-    file: impl Fn(&T) -> &Path,
-) {
-    if let Some(scope) = member_scope {
-        items.retain(|item| !scope.is_out_of_scope(file(item)));
-    }
-}
-
-/// Narrow a baseline's duplicate record to the members the current run's
-/// duplicate scan would see: its exclude globs and member scope.
-fn filter_duplicate_record(
-    groups: &mut [Vec<Location>],
-    filter: &BaselineFilter,
-    member_scope: Option<&MemberScope>,
-) {
-    filter.retain_members(groups);
-    for members in groups {
-        retain_in_scope(members, member_scope, |m| &m.file);
-    }
 }
 
 /// Everything the duplicate pass needs, resolved before `cli` and `config`
@@ -1672,9 +1411,9 @@ fn duplicate_pairs(
     settings: &DupSettings,
     roots: &[ScanRoot],
     format: Format,
-) -> Result<Option<Vec<DuplicatePair>>> {
+) -> Option<Vec<DuplicatePair>> {
     if !settings.enabled {
-        return Ok(None);
+        return None;
     }
     // Only four formats can carry the pairs. Paying for a quadratic sweep and
     // then discarding it silently is worse than saying so and skipping it.
@@ -1686,11 +1425,11 @@ fn duplicate_pairs(
             "warning: --duplicates has no effect with this format; \
              use --format human, json, markdown or pr-comment"
         );
-        return Ok(None);
+        return None;
     }
     let mut functions = Vec::new();
     for root in roots {
-        functions.extend(duplicates::scan::scan_matching(&root.dir, &root.matcher()?));
+        functions.extend(duplicates::scan::scan_matching(&root.dir, &root.matcher));
     }
     // Small functions are dropped before comparison rather than filtered out
     // of the results: every pair of trivial accessors is a genuine structural
@@ -1699,7 +1438,7 @@ fn duplicate_pairs(
     functions.sort_by(|a, b| a.location.cmp(&b.location));
     let mut pairs = duplicates::compare::find_pairs(&functions, settings.threshold);
     duplicates::compare::sort_pairs(&mut pairs);
-    Ok(Some(pairs))
+    Some(pairs)
 }
 
 /// The duplicate section's content: the pairs, their groups, and one triage
@@ -1733,17 +1472,19 @@ impl DuplicateSection<'_> {
         })
     }
 
-    /// Render options carrying this section, every other field at its
-    /// default.
-    fn render_options(&self) -> RenderOptions<'_> {
-        RenderOptions {
+    /// Metadata for this run's duplicate section and its score envelopes.
+    fn render_extras(
+        &self,
+        try_weight: f64,
+    ) -> RenderExtras<'_> {
+        RenderExtras {
             duplicates: self.pairs.as_deref(),
             groups: self.groups.as_deref(),
             triage: self.triage.as_deref(),
             triaged_by: self.triaged_by(),
             novelty: self.novelty.as_ref(),
             untriaged: self.untriaged,
-            ..RenderOptions::new(&cargo_crap::tool::CARGO_CRAP)
+            try_weight,
         }
     }
 }
@@ -1760,8 +1501,8 @@ fn duplicate_section<'a>(
     format: Format,
     target: Option<&Path>,
     baseline: Option<&Baseline>,
-) -> Result<DuplicateSection<'a>> {
-    let pairs = duplicate_pairs(settings, roots, format)?;
+) -> DuplicateSection<'a> {
+    let pairs = duplicate_pairs(settings, roots, format);
     let groups = pairs
         .as_deref()
         .map(|pairs| duplicates::group::group_pairs(pairs, settings.threshold));
@@ -1779,7 +1520,7 @@ fn duplicate_section<'a>(
     });
     let (triage, untriaged) =
         triage.map_or((None, 0), |(verdicts, skipped)| (Some(verdicts), skipped));
-    Ok(DuplicateSection {
+    DuplicateSection {
         pairs,
         groups,
         novelty,
@@ -1787,7 +1528,7 @@ fn duplicate_section<'a>(
         untriaged,
         provider: settings.triage_provider.display_name(),
         model: &settings.triage_model,
-    })
+    }
 }
 
 /// Each answer held to the confidence floor, `None` where the budget asked
@@ -1912,76 +1653,6 @@ fn triage_assessments(
         );
         None
     }
-}
-
-/// Render the final report and return `(has_crappy, has_regression)` for exit-code decisions.
-///
-/// `baseline` arrives pre-loaded and pre-filtered (see [`BaselineFilter`]) so
-/// this stays a pure render dispatcher. `entries` are the rows to show, and
-/// `compared` is the whole run the baseline is compared against, so a
-/// function `top` or `min` left out is never reported as removed.
-fn do_render(
-    entries: &[cargo_crap::merge::CrapEntry],
-    compared: &[cargo_crap::merge::CrapEntry],
-    baseline: Option<&[cargo_crap::merge::CrapEntry]>,
-    opts: &RenderOpts,
-    out: &mut dyn Write,
-) -> Result<(bool, bool)> {
-    let summary = effective_summary(opts.summary, opts.render.format);
-    let outcome = if let Some(baseline_data) = baseline {
-        let mut report = compute_delta(compared, baseline_data, opts.epsilon);
-        let baseline_has_signals = baseline_data.iter().any(|b| b.signals.is_some());
-        cargo_crap::delta::attach_reasons(&mut report, opts.signals, baseline_has_signals);
-        // Counted before the rows are narrowed to the slice, so the gate and
-        // the count lines describe the whole comparison. A gating reason
-        // (spec 43) trips the regression gate too; a regressed CRAP score
-        // is one whenever signals are on.
-        let counts = report.counts();
-        let has_regression = counts.regressed + report.gating_reason_count() > 0;
-        let signal_gates = cargo_crap::delta::gating_signal_count(&report);
-        report.restrict_to(entries);
-        report.sort(opts.sort);
-        let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
-        if summary {
-            render_delta_summary_lines(&counts, signal_gates, out)?;
-        } else {
-            let render = RenderOptions {
-                delta_counts: Some(counts),
-                ..opts.render
-            };
-            render_delta(&report, &render, out)?;
-        }
-        (has_crappy, has_regression)
-    } else {
-        let has_crappy = crappy_count(entries, opts.render.threshold) > 0;
-        if summary {
-            render_summary(entries, opts.render.threshold, opts.render.width, out)?;
-        } else {
-            render(entries, &opts.render, out)?;
-        }
-        (has_crappy, false)
-    };
-    // After whichever table was printed, and only once: the section follows
-    // both branches and every row policy.
-    report::render_duplicates(&opts.render, out).context("writing duplicate report")?;
-    Ok(outcome)
-}
-
-/// The `--summary` delta: the counts line, then a note when gating signal
-/// reasons (spec 43) fail the gate, since the counts only cover CRAP.
-fn render_delta_summary_lines(
-    counts: &cargo_crap::delta::DeltaCounts,
-    signal_gates: usize,
-    out: &mut dyn Write,
-) -> Result<()> {
-    render_delta_counts(counts, out)?;
-    if signal_gates > 0 {
-        writeln!(
-            out,
-            "✗ {signal_gates} signal regression(s); run without --summary for the reasons"
-        )?;
-    }
-    Ok(())
 }
 
 /// Resolve `--repo-url` / `--commit-ref` against the GitHub Actions env vars,
@@ -2163,20 +1834,6 @@ fn resolve_settings(
     }
 }
 
-/// Signals are always measured; only a run with `[signals] enabled = true`
-/// reports them (spec 43), so every other run's output stays as it was.
-fn keep_signals(
-    entries: &mut [cargo_crap::merge::CrapEntry],
-    enabled: bool,
-) {
-    if !enabled {
-        for entry in entries {
-            entry.signals = None;
-            entry.signal_spans = cargo_crap::signals::Spans::default();
-        }
-    }
-}
-
 fn run() -> Result<ExitCode> {
     let LoadedArgs {
         cli,
@@ -2225,116 +1882,67 @@ fn run() -> Result<ExitCode> {
     let diagnostics = merge_result.diagnostics;
     warn_scope_mismatch(diagnostics.as_ref());
     let mut entries = merge_result.entries;
-    keep_signals(&mut entries, signals.enabled);
     assign_crate_names(&mut entries, &members);
     let (min, top) = (cli.min.or(config.min), cli.top.or(config.top));
-    apply_filters(&mut entries, &effective_allow)?;
-    // `entries` stays whole for the baseline comparison. `sliced_rows` holds
-    // the rows `min` and `top` select, ordered after `top` has picked by CRAP.
-    let sliced_rows = shown_rows(&mut entries, min, top, settings.sort_order);
-
-    // --- Baseline (loaded here, filtered per specs 18 + 25) ---
-    let baseline_data = load_filtered_baseline(
+    let allow = AllowSet::compile(&effective_allow)?;
+    let workspace_root = workspace_root(&roots);
+    let raw = load_report_baseline(
         cli.baseline.as_ref(),
-        &effective_allow,
-        &roots,
-        member_scope.as_ref(),
+        workspace_root,
         try_weight,
         signals.enabled,
     )?;
-
-    // --- Render ---
-    let mut out_box = prepare_output(cli.output.as_ref())?;
-    let workspace_root = workspace_root(&roots).map(Path::to_path_buf);
-    let links = resolve_source_links(
-        cli.repo_url,
-        cli.commit_ref,
-        &knobs.cwd,
-        workspace_root.as_deref(),
-    );
-    let baseline = baseline_data.as_ref();
-    let dups = duplicate_section(&dup, &roots, cli.format.into(), target.as_deref(), baseline)?;
-    let opts = RenderOpts {
-        render: RenderOptions {
-            threshold: settings.threshold,
-            format: cli.format.into(),
-            links: links.as_ref(),
-            diagnostics: diagnostics.as_ref(),
-            show_unchanged: settings.show_unchanged,
-            uncovered_hints: settings.uncovered_hints,
-            try_weight,
-            sliced: is_sliced(min, top),
-            width: output_width(cli.output.is_none()),
-            cwd: &knobs.cwd,
-            workspace_root: workspace_root.as_deref(),
-            ..dups.render_options()
-        },
-        epsilon,
-        summary: cli.summary,
-        sort: settings.sort_order,
-        signals: &signals,
+    let scope = CargoScope::new(&roots, member_scope);
+    let analysis = run::Analysis {
+        entries,
+        diagnostics,
+        scope: &scope,
     };
-    let (has_crappy, has_regression) = do_render(
-        sliced_rows.as_deref().unwrap_or(&entries),
-        &entries,
-        baseline.map(|b| b.entries.as_slice()),
-        &opts,
-        out_box.as_mut(),
-    )?;
-    // The flush must precede the gate decision: a write failure (e.g.
-    // ENOSPC) is a tool error (exit 2), never a gate verdict over a
-    // truncated report (#47, spec 23).
-    out_box.flush().context("flushing output")?;
+    let baseline = raw.map(|raw| BaselineFilter::new(analysis.scope, &allow).prepare(raw));
 
-    if (settings.fail_above && has_crappy) || (settings.fail_regression && has_regression) {
-        return Ok(ExitCode::from(1));
-    }
-    Ok(ExitCode::SUCCESS)
+    let mut out = prepare_output(cli.output.as_ref())?;
+    let links = resolve_source_links(cli.repo_url, cli.commit_ref, &knobs.cwd, workspace_root);
+    let duplicates = duplicate_section(
+        &dup,
+        &roots,
+        cli.format.into(),
+        target.as_deref(),
+        baseline.as_ref().map(PreparedBaseline::as_baseline),
+    );
+    let report = run::Settings {
+        allow: &allow,
+        min,
+        top,
+        sort: settings.sort_order,
+        threshold: settings.threshold,
+        epsilon,
+        signals: &signals,
+        fail_above: settings.fail_above,
+        fail_regression: settings.fail_regression,
+        format: cli.format.into(),
+        summary: cli.summary,
+        show_unchanged: settings.show_unchanged,
+        uncovered_hints: settings.uncovered_hints,
+        width: output_width(cli.output.is_none()),
+        links: links.as_ref(),
+        cwd: &knobs.cwd,
+        workspace_root,
+    };
+    let outcome = run::run(
+        &cargo_crap::tool::CARGO_CRAP,
+        &report,
+        analysis,
+        baseline.as_ref(),
+        &duplicates.render_extras(try_weight),
+        out.as_mut(),
+    )?;
+    Ok(outcome.exit_code())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
-        name: "other-tool",
-        version: "7.7.7-other",
-        info_uri: "https://example.test/other-tool",
-        schemas: cargo_crap::report::Schemas {
-            report: "https://example.test/schemas/other-report.json",
-            delta: "https://example.test/schemas/other-delta.json",
-        },
-        comment_marker: "<!-- other-tool-marker -->",
-        baseline_hint: "other-tool --json",
-    };
-
-    #[test]
-    fn the_clis_delta_render_keeps_the_callers_tool() {
-        // Given render options carrying the second tool, the JSON format
-        // and a baseline
-        let entries = [signal_entry(None)];
-        let signals = cargo_crap::signals::SignalSettings::default();
-        let opts = RenderOpts {
-            render: RenderOptions {
-                format: Format::Json,
-                ..RenderOptions::new(&SECOND_TOOL)
-            },
-            epsilon: cargo_crap::delta::DEFAULT_EPSILON,
-            summary: false,
-            sort: SortOrder::Crap,
-            signals: &signals,
-        };
-        // When do_render writes the delta report
-        let mut out = Vec::new();
-        do_render(&entries, &entries, Some(&entries), &opts, &mut out).expect("renders");
-        // Then the envelope carries the second tool's version and delta schema
-        let doc: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
-        assert_eq!(doc["version"], "7.7.7-other");
-        assert_eq!(
-            doc["$schema"],
-            "https://example.test/schemas/other-delta.json"
-        );
-    }
+    use cargo_crap::duplicates::extract::Location;
 
     /// An entry with or without signals, for the spec 43 baseline checks.
     fn signal_entry(signals: Option<cargo_crap::signals::Signals>) -> cargo_crap::merge::CrapEntry {
@@ -2367,26 +1975,6 @@ mod tests {
         assert!(missing_signals_warning(&mixed, true).is_none());
     }
 
-    #[test]
-    fn the_summary_notes_signal_regressions_only_when_there_are_some() {
-        let counts = cargo_crap::delta::DeltaCounts::default();
-        let text = |gates| {
-            let mut out = Vec::new();
-            render_delta_summary_lines(&counts, gates, &mut out).expect("writes");
-            String::from_utf8(out).expect("utf-8")
-        };
-        assert!(!text(0).contains("signal regression"), "{}", text(0));
-        assert!(text(1).contains("✗ 1 signal regression(s)"), "{}", text(1));
-    }
-
-    #[test]
-    fn signals_are_stripped_only_from_a_run_with_them_off() {
-        let mut entries = vec![signal_entry(Some(cargo_crap::signals::Signals::default()))];
-        keep_signals(&mut entries, true);
-        assert!(entries[0].signals.is_some());
-        keep_signals(&mut entries, false);
-        assert!(entries[0].signals.is_none());
-    }
     use cargo_crap::merge::StrayFiles;
 
     fn diag(
@@ -2923,84 +2511,6 @@ mod tests {
     }
 
     #[test]
-    fn without_a_slice_the_run_keeps_one_list_in_the_requested_order() {
-        // Merge order: highest CRAP first.
-        let merged = || -> Vec<cargo_crap::merge::CrapEntry> {
-            [("b", 9.0), ("a", 7.0)]
-                .iter()
-                .map(|&(name, crap)| cargo_crap::merge::CrapEntry {
-                    file: PathBuf::from(format!("src/{name}.rs")),
-                    function: name.into(),
-                    line: 1,
-                    cyclomatic: 1.0,
-                    coverage: Some(0.0),
-                    crap,
-                    crate_name: None,
-                    signals: None,
-                    signal_spans: cargo_crap::signals::Spans::default(),
-                    uncovered: Vec::new(),
-                })
-                .collect()
-        };
-        let mut entries = merged();
-        assert!(shown_rows(&mut entries, None, None, SortOrder::File).is_none());
-        let order: Vec<&str> = entries.iter().map(|e| e.function.as_str()).collect();
-        assert_eq!(order, ["a", "b"]);
-
-        let mut entries = merged();
-        let shown = shown_rows(&mut entries, None, Some(1), SortOrder::File).expect("a slice");
-        let shown: Vec<&str> = shown.iter().map(|e| e.function.as_str()).collect();
-        assert_eq!(shown, ["b"]);
-        let order: Vec<&str> = entries.iter().map(|e| e.function.as_str()).collect();
-        assert_eq!(
-            order,
-            ["b", "a"],
-            "a sliced run leaves the compared list alone"
-        );
-    }
-
-    #[test]
-    fn the_slice_keeps_scores_at_the_cutoff_then_the_top_n() {
-        let entries: Vec<cargo_crap::merge::CrapEntry> = [9.0, 7.0, 5.0, 3.0]
-            .iter()
-            .enumerate()
-            .map(|(i, &crap)| cargo_crap::merge::CrapEntry {
-                file: PathBuf::from("src/lib.rs"),
-                function: format!("f{i}"),
-                line: i + 1,
-                cyclomatic: 1.0,
-                coverage: Some(0.0),
-                crap,
-                crate_name: None,
-                signals: None,
-                signal_spans: cargo_crap::signals::Spans::default(),
-                uncovered: Vec::new(),
-            })
-            .collect();
-        let names = |v: Vec<cargo_crap::merge::CrapEntry>| -> Vec<String> {
-            v.into_iter().map(|e| e.function).collect()
-        };
-        assert_eq!(
-            names(slice_of(&entries, None, None)),
-            ["f0", "f1", "f2", "f3"]
-        );
-        assert_eq!(
-            names(slice_of(&entries, Some(5.0), None)),
-            ["f0", "f1", "f2"]
-        );
-        assert_eq!(names(slice_of(&entries, None, Some(2))), ["f0", "f1"]);
-        assert_eq!(names(slice_of(&entries, Some(8.0), Some(2))), ["f0"]);
-    }
-
-    #[test]
-    fn a_top_or_min_value_is_a_requested_slice() {
-        assert!(!is_sliced(None, None));
-        assert!(is_sliced(Some(5.0), None));
-        assert!(is_sliced(None, Some(50)));
-        assert!(is_sliced(Some(5.0), Some(50)));
-    }
-
-    #[test]
     fn resolve_missing_cli_wins_then_config_then_pessimistic() {
         assert_eq!(
             resolve_missing(
@@ -3029,54 +2539,6 @@ mod tests {
         assert!(!resolve_bool(false, Some(false)));
         // Neither set → default false.
         assert!(!resolve_bool(false, None));
-    }
-
-    #[test]
-    fn name_glob_classifier_keeps_function_patterns() {
-        assert!(!is_path_allow_pattern("trivial"));
-        assert!(!is_path_allow_pattern("Foo::*"));
-        assert!(!is_path_allow_pattern("generated_*"));
-        assert!(!is_path_allow_pattern("*"));
-    }
-
-    #[test]
-    fn path_glob_classifier_recognizes_path_patterns() {
-        assert!(is_path_allow_pattern("src/generated/**"));
-        assert!(is_path_allow_pattern("tests/**"));
-        assert!(is_path_allow_pattern("**/build.rs"));
-        assert!(is_path_allow_pattern("a/b"));
-    }
-
-    #[test]
-    fn path_set_matches_relative_pattern_against_absolute_file() {
-        let set = build_path_set(&["src/generated/**"], "allow").unwrap();
-        let abs = Path::new("/home/u/project/src/generated/foo.rs");
-        assert!(path_set_matches_suffix(&set, abs));
-    }
-
-    #[test]
-    fn path_set_does_not_match_unrelated_file() {
-        let set = build_path_set(&["src/generated/**"], "allow").unwrap();
-        let other = Path::new("/home/u/project/src/main.rs");
-        assert!(!path_set_matches_suffix(&set, other));
-    }
-
-    #[test]
-    fn empty_path_set_is_no_op() {
-        let set = build_path_set(&[], "allow").unwrap();
-        assert!(!path_set_matches_suffix(&set, Path::new("any/path.rs")));
-    }
-
-    #[test]
-    fn path_set_respects_literal_separator() {
-        // `src/*` matches direct children of `src/`, but `*` must not cross a
-        // separator — so `src/generated/foo.rs` (a grandchild) does not match.
-        // Crossing directories requires `**`.
-        let set = build_path_set(&["src/*"], "allow").unwrap();
-        assert!(!path_set_matches_suffix(
-            &set,
-            Path::new("/abs/proj/src/generated/foo.rs"),
-        ));
     }
 
     // --- effective_excludes (spec 14 precedence) ---------------------------
@@ -3231,14 +2693,33 @@ mod tests {
         }
     }
 
+    struct Selection {
+        scope: CargoScope,
+        allow: AllowSet,
+    }
+
+    impl Selection {
+        fn prepare(
+            &self,
+            entries: Vec<cargo_crap::merge::CrapEntry>,
+            duplicate_groups: Option<Vec<Vec<Location>>>,
+        ) -> PreparedBaseline {
+            BaselineFilter::new(&self.scope, &self.allow).prepare(Baseline {
+                entries,
+                duplicate_groups,
+                try_weight: cargo_crap::config::DEFAULT_TRY_WEIGHT,
+            })
+        }
+    }
+
     /// A filter over `dirs`, each walked under `excludes`, as
-    /// `load_filtered_baseline` builds one from the run's roots.
+    /// the CLI does for the current run.
     fn filter_for(
         excludes: &Excludes,
         allow: &[String],
         dirs: Vec<PathBuf>,
         workspace_root: Option<&Path>,
-    ) -> Result<BaselineFilter> {
+    ) -> Result<Selection> {
         let roots: Vec<ScanRoot> = dirs
             .into_iter()
             .map(|dir| {
@@ -3249,8 +2730,11 @@ mod tests {
                     workspace_root.map(Path::to_path_buf),
                 )
             })
-            .collect();
-        BaselineFilter::new(&roots, allow)
+            .collect::<Result<_>>()?;
+        Ok(Selection {
+            scope: CargoScope::new(&roots, None),
+            allow: AllowSet::compile(allow)?,
+        })
     }
 
     #[test]
@@ -3307,15 +2791,16 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("./src/generated/api.rs", "dropped"),
             baseline_entry("./src/lib.rs", "kept"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
-    fn workspace_filter(excludes: &Excludes) -> BaselineFilter {
+    fn workspace_filter(excludes: &Excludes) -> Selection {
         filter_for(
             excludes,
             &[],
@@ -3335,23 +2820,25 @@ mod tests {
             user: strs(&["agent/**"]),
             cli_start: 0,
         });
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("/ws/agent/src/lib.rs", "dropped"),
             baseline_entry("/ws/tests/harness/src/lib.rs", "kept"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
     fn baseline_filter_never_matches_a_default_below_the_workspace_root() {
         let filter = workspace_filter(&defaults_only(&["tests/**"]));
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("/ws/tests/harness/src/lib.rs", "kept"),
             baseline_entry("/ws/agent/tests/it.rs", "dropped"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
@@ -3363,14 +2850,15 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("./src/lib.rs", "kept"),
             baseline_entry("./tests/integration.rs", "test_helper"),
             baseline_entry("benches/bench.rs", "bench_helper"),
             baseline_entry("examples/demo.rs", "example_helper"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
@@ -3384,9 +2872,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![baseline_entry("./src/tests/helpers.rs", "nested_helper")];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["nested_helper"]);
+        let entries = vec![baseline_entry("./src/tests/helpers.rs", "nested_helper")];
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["nested_helper"]);
     }
 
     #[test]
@@ -3411,12 +2900,28 @@ mod tests {
             at("src/b.rs", "skip_me"),
             at("gen/c.rs", "h"),
         ];
-        let mut groups = vec![
+        let groups = vec![
             vec![at("tests/it.rs", "helper"), at("src/a.rs", "g")],
             kept.clone(),
         ];
-        filter.retain_members(&mut groups);
-        assert_eq!(groups, vec![vec![at("src/a.rs", "g")], kept]);
+        let prepared = filter.prepare(Vec::new(), Some(groups));
+        let groups = prepared.as_baseline().duplicate_groups.as_ref().unwrap();
+        assert_eq!(groups, &[vec![at("src/a.rs", "g")], kept]);
+    }
+
+    #[test]
+    fn baseline_scores_keep_only_selected_member_files_that_the_walk_included() {
+        let excludes = defaults_only(&["tests/**"]);
+        let root = PathBuf::from("/ws/crates/alpha");
+        let mut selection = filter_for(&excludes, &[], vec![root], Some(Path::new("/ws"))).unwrap();
+        selection.scope.members = Some(root_layout_scope());
+        let rows = vec![
+            baseline_entry("/ws/crates/alpha/src/lib.rs", "selected"),
+            baseline_entry("/ws/crates/alpha/tests/helper.rs", "excluded"),
+            baseline_entry("/ws/crates/beta/src/lib.rs", "unselected"),
+        ];
+        let prepared = selection.prepare(rows, None);
+        assert_eq!(names(&prepared.as_baseline().entries), ["selected"]);
     }
 
     #[test]
@@ -3427,9 +2932,10 @@ mod tests {
             end_line: 9,
             name: name.to_string(),
         };
-        let filter =
+        let mut filter =
             filter_for(&Excludes::default(), &[], vec![PathBuf::from("/ws")], None).unwrap();
-        let mut groups = vec![
+        filter.scope.members = Some(root_layout_scope());
+        let groups = vec![
             vec![
                 at("/ws/crates/alpha/src/lib.rs", "f"),
                 at("/ws/crates/beta/src/lib.rs", "g"),
@@ -3439,10 +2945,11 @@ mod tests {
                 at("/ws/crates/alpha/src/b.rs", "k"),
             ],
         ];
-        filter_duplicate_record(&mut groups, &filter, Some(&root_layout_scope()));
+        let prepared = filter.prepare(Vec::new(), Some(groups));
+        let groups = prepared.as_baseline().duplicate_groups.as_ref().unwrap();
         assert_eq!(
             groups,
-            vec![
+            &[
                 vec![at("/ws/crates/alpha/src/lib.rs", "f")],
                 vec![
                     at("/ws/crates/alpha/src/a.rs", "h"),
@@ -3550,8 +3057,9 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![baseline_entry("tests\\integration.rs", "test_helper")];
-        filter.retain(&mut entries);
+        let entries = vec![baseline_entry("tests\\integration.rs", "test_helper")];
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
         assert!(entries.is_empty(), "backslash path must match tests/**");
     }
 
@@ -3567,13 +3075,14 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("crates/foo/tests/it.rs", "member_test"),
             baseline_entry("crates/foo/sub/tests/it.rs", "nested_member_test"),
             baseline_entry("crates/foo/src/lib.rs", "kept"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
@@ -3585,18 +3094,19 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("src/codegen.rs", "generated_parse_v1"),
             baseline_entry("src/lib.rs", "kept"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
     fn baseline_filter_applies_path_allow_patterns() {
         // Path-shaped allow patterns use the same suffix matching as
-        // apply_filters, so they work against absolute baseline paths too.
+        // filter::allow, so they work against absolute baseline paths too.
         let filter = filter_for(
             &Excludes::default(),
             &strs(&["src/generated/**"]),
@@ -3604,22 +3114,24 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("/abs/proj/src/generated/api.rs", "dropped"),
             baseline_entry("/abs/proj/src/lib.rs", "kept"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["kept"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["kept"]);
     }
 
     #[test]
     fn baseline_filter_with_no_patterns_is_a_no_op() {
         let filter = filter_for(&Excludes::default(), &[], vec![PathBuf::from(".")], None).unwrap();
-        let mut entries = vec![
+        let entries = vec![
             baseline_entry("tests/integration.rs", "test_helper"),
             baseline_entry("src/lib.rs", "lib_fn"),
         ];
-        filter.retain(&mut entries);
-        assert_eq!(names(&entries), ["test_helper", "lib_fn"]);
+        let prepared = filter.prepare(entries, None);
+        let entries = &prepared.as_baseline().entries;
+        assert_eq!(names(entries), ["test_helper", "lib_fn"]);
     }
 }

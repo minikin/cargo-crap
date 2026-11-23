@@ -122,7 +122,9 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`src/duplicates/`** is a second, opt-in pass over the same AST (`--duplicates`). `extract` collects one `FunctionPrint` per non-test function, `normalize` erases identifiers, literal values and field/path names while keeping control flow, operators, receiver shape and statement order, `fingerprint` hashes every normalized subtree into a `BTreeSet<Fingerprint>` (FNV-1a, not `DefaultHasher`, because the fingerprints must be stable across processes), and `compare` scores every pair by Jaccard similarity. The pass is quadratic in the number of functions, which is why it is off by default; functions below `duplicates.min-nodes` (default 20) are dropped before comparison. It reuses the complexity pass's test filter, so the two analyses cannot disagree about what counts as source. Its `triage/` submodule (spec 30) asks a TypeSafe model three typed questions about each reported pair and annotates the human and JSON output. Triage is opt-in twice: the HTTP client is behind the `triage` Cargo feature (off by default), and the run needs `[duplicates.triage] enabled = true` plus `TYPESAFE_API_KEY`. Any failure degrades to the untriaged report. `just dev` and CI test both builds.
 
-**`src/main.rs`** builds the CLI with `clap`. It handles the `cargo crap` subcommand invocation by stripping the leading `crap` argument when detected. Heavy logic is extracted into `validate_args`, `analyze_sources`, `apply_filters`, `load_coverage`, and `do_render` to keep `main` CC below 15.
+**`src/main.rs`** builds the CLI with `clap`. It handles the `cargo crap` subcommand invocation by stripping the leading `crap` argument when detected. It resolves settings, runs analysis and coverage, prepares the baseline with the Cargo file scope, opens the destination and gathers duplicate data. It passes those inputs to `run::run` and returns the resulting gate exit code.
+
+**`src/run.rs`** owns the report pipeline and `BaselineFilter`. **`src/filter.rs`** compiles allow patterns and selects shown rows. **`src/gate.rs`** maps full-delta counts and the threshold population to an exit code. **`src/policy.rs`** defines the caller's policy types. cargo-crap supplies its values in `src/tool.rs`.
 
 ## Key design decisions
 
@@ -130,7 +132,7 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 - `--missing pessimistic` (default) treats functions with no coverage data as 0% covered. That is the right default for CI gates: unmatched files are a red flag, not a silent pass.
 - Files that fail to parse during `analyze_tree` emit a warning to stderr and are skipped, to avoid aborting a CI run over a single corrupt file.
 - `tests/**`, `benches/**`, and `examples/**` are excluded by default (spec 14). The defaults are ordinary exclude globs prepended during effective-exclude assembly in `main.rs`. `analyze_tree` knows nothing about them. `--no-default-excludes` empties the list; the `default-excludes` config key replaces it wholesale; `exclude`/`--exclude` always append.
-- Baseline entries are filtered through the current run's exclude/allow filters before `compute_delta` (spec 18, `BaselineFilter` in `main.rs`) so changing the exclusion set between runs doesn't flood `removed` or produce phantom pass-2 moves.
+- Baseline entries are filtered through the current run's exclude/allow filters before `compute_delta` (spec 18, `BaselineFilter` in `src/run.rs`) so changing the exclusion set between runs doesn't flood `removed` or produce phantom pass-2 moves.
 
 ## Tests
 

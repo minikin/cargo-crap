@@ -9037,8 +9037,9 @@ fn top_and_min_narrow_the_section_but_not_the_gate() {
 
 // ── Spec 46: Tool branding value ─────────────────────────────────────────
 
-/// A tool whose every value differs from cargo-crap's and from one another.
+/// A tool whose seven branding strings differ from cargo-crap's and from one another.
 const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
+    policy: cargo_crap::tool::CARGO_CRAP_POLICY,
     name: "other-tool",
     version: "7.7.7-other",
     info_uri: "https://example.test/other-tool",
@@ -9388,6 +9389,966 @@ fn no_cargo_crap_branding_reaches_a_second_tools_output() {
         let text = String::from_utf8_lossy(out);
         for brand in ["cargo-crap", "cargo crap", "cargo_crap"] {
             assert!(!text.contains(brand), "{name} contains {brand}:\n{text}");
+        }
+    }
+}
+
+// Spec 47 T3
+
+fn scored_row(
+    file: &str,
+    function: &str,
+    crap: f64,
+) -> cargo_crap::merge::CrapEntry {
+    cargo_crap::merge::CrapEntry {
+        file: file.into(),
+        function: function.into(),
+        line: 1,
+        cyclomatic: crap,
+        coverage: Some(100.0),
+        crap,
+        crate_name: None,
+        signals: None,
+        signal_spans: cargo_crap::signals::Spans::default(),
+        uncovered: Vec::new(),
+    }
+}
+
+#[test]
+fn top_selects_by_score_before_file_order_sorts_the_selected_rows() {
+    use cargo_crap::{filter, merge::SortOrder, report};
+    // Given descending scores with a tie at the top boundary.
+    let mut entries = vec![
+        scored_row("z.rs", "first", 50.0),
+        scored_row("b.rs", "second", 40.0),
+        scored_row("c.rs", "third", 40.0),
+        scored_row("a.rs", "last", 10.0),
+    ];
+    // When the caller selects the first two qualifying rows and requests file order.
+    let selected =
+        filter::slice(&mut entries, Some(40.0), Some(2), SortOrder::File).expect("slice");
+    let options = report::RenderOptions {
+        format: report::Format::Json,
+        ..report::RenderOptions::new(&SECOND_TOOL)
+    };
+    let mut out = Vec::new();
+    report::render(&selected, &options, &mut out).expect("report");
+    // Then the selected rows retain their identities and appear in file order.
+    let doc: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+    let rows: Vec<_> = doc["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["file"].as_str().unwrap(),
+                row["function"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(rows, [("b.rs", "second"), ("z.rs", "first")]);
+}
+
+// Spec 47 T4
+
+struct Roots<'a>(&'a [&'a str]);
+
+impl cargo_crap::run::Scope for Roots<'_> {
+    fn keeps(
+        &self,
+        file: &std::path::Path,
+    ) -> bool {
+        self.0.iter().any(|root| file.starts_with(root))
+    }
+}
+
+fn scored_baseline(entries: Vec<cargo_crap::merge::CrapEntry>) -> cargo_crap::delta::Baseline {
+    cargo_crap::delta::Baseline {
+        entries,
+        try_weight: cargo_crap::config::DEFAULT_TRY_WEIGHT,
+        duplicate_groups: None,
+    }
+}
+
+#[test]
+fn the_callers_file_scope_applies_before_baseline_pairing() {
+    use cargo_crap::{filter::AllowSet, run::BaselineFilter, signals::SignalSettings};
+    // Given an unselected function whose name would otherwise pair with the new row.
+    let raw = scored_baseline(vec![
+        scored_row("old/work.rs", "work", 5.0),
+        scored_row("old/dead.rs", "dead", 5.0),
+        scored_row("src/gone.rs", "gone", 5.0),
+    ]);
+    let current = vec![scored_row("src/new.rs", "work", 5.0)];
+    let scope = Roots(&["src"]);
+    let allow = AllowSet::compile(&[]).unwrap();
+    // When the caller prepares the baseline and writes the delta.
+    let prepared = BaselineFilter::new(&scope, &allow).prepare(raw);
+    let signals = SignalSettings::default();
+    let (out, _) = pipeline_report(
+        &SECOND_TOOL,
+        &pipeline_settings(&allow, &signals),
+        &scope,
+        current,
+        Some(&prepared),
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    // Then work is genuinely new and gone is the only removal.
+    let entries = doc["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["function"], "work");
+    assert_eq!(entries[0]["file"], "src/new.rs");
+    assert_eq!(entries[0]["status"], "new");
+    assert!(entries[0].get("previous_file").is_none());
+    let removed = doc["removed"].as_array().unwrap();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0]["function"], "gone");
+    assert_eq!(removed[0]["file"], "src/gone.rs");
+}
+
+#[test]
+fn allow_filters_hide_score_rows_while_duplicate_members_follow_file_scope() {
+    use cargo_crap::{duplicates::extract::Location, filter::AllowSet, run::BaselineFilter};
+    // Given the same four locations recorded as score rows and as one duplicate group.
+    let mut baseline = scored_baseline(vec![
+        scored_row("src/a.rs", "Worker::run", 5.0),
+        scored_row("gen/b.rs", "build", 5.0),
+        scored_row("src/c.rs", "keep", 5.0),
+        scored_row("old/d.rs", "gone", 5.0),
+    ]);
+    let group: Vec<_> = baseline
+        .entries
+        .iter()
+        .map(|row| Location {
+            name: row.function.clone(),
+            file: row.file.clone(),
+            start_line: row.line,
+            end_line: row.line + 2,
+        })
+        .collect();
+    baseline.duplicate_groups = Some(vec![group.clone()]);
+    let allow = AllowSet::compile(&["Worker::*".into(), "gen/**".into()]).unwrap();
+    // When the caller prepares this baseline for the selected directories.
+    let prepared = BaselineFilter::new(&Roots(&["src", "gen"]), &allow).prepare(baseline);
+    let scoped = prepared.as_baseline();
+    // Then allow patterns suppress score rows and the group follows only the file scope.
+    assert_eq!(scoped.entries.len(), 1);
+    assert_eq!(scoped.entries[0].function, "keep");
+    assert_eq!(scoped.entries[0].file, std::path::Path::new("src/c.rs"));
+    assert_eq!(
+        scoped.duplicate_groups.as_ref().unwrap(),
+        &[group[..3].to_vec()]
+    );
+}
+
+// Spec 47 T5
+
+#[test]
+fn a_hidden_regression_trips_the_gate_and_a_genuine_removal_survives_the_slice() {
+    // Given leader at 60, hidden at 20, and a baseline where hidden was 10 and gone was 1.
+    let dir = tree_of(&[
+        ("a.rs".into(), "leader".into(), 60),
+        ("b.rs".into(), "hidden".into(), 20),
+    ]);
+    write(dir.path(), ".cargo-crap.toml", "missing = \"optimistic\"\n");
+    let baseline = edited_baseline(dir.path(), |doc| {
+        assert_eq!(entry_mut(doc, "leader")["crap"], 60.0);
+        let hidden = entry_mut(doc, "hidden");
+        assert_eq!(hidden["crap"], 20.0);
+        hidden["crap"] = 10.0.into();
+        let mut gone = hidden.clone();
+        gone["function"] = "gone".into();
+        gone["crap"] = 1.0.into();
+        doc["entries"].as_array_mut().unwrap().push(gone);
+    });
+    // When only the top row is shown and the regression gate is enabled.
+    let args = ["--top", "1", "--fail-regression"];
+    let out = delta_run(dir.path(), &baseline, &args);
+    // Then the removal survives, the hidden regression trips the gate and the summary counts both.
+    assert_eq!(out.status.code(), Some(1));
+    let doc = delta_doc(&out);
+    let entries = doc["entries"].as_array().unwrap();
+    let removed = doc["removed"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["function"], "leader");
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0]["function"], "gone");
+    let (summary, code) = run_in(
+        dir.path(),
+        &[
+            "--baseline",
+            &baseline,
+            "--summary",
+            "--top",
+            "1",
+            "--fail-regression",
+        ],
+    );
+    assert_eq!(code, Some(1));
+    assert!(
+        summary.contains("↑ 1 regressed") && summary.contains("— 1 removed"),
+        "{summary}"
+    );
+}
+
+fn sliced_signal_summary(
+    signal: &str,
+    code: i32,
+) -> String {
+    let dir = one_function_tree(
+        "work",
+        NESTED_3,
+        "[signals]\nenabled = true\ngate = [\"nesting\"]\n",
+    );
+    let baseline = edited_baseline(dir.path(), |doc| {
+        let row = entry_mut(doc, "work");
+        assert!(row["crap"].as_f64().unwrap() < 999.0);
+        assert!(row["signals"][signal].as_u64().unwrap() > 0);
+        row["signals"][signal] = 0.into();
+    });
+    let (summary, actual) = run_in(
+        dir.path(),
+        &[
+            "--baseline",
+            &baseline,
+            "--summary",
+            "--min",
+            "999",
+            "--fail-regression",
+        ],
+    );
+    assert_eq!(actual, Some(code), "{summary}");
+    assert!(summary.contains("↑ 0 regressed"), "{summary}");
+    summary
+}
+
+#[test]
+fn signal_reasons_affect_the_verdict_independently_of_score_counts_for_nesting() {
+    assert!(sliced_signal_summary("nesting", 1).contains("✗ 1 signal regression(s)"));
+}
+
+#[test]
+fn signal_reasons_affect_the_verdict_independently_of_score_counts_for_lines() {
+    assert!(!sliced_signal_summary("lines", 0).contains("signal regression"));
+}
+
+// Spec 47 T6
+
+fn pipeline_settings<'a>(
+    allow: &'a cargo_crap::filter::AllowSet,
+    signals: &'a cargo_crap::signals::SignalSettings,
+) -> cargo_crap::run::Settings<'a> {
+    use cargo_crap::{delta::DEFAULT_EPSILON, merge::SortOrder, report::Format};
+    cargo_crap::run::Settings {
+        allow,
+        min: None,
+        top: None,
+        sort: SortOrder::Crap,
+        threshold: 30.0,
+        epsilon: DEFAULT_EPSILON,
+        signals,
+        fail_above: false,
+        fail_regression: false,
+        format: Format::Json,
+        summary: false,
+        show_unchanged: false,
+        uncovered_hints: false,
+        width: None,
+        links: None,
+        cwd: Path::new(""),
+        workspace_root: None,
+    }
+}
+
+fn pipeline_report(
+    tool: &cargo_crap::report::Tool,
+    settings: &cargo_crap::run::Settings<'_>,
+    scope: &dyn cargo_crap::run::Scope,
+    entries: Vec<cargo_crap::merge::CrapEntry>,
+    baseline: Option<&cargo_crap::run::PreparedBaseline>,
+) -> (Vec<u8>, cargo_crap::gate::GateOutcome) {
+    use cargo_crap::run::{self, Analysis, RenderExtras};
+    let analysis = Analysis {
+        entries,
+        diagnostics: None,
+        scope,
+    };
+    let mut out = Vec::new();
+    let verdict = run::run(
+        tool,
+        settings,
+        analysis,
+        baseline,
+        &RenderExtras::default(),
+        &mut out,
+    )
+    .expect("report");
+    (out, verdict)
+}
+
+#[test]
+fn the_clis_delta_render_keeps_the_callers_tool() {
+    use cargo_crap::{filter::AllowSet, run::BaselineFilter, signals::SignalSettings};
+    // Given the second tool and an identical baseline in the caller's scope.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let scope = Roots(&["src"]);
+    let entries = spec46_entries();
+    let baseline = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(entries.clone()));
+    // When the public entry point writes the JSON delta.
+    let signals = SignalSettings::default();
+    let (out, _) = pipeline_report(
+        &SECOND_TOOL,
+        &pipeline_settings(&allow, &signals),
+        &scope,
+        entries,
+        Some(&baseline),
+    );
+    // Then it carries the caller's version and delta schema.
+    let doc: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+    assert_eq!(doc["version"], "7.7.7-other");
+    assert_eq!(
+        doc["$schema"],
+        "https://example.test/schemas/other-delta.json"
+    );
+}
+
+#[test]
+fn the_caller_chooses_which_formats_honor_a_summary_request() {
+    use cargo_crap::{
+        filter::AllowSet,
+        policy::Policy,
+        report::{Format, Tool},
+        signals::SignalSettings,
+    };
+    // Given two tools that differ only in whether Shields honors a summary request.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.format = Format::Shields;
+    settings.summary = true;
+    let write = |tool: &Tool| {
+        pipeline_report(
+            tool,
+            &settings,
+            &Roots(&["src"]),
+            vec![scored_row("src/a.rs", "hot", 50.0)],
+            None,
+        )
+        .0
+    };
+    let badge = Tool {
+        policy: Policy {
+            summary_formats: &[],
+            ..SECOND_TOOL.policy
+        },
+        ..SECOND_TOOL
+    };
+    // When both tools render the same row with a summary requested.
+    let text = String::from_utf8(write(&SECOND_TOOL)).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&write(&badge)).unwrap();
+    // Then the first tool writes summary text and the second writes a Shields badge.
+    assert!(
+        text.contains("Analyzed: 1") && text.contains("Crappy: 1"),
+        "{text}"
+    );
+    assert_eq!(json["message"], "1 crappy");
+}
+
+#[test]
+fn the_library_renders_the_callers_duplicate_group_and_weight() {
+    use cargo_crap::{
+        duplicates::{compare::DuplicatePair, extract::Location, group::DuplicateGroup},
+        filter::AllowSet,
+        run::{self, Analysis, RenderExtras},
+        signals::SignalSettings,
+    };
+
+    // Given a caller with two duplicate functions and a non-default scoring weight.
+    let member = |name: &str, line| Location {
+        file: "src/copies.rs".into(),
+        name: name.into(),
+        start_line: line,
+        end_line: line + 2,
+    };
+    let pair = DuplicatePair {
+        first: member("left", 3),
+        second: member("right", 9),
+        score: 0.875,
+    };
+    let group = DuplicateGroup::of_pair(&pair);
+    let extras = RenderExtras {
+        duplicates: Some(std::slice::from_ref(&pair)),
+        groups: Some(std::slice::from_ref(&group)),
+        try_weight: 0.5,
+        ..RenderExtras::default()
+    };
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = pipeline_settings(&allow, &signals);
+    let analysis = Analysis {
+        entries: vec![],
+        diagnostics: None,
+        scope: &Roots(&["src"]),
+    };
+
+    // When the caller supplies those extras to the public JSON report pipeline.
+    let mut out = Vec::new();
+    run::run(&SECOND_TOOL, &settings, analysis, None, &extras, &mut out).unwrap();
+
+    // Then the envelope carries the pair, the group with both source locations, and the weight.
+    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(doc["try_weight"], 0.5);
+    let pairs = doc["duplicates"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0]["first_function"], "left");
+    assert_eq!(pairs[0]["second_function"], "right");
+    assert_eq!(
+        doc["duplicate_groups"],
+        serde_json::json!([{
+            "score": 0.875,
+            "members": [
+                {"file": "src/copies.rs", "function": "left", "start_line": 3, "end_line": 5},
+                {"file": "src/copies.rs", "function": "right", "start_line": 9, "end_line": 11}
+            ]
+        }])
+    );
+}
+
+#[derive(Default)]
+struct CheckedWriter {
+    bytes: Vec<u8>,
+    flushes: usize,
+    fail_write: bool,
+    fail_flush: bool,
+}
+
+impl std::io::Write for CheckedWriter {
+    fn write(
+        &mut self,
+        bytes: &[u8],
+    ) -> std::io::Result<usize> {
+        if self.fail_write {
+            return Err(std::io::Error::other("write failed"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flushes += 1;
+        if self.fail_flush {
+            return Err(std::io::Error::other("flush failed"));
+        }
+        Ok(())
+    }
+}
+
+fn write_tripped_report(out: &mut CheckedWriter) -> anyhow::Result<cargo_crap::gate::GateOutcome> {
+    use cargo_crap::{
+        filter::AllowSet,
+        run::{self, Analysis, RenderExtras},
+        signals::SignalSettings,
+    };
+    let allow = AllowSet::compile(&[])?;
+    let signals = SignalSettings::default();
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.fail_above = true;
+    let analysis = Analysis {
+        entries: vec![scored_row("src/a.rs", "hot", 40.0)],
+        diagnostics: None,
+        scope: &Roots(&["src"]),
+    };
+    run::run(
+        &SECOND_TOOL,
+        &settings,
+        analysis,
+        None,
+        &RenderExtras::default(),
+        out,
+    )
+}
+
+#[test]
+fn an_output_failure_takes_precedence_over_a_tripped_gate_successful_flush() {
+    // Given the writer accepts every write and flush.
+    let mut out = CheckedWriter::default();
+    // When a report with a threshold violation is rendered.
+    let outcome = write_tripped_report(&mut out).unwrap();
+    // Then the writer contains the complete report, was flushed once, and the gate trips.
+    let doc: serde_json::Value = serde_json::from_slice(&out.bytes).expect("complete JSON report");
+    assert_eq!(doc["entries"][0]["function"], "hot");
+    assert_eq!(out.flushes, 1);
+    assert_eq!(outcome.exit_code(), std::process::ExitCode::from(1));
+}
+
+#[test]
+fn an_output_failure_takes_precedence_over_a_tripped_gate_failed_write() {
+    // Given the writer fails on its first write.
+    let mut out = CheckedWriter {
+        fail_write: true,
+        ..CheckedWriter::default()
+    };
+    // When a report with a threshold violation is rendered.
+    let error = write_tripped_report(&mut out).unwrap_err();
+    // Then the caller receives the write error.
+    assert_eq!(error.root_cause().to_string(), "write failed");
+}
+
+#[test]
+fn an_output_failure_takes_precedence_over_a_tripped_gate_failed_flush() {
+    // Given the writer accepts the report and fails on flush.
+    let mut out = CheckedWriter {
+        fail_flush: true,
+        ..CheckedWriter::default()
+    };
+    // When a report with a threshold violation is rendered.
+    let error = write_tripped_report(&mut out).unwrap_err();
+    // Then the caller receives the flush error after the complete report was written.
+    assert_eq!(error.to_string(), "flushing output");
+    assert_eq!(error.root_cause().to_string(), "flush failed");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.bytes).expect("writes completed before flush");
+    assert_eq!(doc["entries"][0]["function"], "hot");
+}
+
+#[test]
+fn the_library_counts_a_hidden_regression_and_keeps_the_genuine_removal() {
+    use cargo_crap::{
+        filter::AllowSet, report::Format, run::BaselineFilter, signals::SignalSettings,
+    };
+    // Given a leading row, a hidden regression and a removed baseline row.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let scope = Roots(&["src"]);
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.top = Some(1);
+    settings.fail_regression = true;
+    let current = vec![
+        scored_row("src/a.rs", "leader", 60.0),
+        scored_row("src/b.rs", "hidden", 20.0),
+    ];
+    let mut before = current.clone();
+    before[1].crap = 10.0;
+    before.push(scored_row("src/c.rs", "gone", 1.0));
+    let baseline = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(before));
+
+    // When the caller renders only the leading row.
+    let (out, verdict) = pipeline_report(
+        &SECOND_TOOL,
+        &settings,
+        &scope,
+        current.clone(),
+        Some(&baseline),
+    );
+    // Then the JSON preserves the removal and the hidden regression trips the gate.
+    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(doc["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["entries"][0]["function"], "leader");
+    assert_eq!(doc["removed"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["removed"][0]["function"], "gone");
+    assert_eq!(
+        (verdict.crappy, verdict.regressed, verdict.section_failures),
+        (1, 1, 0)
+    );
+    assert_eq!(verdict.exit_code(), std::process::ExitCode::from(1));
+    settings.format = Format::Human;
+    settings.summary = true;
+    // When the caller requests a text summary of the same delta.
+    let (out, summary_verdict) =
+        pipeline_report(&SECOND_TOOL, &settings, &scope, current, Some(&baseline));
+    // Then its counts and verdict still cover the full delta.
+    let summary = String::from_utf8(out).unwrap();
+    assert!(
+        summary.contains("↑ 1 regressed") && summary.contains("— 1 removed"),
+        "{summary}"
+    );
+    assert_eq!(summary_verdict, verdict);
+}
+
+#[test]
+fn the_delta_outcome_counts_hidden_score_changes_once_each() {
+    use cargo_crap::{
+        filter::AllowSet,
+        run::BaselineFilter,
+        signals::{SignalSettings, Signals},
+    };
+    // Given two score regressions with attached reasons and a one-row display limit.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings {
+        enabled: true,
+        ..SignalSettings::default()
+    };
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.top = Some(1);
+    settings.fail_regression = true;
+    let scope = Roots(&["src"]);
+    let before = vec![
+        scored_row("src/a.rs", "leader", 1.0),
+        scored_row("src/b.rs", "hidden", 1.0),
+    ];
+    let mut current = before.clone();
+    for row in &mut current {
+        row.crap = 40.0;
+        row.signals = Some(Signals::default());
+    }
+    let baseline = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(before));
+    // When the caller renders the delta.
+    let (_, outcome) = pipeline_report(&SECOND_TOOL, &settings, &scope, current, Some(&baseline));
+    // Then both regressions count once and one shown row exceeds the threshold.
+    assert_eq!(
+        (outcome.crappy, outcome.regressed, outcome.section_failures),
+        (1, 2, 0)
+    );
+    assert_eq!(outcome.exit_code(), std::process::ExitCode::from(1));
+}
+
+#[test]
+fn the_library_distinguishes_hidden_signal_reasons_from_score_regressions() {
+    use cargo_crap::{
+        filter::AllowSet,
+        report::Format,
+        run::BaselineFilter,
+        signals::{Signal, SignalSettings, Signals},
+    };
+    // Given a hidden row and a policy that gates nesting increases.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings {
+        enabled: true,
+        gate: vec![Signal::Nesting],
+        ..SignalSettings::default()
+    };
+    let scope = Roots(&["src"]);
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.min = Some(51.0);
+    settings.fail_regression = true;
+    settings.format = Format::Human;
+    settings.summary = true;
+    let mut before = scored_row("src/lib.rs", "work", 50.0);
+    before.signals = Some(Signals::default());
+    let baseline =
+        BaselineFilter::new(&scope, &allow).prepare(scored_baseline(vec![before.clone()]));
+    for (nesting, lines, code) in [(1, 0, 1), (0, 1, 0)] {
+        let mut current = before.clone();
+        current.signals = Some(Signals {
+            nesting,
+            lines,
+            ..Signals::default()
+        });
+        // When only nesting or line count increases.
+        let (out, verdict) = pipeline_report(
+            &SECOND_TOOL,
+            &settings,
+            &scope,
+            vec![current],
+            Some(&baseline),
+        );
+        // Then only nesting trips the gate and the CRAP counts stay zero.
+        let summary = String::from_utf8(out).unwrap();
+        assert!(summary.contains("↑ 0 regressed"), "{summary}");
+        assert_eq!(summary.contains("✗ 1 signal regression(s)"), code == 1);
+        assert_eq!(
+            (verdict.crappy, verdict.regressed, verdict.section_failures),
+            (0, 0, 0)
+        );
+        assert_eq!(verdict.exit_code(), std::process::ExitCode::from(code));
+    }
+}
+
+#[test]
+fn disabled_signals_are_omitted_from_public_reports_and_cannot_trip_a_gate() {
+    use cargo_crap::{
+        filter::AllowSet,
+        run::BaselineFilter,
+        signals::{SignalSettings, Signals},
+    };
+    // Given measured signals in both runs and signal reporting disabled.
+    let allow = AllowSet::compile(&[]).unwrap();
+    let scope = Roots(&["src"]);
+    let signals = SignalSettings::default();
+    let mut settings = pipeline_settings(&allow, &signals);
+    settings.fail_regression = true;
+    let mut row = scored_row("src/a.rs", "work", 1.0);
+    row.signals = Some(Signals::default());
+    let before = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(vec![row.clone()]));
+    row.signals = Some(Signals {
+        nesting: 4,
+        ..Signals::default()
+    });
+    for baseline in [None, Some(&before)] {
+        // When the caller renders an absolute or delta report.
+        let (bytes, outcome) =
+            pipeline_report(&SECOND_TOOL, &settings, &scope, vec![row.clone()], baseline);
+        // Then the report omits signal data and the gate passes.
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let entry = &doc["entries"][0];
+        for key in ["signals", "baseline_signals", "reasons", "signal_spans"] {
+            assert!(entry.get(key).is_none(), "{key}: {entry}");
+        }
+        assert_eq!(outcome.exit_code(), std::process::ExitCode::SUCCESS);
+    }
+}
+
+// Spec 47 T7
+
+mod gate_populations {
+    use super::{
+        Roots, SECOND_TOOL, pipeline_report, pipeline_settings, scored_baseline, scored_row,
+    };
+    use cargo_crap::{
+        filter::AllowSet,
+        policy::{Policy, Population},
+        report::Tool,
+        run::BaselineFilter,
+        signals::SignalSettings,
+    };
+    use proptest::{prelude::*, test_runner::FileFailurePersistence};
+    use std::process::ExitCode;
+
+    fn caller(population: Population) -> Tool {
+        Tool {
+            policy: Policy {
+                fail_above_counts: population,
+                ..SECOND_TOOL.policy
+            },
+            ..SECOND_TOOL
+        }
+    }
+
+    fn population_example(
+        min: Option<f64>,
+        top: Option<usize>,
+        names: &[&str],
+        shown_count: usize,
+    ) {
+        // Given the same eligible rows, including one exactly at the threshold.
+        let rows = vec![
+            scored_row("src/a.rs", "skip_me", 80.0),
+            scored_row("src/b.rs", "hot", 50.0),
+            scored_row("src/c.rs", "warm", 40.0),
+            scored_row("src/d.rs", "edge", 30.0),
+        ];
+        let scope = Roots(&["src"]);
+        let allow = AllowSet::compile(&["skip_me".into()]).unwrap();
+        let signals = SignalSettings::default();
+        let mut settings = pipeline_settings(&allow, &signals);
+        settings.min = min;
+        settings.top = top;
+        settings.fail_above = true;
+        let prepared = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(rows.clone()));
+        // When either tool renders the same absolute or delta report.
+        for baseline in [None, Some(&prepared)] {
+            let run = |population| {
+                pipeline_report(
+                    &caller(population),
+                    &settings,
+                    &scope,
+                    rows.clone(),
+                    baseline,
+                )
+            };
+            let (shown, shown_gate) = run(Population::Shown);
+            let (all, all_gate) = run(Population::All);
+            // Then the gate population affects the verdict independently of the rendered bytes.
+            assert_eq!(all, shown);
+            let doc: serde_json::Value = serde_json::from_slice(&shown).unwrap();
+            let actual: Vec<_> = doc["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["function"].as_str().unwrap())
+                .collect();
+            assert_eq!(actual, names);
+            assert_eq!(shown_gate.crappy, shown_count);
+            assert_eq!(all_gate.crappy, 2);
+            assert_eq!(
+                shown_gate.exit_code(),
+                ExitCode::from(u8::from(shown_count > 0))
+            );
+            assert_eq!(all_gate.exit_code(), ExitCode::from(1));
+        }
+    }
+
+    #[test]
+    fn the_caller_selects_the_population_for_the_threshold_gate_with_top_one() {
+        population_example(None, Some(1), &["hot"], 1);
+    }
+    #[test]
+    fn the_caller_selects_the_population_for_the_threshold_gate_with_an_empty_slice() {
+        population_example(Some(51.0), None, &[], 0);
+    }
+    #[test]
+    fn the_caller_selects_the_population_for_the_threshold_gate_without_a_slice() {
+        population_example(None, None, &["hot", "warm", "edge"], 2);
+    }
+
+    fn disabled_gate_example(
+        population: Population,
+        count: usize,
+    ) {
+        let rows = vec![
+            scored_row("src/a.rs", "hot", 50.0),
+            scored_row("src/b.rs", "warm", 40.0),
+        ];
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let scope = Roots(&["src"]);
+        let mut settings = pipeline_settings(&allow, &signals);
+        settings.top = Some(1);
+        let before = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(rows.clone()));
+        for baseline in [None, Some(&before)] {
+            for enabled in [true, false] {
+                settings.fail_above = enabled;
+                let (_, outcome) = pipeline_report(
+                    &caller(population),
+                    &settings,
+                    &scope,
+                    rows.clone(),
+                    baseline,
+                );
+                assert_eq!(outcome.crappy, count);
+                assert_eq!(outcome.exit_code(), ExitCode::from(u8::from(enabled)));
+            }
+        }
+    }
+
+    #[test]
+    fn disabling_fail_above_preserves_the_threshold_count_for_shown() {
+        disabled_gate_example(Population::Shown, 1);
+    }
+    #[test]
+    fn disabling_fail_above_preserves_the_threshold_count_for_all() {
+        disabled_gate_example(Population::All, 2);
+    }
+
+    #[test]
+    fn threshold_counts_cover_empty_input_zero_top_ties_and_oversized_limits() {
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        for (scores, min, top, expected_names, shown, all) in [
+            (&[][..], None, Some(5), &[][..], 0, 0),
+            (&[40.5, 40.5, 30.0][..], None, Some(0), &[], 0, 2),
+            (
+                &[40.5, 40.5, 30.0][..],
+                Some(40.5),
+                Some(1),
+                &["row_0"],
+                1,
+                2,
+            ),
+            (
+                &[40.5, 40.5, 30.0][..],
+                Some(30.0),
+                Some(99),
+                &["row_0", "row_1", "row_2"],
+                2,
+                2,
+            ),
+        ] {
+            let entries: Vec<_> = scores
+                .iter()
+                .enumerate()
+                .map(|(i, &score)| scored_row("src/a.rs", &format!("row_{i}"), score))
+                .collect();
+            let mut settings = pipeline_settings(&allow, &signals);
+            settings.min = min;
+            settings.top = top;
+            let scope = Roots(&["src"]);
+            let prepared =
+                BaselineFilter::new(&scope, &allow).prepare(scored_baseline(entries.clone()));
+            for baseline in [None, Some(&prepared)] {
+                for (population, expected) in [(Population::Shown, shown), (Population::All, all)] {
+                    let (out, verdict) = pipeline_report(
+                        &caller(population),
+                        &settings,
+                        &scope,
+                        entries.clone(),
+                        baseline,
+                    );
+                    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+                    let names: Vec<_> = doc["entries"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|row| row["function"].as_str().unwrap())
+                        .collect();
+                    assert_eq!(names, expected_names, "{scores:?} {min:?} {top:?}");
+                    assert_eq!(
+                        verdict.crappy, expected,
+                        "{population:?} {scores:?} {min:?} {top:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: Some(Box::new(
+                FileFailurePersistence::WithSource("proptest-regressions"),
+            )),
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn the_gate_counts_agree_with_an_independent_count_of_eligible_rows(
+            mut inputs in prop::collection::vec((4u8..=48, any::<bool>(), any::<bool>()), 0..32),
+            threshold in 4u8..=48,
+            min in prop::option::of(4u8..=52),
+            top in prop::option::of(0usize..36),
+            allow_names in any::<bool>(),
+            allow_paths in any::<bool>(),
+        ) {
+            let score_value = |quarters: u8| f64::from(quarters) / 4.0;
+            inputs.sort_by_key(|row| std::cmp::Reverse(row.0));
+            let mut patterns = Vec::new();
+            if allow_names {
+                patterns.push("generated_*".into());
+            }
+            if allow_paths {
+                patterns.push("gen/**".into());
+            }
+            let mut rows = Vec::new();
+            let (mut all, mut shown, mut selected) = (0, 0, 0);
+            for (i, &(score, generated_name, generated_path)) in inputs.iter().enumerate() {
+                let prefix = if generated_name { "generated" } else { "work" };
+                let dir = if generated_path { "gen" } else { "src" };
+                rows.push(scored_row(
+                    &format!("{dir}/{i}.rs"),
+                    &format!("{prefix}_{i}"),
+                    score_value(score),
+                ));
+                // Compute eligibility and rank from the generated inputs.
+                if (allow_names && generated_name) || (allow_paths && generated_path) {
+                    continue;
+                }
+                all += usize::from(score > threshold);
+                if score >= min.unwrap_or(0) && selected < top.unwrap_or(inputs.len()) {
+                    selected += 1;
+                    shown += usize::from(score > threshold);
+                }
+            }
+            let allow = AllowSet::compile(&patterns).unwrap();
+            let signals = SignalSettings::default();
+            let mut settings = pipeline_settings(&allow, &signals);
+            settings.threshold = score_value(threshold);
+            settings.min = min.map(score_value);
+            settings.top = top;
+            settings.fail_above = true;
+            let scope = Roots(&["src", "gen"]);
+            let prepared =
+                BaselineFilter::new(&scope, &allow).prepare(scored_baseline(rows.clone()));
+            for baseline in [None, Some(&prepared)] {
+                for (population, expected) in [(Population::Shown, shown), (Population::All, all)] {
+                    let (_, outcome) = pipeline_report(
+                        &caller(population),
+                        &settings,
+                        &scope,
+                        rows.clone(),
+                        baseline,
+                    );
+                    prop_assert_eq!(outcome.crappy, expected);
+                    prop_assert_eq!(outcome.tripped, expected > 0);
+                }
+            }
         }
     }
 }

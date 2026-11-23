@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Library callers can use `run::run` to write and flush a report and
+  receive its `gate::GateOutcome`. The `filter` module selects report
+  rows, and `policy` lets each tool choose its summary formats and
+  which rows count toward the threshold gate. Use `Population::All` to
+  count every eligible row, including rows hidden by the display limits.
+  Cargo-crap uses `Population::Shown` to count the displayed rows.
+
 - Structural maintainability signals (spec 43), opt-in with
   `[signals] enabled = true`. Each function gets `nesting`, `lines`,
   `bumps`, `bool_ops`, `stubs` and `panics`, measured in the same pass
@@ -27,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   format 2, so the first run after upgrading re-analyses every file.
 
 ### Changed
+
+- **BREAKING (library API):** A `report::Tool` literal must supply its
+  report and gate policy. Add `policy: cargo_crap::tool::CARGO_CRAP_POLICY`
+  to retain cargo-crap's behavior (spec 47).
 
 - **BREAKING (library API):** reports take their branding from a
   `report::Tool` value: its name, version, URLs, PR-comment marker and

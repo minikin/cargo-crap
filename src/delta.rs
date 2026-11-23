@@ -379,17 +379,6 @@ impl DeltaReport {
         });
     }
 
-    /// Reasons that trip `--fail-regression` (spec 43), across every row,
-    /// CRAP `add-tests` reasons included.
-    #[must_use]
-    pub fn gating_reason_count(&self) -> usize {
-        self.entries
-            .iter()
-            .flat_map(|e| &e.reasons)
-            .filter(|r| r.gating)
-            .count()
-    }
-
     /// Number of functions whose CRAP score increased since the baseline.
     #[must_use]
     pub fn regression_count(&self) -> usize {
@@ -1994,7 +1983,7 @@ mod tests {
     }
 
     #[test]
-    fn gating_reasons_are_counted() {
+    fn the_signal_gate_counts_nesting_but_ignores_advisory_lines() {
         let report = reasons_for(
             &[
                 with_signals("f", "src/lib.rs", 1.0, shape(4, 60)),
@@ -2006,11 +1995,11 @@ mod tests {
             ],
         );
         assert_eq!(
-            report.gating_reason_count(),
+            gating_signal_count(&report),
             1,
             "g's lines reason does not gate"
         );
-        assert_eq!(reasons_for(&[], &[]).gating_reason_count(), 0);
+        assert_eq!(gating_signal_count(&reasons_for(&[], &[])), 0);
     }
 
     fn subjects(entry: &DeltaEntry) -> Vec<&'static str> {

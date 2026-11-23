@@ -4506,3 +4506,361 @@ fn uncovered_hints_default_off_keeps_human_output_unchanged() {
         "without the config key the column must not appear:\n{stdout}"
     );
 }
+
+fn report_input_error(args: &[&str]) -> String {
+    let dir = tempfile::tempdir().expect("isolated input tree");
+    let root = dir.path();
+    write_file(
+        &root.join("src/lib.rs"),
+        include_str!("fixtures/sample_project/src/lib.rs"),
+    );
+    write_file(&root.join(".cargo-crap.toml"), "");
+    write_file(
+        &root.join("p_other.info"),
+        include_str!("fixtures/golden/lcov/p_other.info"),
+    );
+    write_file(&root.join("bad.json"), "oops");
+    let destination = root.join("report.json");
+    write_file(&destination, "original");
+
+    let output = cmd()
+        .current_dir(root)
+        .args(["--output", "report.json"])
+        .args(args)
+        .output()
+        .expect("run cargo-crap");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 diagnostics");
+    assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+    assert!(output.stdout.is_empty(), "{args:?}: unexpected report");
+    assert_eq!(
+        std::fs::read(destination).expect("read report"),
+        b"original",
+        "{args:?}"
+    );
+    stderr
+}
+
+#[test]
+fn invalid_report_inputs_preserve_an_existing_output_file_for_an_invalid_allow() {
+    let stderr = report_input_error(&["--allow", "["]);
+    assert!(stderr.contains("invalid allow pattern"), "{stderr}");
+}
+
+#[test]
+fn invalid_report_inputs_preserve_an_existing_output_file_for_a_bad_baseline() {
+    let stderr = report_input_error(&["--baseline", "bad.json"]);
+    assert!(stderr.contains("parsing baseline bad.json"), "{stderr}");
+}
+
+#[test]
+fn invalid_report_inputs_preserve_an_existing_output_file_and_allow_errors_win_over_baseline_errors()
+ {
+    let stderr = report_input_error(&["--allow", "[", "--baseline", "bad.json"]);
+    assert_eq!(
+        stderr.lines().find(|line| line.starts_with("Error:")),
+        Some("Error: invalid allow pattern: \"[\""),
+        "{stderr}"
+    );
+}
+
+fn diagnostics_after_exclude(coverage: &str) -> Vec<String> {
+    let stderr =
+        report_input_error(&["--exclude", "unused/**", "--allow", "[", "--lcov", coverage]);
+    let mut lines = stderr.lines();
+    assert!(
+        lines.next().is_some_and(|line| line.starts_with("warning: --exclude 'unused/**' excluded no file")),
+        "{stderr}"
+    );
+    lines.map(str::to_owned).collect()
+}
+
+#[test]
+fn analysis_and_coverage_diagnostics_precede_allow_validation_for_missing_coverage() {
+    let diagnostics = diagnostics_after_exclude("missing.info");
+    assert_eq!(
+        diagnostics.first().map(String::as_str),
+        Some("Error: parsing LCOV file missing.info"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn analysis_and_coverage_diagnostics_precede_allow_validation_for_disjoint_coverage() {
+    let diagnostics = diagnostics_after_exclude("p_other.info");
+    assert!(
+        diagnostics
+            .first()
+            .is_some_and(|line| line.starts_with("warning: no overlap")),
+        "{diagnostics:?}"
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .find(|line| line.starts_with("Error:"))
+            .map(String::as_str),
+        Some("Error: invalid allow pattern: \"[\""),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn cargo_crap_selects_the_summary_before_dispatching_a_sarif_delta() {
+    for summary in [false, true] {
+        let mut command = color_cmd();
+        command.args([
+            "--path",
+            fixture_src(),
+            "--lcov",
+            fixture_lcov(),
+            "--baseline",
+            "tests/fixtures/golden/baselines/p_mixed.json",
+            "--format",
+            "sarif",
+        ]);
+        if summary {
+            command
+                .arg("--summary")
+                .assert()
+                .success()
+                .stdout(predicate::str::contains(
+                    "↑ 1 regressed  ↓ 0 improved  ★ 1 new  ↔ 1 moved  · 0 unchanged  — 1 removed",
+                ));
+        } else {
+            command
+                .assert()
+                .code(2)
+                .stdout("")
+                .stderr(predicate::str::contains(
+                    "--format sarif is incompatible with --baseline",
+                ));
+        }
+    }
+}
+
+mod pipeline_guard {
+    use syn::{Expr, Item, Stmt, visit::Visit};
+
+    fn path_is(
+        path: &syn::Path,
+        names: &[&str],
+    ) -> bool {
+        path.segments
+            .iter()
+            .map(|part| &part.ident)
+            .eq(names.iter().copied())
+    }
+
+    fn imports_run(
+        tree: &syn::UseTree,
+        prefix: &[&str],
+    ) -> bool {
+        match tree {
+            syn::UseTree::Path(p) if prefix.first().is_some_and(|name| p.ident == name) => {
+                imports_run(&p.tree, &prefix[1..])
+            },
+            syn::UseTree::Group(g) => g.items.iter().any(|item| imports_run(item, prefix)),
+            syn::UseTree::Name(n) => match prefix {
+                [last] => n.ident == last,
+                [] => n.ident == "self",
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn run_call(
+        expr: &Expr,
+        imported: bool,
+    ) -> bool {
+        let Expr::Try(value) = expr else { return false };
+        let Expr::Call(call) = value.expr.as_ref() else {
+            return false;
+        };
+        let Expr::Path(p) = call.func.as_ref() else {
+            return false;
+        };
+        value.attrs.is_empty()
+            && call.attrs.is_empty()
+            && p.attrs.is_empty()
+            && (path_is(&p.path, &["cargo_crap", "run", "run"])
+                || (imported && path_is(&p.path, &["run", "run"])))
+    }
+
+    #[derive(Default)]
+    struct Guard {
+        forbidden: bool,
+        check_exit: bool,
+    }
+
+    impl<'ast> Visit<'ast> for Guard {
+        fn visit_signature(
+            &mut self,
+            sig: &'ast syn::Signature,
+        ) {
+            self.forbidden |= [
+                "apply_filters",
+                "shown_rows",
+                "slice_of",
+                "do_render",
+                "effective_summary",
+            ]
+            .iter()
+            .any(|name| sig.ident == name);
+            syn::visit::visit_signature(self, sig);
+        }
+        fn visit_item(
+            &mut self,
+            item: &'ast Item,
+        ) {
+            let name = match item {
+                Item::Struct(i) => Some(&i.ident),
+                Item::Enum(i) => Some(&i.ident),
+                Item::Type(i) => Some(&i.ident),
+                Item::Union(i) => Some(&i.ident),
+                _ => None,
+            };
+            self.forbidden |= name.is_some_and(|name| name == "BaselineFilter");
+            syn::visit::visit_item(self, item);
+        }
+        fn visit_expr_call(
+            &mut self,
+            call: &'ast syn::ExprCall,
+        ) {
+            let exits_with_one = match call.args.first() {
+                Some(Expr::Lit(literal)) => {
+                    matches!(&literal.lit, syn::Lit::Int(n) if n.base10_digits() == "1")
+                },
+                _ => false,
+            };
+            if self.check_exit
+                && let Expr::Path(path) = call.func.as_ref()
+                && path
+                    .path
+                    .segments
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .map(|s| &s.ident)
+                    .eq(["from", "ExitCode"])
+                && exits_with_one
+            {
+                self.forbidden = true;
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+
+    pub(super) fn delegates_report(source: &str) -> bool {
+        let file = syn::parse_file(source).expect("CLI source parses");
+        let mut guard = Guard::default();
+        guard.visit_file(&file);
+        if guard.forbidden {
+            return false;
+        }
+        let Some(run) = file.items.iter().find_map(|item| match item {
+            Item::Fn(f)
+                if f.sig.ident == "run" && f.attrs.iter().all(|a| !a.path().is_ident("cfg")) =>
+            {
+                Some(f)
+            },
+            _ => None,
+        }) else {
+            return false;
+        };
+        guard.check_exit = true;
+        guard.visit_block(&run.block);
+        if guard.forbidden {
+            return false;
+        }
+        let local_items = run.block.stmts.iter().filter_map(|stmt| match stmt {
+            Stmt::Item(item) => Some(item),
+            _ => None,
+        });
+        let imported = file.items.iter().chain(local_items).any(|item| {
+            let Item::Use(import) = item else {
+                return false;
+            };
+            import.attrs.is_empty() && imports_run(&import.tree, &["cargo_crap", "run"])
+        });
+        let Some(Stmt::Expr(Expr::Call(ok), None)) = run.block.stmts.last() else {
+            return false;
+        };
+        if !ok.attrs.is_empty()
+            || !matches!(ok.func.as_ref(), Expr::Path(p) if path_is(&p.path,&["Ok"]))
+        {
+            return false;
+        }
+        let Some(Expr::MethodCall(exit)) = ok.args.first() else {
+            return false;
+        };
+        if !exit.attrs.is_empty() || exit.method != "exit_code" || !exit.args.is_empty() {
+            return false;
+        }
+        if run_call(&exit.receiver, imported) {
+            return true;
+        }
+        let Expr::Path(receiver) = exit.receiver.as_ref() else {
+            return false;
+        };
+        run.block
+            .stmts
+            .iter()
+            .rev()
+            .find_map(|stmt| {
+                let Stmt::Local(local) = stmt else {
+                    return None;
+                };
+                let syn::Pat::Ident(binding) = &local.pat else {
+                    return None;
+                };
+                receiver.path.is_ident(&binding.ident).then(|| {
+                    binding.mutability.is_none()
+                        && local.attrs.is_empty()
+                        && local
+                            .init
+                            .as_ref()
+                            .is_some_and(|v| run_call(&v.expr, imported))
+                })
+            })
+            .unwrap_or(false)
+    }
+}
+
+use pipeline_guard::delegates_report;
+
+#[test]
+fn cli_delegates_the_report_and_gate_to_the_library() {
+    assert!(delegates_report(include_str!("../src/main.rs")));
+}
+
+#[test]
+fn cli_delegation_requires_a_production_call_and_its_verdict() {
+    let valid = "fn run() { Ok(cargo_crap::run::run()?.exit_code()) }";
+    assert!(delegates_report(valid));
+    assert!(delegates_report(
+        "use cargo_crap::run; fn run() { let verdict = run::run()?; Ok(verdict.exit_code()) }"
+    ));
+    for wrong in [
+        "fn run() { /* run::run()?.exit_code() */ Ok(0) }",
+        "use cargo_crap::run; fn run() { let mut verdict = run::run()?; verdict.tripped = false; Ok(verdict.exit_code()) }",
+        "use impostor::run; fn run() { Ok(run::run()?.exit_code()) }",
+        "fn run() { if stale {return Ok(ExitCode::from(1))} Ok(cargo_crap::run::run()?.exit_code()) }",
+        "fn run() { let s = \"run::run()?.exit_code()\"; Ok(0) }",
+        "fn run() { use cargo_crap::run; Ok(0) }",
+        "#[cfg(test)] fn run() { Ok(run::run()?.exit_code()) }",
+        "fn run() { #[cfg(test)] let verdict = run::run()?; Ok(verdict.exit_code()) }",
+        "fn run() { let ignored = run::run()?; Ok(another.exit_code()) }",
+    ] {
+        assert!(!delegates_report(wrong), "{wrong}");
+    }
+    for old in [
+        "fn do_render() {}",
+        "fn apply_filters() {}",
+        "fn shown_rows() {}",
+        "fn slice_of() {}",
+        "fn effective_summary() {}",
+        "type BaselineFilter = ();",
+    ] {
+        assert!(!delegates_report(&format!("{old} {valid}")), "{old}");
+    }
+}
