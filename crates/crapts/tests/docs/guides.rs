@@ -121,8 +121,7 @@ pub fn check_changed_entry(sample: &Sample) -> Result<Value, String> {
     let report = coverage::sample_json(sample)?;
     let entries = report["changed"]["entries"]
         .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default();
+        .map_or_default(Vec::as_slice);
     let [entry] = entries else {
         return Err(format!(
             "{}: the changed section has {} entries, expected checkout alone",

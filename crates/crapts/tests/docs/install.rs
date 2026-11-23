@@ -69,8 +69,7 @@ fn check_platforms(
         .collect();
     let published: BTreeSet<String> = package["optionalDependencies"]
         .as_object()
-        .map(|deps| deps.keys().cloned().collect())
-        .unwrap_or_default();
+        .map_or_default(|deps| deps.keys().cloned().collect());
     let missing: Vec<_> = published.difference(&listed).collect();
     let extra: Vec<_> = listed.difference(&published).collect();
     if missing.is_empty() && extra.is_empty() {

@@ -125,8 +125,7 @@ pub fn check_shape(
         _ => {
             let keys: BTreeSet<&str> = value
                 .as_object()
-                .map(|o| o.keys().map(String::as_str).collect())
-                .unwrap_or_default();
+                .map_or_default(|o| o.keys().map(String::as_str).collect());
             keys == BTreeSet::from(["schemaVersion", "label", "message", "color"])
                 && value["schemaVersion"] == 1
         },

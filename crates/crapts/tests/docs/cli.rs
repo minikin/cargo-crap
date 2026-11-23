@@ -134,7 +134,7 @@ pub fn check_differences(
     let printed: BTreeSet<String> = all_help_options(help).into_iter().map(|o| o.long).collect();
     let mut named = 0;
     for (line, cells) in pages::table_rows(&section) {
-        let crapts = cells.get(1).map(String::as_str).unwrap_or_default();
+        let crapts = cells.get(1).map_or_default(String::as_str);
         for flag in long_flags(crapts) {
             if !printed.contains(&flag) {
                 return Err(format!("{}: {flag} is not a crapts option", page.at(line)));

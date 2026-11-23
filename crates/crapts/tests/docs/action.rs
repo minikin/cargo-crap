@@ -93,7 +93,7 @@ pub fn check_tables(
                 page.at(*line)
             ));
         };
-        let stated = cells.get(1).map(|c| pages::unquote(c)).unwrap_or_default();
+        let stated = cells.get(1).map_or_default(|c| pages::unquote(c));
         let expected = default_cell(default.as_deref());
         if stated != expected {
             return Err(format!(
@@ -443,8 +443,7 @@ fn node_ready(
         .with
         .iter()
         .find(|(_, k, _)| k == "node-version")
-        .map(|(_, _, v)| v.as_str())
-        .unwrap_or_default();
+        .map_or_default(|(_, _, v)| v.as_str());
     match node_major(version) {
         Some(major) if major >= MIN_NODE => Ok(()),
         _ => Err(format!(

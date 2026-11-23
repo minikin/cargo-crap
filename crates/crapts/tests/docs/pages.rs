@@ -43,7 +43,7 @@ impl Page {
 
     pub fn dir(&self) -> PathBuf {
         let path = Path::new(&self.path);
-        path.parent().map(Path::to_path_buf).unwrap_or_default()
+        path.parent().map_or_default(Path::to_path_buf)
     }
 
     pub fn with(
