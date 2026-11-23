@@ -46,7 +46,7 @@ jobs:
       - name: Actionlint
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
-          ./actionlint -ignore SC2016 .github/workflows/action.yml .github/workflows/demo.yml .github/workflows/release.yml
+          ./actionlint -ignore SC2016 .github/workflows/_build.yml .github/workflows/release.yml .github/workflows/release-crapts.yml .github/workflows/ci.yml .github/workflows/action.yml .github/workflows/demo.yml
 
   build:
     name: Build cargo-crap

@@ -30,6 +30,7 @@ jobs:
       docs: ${{ steps.filter.outputs.docs }}
       workflow: ${{ steps.filter.outputs.workflow }}
       release: ${{ steps.filter.outputs.release }}
+      npm: ${{ steps.filter.outputs.npm }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v4
@@ -37,6 +38,7 @@ jobs:
         with:
           filters: |
             rust:
+              - 'npm/crapts/package.json'
               - '**/*.rs'
               # Both: the root manifest does not depend on how picomatch reads
               # a leading `**/`.
@@ -82,7 +84,26 @@ jobs:
               - 'docs/**'
             workflow:
               - '.github/workflows/ci.yml'
+            npm:
+              - 'npm/crapts/**'
+              - 'scripts/release/*.mjs'
+              - 'scripts/release/package*.json'
+              - 'crates/crapts/**'
+              - 'crates/cargo-crap-core/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
             release:
+              - '.github/workflows/_build.yml'
+              - '.github/workflows/release.yml'
+              - '.github/workflows/release-crapts.yml'
+              - '.github/workflows/action.yml'
+              - '.github/workflows/demo.yml'
+              - 'crates/crapts/Cargo.toml'
+              - 'crates/crapts/CHANGELOG.md'
+              - 'crates/cargo-crap-core/CHANGELOG.md'
+              - 'npm/crapts/package.json'
+              - 'Cargo.lock'
               - 'scripts/release/**'
               - 'Cargo.toml'
               # scripts/release/test.sh copies the core's manifest.
@@ -102,10 +123,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fetch --locked
       - name: Shell tests
         run: bash scripts/release/test.sh
       - name: Shellcheck
         run: shellcheck -x scripts/release/*.sh
+      - name: Actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -ignore SC2016 .github/workflows/_build.yml .github/workflows/release.yml .github/workflows/release-crapts.yml .github/workflows/ci.yml .github/workflows/action.yml .github/workflows/demo.yml
+
+  npm-wrapper:
+    needs: [changes]
+    if: needs.changes.outputs.npm == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci --prefix scripts/release --ignore-scripts
+      - run: cargo build --locked -p crapts
+      - name: Test packed npm packages
+        shell: bash
+        run: |
+          CRAPTS_BINARY="$PWD/target/debug/crapts"
+          if [[ "$RUNNER_OS" == Windows ]]; then CRAPTS_BINARY="$(cygpath -w "$CRAPTS_BINARY.exe")"; fi
+          export CRAPTS_BINARY
+          node --test npm/crapts/test/*.test.*
 
   gates:
     name: Gate scripts

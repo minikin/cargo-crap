@@ -396,3 +396,51 @@ test("the release verifier rejects a malformed Sigstore bundle", async (t) => {
     /bundle|media type|invalid enum/i,
   );
 });
+
+test("archive smoke verifies all six checksums and exercises the selected native release", async (t) => {
+  const { createHash } = await import("node:crypto");
+  const host = resolver.resolveTarget(
+    process.platform,
+    process.arch,
+    process.platform === "linux" ? resolver.detectLibc() : "none",
+  );
+  const native = resolve(
+    process.env.CRAPTS_BINARY ||
+      join(root, "target/debug", windows ? "crapts.exe" : "crapts"),
+  );
+  assert.ok(
+    existsSync(native),
+    "Set CRAPTS_BINARY or run cargo build -p crapts",
+  );
+  const { archives } = fixture(t, { name: host.name, path: native });
+  const files = readdirSync(archives);
+  const sums = files.map(
+    (file) =>
+      createHash("sha256")
+        .update(readFileSync(join(archives, file)))
+        .digest("hex") +
+      "  " +
+      file,
+  );
+  const checksums = join(archives, "SHA256SUMS");
+  writeFileSync(checksums, sums.join("\n") + "\n");
+  const verify = (...args) =>
+    execFileSync(
+      process.execPath,
+      [join(release, "verify-archives.mjs"), archives, ...args],
+      { stdio: "pipe" },
+    );
+  verify();
+  verify(host.triple);
+  execFileSync(process.execPath, [
+    join(release, "smoke.mjs"),
+    "--version",
+    manifest(join(root, "npm/crapts")).version,
+    "--binary",
+    join(archives, windows ? "crapts.exe" : "crapts"),
+  ]);
+  writeFileSync(join(archives, files[0]), "damaged");
+  assert.throws(verify, /checksum mismatch/);
+  writeFileSync(checksums, sums.slice(1).join("\n"));
+  assert.throws(verify, /cover all six/);
+});

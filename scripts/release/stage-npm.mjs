@@ -1,24 +1,20 @@
 import {
-  chmodSync,
-  closeSync,
   cpSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmdirSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { execFileSync } from "node:child_process";
+import { archiveName, extractBinary } from "./archives.mjs";
 import resolver from "../../npm/crapts/lib/resolve.js";
 
 const source = fileURLToPath(new URL("../../npm/crapts/", import.meta.url));
@@ -39,13 +35,9 @@ function stage({ archives, out, version }) {
   if (!archives || !out || !version)
     throw Error("expected --archives, --out and --version");
   const inputs = resolver.targets.map((target) => {
-    const zip = target.platform === "win32";
-    const archive = resolve(
-      archives,
-      "crapts-" + target.triple + (zip ? ".zip" : ".tar.gz"),
-    );
+    const archive = resolve(archives, archiveName(target));
     if (!existsSync(archive)) throw Error("missing " + archive);
-    return { target, archive, zip };
+    return { target, archive };
   });
   const output = resolve(out);
   if (existsSync(output) && readdirSync(output).length)
@@ -54,26 +46,11 @@ function stage({ archives, out, version }) {
   const temp = mkdtempSync(output + "-");
   try {
     const deps = {};
-    for (const { target, archive, zip } of inputs) {
+    for (const { target, archive } of inputs) {
       const dir = join(temp, basename(target.name));
       mkdirSync(join(dir, "bin"), { recursive: true });
       const binary = join(dir, target.binary);
-      const fd = openSync(binary, "wx");
-      try {
-        const member = basename(binary);
-        if (zip && process.platform !== "win32")
-          execFileSync("unzip", ["-p", archive, member], {
-            stdio: ["ignore", fd, "pipe"],
-          });
-        else
-          execFileSync("tar", ["-xOf", archive, member], {
-            stdio: ["ignore", fd, "pipe"],
-          });
-      } finally {
-        closeSync(fd);
-      }
-      if (!statSync(binary).size) throw Error("empty binary in " + archive);
-      if (!zip) chmodSync(binary, 0o755);
+      extractBinary(archive, binary, target);
       deps[target.name] = version;
       writeManifest(dir, {
         name: target.name,
