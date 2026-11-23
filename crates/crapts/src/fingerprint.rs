@@ -73,7 +73,7 @@ pub(crate) fn compute(
         return Vec::new();
     }
     let literals = literal_values(program);
-    let stream = normalized(source, tokens, &literals);
+    let stream = normalized_tokens(source, tokens, &literals);
     let mut intervals: Vec<(Span, usize)> = rows
         .iter()
         .enumerate()
@@ -117,7 +117,7 @@ pub(crate) fn compute(
 
 /// Oxc's token list comes from the lexer alone and drops the final `Eof`, so
 /// it holds no zero-width token synthesized during recovery.
-fn normalized<'s>(
+fn normalized_tokens<'s>(
     source: &'s str,
     tokens: &[Token],
     literals: &'s HashMap<u32, String>,
