@@ -39,8 +39,8 @@ const TOOL: Tool = Tool {
 };
 
 /// The core predicate cannot fail, so the first lookup error is held here
-/// and surfaced after preparation; dropping the row instead would report a
-/// function that is still in scope as removed.
+/// and surfaced after preparation. Returning `false` alone would drop the
+/// row before pairing, and it would vanish from the comparison unreported.
 struct ScoringScope<'a> {
     scope: &'a DiscoveryScope,
     error: RefCell<Option<InputError>>,
@@ -623,5 +623,107 @@ mod baseline_tests {
             &["--coverage", "hits.info", "--baseline", "base.json"],
         );
         assert!(err.contains(&long), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod worktree_scope_tests {
+    use super::super::{config, parse};
+    use super::*;
+    use std::ffi::OsString;
+
+    fn git_init(path: &Path) {
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    fn surviving(
+        cwd: &Path,
+        args: &[&str],
+        rows: &[(&str, &str)],
+    ) -> Vec<(String, String)> {
+        let cwd = cwd.canonicalize().unwrap();
+        let worktree = Worktree::probe(&cwd).unwrap();
+        let loaded = config::load_at(&cwd, worktree.root.as_deref()).unwrap();
+        let args = args.iter().map(OsString::from).collect::<Vec<_>>();
+        let options = Effective::resolve(&cwd, loaded, &parse(&args).unwrap()).unwrap();
+        let discovery = discover_probed(
+            &options.paths.value,
+            &options.discovery(&cwd),
+            cwd.clone(),
+            worktree,
+        )
+        .unwrap();
+        let entries = rows
+            .iter()
+            .map(|(file, function)| {
+                serde_json::json!({"file": file, "function": function, "line": 1, "cyclomatic": 1, "coverage": 100.0, "crap": 5.0})
+            })
+            .collect::<Vec<_>>();
+        let doc = serde_json::json!({
+            "$schema": TOOL.schemas.report, "version": TOOL.version, "name_scheme": 1,
+            "coverage_kind": "lines", "threshold": 10.0, "selection": null, "notices": [],
+            "summary": {"total": rows.len(), "crappy": 0, "regressed": null, "improved": null, "new": null, "moved": null, "unchanged": null, "removed": null, "changed_failures": null},
+            "entries": entries,
+            "diagnostics": {"analyzed_files": 1, "coverage_files": 1, "matched_files": 1, "source_only": {"count": 0, "examples": []}, "coverage_only": {"count": 0, "examples": []}},
+        });
+        let path = cwd.join("base.json");
+        fs::write(&path, doc.to_string()).unwrap();
+        let raw = load_crapts_baseline(&path, &TOOL, CoverageKind::Lines).unwrap();
+        let scope = ScoringScope::new(&discovery.scope);
+        let prepared = prepare(Some(raw), &scope, &options.allow_set)
+            .unwrap()
+            .unwrap();
+        prepared
+            .as_baseline()
+            .entries
+            .iter()
+            .map(|e| (e.file.display().to_string(), e.function.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn config_rules_use_the_config_directory_and_flag_rules_the_invocation_directory() {
+        let repo = tempfile::tempdir().unwrap();
+        git_init(repo.path());
+        fs::write(
+            repo.path().join(".crapts.toml"),
+            "exclude = [\"pkg/src/gen/**\"]\nallow = [\"pkg/src/skip_path.ts\", \"secret\"]\n",
+        )
+        .unwrap();
+        fs::write(repo.path().join(".gitignore"), "pkg/src/ignored.ts\n").unwrap();
+        let pkg = repo.path().join("pkg");
+        fs::create_dir_all(pkg.join("src")).unwrap();
+        fs::write(
+            pkg.join("src/keep.ts"),
+            "export function kept() { return 1 }\n",
+        )
+        .unwrap();
+        let kept = surviving(
+            &pkg,
+            &[
+                "src",
+                "--exclude",
+                "src/flagged/**",
+                "--allow",
+                "src/by_flag.ts",
+            ],
+            &[
+                ("src/keep.ts", "gone"),
+                ("other/outside.ts", "gone"),
+                ("src/gen/old.ts", "oldGen"),
+                ("src/skip_name.ts", "secret"),
+                ("src/skip_path.ts", "hidden"),
+                ("src/flagged/x.ts", "flagged"),
+                ("src/by_flag.ts", "allowed"),
+                ("src/ignored.ts", "ignored"),
+                ("src/app.test.ts", "case"),
+            ],
+        );
+        assert_eq!(kept, [("src/keep.ts".to_owned(), "gone".to_owned())]);
     }
 }

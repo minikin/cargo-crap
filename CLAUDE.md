@@ -170,7 +170,7 @@ JSON rows and visible path labels stay relative to the invocation.
 parsed. Core `delta::load_crapts_baseline` admits it against the measured
 coverage unit, and `BaselineFilter::prepare_crapts` drops rows outside
 `Discovery.scope` or matching an allow pattern. A failed scope lookup is an
-input error, so a function still in scope is never reported as removed.
+input error, so a row that cannot be checked never vanishes unreported.
 `run::run` then renders the delta and evaluates `--fail-regression`. A
 cross-minor baseline's notice appears in the text, markdown and pr-comment
 body. For json, github and shields it is written to stderr after the report

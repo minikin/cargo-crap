@@ -2241,6 +2241,27 @@ fn an_admitted_baseline_runs_the_comparison() {
 }
 
 #[test]
+fn a_git_base_stays_reserved_beside_a_baseline() {
+    let d = fixture();
+    for gate in [&[][..], &["--fail-regression"]] {
+        let args = [
+            &[
+                "--coverage",
+                "absent.info",
+                "--baseline",
+                "b.json",
+                "--base",
+                "HEAD",
+            ][..],
+            gate,
+        ]
+        .concat();
+        let err = before_render(d.path(), &args, &[]);
+        assert_eq!(err, "error: --base is not implemented yet\n");
+    }
+}
+
+#[test]
 fn git_base_comparison_is_reserved() {
     let d = fixture();
     let mut args = vec!["--coverage", "hits.data", "--base", "HEAD"];
