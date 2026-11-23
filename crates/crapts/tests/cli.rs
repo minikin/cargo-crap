@@ -1,7 +1,7 @@
 mod common;
 mod support;
 
-use common::{binary, check, invoke};
+use common::{binary, check, invoke, validated_report};
 
 use serde_json::{Value, json};
 use std::fs;
@@ -547,12 +547,6 @@ fn json_score(
     code: i32,
 ) -> Value {
     validated_report(&json_output(cwd, args, code).stdout)
-}
-
-fn validated_report(bytes: &[u8]) -> Value {
-    let doc = common::validated(bytes);
-    assert!(doc["regression_gate"].is_null(), "{doc:#}");
-    doc
 }
 
 fn json_output(
@@ -2238,6 +2232,20 @@ fn an_admitted_baseline_runs_the_comparison() {
         let text = String::from_utf8(out.stdout).unwrap();
         assert!(text.starts_with("No changes since baseline.\n"), "{text}");
     }
+    let out = invoke(
+        d.path(),
+        &[
+            "--coverage",
+            "hits.data",
+            "--baseline",
+            "b.json",
+            "--format",
+            "json",
+        ],
+    );
+    check(&out, 0);
+    let doc = common::validated_delta(&out.stdout);
+    assert_eq!(doc["summary"]["unchanged"], 3);
 }
 
 #[test]

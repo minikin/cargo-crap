@@ -1,7 +1,7 @@
 mod common;
 mod support;
 
-use common::{check, invoke, validated};
+use common::{check, invoke, validated_delta, validated_report};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
 use std::fs;
@@ -126,7 +126,7 @@ fn write_json(
     doc: &Value,
 ) {
     let bytes = serde_json::to_vec_pretty(doc).unwrap();
-    validated(&bytes);
+    validated_report(&bytes);
     fs::write(path, bytes).unwrap();
 }
 
@@ -245,17 +245,26 @@ fn words(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_owned()).collect()
 }
 
-fn read_cases() -> Vec<(&'static str, Option<Value>, Vec<String>)> {
+fn read_cases(cwd: &Path) -> Vec<(&'static str, Option<Value>, Vec<String>)> {
+    let cause = |name: &str| fs::read_to_string(cwd.join(name)).unwrap_err().to_string();
     vec![
         (
             "absent.json",
             None,
-            words(&["reading baseline", "absent.json", "os error"]),
+            vec![
+                "reading baseline".to_owned(),
+                "absent.json".to_owned(),
+                cause("absent.json"),
+            ],
         ),
         (
             "a-dir",
             None,
-            words(&["reading baseline", "a-dir", "os error"]),
+            vec![
+                "reading baseline".to_owned(),
+                "a-dir".to_owned(),
+                cause("a-dir"),
+            ],
         ),
         (
             "broken.json",
@@ -270,13 +279,13 @@ fn read_cases() -> Vec<(&'static str, Option<Value>, Vec<String>)> {
     ]
 }
 
-fn admission_cases() -> Vec<(&'static str, Option<Value>, Vec<String>)> {
+fn admission_cases(cwd: &Path) -> Vec<(&'static str, Option<Value>, Vec<String>)> {
     let fp = |text: String| edited(move |d| d["entries"][0]["fingerprint"] = json!(text));
     let selection =
         |top: Value, min: Value| edited(|d| d["selection"] = json!({"top": top, "min": min}));
     let incomplete = "was written with --top or --min and is not a complete baseline";
     let version = |v: &'static str| edited(|d| d["version"] = json!(v));
-    let mut cases = read_cases();
+    let mut cases = read_cases(cwd);
     cases.extend([
         (
             "cargo.json",
@@ -396,7 +405,7 @@ fn baseline_admission_errors_exit_2_before_creating_or_modifying_output() {
     let d = app(true, false, true);
     fs::create_dir(d.path().join("a-dir")).unwrap();
     fs::write(d.path().join("broken.json"), "{\"version\":").unwrap();
-    for (path, doc, details) in admission_cases() {
+    for (path, doc, details) in admission_cases(d.path()) {
         if let Some(doc) = doc {
             fs::write(d.path().join(path), doc.to_string()).unwrap();
         }
@@ -517,8 +526,7 @@ fn run_delta(
 ) -> (Value, String) {
     let out = invoke(cwd, &[args, &["--format", "json"]].concat());
     check(&out, code);
-    let doc = validated(&out.stdout);
-    assert!(doc["regression_gate"].is_object(), "{doc:#}");
+    let doc = validated_delta(&out.stdout);
     (doc, String::from_utf8(out.stderr).unwrap())
 }
 
@@ -895,7 +903,7 @@ fn cross_minor_baseline_computes_delta_routes_notice_by_format_and_skips_only_th
     assert_eq!(err, "");
     for format in ["markdown", "pr-comment"] {
         let (out, err) = text(d.path(), &[GATED, &["--format", format]].concat(), 0);
-        let mut lines = out.lines().filter(|l| !l.is_empty());
+        let mut lines = out.lines();
         assert_eq!(lines.next(), Some("<!-- crapts-report -->"), "{out}");
         assert_eq!(
             lines.next(),
@@ -926,7 +934,12 @@ fn cross_minor_baseline_computes_delta_routes_notice_by_format_and_skips_only_th
     );
     assert_eq!(out, "");
     assert!(err.contains("src") && !err.contains(&n), "{err}");
-    let same = format!("{VERSION}-rc.1+build.7");
+    let same = format!(
+        "{}.{}.{}-rc.1+build.7",
+        env!("CARGO_PKG_VERSION_MAJOR"),
+        env!("CARGO_PKG_VERSION_MINOR"),
+        env!("CARGO_PKG_VERSION_PATCH")
+    );
     let d = cross_minor(&same);
     let (doc, err) = run_delta(d.path(), GATED, 1);
     assert_eq!(doc["regression_gate"]["skipped"], false);
@@ -956,7 +969,7 @@ fn a_report_refreshed_in_place_is_read_before_the_output_is_truncated() {
         .concat();
         let (out, err) = text(d.path(), &args, code);
         assert_eq!((out.as_str(), err.as_str()), ("", ""));
-        let doc = validated(&fs::read(d.path().join("report.json")).unwrap());
+        let doc = validated_delta(&fs::read(d.path().join("report.json")).unwrap());
         assert_row(&doc, "hot", "regressed", Some(3.0), 12.0);
     }
 }
@@ -1138,10 +1151,10 @@ fn all_rows_clears_limits_so_a_report_becomes_a_reusable_complete_baseline() {
         ]
         .concat();
         check(&invoke(d.path(), &args), 0);
-        validated(&fs::read(d.path().join(name)).unwrap())
+        fs::read(d.path().join(name)).unwrap()
     };
-    let step1 = save("step1.json", &[]);
-    let full = save("full.json", &["--all-rows"]);
+    let step1 = validated_report(&save("step1.json", &[]));
+    let full = validated_report(&save("full.json", &["--all-rows"]));
     assert_eq!(step1["selection"], json!({"top": 1, "min": 10.0}));
     let (_, err) = refused(
         d.path(),
@@ -1159,7 +1172,10 @@ fn all_rows_clears_limits_so_a_report_becomes_a_reusable_complete_baseline() {
     };
     for baseline in ["full.json", "delta.json"] {
         if baseline == "delta.json" {
-            let delta = save("delta.json", &["--baseline", "full.json", "--all-rows"]);
+            let delta = validated_delta(&save(
+                "delta.json",
+                &["--baseline", "full.json", "--all-rows"],
+            ));
             assert!(delta["regression_gate"].is_object());
         }
         let doc = against(baseline, &[]);
@@ -1173,14 +1189,14 @@ fn all_rows_clears_limits_so_a_report_becomes_a_reusable_complete_baseline() {
         assert_eq!(all["entries"].as_array().unwrap().len(), 3);
     }
     fs::remove_file(d.path().join(".crapts.toml")).unwrap();
-    let top = save("top.json", &["--top", "10"]);
+    let top = validated_report(&save("top.json", &["--top", "10"]));
     assert_eq!(top["selection"], json!({"top": 10, "min": null}));
     assert_eq!(top["entries"].as_array().unwrap().len(), 3);
     refused(
         d.path(),
         &["--coverage", "hits.info", "--baseline", "top.json"],
     );
-    save("cleared.json", &["--top", "10", "--all-rows"]);
+    validated_report(&save("cleared.json", &["--top", "10", "--all-rows"]));
     against("cleared.json", &[]);
 }
 
@@ -1188,7 +1204,7 @@ fn delta_admission_cases(cwd: &Path) -> Vec<(&'static str, Value, &'static str)>
     base(cwd, &[row("src/app.ts", "hot", 1, 3.0)]);
     let out = invoke(cwd, &with(&["--format", "json"]));
     check(&out, 0);
-    let delta = validated(&out.stdout);
+    let delta = validated_delta(&out.stdout);
     let mut norem = delta.clone();
     norem.as_object_mut().unwrap().remove("removed");
     let mut badst = delta;
@@ -1201,12 +1217,20 @@ fn delta_admission_cases(cwd: &Path) -> Vec<(&'static str, Value, &'static str)>
 
 const FORMATS_APP: &str = "export function hot(a: boolean, b: boolean) {\n  if (a) return 1\n  if (b) return 2\n  return 0\n}\nexport function stay() {\n  return 1\n}\nexport function fresh() {\n  return 1\n}\n";
 
-/// hot regresses 3 to 12, reloc moves from src/old.ts, stay is unchanged,
-/// fresh is new and gone is removed.
-fn formats(reloc_base: f64) -> tempfile::TempDir {
+const SPIKE: &str = "export function spike(a: boolean, b: boolean, c: boolean) {\n  if (a) return 1\n  if (b) return 2\n  if (c) return 3\n  return 0\n}\n";
+
+fn formats(
+    reloc_base: f64,
+    spike: bool,
+) -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     fs::create_dir(d.path().join("src")).unwrap();
-    fs::write(d.path().join("src/app.ts"), FORMATS_APP).unwrap();
+    let source = if spike {
+        format!("{FORMATS_APP}{SPIKE}")
+    } else {
+        FORMATS_APP.to_owned()
+    };
+    fs::write(d.path().join("src/app.ts"), source).unwrap();
     fs::write(
         d.path().join("src/new.ts"),
         "export function reloc() {\n  return 1\n}\n",
@@ -1214,7 +1238,7 @@ fn formats(reloc_base: f64) -> tempfile::TempDir {
     .unwrap();
     let mut app = span(1..=5, false);
     app.extend(span(6..=8, true));
-    app.extend(span(9..=11, false));
+    app.extend(span(9..=17, false));
     fs::write(
         d.path().join("hits.info"),
         lcov(&[("src/app.ts", &app), ("src/new.ts", &span(1..=3, false))]),
@@ -1255,7 +1279,7 @@ fn table_row<'a>(
 
 #[test]
 fn supported_delta_formats_render_delta_rows_moves_removals_and_unchanged_visibility() {
-    let d = formats(2.0);
+    let d = formats(2.0, false);
     let cwd = d.path();
     let out = render(cwd, "text", &[]);
     assert!(table_row(&out, "hot").unwrap().contains("+9.0"), "{out}");
@@ -1355,21 +1379,23 @@ fn pr_comment_delta(
 }
 
 fn machine_delta(cwd: &Path) {
+    let spiked = formats(2.0, true);
     let gh = render(
-        cwd,
+        spiked.path(),
         "github",
         &["--repo-url", "https://x", "--commit-ref", "sha"],
     );
-    let warnings = gh.lines().collect::<Vec<_>>();
-    assert_eq!(warnings.len(), 1, "{gh}");
-    assert!(
-        warnings[0].starts_with("::warning file=src/app.ts,line=1,")
-            && warnings[0].contains("::hot "),
-        "{gh}"
-    );
+    let annotated = gh
+        .lines()
+        .map(|l| {
+            assert!(l.starts_with("::warning file=src/app.ts,"), "{gh}");
+            l.split("::").nth(2).unwrap().split(' ').next().unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(annotated, ["spike", "hot"], "{gh}");
     assert_eq!(
         render(
-            cwd,
+            spiked.path(),
             "github",
             &[
                 "--repo-url",
@@ -1391,7 +1417,7 @@ fn machine_delta(cwd: &Path) {
 
 #[test]
 fn a_regressed_move_is_annotated_with_its_previous_file() {
-    let d = formats(1.0);
+    let d = formats(1.0, false);
     let gh = render(d.path(), "github", &[]);
     let reloc = gh
         .lines()
@@ -1402,7 +1428,7 @@ fn a_regressed_move_is_annotated_with_its_previous_file() {
 
 #[test]
 fn markdown_formats_link_delta_cells_to_the_commit() {
-    let d = formats(2.0);
+    let d = formats(2.0, false);
     for format in ["markdown", "pr-comment"] {
         let out = render(
             d.path(),
@@ -1484,7 +1510,7 @@ fn a_delta_written_to_a_file_leaves_stdout_empty_and_is_replaced_by_the_next_run
         1,
     );
     assert_eq!((out.as_str(), err.as_str()), ("", ""));
-    let doc = validated(&fs::read(&out_path).unwrap());
+    let doc = validated_delta(&fs::read(&out_path).unwrap());
     assert_row(&doc, "hot", "regressed", Some(3.0), 12.0);
     base(d.path(), &[row("src/app.ts", "hot", 1, 12.0)]);
     let (out, err) = text(
@@ -1499,7 +1525,7 @@ fn a_delta_written_to_a_file_leaves_stdout_empty_and_is_replaced_by_the_next_run
         0,
     );
     assert_eq!((out.as_str(), err.as_str()), ("", ""));
-    let doc = validated(&fs::read(&out_path).unwrap());
+    let doc = validated_delta(&fs::read(&out_path).unwrap());
     assert_row(&doc, "hot", "unchanged", Some(12.0), 12.0);
 }
 
@@ -1548,6 +1574,15 @@ mod properties {
         args: &[&str],
         code: i32,
     ) -> Result<Output, TestCaseError> {
+        noted(cwd, args, code, "")
+    }
+
+    fn noted(
+        cwd: &Path,
+        args: &[&str],
+        code: i32,
+        stderr: &str,
+    ) -> Result<Output, TestCaseError> {
         let out = invoke(cwd, args);
         prop_assert_eq!(
             out.status.code(),
@@ -1555,7 +1590,7 @@ mod properties {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        prop_assert_eq!(out.stderr.as_slice(), b"");
+        prop_assert_eq!(String::from_utf8_lossy(&out.stderr), stderr);
         Ok(out)
     }
 
@@ -1569,10 +1604,10 @@ mod properties {
             let cwd = dir.path();
             let report = quiet(cwd, &["--coverage", "hits.info", "--all-rows", "--format", "json", "--output", "base.json"], 0)?;
             prop_assert!(report.stdout.is_empty());
-            validated(&fs::read(cwd.join("base.json")).unwrap());
+            validated_report(&fs::read(cwd.join("base.json")).unwrap());
             for baseline in ["base.json", "delta.json"] {
                 let out = quiet(cwd, &["--coverage", "hits.info", "--baseline", baseline, "--fail-regression", "--format", "json"], 0)?;
-                let doc = validated(&out.stdout);
+                let doc = validated_delta(&out.stdout);
                 prop_assert_eq!(doc["entries"].as_array().unwrap().len(), functions.len());
                 all_unchanged(&doc)?;
                 fs::write(cwd.join("delta.json"), &out.stdout).unwrap();
@@ -1593,6 +1628,7 @@ mod properties {
             summary in any::<bool>(),
             show_unchanged in any::<bool>(),
             format in prop::sample::select(vec!["text", "json", "markdown", "pr-comment", "github", "shields"]),
+            skipped in any::<bool>(),
         ) {
             let shape = functions.iter().map(|&(d, c, _)| (d, c)).collect::<Vec<_>>();
             let dir = project(&shape);
@@ -1607,28 +1643,62 @@ mod properties {
             for name in &names[functions.len()..] {
                 rows.push(row("rows.ts", name, 90, 5.0));
             }
-            base(cwd, &rows);
+            let mut doc = report(&rows);
+            let version = if skipped { prev_minor() } else { VERSION.to_owned() };
+            doc["version"] = json!(version);
+            write_json(&cwd.join("base.json"), &doc);
+            let note = if skipped { format!("{}\n", notice(&version)) } else { String::new() };
             let eps: f64 = epsilon.parse().unwrap();
             let regressed = functions
                 .iter()
                 .filter(|&&(d, c, recorded)| recorded.is_some_and(|b| score(d, c) - b > eps))
                 .count();
-            let code = i32::from(regressed > 0);
+            let code = i32::from(regressed > 0 && !skipped);
             let gate = ["--coverage", "hits.info", "--baseline", "base.json", "--threshold", "10", "--epsilon", epsilon, "--fail-regression"];
-            let reference = validated(&quiet(cwd, &[&gate[..], &["--format", "json"]].concat(), code)?.stdout);
-            prop_assert_eq!(reference["summary"]["regressed"].as_u64(), Some(regressed as u64));
-            prop_assert_eq!(reference["summary"]["removed"].as_u64(), Some(removed as u64));
+            let reference = validated_delta(&noted(cwd, &[&gate[..], &["--format", "json"]].concat(), code, &note)?.stdout);
+            prop_assert_eq!(&reference["regression_gate"]["skipped"], &json!(skipped));
+            prop_assert_eq!(reference["summary"]["regressed"].as_u64(), Some(u64::try_from(regressed).unwrap()));
+            prop_assert_eq!(reference["summary"]["removed"].as_u64(), Some(u64::try_from(removed).unwrap()));
             let top = top.map(|n| n.to_string());
             let min = min.map(|n| n.to_string());
             let mut display = vec!["--sort", if by_file { "file" } else { "crap" }];
             if let Some(n) = &top { display.extend(["--top", n]); }
             if let Some(n) = &min { display.extend(["--min", n]); }
             if show_unchanged { display.push("--show-unchanged"); }
-            let sliced = validated(&quiet(cwd, &[&gate[..], &display, &["--format", "json"]].concat(), code)?.stdout);
+            let sliced = validated_delta(&noted(cwd, &[&gate[..], &display, &["--format", "json"]].concat(), code, &note)?.stdout);
             prop_assert_eq!(&sliced["summary"], &reference["summary"]);
             prop_assert_eq!(&sliced["removed"], &reference["removed"]);
             if summary { display.push("--summary"); }
-            quiet(cwd, &[&gate[..], &display, &["--format", format]].concat(), code)?;
+            let machine = matches!(format, "json" | "github" | "shields");
+            noted(cwd, &[&gate[..], &display, &["--format", format]].concat(), code, if machine { &note } else { "" })?;
         }
     }
+}
+
+#[test]
+fn an_extreme_baseline_score_keeps_a_finite_delta_that_reloads() {
+    let d = app(false, true, true);
+    base(d.path(), &[row("src/app.ts", "hot", 1, 1e308)]);
+    let (out, err) = text(
+        d.path(),
+        &with(&["--format", "json", "--output", "delta.json"]),
+        0,
+    );
+    assert_eq!((out.as_str(), err.as_str()), ("", ""));
+    let doc = validated_delta(&fs::read(d.path().join("delta.json")).unwrap());
+    let e = entry(&doc, "hot");
+    assert_eq!(e["status"], "improved");
+    assert_eq!(e["delta"].as_f64(), Some(12.0 - 1e308));
+    let reloaded = quiet_delta(
+        d.path(),
+        &[
+            "--coverage",
+            "hits.info",
+            "--baseline",
+            "delta.json",
+            "--fail-regression",
+        ],
+        0,
+    );
+    assert_row(&reloaded, "hot", "unchanged", Some(12.0), 12.0);
 }

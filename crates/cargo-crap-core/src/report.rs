@@ -103,7 +103,9 @@ pub enum Format {
 ///
 /// ```
 /// use cargo_crap_core::report::{Format, RenderOptions, Schemas, Tool};
-/// use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+/// use cargo_crap_core::policy::{
+///     EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder,
+/// };
 /// const TOOL: Tool = Tool {
 ///     policy: Policy {
 ///         envelope: EnvelopeKind::CargoCrapV1,
@@ -112,6 +114,7 @@ pub enum Format {
 ///         summary_formats: &[Format::Human],
 ///         signal_detail_hint: None,
 ///         tie_order: TieOrder::Stable,
+///         notice_spacing: NoticeSpacing::Separated,
 ///     },
 ///     name: "my-tool",
 ///     version: "1.0.0",
@@ -558,19 +561,24 @@ fn duplicate_table(
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR
 /// comment. Used by both [`markdown`] and [`pr_comment`] renderers.
-fn selected_comment_marker<'a>(opts: &'a RenderOptions<'a>) -> &'a str {
-    match opts.format {
-        Format::PrComment => opts.pr_comment_marker.unwrap_or(opts.tool.comment_marker),
-        _ => opts.tool.comment_marker,
-    }
-}
-
 pub(crate) fn write_pr_comment_marker(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    writeln!(out, "{}", selected_comment_marker(opts))?;
+    write_marker_line(opts, out)?;
     writeln!(out)?;
+    Ok(())
+}
+
+pub(crate) fn write_marker_line(
+    opts: &RenderOptions,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let marker = match opts.format {
+        Format::PrComment => opts.pr_comment_marker.unwrap_or(opts.tool.comment_marker),
+        _ => opts.tool.comment_marker,
+    };
+    writeln!(out, "{marker}")?;
     Ok(())
 }
 

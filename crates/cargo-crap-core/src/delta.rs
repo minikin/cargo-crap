@@ -1967,8 +1967,14 @@ fn stem(name: &str) -> &str {
 }
 
 fn rounded_delta(d: f64) -> f64 {
+    let scaled = d * 1e6;
+    // A delta this large has no fractional digits, and its scaled value
+    // would serialize as null.
+    if !scaled.is_finite() {
+        return d;
+    }
     // Adding 0.0 normalizes IEEE-754 -0.0 to 0.0 for JSON output.
-    (d * 1e6).round() / 1e6 + 0.0
+    scaled.round() / 1e6 + 0.0
 }
 
 /// A row that is not open was withheld by the stem guard or already paired.
@@ -3636,6 +3642,14 @@ mod full_name_tests {
         ] {
             assert_eq!(stem(name), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn a_delta_too_large_to_scale_is_kept_as_it_is() {
+        for d in [12.0 - 1e308, 1e303, -f64::MAX] {
+            assert_eq!(rounded_delta(d), d, "{d}");
+        }
+        assert!(rounded_delta(-1e303).is_finite());
     }
 
     #[test]

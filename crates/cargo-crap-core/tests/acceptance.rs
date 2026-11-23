@@ -3,7 +3,9 @@
 use cargo_crap_core::delta::DEFAULT_EPSILON;
 use cargo_crap_core::entry::{CrapEntry, SortOrder};
 use cargo_crap_core::filter::AllowSet;
-use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+use cargo_crap_core::policy::{
+    EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder,
+};
 use cargo_crap_core::report::{Format, Schemas, Tool};
 use cargo_crap_core::run::{self, Analysis, RenderExtras, Scope, Settings};
 use cargo_crap_core::signals::SignalSettings;

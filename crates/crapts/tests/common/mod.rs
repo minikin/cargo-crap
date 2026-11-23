@@ -48,19 +48,24 @@ static REPORT: LazyLock<jsonschema::Validator> =
 static DELTA: LazyLock<jsonschema::Validator> =
     LazyLock::new(|| validator(include_str!("../../../../schemas/crapts/delta-v1.json")));
 
-/// Picks the schema from the document's own `$schema`, so a delta report can
-/// never pass as an absolute one.
-pub fn validated(bytes: &[u8]) -> Value {
+fn validated(
+    bytes: &[u8],
+    validator: &jsonschema::Validator,
+    file: &str,
+) -> Value {
     let doc: Value = serde_json::from_slice(bytes).unwrap();
     let schema = doc["$schema"].as_str().unwrap_or_default();
-    let validator = if schema.ends_with("/crapts/delta-v1.json") {
-        &*DELTA
-    } else {
-        assert!(schema.ends_with("/crapts/report-v1.json"), "{schema}");
-        &*REPORT
-    };
+    assert!(schema.ends_with(file), "{schema}");
     if let Err(error) = validator.validate(&doc) {
         panic!("{error}: {doc:#}");
     }
     doc
+}
+
+pub fn validated_report(bytes: &[u8]) -> Value {
+    validated(bytes, &REPORT, "/crapts/report-v1.json")
+}
+
+pub fn validated_delta(bytes: &[u8]) -> Value {
+    validated(bytes, &DELTA, "/crapts/delta-v1.json")
 }

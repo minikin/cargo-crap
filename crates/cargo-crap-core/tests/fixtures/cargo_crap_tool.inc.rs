@@ -12,6 +12,7 @@ Tool {
         ],
         signal_detail_hint: Some("run without --summary for the reasons"),
         tie_order: TieOrder::Stable,
+        notice_spacing: NoticeSpacing::Separated,
     },
     name: "cargo-crap",
     version: "0.0.0-test",

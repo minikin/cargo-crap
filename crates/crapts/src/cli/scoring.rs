@@ -6,10 +6,13 @@ use crate::{Discovery, DiscoveryScope, Mode, analyze};
 use cargo_crap_core::coverage::CoverageKind;
 use cargo_crap_core::delta::{CraptsBaseline, load_crapts_baseline};
 use cargo_crap_core::filter::AllowSet;
-use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+use cargo_crap_core::policy::{
+    EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder,
+};
 use cargo_crap_core::report::{self, Schemas, SourceLinks, Tool};
-use cargo_crap_core::run::{self, Analysis, RenderExtras, Scope, Settings};
-use cargo_crap_core::run::{BaselineFilter, PreparedBaseline};
+use cargo_crap_core::run::{
+    self, Analysis, BaselineFilter, PreparedBaseline, RenderExtras, Scope, Settings,
+};
 use cargo_crap_core::signals::SignalSettings;
 use std::cell::RefCell;
 use std::ffi::OsStr;
@@ -26,6 +29,7 @@ const TOOL: Tool = Tool {
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
         signal_detail_hint: None,
         tie_order: TieOrder::FileFunctionLine,
+        notice_spacing: NoticeSpacing::Adjacent,
     },
     name: "crapts",
     version: env!("CARGO_PKG_VERSION"),
@@ -64,8 +68,11 @@ impl Scope for ScoringScope<'_> {
         &self,
         file: &Path,
     ) -> bool {
+        if self.error.borrow().is_some() {
+            return false;
+        }
         self.scope.keeps(file).unwrap_or_else(|error| {
-            self.error.borrow_mut().get_or_insert(error);
+            self.error.replace(Some(error));
             false
         })
     }
@@ -273,12 +280,14 @@ fn machine_notice(
     format: Format,
     prepared: Option<&PreparedBaseline>,
 ) -> Result<()> {
-    let notice = prepared.and_then(PreparedBaseline::notice);
-    match notice {
-        Some(text) if matches!(format, Format::Json | Format::GitHub | Format::Shields) => {
-            writeln!(err, "{text}").map_err(|e| InputError::at(Path::new("stderr"), e))
+    let Some(notice) = prepared.and_then(PreparedBaseline::notice) else {
+        return Ok(());
+    };
+    match format {
+        Format::Json | Format::GitHub | Format::Shields => {
+            writeln!(err, "{notice}").map_err(|e| InputError::at(Path::new("stderr"), e))
         },
-        _ => Ok(()),
+        Format::Human | Format::Markdown | Format::PrComment | Format::Sarif => Ok(()),
     }
 }
 #[cfg(test)]
@@ -395,28 +404,11 @@ mod presentation_tests {
 }
 
 #[cfg(test)]
-mod baseline_tests {
+mod test_support {
     use super::*;
-    use cargo_crap_core::delta::load_crapts_baseline;
-    use cargo_crap_core::filter::AllowSet;
     use serde_json::{Value, json};
-    use std::ffi::OsString;
 
-    const SOURCE: &str = "export function hot(a: boolean) {\n  if (a) return 1\n  return 0\n}\n";
-
-    fn tree() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir(dir.path().join("src")).unwrap();
-        fs::write(dir.path().join("src/app.ts"), SOURCE).unwrap();
-        fs::write(
-            dir.path().join("hits.info"),
-            "SF:src/app.ts\nDA:1,1\nDA:2,1\nDA:3,0\nDA:4,1\nend_of_record\n",
-        )
-        .unwrap();
-        dir
-    }
-
-    fn report(
+    pub(super) fn baseline_doc(
         kind: &str,
         rows: &[(&str, &str)],
     ) -> Value {
@@ -438,6 +430,46 @@ mod baseline_tests {
             "entries": entries,
             "diagnostics": {"analyzed_files": 1, "coverage_files": 1, "matched_files": 1, "source_only": {"count": 0, "examples": []}, "coverage_only": {"count": 0, "examples": []}},
         })
+    }
+
+    pub(super) fn survivors(
+        cwd: &Path,
+        scope: &DiscoveryScope,
+        allow: &AllowSet,
+        rows: &[(&str, &str)],
+    ) -> Result<Vec<(String, String)>> {
+        let path = cwd.join("base.json");
+        fs::write(&path, baseline_doc("lines", rows).to_string()).unwrap();
+        let raw = load_crapts_baseline(&path, &TOOL, CoverageKind::Lines).unwrap();
+        let prepared = prepare(Some(raw), &ScoringScope::new(scope), allow)?.unwrap();
+        Ok(prepared
+            .as_baseline()
+            .entries
+            .iter()
+            .map(|e| (e.file.display().to_string(), e.function.clone()))
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod baseline_tests {
+    use super::test_support::{baseline_doc, survivors};
+    use super::*;
+    use serde_json::Value;
+    use std::ffi::OsString;
+
+    const SOURCE: &str = "export function hot(a: boolean) {\n  if (a) return 1\n  return 0\n}\n";
+
+    fn tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/app.ts"), SOURCE).unwrap();
+        fs::write(
+            dir.path().join("hits.info"),
+            "SF:src/app.ts\nDA:1,1\nDA:2,1\nDA:3,0\nDA:4,1\nend_of_record\n",
+        )
+        .unwrap();
+        dir
     }
 
     fn invoke(
@@ -474,7 +506,7 @@ mod baseline_tests {
         fs::write(d.path().join("broken.json"), "{").unwrap();
         fs::write(
             d.path().join("kind.json"),
-            report("statements", &[("src/app.ts", "hot")]).to_string(),
+            baseline_doc("statements", &[("src/app.ts", "hot")]).to_string(),
         )
         .unwrap();
         for (path, details) in [
@@ -534,7 +566,7 @@ mod baseline_tests {
         let d = tree();
         fs::write(
             d.path().join("base.json"),
-            report("lines", &[("src/app.ts", "hot")]).to_string(),
+            baseline_doc("lines", &[("src/app.ts", "hot")]).to_string(),
         )
         .unwrap();
         let (code, out, err) = invoke(
@@ -560,19 +592,9 @@ mod baseline_tests {
         allow: &[&str],
     ) -> Result<Vec<(String, String)>> {
         let found = crate::discover(&[], &crate::DiscoveryOptions::new(cwd)).unwrap();
-        let path = cwd.join("base.json");
-        fs::write(&path, report("lines", rows).to_string()).unwrap();
-        let raw = load_crapts_baseline(&path, &TOOL, CoverageKind::Lines).unwrap();
         let bases = allow.iter().map(|p| (*p, cwd)).collect::<Vec<_>>();
         let allow = AllowSet::compile_with_bases(cwd, &bases).unwrap();
-        let scope = ScoringScope::new(&found.scope);
-        let prepared = prepare(Some(raw), &scope, &allow)?.unwrap();
-        Ok(prepared
-            .as_baseline()
-            .entries
-            .iter()
-            .map(|e| (e.file.display().to_string(), e.function.clone()))
-            .collect())
+        survivors(cwd, &found.scope, &allow, rows)
     }
 
     #[test]
@@ -609,13 +631,18 @@ mod baseline_tests {
     fn a_failed_scope_lookup_is_an_input_error_not_a_removal() {
         let d = tree();
         let long = format!("src/{}.ts", "a".repeat(300));
-        let error = prepared(d.path(), &[("src/app.ts", "gone"), (&long, "lost")], &[])
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(&long), "{error}");
+        let later = format!("src/{}.ts", "b".repeat(300));
+        let error = prepared(
+            d.path(),
+            &[("src/app.ts", "gone"), (&long, "lost"), (&later, "also")],
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(&long) && !error.contains(&later), "{error}");
         fs::write(
             d.path().join("base.json"),
-            report("lines", &[(&long, "lost")]).to_string(),
+            baseline_doc("lines", &[(&long, "lost")]).to_string(),
         )
         .unwrap();
         let err = refused(
@@ -629,6 +656,7 @@ mod baseline_tests {
 #[cfg(test)]
 mod worktree_scope_tests {
     use super::super::{config, parse};
+    use super::test_support::survivors;
     use super::*;
     use std::ffi::OsString;
 
@@ -658,32 +686,7 @@ mod worktree_scope_tests {
             worktree,
         )
         .unwrap();
-        let entries = rows
-            .iter()
-            .map(|(file, function)| {
-                serde_json::json!({"file": file, "function": function, "line": 1, "cyclomatic": 1, "coverage": 100.0, "crap": 5.0})
-            })
-            .collect::<Vec<_>>();
-        let doc = serde_json::json!({
-            "$schema": TOOL.schemas.report, "version": TOOL.version, "name_scheme": 1,
-            "coverage_kind": "lines", "threshold": 10.0, "selection": null, "notices": [],
-            "summary": {"total": rows.len(), "crappy": 0, "regressed": null, "improved": null, "new": null, "moved": null, "unchanged": null, "removed": null, "changed_failures": null},
-            "entries": entries,
-            "diagnostics": {"analyzed_files": 1, "coverage_files": 1, "matched_files": 1, "source_only": {"count": 0, "examples": []}, "coverage_only": {"count": 0, "examples": []}},
-        });
-        let path = cwd.join("base.json");
-        fs::write(&path, doc.to_string()).unwrap();
-        let raw = load_crapts_baseline(&path, &TOOL, CoverageKind::Lines).unwrap();
-        let scope = ScoringScope::new(&discovery.scope);
-        let prepared = prepare(Some(raw), &scope, &options.allow_set)
-            .unwrap()
-            .unwrap();
-        prepared
-            .as_baseline()
-            .entries
-            .iter()
-            .map(|e| (e.file.display().to_string(), e.function.clone()))
-            .collect()
+        survivors(&cwd, &discovery.scope, &options.allow_set, rows).unwrap()
     }
 
     #[test]

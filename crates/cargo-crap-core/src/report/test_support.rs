@@ -9,7 +9,7 @@ use crate::coverage::LineRange;
 use crate::delta::{DeltaEntry, DeltaReport, DeltaStatus};
 use crate::duplicates::verdict::Assessment;
 use crate::entry::CrapEntry;
-use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+use crate::policy::{EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder};
 use std::path::PathBuf;
 
 /// cargo-crap's branding with a fixed version, so the report tests' expected

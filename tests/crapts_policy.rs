@@ -9,7 +9,9 @@ use cargo_crap_core::delta::{Baseline, DEFAULT_EPSILON, load_crapts_baseline};
 use cargo_crap_core::entry::{CrapEntry, ScopeDiagnostics, SortOrder, StrayFiles};
 use cargo_crap_core::filter::AllowSet;
 use cargo_crap_core::gate::GateOutcome;
-use cargo_crap_core::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+use cargo_crap_core::policy::{
+    EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder,
+};
 use cargo_crap_core::report::{Format, Placement, Schemas, Section, Tool};
 use cargo_crap_core::run::{self, Analysis, BaselineFilter, RenderExtras, Scope, Settings};
 use cargo_crap_core::signals::SignalSettings;
@@ -24,6 +26,7 @@ const CRAPTS: Tool = Tool {
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
         signal_detail_hint: None,
         tie_order: TieOrder::FileFunctionLine,
+        notice_spacing: NoticeSpacing::Separated,
     },
     name: "crapts",
     version: "0.2.3",
@@ -1368,6 +1371,7 @@ fn a_caller_can_change_tie_policy_alone() {
         name: "audit",
         policy: Policy {
             tie_order: TieOrder::Stable,
+            notice_spacing: NoticeSpacing::Separated,
             ..CRAPTS.policy
         },
         ..CRAPTS
@@ -1376,6 +1380,7 @@ fn a_caller_can_change_tie_policy_alone() {
         name: "audit",
         policy: Policy {
             tie_order: TieOrder::FileFunctionLine,
+            notice_spacing: NoticeSpacing::Separated,
             ..CRAPTS.policy
         },
         ..CRAPTS

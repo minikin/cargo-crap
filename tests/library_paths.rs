@@ -290,7 +290,9 @@ fn both_crate_names_refer_to_the_same_public_types() {
 }
 
 mod cargo_crap_fixture {
-    use cargo_crap::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+    use cargo_crap::policy::{
+        EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder,
+    };
     use cargo_crap::report::{Format, Schemas, Tool};
     use cargo_crap::tool::CARGO_CRAP;
 
