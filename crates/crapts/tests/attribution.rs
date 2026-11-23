@@ -473,13 +473,18 @@ fn the_caller_receives_rows_the_measured_unit_and_diagnostics_from_one_run() {
             assert_eq!((measured.covered, measured.total), (hits, total));
             assert_eq!((entry.coverage, entry.crap), (Some(percent), score));
             assert_eq!(ranges(measured), misses);
+            let analyzed = fixture.analyses[0]
+                .rows
+                .iter()
+                .find(|row| row.name == name)
+                .unwrap();
             assert_eq!(
-                (
-                    entry.fingerprint.as_ref(),
-                    entry.crate_name.as_ref(),
-                    entry.signals.as_ref()
-                ),
-                (None, None, None)
+                entry.fingerprint.as_deref(),
+                Some(analyzed.fingerprint.to_string().as_str())
+            );
+            assert_eq!(
+                (entry.crate_name.as_ref(), entry.signals.as_ref()),
+                (None, None)
             );
             assert_eq!(entry.signal_spans, Spans::default());
         }

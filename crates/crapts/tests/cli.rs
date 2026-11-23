@@ -623,7 +623,13 @@ fn an_absolute_report_identifies_the_tool_inputs_and_scores() {
         assert_eq!(row["cyclomatic"].as_f64(), Some(cc));
         assert_eq!(row["coverage"].as_f64(), Some(cov));
         assert_eq!(row["crap"].as_f64(), Some(crap));
-        assert!(row.get("fingerprint").is_none());
+        let fingerprint = row["fingerprint"].as_str().unwrap();
+        assert_eq!(fingerprint.len(), 64);
+        assert!(
+            fingerprint
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
     }
 }
 

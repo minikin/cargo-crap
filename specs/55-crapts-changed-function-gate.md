@@ -1170,7 +1170,7 @@ Each scenario's assertions are proved at the layer that implements them. T5 prov
   Scenarios: _Hash the row's own token sequence_, _Pin token boundaries and digests for each scoring unit_, _A UTF-8 BOM leaves the fingerprint unchanged_, _Normalize formatting while retaining literal content_, _Compare physical line endings inside tokens_, _Distinguish edits to owned code from edits to other rows_, _Include a method's decorator in its source span and fingerprint_, _Body edits preserve a binding name and binding edits preserve a body fingerprint_, _Name and fingerprint stability under irrelevant edits_.
   Tests: acceptance and the stability property in `crates/crapts/tests/fingerprints.rs`.
 
-- [ ] **T4 - Emit fingerprints in crapts JSON.** Needs: T3.
+- [x] **T4 - Emit fingerprints in crapts JSON.** Needs: T3.
   Copy each row's fingerprint into `CrapEntry.fingerprint` in `attribute`, let the core's `CraptsV1` writer emit it, keep `CargoCrapV1` omitting it, and amend the earlier tests listed under "Amendments to approved specs". Its `--baseline` steps, the delta step of _crapts JSON rows carry the row fingerprint_ and the baseline outline, wait for Spec 54.
   Scenarios: _crapts JSON rows carry the row fingerprint_, _cargo-crap reports keep omitting fingerprints_, _A baseline without fingerprints is admitted and pairs by name_.
   Tests: acceptance in `crates/crapts/tests/{cli,baseline}.rs`, `tests/crapts_policy.rs`, the Spec 44 goldens.

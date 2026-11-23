@@ -1681,9 +1681,18 @@ fn both_crapts_report_shapes_admit_rows_without_a_wire_fingerprint() {
         vec![],
     );
     for (name, rep) in [("abs.json", &abs), ("delta.json", &delta)] {
-        for entry in rep.json["entries"].as_array().unwrap() {
-            assert!(entry.get("fingerprint").is_none(), "{name}: {}", rep.raw);
-        }
+        let entries = rep.json["entries"].as_array().unwrap();
+        assert_eq!(
+            entries[0]["fingerprint"],
+            "a".repeat(64),
+            "{name}: {}",
+            rep.raw
+        );
+        assert!(
+            entries[1].get("fingerprint").is_none(),
+            "{name}: {}",
+            rep.raw
+        );
         let path = dir.path().join(name);
         std::fs::write(&path, &rep.raw).unwrap();
         let loaded = load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines).unwrap();
@@ -3222,5 +3231,23 @@ fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
         assert!(schema.is_valid(&without));
         with["changed"].as_object_mut().unwrap().remove("counts");
         assert!(!schema.is_valid(&with));
+    }
+}
+
+#[test]
+fn cargo_crap_reports_keep_omitting_fingerprints() {
+    let knobs = Knobs {
+        tool: cargo_crap::tool::CARGO_CRAP,
+        ..Knobs::default()
+    };
+    let mut current = row("src/a.rs", "f", 3, 20.0);
+    current.fingerprint = Some("a".repeat(64));
+    let baseline = row("src/a.rs", "f", 3, 10.0);
+    for report in [
+        absolute(&knobs, vec![current.clone()]),
+        compare(&knobs, vec![current.clone()], vec![baseline]),
+    ] {
+        assert_eq!(report.json["entries"][0]["function"], "f");
+        assert!(!report.raw.contains("fingerprint"), "{}", report.raw);
     }
 }
