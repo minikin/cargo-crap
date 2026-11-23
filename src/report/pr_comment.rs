@@ -15,7 +15,7 @@ use super::types::{
 };
 use super::{RenderOptions, write_pr_comment_marker};
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaReport, DeltaStatus, RemovedEntry};
-use crate::merge::CrapEntry;
+use crate::entry::CrapEntry;
 use anyhow::Result;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -641,6 +641,7 @@ mod tests {
                 crap,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -1239,6 +1240,7 @@ mod tests {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -1259,6 +1261,7 @@ mod tests {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -1305,6 +1308,7 @@ mod tests {
                 crap: 29.9,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -1317,6 +1321,7 @@ mod tests {
                 crap: 30.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -1329,6 +1334,7 @@ mod tests {
                 crap: 30.1,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -1363,6 +1369,7 @@ mod tests {
             crap: 110.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -1668,6 +1675,7 @@ mod tests {
             crap: 110.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];

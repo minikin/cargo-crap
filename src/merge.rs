@@ -19,211 +19,23 @@
 //! covered" — which is exactly the class of bug where a green CI suddenly
 //! starts red-lining a whole codebase.
 //!
-//! Our strategy: build a lookup keyed on **canonicalized suffix matches**.
-//! For every coverage path we can't canonicalize (because it's relative),
-//! we try progressively shorter suffixes against canonical complexity paths.
-//!
-//! Ambiguity is resolved deterministically (spec 26): among several
-//! suffix-matching keys the longest wins, and different spellings of one
-//! file (canonical aliases, `./`-prefixed variants) merge their line data
-//! instead of racing on map order.
+//! A relative LCOV key belongs to the machine that produced the coverage. Resolving
+//! it against this process's working directory can silently attach hits to another file.
+//! [`crate::paths::assign`] gives canonical aliases priority over component suffixes.
 
 use crate::complexity::FunctionComplexity;
-use crate::coverage::{FileCoverage, LineRange};
+use crate::coverage::FileCoverage;
+#[cfg(test)]
+use crate::coverage::LineRange;
+pub use crate::entry::{
+    CrapEntry, MissingCoveragePolicy, SCOPE_EXAMPLE_CAP, ScopeDiagnostics, SortOrder, StrayFiles,
+    sort_entries,
+};
+use crate::paths::{self, TiePolicy};
 use crate::score::crap;
-use crate::signals::{Signals, Spans};
-use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
-
-/// One row in the final report.
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
-pub struct CrapEntry {
-    pub file: PathBuf,
-    pub function: String,
-    pub line: usize,
-    pub cyclomatic: f64,
-    /// Percentage; may be `None` if we could not find coverage data for
-    /// this file at all. That's different from "0% covered" — it means the
-    /// coverage report didn't mention the file.
-    pub coverage: Option<f64>,
-    pub crap: f64,
-    /// Cargo workspace member name, set by `--workspace` runs after the
-    /// entry's file path has been suffix-matched against a member root.
-    /// Always `None` for non-workspace runs and for older baselines that
-    /// pre-date this field.
-    #[serde(rename = "crate", default, skip_serializing_if = "Option::is_none")]
-    pub crate_name: Option<String>,
-    /// Maximal runs of instrumented-but-never-hit lines inside the
-    /// function's span. Empty when the file had no coverage data
-    /// at all — "unknown" must stay distinguishable from "known-uncovered"
-    /// — and for baselines that pre-date this field. Payload only: never
-    /// part of any delta pairing key.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub uncovered: Vec<LineRange>,
-    /// Structural maintainability signals (spec 43). `None` unless
-    /// `[signals] enabled = true`, and for baselines recorded without them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signals: Option<Signals>,
-    /// Where each signal comes from, for reasons. Never serialized: only the
-    /// current run's spans are ever pointed at.
-    #[serde(skip)]
-    pub signal_spans: Spans,
-}
-
-/// Final ordering applied to the report entries (spec 17).
-///
-/// [`merge`] always sorts by CRAP descending first — that ordering is the
-/// selection invariant `--top` relies on. The user-requested sort is applied
-/// as a separate, final step via [`sort_entries`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum SortOrder {
-    /// CRAP score descending — the right order for humans reading top-down.
-    #[default]
-    Crap,
-    /// `(file, function, line)` ascending — stable across score changes, so a
-    /// committed JSON baseline produces minimal diffs.
-    File,
-}
-
-/// A path with its separators unified, so a baseline written on Windows
-/// matches a run on Unix.
-pub(crate) fn path_key(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
-}
-
-/// Number of trailing path components two files share, after forward-slash
-/// normalization. `0` means not even the filename matches.
-fn common_suffix_len(
-    a: &Path,
-    b: &Path,
-) -> usize {
-    let a = path_key(a);
-    let b = path_key(b);
-    a.split('/')
-        .rev()
-        .zip(b.split('/').rev())
-        .take_while(|(x, y)| x == y)
-        .count()
-}
-
-/// For `from`, find the index in `candidates` whose file shares the longest
-/// common path suffix with it. Returns `None` when no candidate shares at
-/// least the filename, or when the best score is tied (ambiguous).
-pub(crate) fn unique_best_by_suffix<T>(
-    from: &Path,
-    candidates: &[T],
-    file_of: impl Fn(&T) -> &Path,
-) -> Option<usize> {
-    let mut best: Option<(usize, usize)> = None; // (candidate idx, score)
-    let mut tied = false;
-    for (i, c) in candidates.iter().enumerate() {
-        let score = common_suffix_len(from, file_of(c));
-        if score == 0 {
-            continue;
-        }
-        match best {
-            None => best = Some((i, score)),
-            Some((_, s)) => match score.cmp(&s) {
-                std::cmp::Ordering::Equal => tied = true,
-                std::cmp::Ordering::Greater => {
-                    best = Some((i, score));
-                    tied = false;
-                },
-                std::cmp::Ordering::Less => {},
-            },
-        }
-    }
-    match (best, tied) {
-        (Some((i, _)), false) => Some(i),
-        _ => None,
-    }
-}
-
-/// Stable `(file, function, line)` sort key. The file path is normalized to
-/// forward slashes so baselines written on different platforms sort the same.
-pub(crate) fn file_order_key(e: &CrapEntry) -> (String, &str, usize) {
-    (path_key(&e.file), e.function.as_str(), e.line)
-}
-
-/// Apply the user-requested [`SortOrder`] to an entry slice in place.
-///
-/// Call this *after* `--allow` / `--min` / `--top` have run: `--top` selects
-/// the N highest-CRAP functions against [`merge`]'s descending order, and this
-/// only reorders the survivors for display (spec 17).
-pub fn sort_entries(
-    entries: &mut [CrapEntry],
-    order: SortOrder,
-) {
-    match order {
-        SortOrder::Crap => entries.sort_by(|a, b| {
-            b.crap
-                .partial_cmp(&a.crap)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }),
-        SortOrder::File => entries.sort_by(|a, b| file_order_key(a).cmp(&file_order_key(b))),
-    }
-}
-
-/// How to treat functions we have complexity data for but no coverage data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MissingCoveragePolicy {
-    /// Assume 0% coverage. Pessimistic — good for CI gates, where unmapped
-    /// files are a red flag worth surfacing.
-    Pessimistic,
-    /// Assume 100% coverage. Optimistic — suitable for interactive use where
-    /// you've scoped coverage to a subset of the tree intentionally.
-    Optimistic,
-    /// Skip the function entirely; don't emit a row.
-    Skip,
-}
-
-/// Cap on example paths carried per stray side of [`ScopeDiagnostics`].
-/// `count` always holds the true total; only the examples are bounded, so
-/// a 1000-file mismatch stays readable on stderr and in JSON (spec 24).
-pub const SCOPE_EXAMPLE_CAP: usize = 10;
-
-/// One side's stray files: the true count plus at most
-/// [`SCOPE_EXAMPLE_CAP`] example paths, sorted.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StrayFiles {
-    pub count: usize,
-    pub examples: Vec<PathBuf>,
-}
-
-impl StrayFiles {
-    fn new(mut files: Vec<PathBuf>) -> Self {
-        files.sort();
-        let count = files.len();
-        files.truncate(SCOPE_EXAMPLE_CAP);
-        Self {
-            count,
-            examples: files,
-        }
-    }
-}
-
-/// Source/LCOV scope diagnostics (spec 24): how well the analyzed source
-/// tree and the LCOV report overlap. A large stray set on either side means
-/// the two inputs describe different scopes — the classic cause of a delta
-/// full of unrelated 0%-coverage entries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScopeDiagnostics {
-    /// Distinct source files that produced at least one analyzed function.
-    pub analyzed_files: usize,
-    /// Distinct `SF` records in the LCOV report.
-    pub lcov_files: usize,
-    /// Files present on both sides after path matching.
-    pub matched_files: usize,
-    /// Analyzed files with no LCOV match.
-    pub source_only: StrayFiles,
-    /// LCOV `SF` files matched by no analyzed file.
-    pub lcov_only: StrayFiles,
-}
+use std::path::PathBuf;
 
 /// Output of [`merge`]: the scored entries plus scope diagnostics.
 pub struct MergeResult {
@@ -246,35 +58,40 @@ pub fn merge(
     coverage: HashMap<PathBuf, FileCoverage>,
     policy: MissingCoveragePolicy,
 ) -> MergeResult {
-    let index = PathIndex::build(&coverage);
-    let has_coverage = !coverage.is_empty();
+    let sources: Vec<_> = complexity
+        .iter()
+        .map(|f| f.file.as_path())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let (keys, values): (Vec<_>, Vec<_>) = coverage
+        .iter()
+        .map(|(path, data)| (path.as_path(), data))
+        .unzip();
+    let assignment = paths::assign(&sources, &keys, TiePolicy::PerSource);
+    let diagnostics = (!keys.is_empty()).then(|| assignment.diagnostics(&sources, &keys));
 
-    let mut mapped_files: HashSet<PathBuf> = HashSet::new();
-    let mut seen_files: HashSet<PathBuf> = HashSet::new();
-    // Raw LCOV keys consumed by at least one lookup — the complement is the
-    // lcov_only side of the scope diagnostics.
-    let mut used_lcov_keys: HashSet<PathBuf> = HashSet::new();
+    // Several source files may claim one suffix. Cache its hit map to avoid
+    // summing the same aliases repeatedly.
+    let mut groups = HashMap::new();
+    let mut source_groups = HashMap::new();
+    for (source, bound) in sources.into_iter().zip(assignment.bindings) {
+        if let Some((&first, rest)) = bound.split_first() {
+            groups
+                .entry(first)
+                .or_insert_with(|| merge_coverage(values[first], rest, &values));
+            source_groups.insert(source.to_owned(), first);
+        }
+    }
 
     let mut entries: Vec<CrapEntry> = complexity
         .into_iter()
         .filter_map(|fc| {
-            let hit = index.lookup(&fc.file);
-            let cov = hit.map(|found| found.cov.coverage_in_span(fc.start_line, fc.end_line));
+            let hit = source_groups.get(&fc.file).map(|key| &groups[key]);
+            let cov = hit.map(|data| data.coverage_in_span(fc.start_line, fc.end_line));
             let uncovered = hit
-                .map(|found| {
-                    found
-                        .cov
-                        .uncovered_ranges_in_span(fc.start_line, fc.end_line)
-                })
+                .map(|data| data.uncovered_ranges_in_span(fc.start_line, fc.end_line))
                 .unwrap_or_default();
-
-            if has_coverage {
-                if let Some(found) = hit {
-                    mapped_files.insert(fc.file.clone());
-                    used_lcov_keys.extend(found.spellings.iter().map(|s| s.to_path_buf()));
-                }
-                seen_files.insert(fc.file.clone());
-            }
 
             let cov_for_scoring = match (cov, policy) {
                 (Some(c), _) => c,
@@ -293,42 +110,14 @@ pub fn merge(
                 crap: crap_score,
                 crate_name: None,
                 signals: Some(fc.signals),
+                fingerprint: None,
                 signal_spans: fc.spans,
                 uncovered,
             })
         })
         .collect();
 
-    entries.sort_by(|a, b| {
-        b.crap
-            .partial_cmp(&a.crap)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let diagnostics = has_coverage.then(|| {
-        let source_only: Vec<PathBuf> = seen_files
-            .iter()
-            .filter(|f| !mapped_files.contains(*f))
-            .cloned()
-            .collect();
-        // Every spelling behind a consumed index entry — aliases of a
-        // symlinked checkout root, `lcov -a`-merged legs, `./`-prefixed
-        // variants — was recorded in `used_lcov_keys` at lookup time
-        // (spec 26), so the stray set is a plain complement. No
-        // re-canonicalization, and relative keys are never resolved.
-        let lcov_only: Vec<PathBuf> = coverage
-            .keys()
-            .filter(|k| !used_lcov_keys.contains(*k))
-            .cloned()
-            .collect();
-        ScopeDiagnostics {
-            analyzed_files: seen_files.len(),
-            lcov_files: coverage.len(),
-            matched_files: mapped_files.len(),
-            source_only: StrayFiles::new(source_only),
-            lcov_only: StrayFiles::new(lcov_only),
-        }
-    });
+    sort_entries(&mut entries, SortOrder::Crap);
 
     MergeResult {
         entries,
@@ -336,165 +125,23 @@ pub fn merge(
     }
 }
 
-/// Coverage data reachable through one index key, together with every raw
-/// LCOV spelling that fed it. Entries start borrowed and are copied only
-/// when a second spelling merges in (spec 26), so the common unambiguous
-/// case stays allocation-free.
-struct IndexedCoverage<'a> {
-    /// Raw `SF` spellings behind this entry. All of them count as consumed
-    /// when a lookup binds here — the spec-24 diagnostics must not report
-    /// an alias of a matched file as a stray.
-    spellings: Vec<&'a Path>,
-    cov: Cow<'a, FileCoverage>,
-}
-
-/// A path lookup index that handles absolute-vs-relative mismatches between
-/// the complexity pass (which has whatever was on the command line) and the
-/// coverage file (which has whatever the coverage tool decided to write).
-struct PathIndex<'a> {
-    /// Canonicalized absolute paths → merged coverage. Fast path. Aliased
-    /// spellings of one real file (symlinked roots, `lcov -a` legs) merge
-    /// their line data here instead of overwriting each other (spec 26).
-    by_absolute: HashMap<PathBuf, IndexedCoverage<'a>>,
-    /// Suffix-matching tier: relative keys, plus absolute keys that don't
-    /// canonicalize (coverage produced in a container at a different root),
-    /// keyed by their normalized components. Component-equal spellings
-    /// (`src/lib.rs` vs `./src/lib.rs`) merged at build time, so the
-    /// needles are pairwise component-distinct.
-    by_relative: Vec<(PathBuf, IndexedCoverage<'a>)>,
-}
-
-impl<'a> PathIndex<'a> {
-    fn build(coverage: &'a HashMap<PathBuf, FileCoverage>) -> Self {
-        let mut by_absolute = HashMap::new();
-        let mut by_suffix = HashMap::new();
-
-        for (raw_path, cov) in coverage {
-            if let Some(abs) = fast_path_key(raw_path) {
-                insert_or_merge(&mut by_absolute, abs, raw_path, cov);
-            } else {
-                // A degenerate key with no meaningful components (`SF:.`,
-                // empty `SF:`) would become an empty needle, and an empty
-                // needle trivially suffix-matches every query. Keep it out
-                // of the index entirely so it surfaces as an lcov_only
-                // stray (spec 24) instead of silently binding unmatched
-                // files to garbage data.
-                let key = normalized(raw_path);
-                if !key.as_os_str().is_empty() {
-                    insert_or_merge(&mut by_suffix, key, raw_path, cov);
-                }
-            }
-        }
-
-        Self {
-            by_absolute,
-            by_relative: by_suffix.into_iter().collect(),
-        }
+fn merge_coverage<'a>(
+    first: &'a FileCoverage,
+    rest: &[usize],
+    values: &[&FileCoverage],
+) -> Cow<'a, FileCoverage> {
+    let mut data = Cow::Borrowed(first);
+    for &key in rest {
+        data.to_mut().merge_from(values[key]);
     }
-
-    /// Find coverage for `query`. The hit carries every raw LCOV spelling
-    /// it consumed (they feed the scope diagnostics).
-    fn lookup(
-        &self,
-        query: &Path,
-    ) -> Option<&IndexedCoverage<'a>> {
-        // Fast path: direct canonical match.
-        if let Ok(abs) = query.canonicalize()
-            && let Some(hit) = self.by_absolute.get(&abs)
-        {
-            return Some(hit);
-        }
-
-        // Slow path: suffix match. A coverage path `src/foo.rs` matches a
-        // complexity path `.../project/src/foo.rs` if the former is a
-        // component-wise suffix of the latter. Among several matching
-        // needles the most specific (longest) one wins — and that maximum
-        // is unique by construction: two component-distinct needles of
-        // equal length cannot both be a suffix of one query (spec 26).
-        self.by_relative
-            .iter()
-            .filter(|(needle, _)| path_has_suffix(query, needle))
-            .max_by_key(|(needle, _)| needle.components().count())
-            .map(|(_, hit)| hit)
-    }
-}
-
-/// The canonical fast-path key for `raw_path`, or `None` when it belongs
-/// in the suffix tier.
-///
-/// CRITICAL: only *absolute* paths are canonicalized. A relative path like
-/// `src/lib.rs` in an LCOV file means "some file whose component-suffix is
-/// this" — it must NOT be resolved against the caller's CWD, because the
-/// CWD is an accident of invocation. Early versions of this code called
-/// `canonicalize()` unconditionally; if the CWD happened to contain a
-/// matching path, the coverage entry would silently bind to the wrong file
-/// and every real function would come back as 0% covered. The integration
-/// test `end_to_end_pipeline_produces_ranked_scores` exists specifically
-/// to catch a regression back into that behavior.
-fn fast_path_key(raw_path: &Path) -> Option<PathBuf> {
-    if raw_path.is_absolute() {
-        raw_path.canonicalize().ok()
-    } else {
-        None
-    }
-}
-
-/// A path reduced to its meaningful components: `./src/lib.rs` and
-/// `src/lib.rs` normalize identically, so spelling variants of one logical
-/// file share a suffix-tier key (and merge, per spec 26). Pure component
-/// surgery — no filesystem access, preserving the CWD invariant.
-fn normalized(path: &Path) -> PathBuf {
-    path.components()
-        .filter(|c| !matches!(c, Component::CurDir))
-        .collect()
-}
-
-/// Add one raw LCOV record under `key`, merging line data (per-line
-/// saturating sum) when the key is already taken. Order-independent by
-/// commutativity — this is what makes aliased inputs deterministic.
-fn insert_or_merge<'a>(
-    map: &mut HashMap<PathBuf, IndexedCoverage<'a>>,
-    key: PathBuf,
-    raw_path: &'a Path,
-    cov: &'a FileCoverage,
-) {
-    match map.entry(key) {
-        Entry::Occupied(mut slot) => {
-            let indexed = slot.get_mut();
-            indexed.spellings.push(raw_path);
-            indexed.cov.to_mut().merge_from(cov);
-        },
-        Entry::Vacant(slot) => {
-            slot.insert(IndexedCoverage {
-                spellings: vec![raw_path],
-                cov: Cow::Borrowed(cov),
-            });
-        },
-    }
-}
-
-/// True if `haystack` ends with `needle`, compared component by component.
-///
-/// This is stricter than a byte-level `ends_with`: `foo/bar.rs` must not
-/// match `oofoo/bar.rs`. Cross-platform separators are handled because
-/// `Path::components` normalizes them.
-fn path_has_suffix(
-    haystack: &Path,
-    needle: &Path,
-) -> bool {
-    let hay: Vec<_> = haystack.components().collect();
-    let nee: Vec<_> = needle.components().collect();
-    if nee.len() > hay.len() {
-        return false;
-    }
-    hay[hay.len() - nee.len()..] == nee[..]
+    data
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn cov_with(lines: &[(u32, u64)]) -> FileCoverage {
         FileCoverage {
@@ -503,78 +150,10 @@ mod tests {
     }
 
     #[test]
-    fn suffix_match_works_for_relative_coverage_paths() {
-        // Simulates the realistic case: coverage file was generated with
-        // `cargo llvm-cov` in the workspace root, producing relative paths.
-        let mut cov_map = HashMap::new();
-        cov_map.insert(PathBuf::from("src/foo.rs"), cov_with(&[(10, 1), (11, 1)]));
-        let index = PathIndex::build(&cov_map);
-
-        let complexity_path = PathBuf::from("/home/alice/project/src/foo.rs");
-        let result = index.lookup(&complexity_path);
-        assert!(result.is_some(), "expected suffix match to succeed");
-    }
-
-    #[test]
-    fn suffix_match_rejects_partial_component_matches() {
-        // `oofoo.rs` should NOT match `foo.rs` — that's a byte-level
-        // ends_with bug we're explicitly avoiding.
-        let a = PathBuf::from("/project/src/oofoo.rs");
-        let b = PathBuf::from("foo.rs");
-        assert!(!path_has_suffix(&a, &b));
-    }
-
-    #[test]
-    fn equal_length_paths_match_when_identical() {
-        // Kills: replace > with == and > with >= in the nee.len() > hay.len() guard.
-        // If the guard fired for equal-length paths, identical paths would return false.
-        let a = PathBuf::from("/project/src/foo.rs");
-        let b = PathBuf::from("/project/src/foo.rs");
-        assert!(
-            path_has_suffix(&a, &b),
-            "identical paths must match as a suffix"
-        );
-    }
-
-    #[test]
-    fn longer_needle_does_not_match() {
-        // Needle longer than haystack must always return false.
-        let hay = PathBuf::from("src/foo.rs");
-        let needle = PathBuf::from("/abs/project/src/foo.rs");
-        assert!(!path_has_suffix(&hay, &needle));
-    }
-
-    #[test]
     fn longest_matching_suffix_wins_over_shorter_ambiguous_key() {
-        // Spec 26: `src/lib.rs` and `vendor/dep/src/lib.rs` both suffix-match
-        // a query under vendor/dep/. The 4-component needle must win — under
-        // the old first-match-in-hash-order lookup this failed about half the
-        // time (kills max_by_key → min_by_key and dropping the preference).
         let mut cov_map = HashMap::new();
         cov_map.insert(PathBuf::from("src/lib.rs"), cov_with(&[(1, 7)]));
         cov_map.insert(PathBuf::from("vendor/dep/src/lib.rs"), cov_with(&[(1, 0)]));
-        let index = PathIndex::build(&cov_map);
-
-        let vendor = index
-            .lookup(Path::new("/repo/vendor/dep/src/lib.rs"))
-            .expect("vendor query matches");
-        assert_eq!(
-            vendor.cov.coverage_in_span(1, 1),
-            0.0,
-            "nested query must bind to the vendor key (line 1: 0 hits)"
-        );
-
-        let root = index
-            .lookup(Path::new("/repo/src/lib.rs"))
-            .expect("root query matches");
-        assert_eq!(
-            root.cov.coverage_in_span(1, 1),
-            100.0,
-            "the shorter key still serves its own queries"
-        );
-
-        // Through merge(): after both queries bind, neither ambiguous key
-        // is a stray (spec 26, "shorter key still serves its own queries").
         let complexity = vec![
             FunctionComplexity {
                 file: PathBuf::from("/repo/src/lib.rs"),
@@ -596,6 +175,14 @@ mod tests {
             },
         ];
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        assert_eq!(
+            result
+                .entries
+                .iter()
+                .map(|e| (e.function.as_str(), e.coverage))
+                .collect::<Vec<_>>(),
+            [("vendored", Some(0.0)), ("rooted", Some(100.0))]
+        );
         let diag = result.diagnostics.expect("diagnostics present");
         assert_eq!(diag.matched_files, 2);
         assert_eq!(
@@ -606,27 +193,19 @@ mod tests {
 
     #[test]
     fn component_equal_spellings_merge_into_one_entry() {
-        // Spec 26: `src/lib.rs` and `./src/lib.rs` are spellings of the same
-        // logical file — merged at build time (union of lines, summed hits),
-        // and both raw spellings count as consumed.
         let mut cov_map = HashMap::new();
         cov_map.insert(PathBuf::from("src/lib.rs"), cov_with(&[(1, 2)]));
         cov_map.insert(PathBuf::from("./src/lib.rs"), cov_with(&[(1, 3), (2, 1)]));
-        let index = PathIndex::build(&cov_map);
-        assert_eq!(
-            index.by_relative.len(),
-            1,
-            "spelling variants collapse to one suffix-tier entry"
-        );
+        let first = &cov_map[Path::new("src/lib.rs")];
+        let second = &cov_map[Path::new("./src/lib.rs")];
+        let summed = merge_coverage(first, &[1], &[first, second]);
+        assert_eq!(summed.lines.get(&1), Some(&5));
+        assert_eq!(summed.lines.get(&2), Some(&1));
+        assert!(matches!(
+            merge_coverage(first, &[], &[first]),
+            Cow::Borrowed(_)
+        ));
 
-        let hit = index
-            .lookup(Path::new("/repo/src/lib.rs"))
-            .expect("query matches the merged entry");
-        assert_eq!(hit.cov.lines.get(&1), Some(&5), "hits sum: 2 + 3");
-        assert_eq!(hit.cov.lines.get(&2), Some(&1));
-        assert_eq!(hit.cov.coverage_in_span(1, 2), 100.0);
-
-        // Through merge(): neither spelling is a stray.
         let complexity = vec![FunctionComplexity {
             file: PathBuf::from("/repo/src/lib.rs"),
             name: "f".into(),
@@ -637,6 +216,7 @@ mod tests {
             spans: crate::signals::Spans::default(),
         }];
         let result = merge(complexity, cov_map, MissingCoveragePolicy::Pessimistic);
+        assert_eq!(result.entries[0].coverage, Some(100.0));
         let diag = result.diagnostics.expect("diagnostics present");
         assert_eq!(
             diag.lcov_only.count, 0,
@@ -645,27 +225,36 @@ mod tests {
     }
 
     #[test]
+    fn disjoint_relative_aliases_contribute_both_hit_and_uncovered_lines() {
+        let coverage = HashMap::from([
+            (PathBuf::from("src/lib.rs"), cov_with(&[(1, 7)])),
+            (PathBuf::from("./src/lib.rs"), cov_with(&[(2, 0)])),
+        ]);
+        let function = FunctionComplexity {
+            file: PathBuf::from("/repo/src/lib.rs"),
+            name: "alias".into(),
+            start_line: 1,
+            end_line: 2,
+            cyclomatic: 1.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
+        };
+        let result = merge(vec![function], coverage, MissingCoveragePolicy::Skip);
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].coverage, Some(50.0));
+        assert_eq!(
+            result.entries[0].uncovered,
+            [LineRange { start: 2, end: 2 }]
+        );
+        assert_eq!(result.diagnostics.unwrap().lcov_only.count, 0);
+    }
+
+    #[test]
     fn degenerate_lcov_keys_never_wildcard_match() {
-        // `SF:.` (and an empty SF) normalize to zero components; an empty
-        // needle would trivially suffix-match EVERY query, silently binding
-        // unmapped files to garbage data. Such keys must stay out of the
-        // index and surface as lcov_only strays instead (kills dropping the
-        // empty-key guard in PathIndex::build).
         let mut cov_map = HashMap::new();
         cov_map.insert(PathBuf::from("."), cov_with(&[(1, 1)]));
         cov_map.insert(PathBuf::from(""), cov_with(&[(1, 1)]));
         cov_map.insert(PathBuf::from("src/foo.rs"), cov_with(&[(1, 1)]));
-        let index = PathIndex::build(&cov_map);
-
-        assert!(
-            index.lookup(Path::new("/repo/src/bar.rs")).is_none(),
-            "a file with no real LCOV record must stay unmatched"
-        );
-        assert!(
-            index.lookup(Path::new("/repo/src/foo.rs")).is_some(),
-            "legitimate keys still match"
-        );
-
         let complexity = vec![FunctionComplexity {
             file: PathBuf::from("/repo/src/bar.rs"),
             name: "unmapped".into(),
@@ -685,22 +274,6 @@ mod tests {
             diag.lcov_only.count, 3,
             "degenerate keys and the unconsumed real key are strays"
         );
-    }
-
-    #[test]
-    fn distinct_relative_files_never_merge() {
-        // Spec 26: component-inequal keys stay separate and never compete
-        // for the same query (one would have to be a suffix of the other).
-        let mut cov_map = HashMap::new();
-        cov_map.insert(PathBuf::from("a/util.rs"), cov_with(&[(1, 1)]));
-        cov_map.insert(PathBuf::from("b/util.rs"), cov_with(&[(1, 0)]));
-        let index = PathIndex::build(&cov_map);
-        assert_eq!(index.by_relative.len(), 2);
-
-        let a = index.lookup(Path::new("/repo/a/util.rs")).expect("a match");
-        assert_eq!(a.cov.coverage_in_span(1, 1), 100.0);
-        let b = index.lookup(Path::new("/repo/b/util.rs")).expect("b match");
-        assert_eq!(b.cov.coverage_in_span(1, 1), 0.0);
     }
 
     #[cfg(unix)]
@@ -789,36 +362,6 @@ mod tests {
     }
 
     #[test]
-    fn relative_coverage_paths_are_not_resolved_against_cwd() {
-        // REGRESSION TEST. A relative path in the coverage file must never
-        // be canonicalized against the process's CWD, because that causes a
-        // silent-binding bug: `src/lib.rs` in LCOV would resolve to
-        // `<cwd>/src/lib.rs` (which likely exists — it's the tool's own
-        // source), and then the lookup for a DIFFERENT file ending in
-        // `src/lib.rs` would miss, returning `None` for every function.
-        //
-        // We construct exactly this scenario: a relative coverage path that
-        // happens to match something real under CWD, and a complexity path
-        // that is the "intended" target elsewhere.
-        let mut cov_map = HashMap::new();
-        cov_map.insert(PathBuf::from("src/lib.rs"), cov_with(&[(10, 1)]));
-        let index = PathIndex::build(&cov_map);
-
-        // The relative path must live in `by_relative`, NOT `by_absolute`,
-        // even if a file by that relative name happens to exist under CWD.
-        assert!(
-            index.by_absolute.is_empty(),
-            "relative coverage paths must not populate by_absolute"
-        );
-        assert_eq!(index.by_relative.len(), 1);
-
-        // Lookup for an unrelated absolute path ending in src/lib.rs must
-        // succeed via suffix match.
-        let found = index.lookup(Path::new("/somewhere/else/src/lib.rs"));
-        assert!(found.is_some());
-    }
-
-    #[test]
     fn unmapped_files_reported_when_lcov_provided() {
         let mut cov_map = HashMap::new();
         cov_map.insert(PathBuf::from("src/foo.rs"), cov_with(&[(1, 1)]));
@@ -893,11 +436,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlink_alias_of_a_consumed_key_is_not_lcov_only() {
-        // Two absolute SF records spelling the same real file (one through a
-        // symlink) merge into one fast-path entry at build time (spec 26);
-        // both raw spellings are recorded as consumed when a lookup binds.
-        // Neither may be reported as a stray (no spurious scope warning on
-        // a perfectly matched scope).
         let dir = tempfile::tempdir().expect("tempdir");
         let real = dir.path().join("a.rs");
         std::fs::write(&real, "pub fn f() {}\n").expect("write");
@@ -930,13 +468,6 @@ mod tests {
 
     #[test]
     fn relative_key_is_never_treated_as_an_alias() {
-        // src/merge.rs exists relative to the crate root (the unit-test CWD).
-        // The absolute spelling is consumed via the fast path; the relative
-        // spelling must still be reported as lcov_only — resolving it against
-        // the CWD to discover the aliasing would violate the invariant that
-        // relative LCOV paths are never canonicalized (kills dropping the
-        // is_absolute guard in fast_path_key, which would merge the two
-        // spellings into one fast-path entry).
         let abs = PathBuf::from("src/merge.rs")
             .canonicalize()
             .expect("crate-root CWD");
@@ -963,6 +494,44 @@ mod tests {
             "the relative spelling stays a stray — CWD resolution is forbidden"
         );
         assert_eq!(diag.lcov_only.examples, vec![PathBuf::from("src/merge.rs")]);
+    }
+
+    #[test]
+    fn skip_counts_distinct_unmatched_files_before_dropping_rows() {
+        let function = |file: &str, line| FunctionComplexity {
+            file: file.into(),
+            name: format!("f{line}"),
+            start_line: line,
+            end_line: line,
+            cyclomatic: 1.0,
+            signals: crate::signals::Signals::default(),
+            spans: crate::signals::Spans::default(),
+        };
+        let entries = vec![
+            function("/repo/a.rs", 1),
+            function("/repo/a.rs", 2),
+            function("/repo/b.rs", 1),
+            function("/repo/b.rs", 2),
+        ];
+        let coverage = HashMap::from([(PathBuf::from("a.rs"), cov_with(&[(1, 1), (2, 0)]))]);
+        let result = merge(entries, coverage, MissingCoveragePolicy::Skip);
+        assert_eq!(result.entries.len(), 2);
+        assert!(
+            result
+                .entries
+                .iter()
+                .all(|r| r.file == Path::new("/repo/a.rs"))
+        );
+        let diag = result.diagnostics.unwrap();
+        assert_eq!(
+            (
+                diag.analyzed_files,
+                diag.matched_files,
+                diag.source_only.count
+            ),
+            (2, 1, 1)
+        );
+        assert_eq!(diag.source_only.examples, [Path::new("/repo/b.rs")]);
     }
 
     #[test]
@@ -1041,6 +610,7 @@ mod tests {
             crap,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
@@ -1206,6 +776,7 @@ mod tests {
             crap: 4.5,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: vec![LineRange { start: 3, end: 5 }],
         };

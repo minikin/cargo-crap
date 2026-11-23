@@ -21,6 +21,10 @@
 //!   the tool refuses to certify monster methods as clean just because they
 //!   happen to be tested.
 
+/// What a `?` operator costs, absent any configuration: one decision point,
+/// the same as an `if`.
+pub const DEFAULT_TRY_WEIGHT: f64 = 1.0;
+
 /// The default threshold above which a function is considered "crappy".
 ///
 /// This matches the value used in the original Crap4j tool and `NDepend`.

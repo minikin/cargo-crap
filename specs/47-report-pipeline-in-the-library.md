@@ -381,7 +381,7 @@ pub struct Analysis<'a> {
     pub scope: &'a dyn Scope,
 }
 pub struct BaselineFilter<'a> { /* borrowed scope and allow set */ }
-pub struct PreparedBaseline(Baseline); // private field
+pub struct PreparedBaseline(Baseline);
 impl<'a> BaselineFilter<'a> {
     pub fn new(scope: &'a dyn Scope, allow_set: &'a AllowSet) -> Self;
     pub fn prepare(&self, baseline: Baseline) -> PreparedBaseline;

@@ -1,8 +1,20 @@
 //! What the model said about one pair, and how sure it has to be before the
 //! report repeats it.
 
-use crate::duplicates::triage::provider::Answers;
 use std::fmt;
+
+/// The three answers as a provider decoded them, before any range check.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Answers {
+    pub kind: Kind,
+    pub kind_confidence: f64,
+    /// The worth Score's position across its levels, the lowest being 0.
+    pub worth: f64,
+    pub worth_confidence: f64,
+    /// The probability that a fix to one side would be missed in the other.
+    /// Neither API returns a confidence for it.
+    pub divergence: f64,
+}
 
 /// Question id of the Choice that names the kind of duplication.
 pub const KIND_QUESTION: &str = "duplication_kind";
@@ -16,7 +28,6 @@ pub const DIVERGENCE_QUESTION: &str = "divergence_risk";
 /// cannot answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// The same logic, written twice.
     SameLogic,
     /// Nothing in common but a Rust idiom or a sequence of similar calls.
     SharedShapeOnly,
@@ -36,7 +47,6 @@ impl Kind {
         Kind::Parameterisable,
     ];
 
-    /// The option key on the wire.
     #[must_use]
     pub fn wire_name(self) -> &'static str {
         match self {
@@ -47,7 +57,6 @@ impl Kind {
         }
     }
 
-    /// The label the report prints.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
@@ -58,7 +67,6 @@ impl Kind {
         }
     }
 
-    /// The kind whose wire name is `name`, if any.
     #[must_use]
     pub fn from_wire(name: &str) -> Option<Kind> {
         Kind::ALL.into_iter().find(|kind| kind.wire_name() == name)
@@ -71,7 +79,6 @@ impl Kind {
 pub struct WorthExtracting(f64);
 
 impl WorthExtracting {
-    /// The levels' labels, from "leave it" to "should be one function".
     pub const LABELS: [&'static str; 4] = ["leave-it", "optional", "worthwhile", "should-be-one"];
 
     /// The top level's score; the bottom is `0.0`.
@@ -83,7 +90,6 @@ impl WorthExtracting {
         (0.0..=Self::TOP).contains(&score).then_some(Self(score))
     }
 
-    /// The score as the model returned it.
     #[must_use]
     pub fn score(self) -> f64 {
         self.0
@@ -101,14 +107,12 @@ impl WorthExtracting {
         level
     }
 
-    /// The label of the level nearest the score.
     #[must_use]
     pub fn label(self) -> &'static str {
         Self::LABELS[self.level()]
     }
 }
 
-/// The model's three answers about one pair.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Verdict {
     pub kind: Kind,
@@ -170,7 +174,6 @@ impl Verdict {
     }
 }
 
-/// Why a response could not be decoded into a verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodeError(String);
 
@@ -184,7 +187,6 @@ impl fmt::Display for DecodeError {
 }
 
 impl DecodeError {
-    /// An error whose message is `message`.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
@@ -424,8 +426,6 @@ mod tests {
     }
 
     proptest! {
-        /// Every verdict either asserts its kind or is uncertain, decided by
-        /// the confidence against the floor and nothing else.
         #[test]
         fn the_floor_is_a_partition(verdict in verdicts(), floor in 0.0..=1.0f64) {
             match verdict.assessment(floor) {
@@ -440,7 +440,6 @@ mod tests {
             }
         }
 
-        /// A stricter floor can only take assertions away.
         #[test]
         fn raising_the_floor_never_asserts_a_kind(
             verdict in verdicts(),
@@ -456,8 +455,6 @@ mod tests {
             }
         }
 
-        /// The label is the level nearest the score, never more than half a
-        /// level away.
         #[test]
         fn the_worth_label_is_within_half_a_level(score in 0.0..=3.0f64) {
             let worth = WorthExtracting::new(score).expect("in range");

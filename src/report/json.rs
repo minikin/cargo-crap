@@ -6,11 +6,11 @@
 
 use crate::delta::{DeltaEntry, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
-use crate::duplicates::extract::Location;
 use crate::duplicates::group::DuplicateGroup;
+use crate::duplicates::model::Location;
 use crate::duplicates::novelty::Novelty;
-use crate::duplicates::triage::verdict::Assessment;
-use crate::merge::{CrapEntry, ScopeDiagnostics};
+use crate::duplicates::verdict::Assessment;
+use crate::entry::{CrapEntry, ScopeDiagnostics};
 use crate::report::RenderOptions;
 use anyhow::Result;
 use std::io::Write;
@@ -56,7 +56,7 @@ pub struct Envelope {
 /// `None` (no key on the wire) when it is. Exact comparison on purpose: any
 /// other weight, however close, scored the entries differently.
 fn recorded_try_weight(try_weight: f64) -> Option<f64> {
-    (try_weight != crate::config::DEFAULT_TRY_WEIGHT).then_some(try_weight)
+    (try_weight != crate::score::DEFAULT_TRY_WEIGHT).then_some(try_weight)
 }
 
 /// The envelope's `untriaged_groups`: the count when the budget skipped a
@@ -335,10 +335,14 @@ pub(crate) fn render_json(
     out: &mut dyn Write,
 ) -> Result<()> {
     let duplicate_groups = wire_groups(opts.groups, opts.triage);
+    let mut rows = entries.to_vec();
+    for row in &mut rows {
+        row.fingerprint = None;
+    }
     let envelope = Envelope {
         schema: Some(opts.tool.schemas.report.to_string()),
         version: opts.tool.version.to_string(),
-        entries: entries.to_vec(),
+        entries: rows,
         diagnostics: opts.diagnostics.cloned(),
         duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
         untriaged_groups: recorded_untriaged(duplicate_groups.as_ref(), opts.untriaged),
@@ -375,13 +379,19 @@ pub(crate) fn render_delta_json(
         #[serde(skip_serializing_if = "Option::is_none")]
         try_weight: Option<f64>,
     }
+    let mut rows = std::borrow::Cow::Borrowed(report.entries.as_slice());
+    if rows.iter().any(|row| row.current.fingerprint.is_some()) {
+        for row in rows.to_mut() {
+            row.current.fingerprint = None;
+        }
+    }
     let duplicate_groups = wire_delta_groups(opts);
     serde_json::to_writer_pretty(
         &mut *out,
         &DeltaOutput {
             schema: opts.tool.schemas.delta,
             version: opts.tool.version,
-            entries: &report.entries,
+            entries: &rows,
             removed: &report.removed,
             diagnostics: opts.diagnostics,
             duplicates: wire(opts.duplicates, opts.pair_triage().as_deref()),
@@ -459,7 +469,7 @@ mod tests {
 
     #[test]
     fn diagnostics_embedded_when_present_and_absent_otherwise() {
-        use crate::merge::StrayFiles;
+        use crate::entry::StrayFiles;
         let diag = ScopeDiagnostics {
             analyzed_files: 4,
             lcov_files: 3,
@@ -518,6 +528,7 @@ mod tests {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -599,7 +610,7 @@ mod tests {
     }
 
     fn one_pair() -> Vec<DuplicatePair> {
-        use crate::duplicates::extract::Location;
+        use crate::duplicates::model::Location;
         let at = |line: usize, name: &str| Location {
             file: PathBuf::from("src/a.rs"),
             start_line: line,
@@ -615,7 +626,7 @@ mod tests {
 
     fn duplicates_json(
         pairs: &[DuplicatePair],
-        triage: Option<&[crate::duplicates::triage::verdict::Assessment]>,
+        triage: Option<&[crate::duplicates::verdict::Assessment]>,
     ) -> serde_json::Value {
         let triage = triage.map(super::super::test_support::every);
         let mut buf = Vec::new();
@@ -635,7 +646,7 @@ mod tests {
 
     #[test]
     fn an_asserted_verdict_is_carried_beside_its_pair() {
-        use crate::duplicates::triage::verdict::{Assessment, Kind, Verdict, WorthExtracting};
+        use crate::duplicates::verdict::{Assessment, Kind, Verdict, WorthExtracting};
         let triage = [Assessment::Kind(Verdict {
             kind: Kind::SameLogic,
             confidence: 0.9,
@@ -661,7 +672,7 @@ mod tests {
 
     #[test]
     fn an_uncertain_verdict_asserts_nothing_but_its_confidence() {
-        use crate::duplicates::triage::verdict::Assessment;
+        use crate::duplicates::verdict::Assessment;
         let triage = [Assessment::Uncertain { confidence: 0.31 }];
         let pair = &duplicates_json(&one_pair(), Some(&triage))[0];
         assert_eq!(
@@ -687,7 +698,7 @@ mod tests {
     fn the_delta_envelope_carries_the_verdict_too() {
         use super::super::render_delta;
         use super::super::test_support::fractional_cc_delta;
-        use crate::duplicates::triage::verdict::Assessment;
+        use crate::duplicates::verdict::Assessment;
         let pairs = one_pair();
         let triage = [Some(Assessment::Uncertain { confidence: 0.4 })];
         let mut buf = Vec::new();

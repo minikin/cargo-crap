@@ -100,21 +100,7 @@ pub struct BinaryQuestion {
     pub if_false: &'static str,
 }
 
-/// The three answers as a provider decoded them, before any range check.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Answers {
-    /// The chosen kind.
-    pub kind: Kind,
-    /// The kind Choice's confidence.
-    pub kind_confidence: f64,
-    /// The worth Score's position across its levels, the lowest being 0.
-    pub worth: f64,
-    /// The worth Score's confidence.
-    pub worth_confidence: f64,
-    /// The probability that a fix to one side would be missed in the other.
-    /// Neither API returns a confidence for it.
-    pub divergence: f64,
-}
+pub use crate::duplicates::verdict::Answers;
 
 /// The kind a choice answer to `question` names, or an error naming the
 /// question and the value when it names none.

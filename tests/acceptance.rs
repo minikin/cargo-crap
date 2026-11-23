@@ -9035,8 +9035,6 @@ fn top_and_min_narrow_the_section_but_not_the_gate() {
     assert_eq!(out.status.code(), Some(1), "{out:?}");
 }
 
-// ── Spec 46: Tool branding value ─────────────────────────────────────────
-
 /// A tool whose seven branding strings differ from cargo-crap's and from one another.
 const SECOND_TOOL: cargo_crap::report::Tool = cargo_crap::report::Tool {
     policy: cargo_crap::tool::CARGO_CRAP_POLICY,
@@ -9065,6 +9063,7 @@ fn spec46_entries() -> Vec<cargo_crap::merge::CrapEntry> {
             crap,
             crate_name: crate_name.map(Into::into),
             signals: None,
+            fingerprint: None,
             signal_spans: cargo_crap::signals::Spans::default(),
             uncovered: Vec::new(),
         };
@@ -9075,8 +9074,6 @@ fn spec46_entries() -> Vec<cargo_crap::merge::CrapEntry> {
     vec![entry("tangled", 110.0, Some("demo-crate")), tidy]
 }
 
-/// [`spec46_entries`] as a delta: `tangled` regressed from 100 to 110 and
-/// `tidy` is unchanged at 1.
 fn spec46_delta() -> cargo_crap::delta::DeltaReport {
     use cargo_crap::delta::DeltaStatus;
     cargo_crap::delta::DeltaReport {
@@ -9103,8 +9100,6 @@ fn spec46_delta() -> cargo_crap::delta::DeltaReport {
     }
 }
 
-/// The absolute and the delta render of the spec 46 fixtures in `format`
-/// under `tool`.
 fn spec46_render(
     tool: &cargo_crap::report::Tool,
     format: cargo_crap::report::Format,
@@ -9123,33 +9118,21 @@ fn spec46_render(
     )
 }
 
-// Spec 46 T1
-
 #[test]
 fn formats_without_branding_do_not_depend_on_the_tool() {
     use cargo_crap::report::Format;
-    // Given the spec 46 entries and delta report
     for format in [Format::Human, Format::GitHub, Format::Shields] {
-        // When they are rendered once with cargo-crap's Tool and once with
-        // the second tool
         let cargo_crap = spec46_render(&cargo_crap::tool::CARGO_CRAP, format);
         let second = spec46_render(&SECOND_TOOL, format);
-        // Then the two outputs are byte-identical
         assert_eq!(cargo_crap, second, "{format:?}");
     }
 }
 
-// Spec 46 T2
-
 #[test]
 fn the_json_report_carries_the_second_tools_version_and_schema() {
-    // Given entries rendered with the second tool
-    // When they are rendered as --format json
     let (absolute, _) = spec46_render(&SECOND_TOOL, cargo_crap::report::Format::Json);
     let doc: serde_json::Value = serde_json::from_str(&absolute).expect("JSON");
-    // Then the envelope's version is the second tool's
     assert_eq!(doc["version"], "7.7.7-other");
-    // And its $schema is the second tool's report schema
     assert_eq!(
         doc["$schema"],
         "https://example.test/schemas/other-report.json"
@@ -9158,25 +9141,17 @@ fn the_json_report_carries_the_second_tools_version_and_schema() {
 
 #[test]
 fn the_json_delta_carries_the_second_tools_version_and_schema() {
-    // Given a delta report rendered with the second tool
-    // When it is rendered as --format json
     let (_, delta) = spec46_render(&SECOND_TOOL, cargo_crap::report::Format::Json);
     let doc: serde_json::Value = serde_json::from_str(&delta).expect("JSON");
-    // Then the envelope's version is the second tool's
     assert_eq!(doc["version"], "7.7.7-other");
-    // And its $schema is the second tool's delta schema
     assert_eq!(
         doc["$schema"],
         "https://example.test/schemas/other-delta.json"
     );
 }
 
-// Spec 46 T3
-
 #[test]
 fn sarif_names_the_second_tool_as_its_driver() {
-    // Given entries above the threshold rendered with the second tool
-    // When they are rendered as --format sarif
     let opts = cargo_crap::report::RenderOptions {
         format: cargo_crap::report::Format::Sarif,
         ..cargo_crap::report::RenderOptions::new(&SECOND_TOOL)
@@ -9186,10 +9161,8 @@ fn sarif_names_the_second_tool_as_its_driver() {
     let absolute = String::from_utf8(out).expect("utf-8");
     let doc: serde_json::Value = serde_json::from_str(&absolute).expect("JSON");
     let driver = &doc["runs"][0]["tool"]["driver"];
-    // Then the driver's name and version are the second tool's
     assert_eq!(driver["name"], "other-tool");
     assert_eq!(driver["version"], "7.7.7-other");
-    // And its informationUri and the rule's helpUri are the second tool's
     assert_eq!(driver["informationUri"], "https://example.test/other-tool");
     assert_eq!(
         driver["rules"][0]["helpUri"],
@@ -9199,25 +9172,19 @@ fn sarif_names_the_second_tool_as_its_driver() {
 
 #[test]
 fn sarif_with_a_delta_report_is_refused_under_the_second_tool() {
-    // Given a delta report and render options carrying the second tool
     let opts = cargo_crap::report::RenderOptions {
         format: cargo_crap::report::Format::Sarif,
         ..cargo_crap::report::RenderOptions::new(&SECOND_TOOL)
     };
-    // When it is rendered as --format sarif
     let mut out = Vec::new();
     let err = cargo_crap::report::render_delta(&spec46_delta(), &opts, &mut out)
         .expect_err("SARIF has no delta form");
-    // Then rendering fails with the refusal
     assert_eq!(
         err.to_string(),
         "--format sarif is incompatible with --baseline; use --format json for delta output"
     );
-    // And nothing is written
     assert_eq!(out, [] as [u8; 0]);
 }
-
-// Spec 46 T4
 
 // The marker and version scenarios share one helper so both cover the
 // outline's four rows.
@@ -9239,46 +9206,35 @@ fn spec46_marker_reports(
 
 #[test]
 fn the_markdown_and_pr_comment_reports_start_with_the_second_tools_marker() {
-    // Given each input of the outline rendered with the second tool
-    // When it is rendered in each format of the outline
     for (input, format, output) in spec46_marker_reports(&SECOND_TOOL) {
         let mut lines = output.lines();
-        // Then the first line is the second tool's marker
         assert_eq!(
             lines.next(),
             Some("<!-- other-tool-marker -->"),
             "{input} as {format}"
         );
-        // And the second line is empty
         assert_eq!(lines.next(), Some(""), "{input} as {format}");
     }
 }
 
 #[test]
 fn the_markdown_and_pr_comment_reports_do_not_depend_on_the_tools_version() {
-    // Given the second tool and a copy of it whose version is "8.8.8-copy"
     let copy = cargo_crap::report::Tool {
         version: "8.8.8-copy",
         ..SECOND_TOOL
     };
-    // And each input of the outline rendered with each
-    // When both are rendered in each format of the outline
     let (second, copied) = (
         spec46_marker_reports(&SECOND_TOOL),
         spec46_marker_reports(&copy),
     );
-    // Then the two outputs are byte-identical
     assert_eq!(second.len(), 4);
     for (a, b) in second.iter().zip(&copied) {
         assert_eq!(a, b, "{} as {}", a.0, a.1);
     }
 }
 
-// Spec 46 T5
-
 #[test]
 fn a_baseline_that_does_not_parse_names_the_second_tools_hint() {
-    // Given a baseline file broken.json holding the text "not json"
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join("broken.json");
     fs::write(&path, "not json").expect("write");
@@ -9286,23 +9242,16 @@ fn a_baseline_that_does_not_parse_names_the_second_tools_hint() {
         "parsing baseline {} — must be JSON from `other-tool --json`",
         path.display()
     );
-    // When it is loaded with the second tool, through load_baseline and
-    // through load_baseline_with_weight
     let plain = cargo_crap::delta::load_baseline(&path, &SECOND_TOOL);
     let weighted = cargo_crap::delta::load_baseline_with_weight(&path, &SECOND_TOOL);
-    // Then both loads fail
     let (plain, weighted) = (plain.expect_err("fails"), weighted.expect_err("fails"));
-    // And each error's first line names the path and the second tool's hint
     assert_eq!(plain.to_string(), expected);
     assert_eq!(weighted.to_string(), expected);
 }
 
-// Spec 46 T6
-
 #[test]
 fn no_cargo_crap_branding_reaches_a_second_tools_output() {
     use cargo_crap::report::Format;
-    // Given entries and a delta report rendered with the second tool
     let opts = |format| cargo_crap::report::RenderOptions {
         format,
         ..cargo_crap::report::RenderOptions::new(&SECOND_TOOL)
@@ -9316,13 +9265,10 @@ fn no_cargo_crap_branding_reaches_a_second_tools_output() {
         Format::Sarif,
         Format::Shields,
     ];
-    // When the entries are rendered in all seven formats and the delta
-    // report in every format but sarif
     let mut outputs = Vec::new();
     for format in all {
         let mut out = Vec::new();
         let rendered = cargo_crap::report::render(&spec46_entries(), &opts(format), &mut out);
-        // Then each of the thirteen renders succeeds
         rendered.unwrap_or_else(|e| panic!("{format:?}: {e}"));
         outputs.push((format!("{format:?}"), out));
         if !matches!(format, Format::Sarif) {
@@ -9334,8 +9280,6 @@ fn no_cargo_crap_branding_reaches_a_second_tools_output() {
         }
     }
     assert_eq!(outputs.len(), 13);
-    // The sections the default options leave out render too: duplicates,
-    // scope diagnostics, source links and uncovered hints.
     let side = |name: &str, start_line| cargo_crap::duplicates::extract::Location {
         file: PathBuf::from("src/demo.rs"),
         start_line,
@@ -9384,7 +9328,6 @@ fn no_cargo_crap_branding_reaches_a_second_tools_output() {
         markdown.contains("example.test/repo") && markdown.contains("0.90"),
         "{markdown}"
     );
-    // And no output contains "cargo-crap", "cargo crap" or "cargo_crap"
     for (name, out) in &outputs {
         let text = String::from_utf8_lossy(out);
         for brand in ["cargo-crap", "cargo crap", "cargo_crap"] {
@@ -9392,8 +9335,6 @@ fn no_cargo_crap_branding_reaches_a_second_tools_output() {
         }
     }
 }
-
-// Spec 47 T3
 
 fn scored_row(
     file: &str,
@@ -9409,6 +9350,7 @@ fn scored_row(
         crap,
         crate_name: None,
         signals: None,
+        fingerprint: None,
         signal_spans: cargo_crap::signals::Spans::default(),
         uncovered: Vec::new(),
     }
@@ -9417,14 +9359,12 @@ fn scored_row(
 #[test]
 fn top_selects_by_score_before_file_order_sorts_the_selected_rows() {
     use cargo_crap::{filter, merge::SortOrder, report};
-    // Given descending scores with a tie at the top boundary.
     let mut entries = vec![
         scored_row("z.rs", "first", 50.0),
         scored_row("b.rs", "second", 40.0),
         scored_row("c.rs", "third", 40.0),
         scored_row("a.rs", "last", 10.0),
     ];
-    // When the caller selects the first two qualifying rows and requests file order.
     let selected =
         filter::slice(&mut entries, Some(40.0), Some(2), SortOrder::File).expect("slice");
     let options = report::RenderOptions {
@@ -9433,7 +9373,6 @@ fn top_selects_by_score_before_file_order_sorts_the_selected_rows() {
     };
     let mut out = Vec::new();
     report::render(&selected, &options, &mut out).expect("report");
-    // Then the selected rows retain their identities and appear in file order.
     let doc: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
     let rows: Vec<_> = doc["entries"]
         .as_array()
@@ -9448,8 +9387,6 @@ fn top_selects_by_score_before_file_order_sorts_the_selected_rows() {
         .collect();
     assert_eq!(rows, [("b.rs", "second"), ("z.rs", "first")]);
 }
-
-// Spec 47 T4
 
 struct Roots<'a>(&'a [&'a str]);
 
@@ -9473,7 +9410,6 @@ fn scored_baseline(entries: Vec<cargo_crap::merge::CrapEntry>) -> cargo_crap::de
 #[test]
 fn the_callers_file_scope_applies_before_baseline_pairing() {
     use cargo_crap::{filter::AllowSet, run::BaselineFilter, signals::SignalSettings};
-    // Given an unselected function whose name would otherwise pair with the new row.
     let raw = scored_baseline(vec![
         scored_row("old/work.rs", "work", 5.0),
         scored_row("old/dead.rs", "dead", 5.0),
@@ -9482,7 +9418,6 @@ fn the_callers_file_scope_applies_before_baseline_pairing() {
     let current = vec![scored_row("src/new.rs", "work", 5.0)];
     let scope = Roots(&["src"]);
     let allow = AllowSet::compile(&[]).unwrap();
-    // When the caller prepares the baseline and writes the delta.
     let prepared = BaselineFilter::new(&scope, &allow).prepare(raw);
     let signals = SignalSettings::default();
     let (out, _) = pipeline_report(
@@ -9493,7 +9428,6 @@ fn the_callers_file_scope_applies_before_baseline_pairing() {
         Some(&prepared),
     );
     let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    // Then work is genuinely new and gone is the only removal.
     let entries = doc["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["function"], "work");
@@ -9509,7 +9443,6 @@ fn the_callers_file_scope_applies_before_baseline_pairing() {
 #[test]
 fn allow_filters_hide_score_rows_while_duplicate_members_follow_file_scope() {
     use cargo_crap::{duplicates::extract::Location, filter::AllowSet, run::BaselineFilter};
-    // Given the same four locations recorded as score rows and as one duplicate group.
     let mut baseline = scored_baseline(vec![
         scored_row("src/a.rs", "Worker::run", 5.0),
         scored_row("gen/b.rs", "build", 5.0),
@@ -9528,10 +9461,8 @@ fn allow_filters_hide_score_rows_while_duplicate_members_follow_file_scope() {
         .collect();
     baseline.duplicate_groups = Some(vec![group.clone()]);
     let allow = AllowSet::compile(&["Worker::*".into(), "gen/**".into()]).unwrap();
-    // When the caller prepares this baseline for the selected directories.
     let prepared = BaselineFilter::new(&Roots(&["src", "gen"]), &allow).prepare(baseline);
     let scoped = prepared.as_baseline();
-    // Then allow patterns suppress score rows and the group follows only the file scope.
     assert_eq!(scoped.entries.len(), 1);
     assert_eq!(scoped.entries[0].function, "keep");
     assert_eq!(scoped.entries[0].file, std::path::Path::new("src/c.rs"));
@@ -9541,11 +9472,8 @@ fn allow_filters_hide_score_rows_while_duplicate_members_follow_file_scope() {
     );
 }
 
-// Spec 47 T5
-
 #[test]
 fn a_hidden_regression_trips_the_gate_and_a_genuine_removal_survives_the_slice() {
-    // Given leader at 60, hidden at 20, and a baseline where hidden was 10 and gone was 1.
     let dir = tree_of(&[
         ("a.rs".into(), "leader".into(), 60),
         ("b.rs".into(), "hidden".into(), 20),
@@ -9561,10 +9489,8 @@ fn a_hidden_regression_trips_the_gate_and_a_genuine_removal_survives_the_slice()
         gone["crap"] = 1.0.into();
         doc["entries"].as_array_mut().unwrap().push(gone);
     });
-    // When only the top row is shown and the regression gate is enabled.
     let args = ["--top", "1", "--fail-regression"];
     let out = delta_run(dir.path(), &baseline, &args);
-    // Then the removal survives, the hidden regression trips the gate and the summary counts both.
     assert_eq!(out.status.code(), Some(1));
     let doc = delta_doc(&out);
     let entries = doc["entries"].as_array().unwrap();
@@ -9632,8 +9558,6 @@ fn signal_reasons_affect_the_verdict_independently_of_score_counts_for_lines() {
     assert!(!sliced_signal_summary("lines", 0).contains("signal regression"));
 }
 
-// Spec 47 T6
-
 fn pipeline_settings<'a>(
     allow: &'a cargo_crap::filter::AllowSet,
     signals: &'a cargo_crap::signals::SignalSettings,
@@ -9689,12 +9613,10 @@ fn pipeline_report(
 #[test]
 fn the_clis_delta_render_keeps_the_callers_tool() {
     use cargo_crap::{filter::AllowSet, run::BaselineFilter, signals::SignalSettings};
-    // Given the second tool and an identical baseline in the caller's scope.
     let allow = AllowSet::compile(&[]).unwrap();
     let scope = Roots(&["src"]);
     let entries = spec46_entries();
     let baseline = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(entries.clone()));
-    // When the public entry point writes the JSON delta.
     let signals = SignalSettings::default();
     let (out, _) = pipeline_report(
         &SECOND_TOOL,
@@ -9703,7 +9625,6 @@ fn the_clis_delta_render_keeps_the_callers_tool() {
         entries,
         Some(&baseline),
     );
-    // Then it carries the caller's version and delta schema.
     let doc: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
     assert_eq!(doc["version"], "7.7.7-other");
     assert_eq!(
@@ -9720,7 +9641,6 @@ fn the_caller_chooses_which_formats_honor_a_summary_request() {
         report::{Format, Tool},
         signals::SignalSettings,
     };
-    // Given two tools that differ only in whether Shields honors a summary request.
     let allow = AllowSet::compile(&[]).unwrap();
     let signals = SignalSettings::default();
     let mut settings = pipeline_settings(&allow, &signals);
@@ -9743,10 +9663,8 @@ fn the_caller_chooses_which_formats_honor_a_summary_request() {
         },
         ..SECOND_TOOL
     };
-    // When both tools render the same row with a summary requested.
     let text = String::from_utf8(write(&SECOND_TOOL)).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&write(&badge)).unwrap();
-    // Then the first tool writes summary text and the second writes a Shields badge.
     assert!(
         text.contains("Analyzed: 1") && text.contains("Crappy: 1"),
         "{text}"
@@ -9763,7 +9681,6 @@ fn the_library_renders_the_callers_duplicate_group_and_weight() {
         signals::SignalSettings,
     };
 
-    // Given a caller with two duplicate functions and a non-default scoring weight.
     let member = |name: &str, line| Location {
         file: "src/copies.rs".into(),
         name: name.into(),
@@ -9791,11 +9708,9 @@ fn the_library_renders_the_callers_duplicate_group_and_weight() {
         scope: &Roots(&["src"]),
     };
 
-    // When the caller supplies those extras to the public JSON report pipeline.
     let mut out = Vec::new();
     run::run(&SECOND_TOOL, &settings, analysis, None, &extras, &mut out).unwrap();
 
-    // Then the envelope carries the pair, the group with both source locations, and the weight.
     let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(doc["try_weight"], 0.5);
     let pairs = doc["duplicates"].as_array().unwrap();
@@ -9869,11 +9784,8 @@ fn write_tripped_report(out: &mut CheckedWriter) -> anyhow::Result<cargo_crap::g
 
 #[test]
 fn an_output_failure_takes_precedence_over_a_tripped_gate_successful_flush() {
-    // Given the writer accepts every write and flush.
     let mut out = CheckedWriter::default();
-    // When a report with a threshold violation is rendered.
     let outcome = write_tripped_report(&mut out).unwrap();
-    // Then the writer contains the complete report, was flushed once, and the gate trips.
     let doc: serde_json::Value = serde_json::from_slice(&out.bytes).expect("complete JSON report");
     assert_eq!(doc["entries"][0]["function"], "hot");
     assert_eq!(out.flushes, 1);
@@ -9882,27 +9794,21 @@ fn an_output_failure_takes_precedence_over_a_tripped_gate_successful_flush() {
 
 #[test]
 fn an_output_failure_takes_precedence_over_a_tripped_gate_failed_write() {
-    // Given the writer fails on its first write.
     let mut out = CheckedWriter {
         fail_write: true,
         ..CheckedWriter::default()
     };
-    // When a report with a threshold violation is rendered.
     let error = write_tripped_report(&mut out).unwrap_err();
-    // Then the caller receives the write error.
     assert_eq!(error.root_cause().to_string(), "write failed");
 }
 
 #[test]
 fn an_output_failure_takes_precedence_over_a_tripped_gate_failed_flush() {
-    // Given the writer accepts the report and fails on flush.
     let mut out = CheckedWriter {
         fail_flush: true,
         ..CheckedWriter::default()
     };
-    // When a report with a threshold violation is rendered.
     let error = write_tripped_report(&mut out).unwrap_err();
-    // Then the caller receives the flush error after the complete report was written.
     assert_eq!(error.to_string(), "flushing output");
     assert_eq!(error.root_cause().to_string(), "flush failed");
     let doc: serde_json::Value =
@@ -9915,7 +9821,6 @@ fn the_library_counts_a_hidden_regression_and_keeps_the_genuine_removal() {
     use cargo_crap::{
         filter::AllowSet, report::Format, run::BaselineFilter, signals::SignalSettings,
     };
-    // Given a leading row, a hidden regression and a removed baseline row.
     let allow = AllowSet::compile(&[]).unwrap();
     let signals = SignalSettings::default();
     let scope = Roots(&["src"]);
@@ -9931,7 +9836,6 @@ fn the_library_counts_a_hidden_regression_and_keeps_the_genuine_removal() {
     before.push(scored_row("src/c.rs", "gone", 1.0));
     let baseline = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(before));
 
-    // When the caller renders only the leading row.
     let (out, verdict) = pipeline_report(
         &SECOND_TOOL,
         &settings,
@@ -9939,7 +9843,6 @@ fn the_library_counts_a_hidden_regression_and_keeps_the_genuine_removal() {
         current.clone(),
         Some(&baseline),
     );
-    // Then the JSON preserves the removal and the hidden regression trips the gate.
     let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(doc["entries"].as_array().unwrap().len(), 1);
     assert_eq!(doc["entries"][0]["function"], "leader");
@@ -9952,10 +9855,8 @@ fn the_library_counts_a_hidden_regression_and_keeps_the_genuine_removal() {
     assert_eq!(verdict.exit_code(), std::process::ExitCode::from(1));
     settings.format = Format::Human;
     settings.summary = true;
-    // When the caller requests a text summary of the same delta.
     let (out, summary_verdict) =
         pipeline_report(&SECOND_TOOL, &settings, &scope, current, Some(&baseline));
-    // Then its counts and verdict still cover the full delta.
     let summary = String::from_utf8(out).unwrap();
     assert!(
         summary.contains("↑ 1 regressed") && summary.contains("— 1 removed"),
@@ -9971,7 +9872,6 @@ fn the_delta_outcome_counts_hidden_score_changes_once_each() {
         run::BaselineFilter,
         signals::{SignalSettings, Signals},
     };
-    // Given two score regressions with attached reasons and a one-row display limit.
     let allow = AllowSet::compile(&[]).unwrap();
     let signals = SignalSettings {
         enabled: true,
@@ -9991,9 +9891,7 @@ fn the_delta_outcome_counts_hidden_score_changes_once_each() {
         row.signals = Some(Signals::default());
     }
     let baseline = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(before));
-    // When the caller renders the delta.
     let (_, outcome) = pipeline_report(&SECOND_TOOL, &settings, &scope, current, Some(&baseline));
-    // Then both regressions count once and one shown row exceeds the threshold.
     assert_eq!(
         (outcome.crappy, outcome.regressed, outcome.section_failures),
         (1, 2, 0)
@@ -10009,7 +9907,6 @@ fn the_library_distinguishes_hidden_signal_reasons_from_score_regressions() {
         run::BaselineFilter,
         signals::{Signal, SignalSettings, Signals},
     };
-    // Given a hidden row and a policy that gates nesting increases.
     let allow = AllowSet::compile(&[]).unwrap();
     let signals = SignalSettings {
         enabled: true,
@@ -10033,7 +9930,6 @@ fn the_library_distinguishes_hidden_signal_reasons_from_score_regressions() {
             lines,
             ..Signals::default()
         });
-        // When only nesting or line count increases.
         let (out, verdict) = pipeline_report(
             &SECOND_TOOL,
             &settings,
@@ -10041,7 +9937,6 @@ fn the_library_distinguishes_hidden_signal_reasons_from_score_regressions() {
             vec![current],
             Some(&baseline),
         );
-        // Then only nesting trips the gate and the CRAP counts stay zero.
         let summary = String::from_utf8(out).unwrap();
         assert!(summary.contains("↑ 0 regressed"), "{summary}");
         assert_eq!(summary.contains("✗ 1 signal regression(s)"), code == 1);
@@ -10060,7 +9955,6 @@ fn disabled_signals_are_omitted_from_public_reports_and_cannot_trip_a_gate() {
         run::BaselineFilter,
         signals::{SignalSettings, Signals},
     };
-    // Given measured signals in both runs and signal reporting disabled.
     let allow = AllowSet::compile(&[]).unwrap();
     let scope = Roots(&["src"]);
     let signals = SignalSettings::default();
@@ -10074,10 +9968,8 @@ fn disabled_signals_are_omitted_from_public_reports_and_cannot_trip_a_gate() {
         ..Signals::default()
     });
     for baseline in [None, Some(&before)] {
-        // When the caller renders an absolute or delta report.
         let (bytes, outcome) =
             pipeline_report(&SECOND_TOOL, &settings, &scope, vec![row.clone()], baseline);
-        // Then the report omits signal data and the gate passes.
         let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let entry = &doc["entries"][0];
         for key in ["signals", "baseline_signals", "reasons", "signal_spans"] {
@@ -10086,8 +9978,6 @@ fn disabled_signals_are_omitted_from_public_reports_and_cannot_trip_a_gate() {
         assert_eq!(outcome.exit_code(), std::process::ExitCode::SUCCESS);
     }
 }
-
-// Spec 47 T7
 
 mod gate_populations {
     use super::{
@@ -10119,7 +10009,6 @@ mod gate_populations {
         names: &[&str],
         shown_count: usize,
     ) {
-        // Given the same eligible rows, including one exactly at the threshold.
         let rows = vec![
             scored_row("src/a.rs", "skip_me", 80.0),
             scored_row("src/b.rs", "hot", 50.0),
@@ -10134,7 +10023,6 @@ mod gate_populations {
         settings.top = top;
         settings.fail_above = true;
         let prepared = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(rows.clone()));
-        // When either tool renders the same absolute or delta report.
         for baseline in [None, Some(&prepared)] {
             let run = |population| {
                 pipeline_report(
@@ -10147,7 +10035,6 @@ mod gate_populations {
             };
             let (shown, shown_gate) = run(Population::Shown);
             let (all, all_gate) = run(Population::All);
-            // Then the gate population affects the verdict independently of the rendered bytes.
             assert_eq!(all, shown);
             let doc: serde_json::Value = serde_json::from_slice(&shown).unwrap();
             let actual: Vec<_> = doc["entries"]
@@ -10316,7 +10203,6 @@ mod gate_populations {
                     &format!("{prefix}_{i}"),
                     score_value(score),
                 ));
-                // Compute eligibility and rank from the generated inputs.
                 if (allow_names && generated_name) || (allow_paths && generated_path) {
                     continue;
                 }
@@ -10351,4 +10237,56 @@ mod gate_populations {
             }
         }
     }
+}
+
+fn fingerprinted_row() -> cargo_crap::merge::CrapEntry {
+    cargo_crap::merge::CrapEntry {
+        file: "src/a.rs".into(),
+        function: "f".into(),
+        line: 3,
+        cyclomatic: 2.0,
+        coverage: Some(50.0),
+        crap: 2.5,
+        fingerprint: Some("a1b2".into()),
+        ..Default::default()
+    }
+}
+
+fn json_options() -> cargo_crap::report::RenderOptions<'static> {
+    cargo_crap::report::RenderOptions {
+        format: cargo_crap::report::Format::Json,
+        ..cargo_crap::report::RenderOptions::new(&cargo_crap::tool::CARGO_CRAP)
+    }
+}
+
+fn assert_untagged_json(
+    out: &[u8],
+    schema: &str,
+) {
+    let doc: serde_json::Value = serde_json::from_slice(out).unwrap();
+    assert_eq!(doc["entries"][0]["function"], "f");
+    assert!(doc["entries"][0].get("fingerprint").is_none());
+    schemas::compile(schema).validate(&doc).unwrap();
+}
+
+#[test]
+fn cargo_craps_json_report_omits_a_callers_fingerprint() {
+    let current = fingerprinted_row();
+    let mut out = Vec::new();
+    cargo_crap::report::render(&[current], &json_options(), &mut out).unwrap();
+    assert_untagged_json(&out, "schemas/report-v1.json");
+}
+
+#[test]
+fn cargo_craps_json_delta_omits_a_callers_fingerprint() {
+    let current = fingerprinted_row();
+    let baseline = cargo_crap::merge::CrapEntry {
+        crap: 2.0,
+        fingerprint: None,
+        ..current.clone()
+    };
+    let delta = cargo_crap::delta::compute_delta(&[current], &[baseline], 0.0);
+    let mut out = Vec::new();
+    cargo_crap::report::render_delta(&delta, &json_options(), &mut out).unwrap();
+    assert_untagged_json(&out, "schemas/delta-v2.json");
 }

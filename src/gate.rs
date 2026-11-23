@@ -1,9 +1,6 @@
-//! Counts and exit status for a completed report.
-
-use crate::{merge::CrapEntry, policy::Population, report::crappy_count};
+use crate::{entry::CrapEntry, policy::Population, report::crappy_count};
 use std::process::ExitCode;
 
-/// Count threshold violations in the caller's selected score population.
 pub(crate) fn threshold_count(
     population: Population,
     eligible: &[CrapEntry],
@@ -17,21 +14,17 @@ pub(crate) fn threshold_count(
     crappy_count(rows, threshold)
 }
 
-/// Counts and verdict for the report the caller successfully wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GateOutcome {
     /// Score rows strictly above the threshold in the selected gate population.
     pub crappy: usize,
     /// Score regressions in the whole baseline comparison.
     pub regressed: usize,
-    /// Report sections whose own gates failed.
     pub section_failures: usize,
-    /// Whether an enabled gate failed.
     pub tripped: bool,
 }
 
 impl GateOutcome {
-    /// Apply the enabled gates to score and signal counts from a completed comparison.
     #[must_use]
     pub(crate) fn from_counts(
         crappy: usize,
@@ -50,7 +43,6 @@ impl GateOutcome {
         }
     }
 
-    /// Exit 1 for a tripped gate and 0 for a passing report.
     #[expect(
         clippy::allow_attributes,
         reason = "ExitCode gained must_use in Rust 1.100 so must_use_candidate fires on 1.99 only"

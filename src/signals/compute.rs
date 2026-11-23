@@ -1,4 +1,4 @@
-//! Structural maintainability signals (spec 43).
+//! Structural maintainability signals.
 //!
 //! A small vector of named, deterministic counts per function, computed
 //! over the same body cyclomatic complexity walks. Unlike CC, the walk
@@ -8,248 +8,11 @@
 //! never reported. Macro bodies are opaque: `syn` keeps their tokens
 //! unparsed, so no construct inside them is seen.
 
+use super::model::{Measured, Signals, Spans};
 use crate::coverage::LineRange;
-use serde::{Deserialize, Serialize};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{BinOp, Expr};
-
-/// The signals of one function. A recorded object missing a key reads it
-/// as 0, so one partial entry cannot fail a whole baseline.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Signals {
-    /// Deepest number of nested bodies (`if`, `match`, loops, `let … else`,
-    /// closures, `async` blocks) enclosing any code in the function.
-    pub nesting: u32,
-    /// The function's span in lines, signature to closing brace.
-    pub lines: u32,
-    /// Top-level statements of the body whose own nesting reaches 2.
-    pub bumps: u32,
-    /// Most `&&` / `||` operators in one `if` / `while` condition or guard.
-    pub bool_ops: u32,
-    /// `todo!`, `unimplemented!` and `dbg!` invocations.
-    pub stubs: u32,
-    /// `.unwrap()`, `.expect(…)` calls and `panic!` invocations.
-    pub panics: u32,
-}
-
-/// Where each signal comes from: the line ranges a reason points at.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Spans {
-    /// The function's own span.
-    pub lines: Vec<LineRange>,
-    /// The top-level statement holding the deepest nesting (first of equals);
-    /// empty when nesting is 0.
-    pub nesting: Vec<LineRange>,
-    /// Each bump statement.
-    pub bumps: Vec<LineRange>,
-    /// The worst condition (first of equals); empty when `bool_ops` is 0.
-    pub bool_ops: Vec<LineRange>,
-    /// Each stub site.
-    pub stubs: Vec<LineRange>,
-    /// Each panic site.
-    pub panics: Vec<LineRange>,
-}
-
-/// A function's signals and the spans behind them.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Measured {
-    pub signals: Signals,
-    pub spans: Spans,
-}
-
-/// One named signal, as configured and reported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Signal {
-    Nesting,
-    Lines,
-    Bumps,
-    BoolOps,
-    Stubs,
-    Panics,
-}
-
-impl Signal {
-    /// Every signal, in report order.
-    pub const ALL: [Self; 6] = [
-        Self::Nesting,
-        Self::Lines,
-        Self::Bumps,
-        Self::BoolOps,
-        Self::Stubs,
-        Self::Panics,
-    ];
-
-    /// The default gate set: the signals whose regression fails
-    /// `--fail-regression` unless `[signals] gate` says otherwise.
-    pub const DEFAULT_GATE: [Self; 4] = [Self::Nesting, Self::Bumps, Self::BoolOps, Self::Stubs];
-
-    /// The name as it appears in JSON and messages.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Nesting => "nesting",
-            Self::Lines => "lines",
-            Self::Bumps => "bumps",
-            Self::BoolOps => "bool_ops",
-            Self::Stubs => "stubs",
-            Self::Panics => "panics",
-        }
-    }
-
-    /// The signal a configured name means; `-` and `_` are interchangeable.
-    #[must_use]
-    pub fn parse(name: &str) -> Option<Self> {
-        let name = name.replace('-', "_");
-        Self::ALL.into_iter().find(|s| s.name() == name)
-    }
-
-    /// This signal's value in `signals`.
-    #[must_use]
-    pub const fn value(
-        self,
-        signals: &Signals,
-    ) -> u32 {
-        match self {
-            Self::Nesting => signals.nesting,
-            Self::Lines => signals.lines,
-            Self::Bumps => signals.bumps,
-            Self::BoolOps => signals.bool_ops,
-            Self::Stubs => signals.stubs,
-            Self::Panics => signals.panics,
-        }
-    }
-
-    /// The line ranges this signal comes from in `spans`.
-    #[must_use]
-    pub fn spans(
-        self,
-        spans: &Spans,
-    ) -> &[LineRange] {
-        match self {
-            Self::Nesting => &spans.nesting,
-            Self::Lines => &spans.lines,
-            Self::Bumps => &spans.bumps,
-            Self::BoolOps => &spans.bool_ops,
-            Self::Stubs => &spans.stubs,
-            Self::Panics => &spans.panics,
-        }
-    }
-
-    /// Counting signals compare a new function against zero; shape signals
-    /// only against a configured limit.
-    #[must_use]
-    pub const fn is_count(self) -> bool {
-        matches!(self, Self::Stubs | Self::Panics)
-    }
-}
-
-/// Ceilings for the shape signals of new functions, validated.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Limits {
-    pub nesting: Option<u32>,
-    pub lines: Option<u32>,
-    pub bumps: Option<u32>,
-    pub bool_ops: Option<u32>,
-}
-
-impl Limits {
-    /// The limit configured for `signal`; counting signals have none.
-    #[must_use]
-    pub const fn get(
-        self,
-        signal: Signal,
-    ) -> Option<u32> {
-        match signal {
-            Signal::Nesting => self.nesting,
-            Signal::Lines => self.lines,
-            Signal::Bumps => self.bumps,
-            Signal::BoolOps => self.bool_ops,
-            Signal::Stubs | Signal::Panics => None,
-        }
-    }
-}
-
-/// The `[signals]` table, resolved and validated.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SignalSettings {
-    pub enabled: bool,
-    /// Gated signals, deduplicated, in report order.
-    pub gate: Vec<Signal>,
-    pub limits: Limits,
-}
-
-impl Default for SignalSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            gate: Signal::DEFAULT_GATE.to_vec(),
-            limits: Limits::default(),
-        }
-    }
-}
-
-impl SignalSettings {
-    /// Resolve `config`, rejecting unknown gate names and negative limits.
-    ///
-    /// # Errors
-    ///
-    /// When a gate entry names no signal (the message names it and lists the
-    /// valid ones) or a limit is negative or too large (the message names its
-    /// key).
-    pub fn resolve(config: &crate::config::SignalsConfig) -> anyhow::Result<Self> {
-        let gate = match &config.gate {
-            None => Signal::DEFAULT_GATE.to_vec(),
-            Some(names) => {
-                let mut gate = Vec::with_capacity(names.len());
-                for name in names {
-                    let Some(signal) = Signal::parse(name) else {
-                        anyhow::bail!(
-                            "invalid signals.gate entry {name:?} (config): valid signals are \
-                             nesting, lines, bumps, bool-ops, stubs, panics"
-                        );
-                    };
-                    gate.push(signal);
-                }
-                gate.sort_unstable();
-                gate.dedup();
-                gate
-            },
-        };
-        let raw = config.limits;
-        let limits = Limits {
-            nesting: limit("nesting", raw.nesting)?,
-            lines: limit("lines", raw.lines)?,
-            bumps: limit("bumps", raw.bumps)?,
-            bool_ops: limit("bool-ops", raw.bool_ops)?,
-        };
-        Ok(Self {
-            enabled: config.enabled.unwrap_or(false),
-            gate,
-            limits,
-        })
-    }
-}
-
-/// A configured limit as `u32`, or an error naming its key.
-fn limit(
-    key: &str,
-    value: Option<i64>,
-) -> anyhow::Result<Option<u32>> {
-    value
-        .map(|v| {
-            u32::try_from(v).map_err(|_| {
-                anyhow::anyhow!(
-                    "invalid signals.limits.{key} value {v} (config): must be a non-negative \
-                     integer no greater than {}",
-                    u32::MAX
-                )
-            })
-        })
-        .transpose()
-}
 
 /// Measure a function whose body is `body` and whose span is
 /// `start_line..=end_line` (1-indexed, inclusive).
@@ -294,7 +57,6 @@ pub fn compute(
     Measured { signals, spans }
 }
 
-/// Lines in `start..=end`, saturating at `u32::MAX`.
 fn span_lines(
     start: usize,
     end: usize,
@@ -307,7 +69,6 @@ fn line(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// The lines a syntax node covers.
 fn range_of(span: proc_macro2::Span) -> LineRange {
     LineRange {
         start: line(span.start().line),
@@ -315,13 +76,10 @@ fn range_of(span: proc_macro2::Span) -> LineRange {
     }
 }
 
-/// A site count as `u32`, saturating.
 fn count(sites: &[LineRange]) -> u32 {
     u32::try_from(sites.len()).unwrap_or(u32::MAX)
 }
 
-/// One walk over a statement: the deepest nesting it reaches, its worst
-/// condition, and its stub and panic sites.
 #[derive(Default)]
 struct Walker {
     depth: u32,
@@ -333,7 +91,6 @@ struct Walker {
 }
 
 impl Walker {
-    /// Walk `f` one nesting level deeper.
     fn nested(
         &mut self,
         f: impl FnOnce(&mut Self),
@@ -344,7 +101,6 @@ impl Walker {
         self.depth -= 1;
     }
 
-    /// Score `cond` as a condition, then walk it at the current level.
     fn condition(
         &mut self,
         cond: &Expr,
@@ -533,7 +289,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// The signals of `fn f() { <body> }`, written on one line.
     fn signals_of(body: &str) -> Signals {
         let item: syn::ItemFn =
             syn::parse_str(&format!("fn f() {{ {body} }}")).expect("valid function");
@@ -542,10 +297,7 @@ mod tests {
 
     #[test]
     fn nesting_counts_the_bodies_that_enclose_the_deepest_code() {
-        // Given a function whose body is
-        // `for x in xs { if x > 0 { match x { 1 => f(), _ => g() } } }`
         let s = signals_of("for x in xs { if x > 0 { match x { 1 => f(), _ => g() } } }");
-        // Then nesting is 3
         assert_eq!(s.nesting, 3);
     }
 
@@ -641,31 +393,17 @@ mod tests {
         assert_eq!(s.bool_ops, 2);
         let s = signals_of("for x in xs { if a || b { f() } }");
         assert_eq!(s.bool_ops, 1);
-        // Operators outside a condition are not a condition.
         let s = signals_of("let ok = a && b && c;");
         assert_eq!(s.bool_ops, 0);
     }
 
     #[test]
     fn a_conditional_inside_a_condition_is_scored_on_its_own() {
-        // The outer condition has one `||`; the inner one has two `&&`.
         let s = signals_of("if (if a && b && c { x } else { y }) || d { f() }");
         assert_eq!(s.bool_ops, 2);
         // A block inside a condition is not part of it.
         let s = signals_of("while { a && b } || c { f() }");
         assert_eq!(s.bool_ops, 1);
-    }
-
-    #[test]
-    fn a_partial_signals_object_reads_missing_keys_as_zero() {
-        let s: Signals = serde_json::from_str(r#"{"nesting": 3}"#).expect("partial reads");
-        assert_eq!(
-            s,
-            Signals {
-                nesting: 3,
-                ..Signals::default()
-            }
-        );
     }
 
     #[test]
@@ -708,12 +446,9 @@ mod tests {
 
     #[test]
     fn stubs_and_panics_are_counted_per_occurrence() {
-        // Given a function whose body is
-        // `let v = x.unwrap(); let w = y.expect("y"); if v { todo!() } dbg!(w); panic!("no")`
         let s = signals_of(
             r#"let v = x.unwrap(); let w = y.expect("y"); if v { todo!() } dbg!(w); panic!("no")"#,
         );
-        // Then stubs is 2 and panics is 3
         assert_eq!(s.stubs, 2);
         assert_eq!(s.panics, 3);
     }
@@ -734,7 +469,6 @@ mod tests {
         assert_eq!(s.stubs, 0);
     }
 
-    /// Measure the first function in a multi-line `source`.
     fn measured_of(source: &str) -> Measured {
         let file = syn::parse_file(source).expect("valid file");
         let syn::Item::Fn(item) = &file.items[0] else {
@@ -782,7 +516,6 @@ mod tests {
 
     #[test]
     fn the_worst_condition_span_is_the_first_of_equals() {
-        // Equal conditions in separate statements, then within one.
         let m = measured_of(
             "fn f() {
     if a && b {
@@ -840,111 +573,6 @@ mod tests {
         assert_eq!(m.spans.bumps, Vec::<LineRange>::new());
     }
 
-    fn settings(toml_text: &str) -> anyhow::Result<SignalSettings> {
-        let config: crate::config::Config = toml::from_str(toml_text).expect("valid TOML");
-        SignalSettings::resolve(&config.signals)
-    }
-
-    #[test]
-    fn signals_are_off_with_the_default_gate_unless_configured() {
-        let s = settings("").expect("valid");
-        assert!(!s.enabled);
-        assert_eq!(s.gate, Signal::DEFAULT_GATE);
-        assert_eq!(s.limits, Limits::default());
-        assert!(
-            settings("[signals]\nenabled = true\n")
-                .expect("valid")
-                .enabled
-        );
-    }
-
-    #[test]
-    fn the_gate_accepts_either_spelling_and_drops_duplicates() {
-        let s =
-            settings("[signals]\ngate = [\"bool-ops\", \"lines\", \"bool_ops\"]\n").expect("valid");
-        assert_eq!(s.gate, [Signal::Lines, Signal::BoolOps]);
-        let none = settings("[signals]\ngate = []\n").expect("valid");
-        assert_eq!(none.gate, Vec::<Signal>::new());
-    }
-
-    #[test]
-    fn an_unknown_signal_in_the_gate_list_is_a_tool_error() {
-        let err = settings("[signals]\ngate = [\"nestng\"]\n").expect_err("rejected");
-        let message = err.to_string();
-        assert!(message.contains("\"nestng\""), "{message}");
-        for name in ["nesting", "lines", "bumps", "bool-ops", "stubs", "panics"] {
-            assert!(message.contains(name), "{name}: {message}");
-        }
-    }
-
-    #[test]
-    fn a_negative_limit_is_a_tool_error() {
-        let err = settings("[signals.limits]\nnesting = -1\n").expect_err("rejected");
-        assert!(err.to_string().contains("signals.limits.nesting"), "{err}");
-        let err = settings("[signals.limits]\nbool-ops = 5000000000\n").expect_err("rejected");
-        assert!(err.to_string().contains("signals.limits.bool-ops"), "{err}");
-    }
-
-    #[test]
-    fn limits_resolve_per_signal() {
-        let s = settings("[signals.limits]\nnesting = 4\nlines = 80\nbumps = 0\nbool_ops = 3\n")
-            .expect("valid");
-        assert_eq!(s.limits.get(Signal::Nesting), Some(4));
-        assert_eq!(s.limits.get(Signal::Lines), Some(80));
-        assert_eq!(s.limits.get(Signal::Bumps), Some(0));
-        assert_eq!(s.limits.get(Signal::BoolOps), Some(3));
-        assert_eq!(s.limits.get(Signal::Stubs), None);
-    }
-
-    #[test]
-    fn every_signal_parses_from_its_own_name_and_reads_its_own_field() {
-        let signals = Signals {
-            nesting: 1,
-            lines: 2,
-            bumps: 3,
-            bool_ops: 4,
-            stubs: 5,
-            panics: 6,
-        };
-        for (i, signal) in Signal::ALL.into_iter().enumerate() {
-            assert_eq!(Signal::parse(signal.name()), Some(signal));
-            assert_eq!(signal.value(&signals), u32::try_from(i + 1).expect("small"));
-        }
-        assert_eq!(Signal::parse("bool-ops"), Some(Signal::BoolOps));
-        assert_eq!(Signal::parse("crap"), None);
-        assert!(Signal::Stubs.is_count() && Signal::Panics.is_count());
-        assert!(!Signal::Nesting.is_count() && !Signal::Lines.is_count());
-    }
-
-    #[test]
-    fn every_signal_reads_its_own_spans() {
-        let range = |n| vec![LineRange { start: n, end: n }];
-        let spans = Spans {
-            lines: range(1),
-            nesting: range(2),
-            bumps: range(3),
-            bool_ops: range(4),
-            stubs: range(5),
-            panics: range(6),
-        };
-        for (i, signal) in Signal::ALL.into_iter().enumerate() {
-            let n = u32::try_from(i + 1).expect("small");
-            let expected = if signal == Signal::Nesting {
-                2
-            } else if signal == Signal::Lines {
-                1
-            } else {
-                n
-            };
-            assert_eq!(
-                signal.spans(&spans),
-                range(expected).as_slice(),
-                "{signal:?}"
-            );
-        }
-    }
-
-    /// A random function body built from a small statement grammar.
     fn body() -> impl Strategy<Value = String> {
         let leaf = prop_oneof![
             Just("f();".to_owned()),
@@ -990,14 +618,11 @@ mod tests {
         prop::collection::vec(body(), 0..4).prop_map(|v| v.concat())
     }
 
-    /// `&&` and `||` operators anywhere in `source`.
     fn bool_op_count(source: &str) -> u32 {
         u32::try_from(source.matches("&&").count() + source.matches("||").count()).expect("small")
     }
 
     proptest! {
-        /// Wrapping a body in a conditional adds exactly one level and moves
-        /// no other count.
         #[test]
         fn wrapping_a_body_in_a_conditional_adds_exactly_one_level(b in statements()) {
             let plain = signals_of(&b);
@@ -1027,8 +652,6 @@ mod tests {
             prop_assert!(signals_of(&b).bool_ops <= bool_op_count(&b));
         }
 
-        /// Every recorded span lies inside the function, and each counting
-        /// signal has one span per occurrence.
         #[test]
         fn every_span_lies_inside_its_function(parts in prop::collection::vec(body(), 0..5)) {
             let source = format!("\n\nfn f() {{\n{}\n}}\n", parts.join("\n"));

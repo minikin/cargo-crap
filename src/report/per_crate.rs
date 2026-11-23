@@ -4,7 +4,7 @@
 
 use super::layout::{Cut, column_width, table_width};
 use super::types::apply_table_styling;
-use crate::merge::CrapEntry;
+use crate::entry::CrapEntry;
 use anyhow::Result;
 use comfy_table::{Attribute, Cell, CellAlignment, Table, presets::UTF8_FULL};
 use std::io::Write;
@@ -155,6 +155,7 @@ mod tests {
             crap,
             crate_name: crate_name.map(std::string::ToString::to_string),
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }

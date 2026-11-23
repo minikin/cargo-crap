@@ -4,9 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::duplicates::extract::Location;
 use crate::duplicates::group::DuplicateGroup;
-use crate::merge::{path_key, unique_best_by_suffix};
+use crate::duplicates::model::Location;
+use crate::paths::{path_key, unique_best_by_suffix};
 
 /// What a current group is, measured against the baseline's groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

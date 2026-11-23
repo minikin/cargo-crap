@@ -7,7 +7,7 @@
 //! the badge reflects absolute current scores only.
 
 use crate::delta::DeltaReport;
-use crate::merge::CrapEntry;
+use crate::entry::CrapEntry;
 use crate::score::Severity;
 use anyhow::Result;
 use serde::Serialize;
@@ -175,7 +175,7 @@ mod tests {
         // A baseline that would normally produce regressions/removals.
         let mut baseline = sample();
         baseline[1].crap = 5.0;
-        baseline.push(crate::merge::CrapEntry {
+        baseline.push(crate::entry::CrapEntry {
             file: "gone.rs".into(),
             function: "removed_fn".into(),
             line: 1,
@@ -184,6 +184,7 @@ mod tests {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         });

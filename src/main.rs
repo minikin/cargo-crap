@@ -826,7 +826,6 @@ fn assign_crate_names(
     }
 }
 
-/// The exclude globs and selected workspace members of cargo-crap's source walk.
 struct CargoScope {
     /// Deepest root first, so a nested member owns its files.
     roots: Vec<(PathBuf, Arc<complexity::ExcludeMatcher>)>,
@@ -1233,7 +1232,6 @@ fn validate_args(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Load the baseline, issue compatibility warnings and resolve recorded paths before preparation.
 fn load_report_baseline(
     baseline: Option<&PathBuf>,
     workspace_root: Option<&Path>,
@@ -1472,7 +1470,6 @@ impl DuplicateSection<'_> {
         })
     }
 
-    /// Metadata for this run's duplicate section and its score envelopes.
     fn render_extras(
         &self,
         try_weight: f64,
@@ -1955,6 +1952,7 @@ mod tests {
             crap: 2.0,
             crate_name: None,
             signals,
+            fingerprint: None,
             signal_spans: cargo_crap::signals::Spans::default(),
             uncovered: Vec::new(),
         }
@@ -2667,6 +2665,7 @@ mod tests {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: cargo_crap::signals::Spans::default(),
             uncovered: Vec::new(),
         }

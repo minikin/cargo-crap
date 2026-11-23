@@ -6,7 +6,7 @@
 use super::per_crate::{has_crate_data, write_per_crate_human};
 use super::types::styled;
 use crate::delta::{DeltaCounts, DeltaReport};
-use crate::merge::CrapEntry;
+use crate::entry::CrapEntry;
 use anyhow::Result;
 use owo_colors::Style;
 use std::io::Write;
@@ -141,6 +141,7 @@ mod tests {
             crap,
             crate_name: crate_name.map(std::string::ToString::to_string),
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
@@ -223,6 +224,7 @@ mod tests {
                 crap: 1.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },

@@ -6,7 +6,7 @@
 //! result set still produces a valid SARIF document upload-able to GitHub.
 
 use super::types::cc_display;
-use crate::merge::CrapEntry;
+use crate::entry::CrapEntry;
 use crate::report::Tool;
 use crate::score::Severity;
 use anyhow::Result;

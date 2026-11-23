@@ -16,14 +16,13 @@
 //!
 //! Shared building blocks (severity grade, coverage bar, Δ formatting, source
 //! links, per-crate rollups) live in [`types`], [`links`], and [`per_crate`].
-//! [`RenderOptions`] carries the front end's [`Tool`].
 
 use crate::delta::{DeltaCounts, DeltaReport};
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::group::DuplicateGroup;
 use crate::duplicates::novelty::Comparison;
-use crate::duplicates::triage::verdict::Assessment;
-use crate::merge::{CrapEntry, ScopeDiagnostics};
+use crate::duplicates::verdict::Assessment;
+use crate::entry::{CrapEntry, ScopeDiagnostics};
 use crate::score::Severity;
 use anyhow::{Result, bail};
 use std::borrow::Cow;
@@ -94,7 +93,6 @@ pub enum Format {
 /// Options shared by [`render`] and [`render_delta`], so their signatures
 /// survive new knobs without breaking every call site again.
 ///
-/// Construct with struct-update syntax over [`RenderOptions::new`]:
 ///
 /// ```
 /// use cargo_crap::report::{Format, RenderOptions, Schemas, Tool};
@@ -125,7 +123,6 @@ pub enum Format {
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct RenderOptions<'a> {
-    /// The front end whose name, version and URLs the reports carry.
     pub tool: &'a Tool,
     /// CRAP score above which a function is flagged.
     pub threshold: f64,
@@ -152,7 +149,7 @@ pub struct RenderOptions<'a> {
     pub duplicates: Option<&'a [DuplicatePair]>,
     /// The `?` weight the entries were analyzed under. Only the JSON
     /// renderers read it, recording it in the envelope when it is not
-    /// [`DEFAULT_TRY_WEIGHT`](crate::config::DEFAULT_TRY_WEIGHT).
+    /// [`DEFAULT_TRY_WEIGHT`](crate::score::DEFAULT_TRY_WEIGHT).
     pub try_weight: f64,
     /// One triage verdict per duplicate group, in the groups' order, when
     /// `groups` is set, else one per pair in the pairs' order, or `None` when
@@ -213,12 +210,6 @@ pub struct TriagedBy<'a> {
 }
 
 impl<'a> RenderOptions<'a> {
-    /// Options for `tool` with the CLI defaults: threshold 30, human
-    /// format, no links, no diagnostics, changed-only delta rows, no
-    /// uncovered hints, no duplicates, the classical `?` weight, a capped
-    /// human table, no working directory, so paths show as given, no
-    /// triage provider, every pair reported on its own, and no group left
-    /// untriaged by a budget.
     #[must_use]
     pub fn new(tool: &'a Tool) -> Self {
         Self {
@@ -230,7 +221,7 @@ impl<'a> RenderOptions<'a> {
             show_unchanged: false,
             uncovered_hints: false,
             duplicates: None,
-            try_weight: crate::config::DEFAULT_TRY_WEIGHT,
+            try_weight: crate::score::DEFAULT_TRY_WEIGHT,
             triage: None,
             sliced: false,
             delta_counts: None,
@@ -561,7 +552,7 @@ mod tests {
         assert!(!opts.show_unchanged);
         assert!(!opts.uncovered_hints);
         assert!(opts.duplicates.is_none());
-        assert_eq!(opts.try_weight, crate::config::DEFAULT_TRY_WEIGHT);
+        assert_eq!(opts.try_weight, crate::score::DEFAULT_TRY_WEIGHT);
         assert!(opts.triage.is_none());
         assert!(!opts.sliced);
         assert!(opts.delta_counts.is_none());
@@ -724,8 +715,6 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// The human, github and shields formats carry no branding, so
-        /// the tool they are given never changes a byte of them.
         #[test]
         fn formats_without_branding_do_not_depend_on_the_tool(
             tool in arb_tool(),
@@ -945,7 +934,7 @@ mod tests {
 
     #[test]
     fn json_diagnostics_write_analyzed_examples_below_the_workspace_root() {
-        let stray = |examples: &[&str]| crate::merge::StrayFiles {
+        let stray = |examples: &[&str]| crate::entry::StrayFiles {
             count: examples.len(),
             examples: examples.iter().map(PathBuf::from).collect(),
         };
@@ -985,7 +974,7 @@ mod tests {
 
     mod duplicate_groups {
         use super::*;
-        use crate::duplicates::extract::Location;
+        use crate::duplicates::model::Location;
 
         fn pair(n: usize) -> DuplicatePair {
             let at = |line: usize| Location {
@@ -1094,8 +1083,8 @@ mod tests {
 
     mod pair_triage {
         use super::*;
-        use crate::duplicates::extract::Location;
         use crate::duplicates::group::group_pairs;
+        use crate::duplicates::model::Location;
 
         fn f(n: usize) -> Location {
             Location {

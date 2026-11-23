@@ -12,7 +12,7 @@ use super::types::{
     no_change_message, styled, uncovered_display, visible_delta_entries,
 };
 use crate::delta::{DeltaCounts, DeltaEntry, DeltaReport, DeltaStatus};
-use crate::merge::{CrapEntry, file_order_key};
+use crate::entry::{CrapEntry, file_order_key};
 use crate::score::Severity;
 use anyhow::Result;
 use comfy_table::{Attribute, Cell, CellAlignment, Color, Table, presets::UTF8_FULL};
@@ -658,6 +658,7 @@ mod tests {
             crap,
             crate_name: crate_name.map(std::string::ToString::to_string),
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }
@@ -684,6 +685,7 @@ mod tests {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -734,6 +736,7 @@ mod tests {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -755,6 +758,7 @@ mod tests {
             crap: 1.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -777,6 +781,7 @@ mod tests {
                 crap: 72.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -789,6 +794,7 @@ mod tests {
                 crap: 110.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -813,6 +819,7 @@ mod tests {
             crap: 20.0,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }];
@@ -865,6 +872,7 @@ mod tests {
                 crap: 1.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -925,6 +933,7 @@ mod tests {
                 crap: 50.0,
                 crate_name: None,
                 signals: None,
+                fingerprint: None,
                 signal_spans: crate::signals::Spans::default(),
                 uncovered: Vec::new(),
             },
@@ -1448,6 +1457,7 @@ mod tests {
             crap,
             crate_name: None,
             signals: None,
+            fingerprint: None,
             signal_spans: crate::signals::Spans::default(),
             uncovered: Vec::new(),
         }

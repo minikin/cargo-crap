@@ -12,10 +12,10 @@ use super::links::linkify;
 use super::types::{bar, below_root, cwd_relative, styled, workspace_relative};
 use super::{RenderOptions, SourceLinks, TriagedBy};
 use crate::duplicates::compare::DuplicatePair;
-use crate::duplicates::extract::Location;
 use crate::duplicates::group::DuplicateGroup;
+use crate::duplicates::model::Location;
 use crate::duplicates::novelty::Comparison;
-use crate::duplicates::triage::verdict::{Assessment, WorthExtracting};
+use crate::duplicates::verdict::{Assessment, WorthExtracting};
 
 pub use crate::duplicates::compare::sort_pairs;
 
@@ -734,10 +734,8 @@ fn side(at: &Location) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::duplicates::compare::find_pairs;
-    use crate::duplicates::extract::{FunctionPrint, functions_in_source};
     use crate::duplicates::group::DuplicateGroup;
-    use crate::duplicates::triage::verdict::{Assessment, Kind, Verdict, WorthExtracting};
+    use crate::duplicates::verdict::{Assessment, Kind, Verdict, WorthExtracting};
     use crate::report::test_support::Refuses;
     use crate::report::test_support::every;
     use proptest::prelude::*;
@@ -750,20 +748,20 @@ mod tests {
         String::from_utf8(buf).expect("the section is utf-8")
     }
 
-    fn pairs_from(
-        src: &str,
-        file: &str,
-    ) -> Vec<FunctionPrint> {
-        functions_in_source(src, Path::new(file)).expect("test source must parse")
-    }
-
     #[test]
     fn line_ranges_locate_each_side_of_the_pair() {
         // Given a function on lines 2-4 and its duplicate on lines 6-8.
-        let src = "\nfn a(x: i32) -> i32 {\n    x + 1\n}\n\nfn b(y: i32) -> i32 {\n    y + 2\n}\n";
-        let mut pairs = find_pairs(&pairs_from(src, "src/a.rs"), 0.82);
-        sort_pairs(&mut pairs);
-        assert_eq!(pairs.len(), 1);
+        let pairs = [DuplicatePair {
+            first: Location {
+                end_line: 4,
+                ..at("src/a.rs", 2, "a")
+            },
+            second: Location {
+                end_line: 8,
+                ..at("src/a.rs", 6, "b")
+            },
+            score: 1.0,
+        }];
         let out = rendered(&pairs);
         assert!(out.contains("src/a.rs:2-4"), "first side's range: {out}");
         assert!(out.contains("src/a.rs:6-8"), "second side's range: {out}");
@@ -772,22 +770,13 @@ mod tests {
 
     #[test]
     fn the_count_line_agrees_with_the_number_of_pairs() {
-        let one = pairs_from("fn a() -> i32 { 1 } fn b() -> i32 { 1 }", "src/a.rs");
-        let mut pairs = find_pairs(&one, 0.0);
-        sort_pairs(&mut pairs);
-        assert_eq!(pairs.len(), 1);
+        let pairs = [pair(1, 1.0)];
         assert!(
             rendered(&pairs).contains("1 duplicate candidate:"),
             "singular for one"
         );
 
-        let three = pairs_from(
-            "fn a() -> i32 { 1 } fn b() -> i32 { 1 } fn c() -> i32 { 1 }",
-            "src/a.rs",
-        );
-        let mut pairs = find_pairs(&three, 0.0);
-        sort_pairs(&mut pairs);
-        assert_eq!(pairs.len(), 3);
+        let pairs = [pair(1, 1.0), pair(2, 1.0), pair(3, 1.0)];
         assert!(
             rendered(&pairs).contains("3 duplicate candidates:"),
             "plural for three"
@@ -806,16 +795,10 @@ mod tests {
 
     #[test]
     fn ordering_is_deterministic_regardless_of_input_order() {
-        let mut a = pairs_from("fn a() -> i32 { 1 } fn b() -> i32 { 1 }", "src/z.rs");
-        let b = pairs_from(
-            "fn c(v: V) { for x in v { g(x); } } fn d(v: V) { for x in v { g(x); } }",
-            "src/a.rs",
-        );
-        a.extend(b);
-        let mut forward = find_pairs(&a, 0.5);
+        let mut forward = [pair(1, 0.75), pair(2, 1.0), pair(3, 0.75)];
+        let mut reversed = forward.clone();
+        reversed.reverse();
         sort_pairs(&mut forward);
-        a.reverse();
-        let mut reversed = find_pairs(&a, 0.5);
         sort_pairs(&mut reversed);
         assert_eq!(
             rendered(&forward),
@@ -1388,12 +1371,7 @@ mod tests {
 
     #[test]
     fn pairs_are_listed_in_the_same_order_as_the_human_section() {
-        let src = "
-            fn a(v: V) { for x in v { if p(x) { g(x); } } }
-            fn b(v: V) { for x in v { if p(x) { g(x); } } }
-            fn c(v: V) { for x in v { if p(x) { g(x); } } h(v); k(v); }
-        ";
-        let mut pairs = find_pairs(&pairs_from(src, "src/a.rs"), 0.0);
+        let mut pairs = [pair(1, 0.8), pair(2, 1.0), pair(3, 0.8)];
         sort_pairs(&mut pairs);
         let human: Vec<String> = rendered(&pairs)
             .lines()

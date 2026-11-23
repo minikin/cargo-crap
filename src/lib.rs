@@ -68,7 +68,7 @@
 //! //    treated as 0% covered (the pessimistic default, safest for CI gates).
 //! let entries = merge(fns, cov, MissingCoveragePolicy::Pessimistic).entries;
 //!
-//! // 4. Render the human-readable table to stdout. `RenderOptions::new`
+//! // `RenderOptions::new`
 //! //    takes the CLI defaults: threshold 30, human format.
 //! render(&entries, &RenderOptions::new(&CARGO_CRAP), &mut io::stdout())?;
 //!
@@ -147,8 +147,11 @@
 //! | [`cache`] | What is kept on disk between runs, under `<target>/cargo-crap/`. |
 //! | [`score`] | The CRAP formula and the `Clean`/`Crappy` classifier. No I/O. |
 //! | [`complexity`] | `syn`-based AST walker. Produces `(file, function, span, CC)` per function. |
-//! | [`coverage`] | LCOV parser. Produces `(file, line) → hit-count` maps. |
-//! | [`merge`] | Joins complexity with coverage. Handles all path-matching cases. |
+//! | [`signals::model`], [`signals::config`], [`signals::compute`](mod@signals::compute) | Signal measurements, configuration and Rust syntax walker. |
+//! | [`entry`], [`paths`] | Report rows, ordering, scope diagnostics and coverage path assignment. |
+//! | [`duplicates::model`], [`duplicates::verdict`] | Duplicate function identities, fingerprints and triage verdicts. |
+//! | [`coverage::lcov`] | LCOV parser. Produces `(file, line) → hit-count` maps. |
+//! | [`merge`] | Joins Rust function spans with assigned coverage records. |
 //! | [`delta`] | Baseline comparison. Computes per-function deltas and regression counts. |
 //! | [`duplicates`] | Structural duplicate detection: normalize each function's AST, fingerprint its subtrees, compare pairs by Jaccard similarity. Optional triage of the pairs by a `TypeSafe` model lives in `duplicates::triage` (the HTTP client needs the `triage` feature). |
 //! | [`report`] | Renders `Vec<CrapEntry>` or `DeltaReport` as a human table, JSON, GitHub annotations, Markdown, a PR comment, SARIF, or a Shields.io badge. |
@@ -165,9 +168,11 @@ pub mod config;
 pub mod coverage;
 pub mod delta;
 pub mod duplicates;
+pub mod entry;
 pub mod filter;
 pub mod gate;
 pub mod merge;
+pub mod paths;
 pub mod policy;
 pub mod report;
 pub mod run;

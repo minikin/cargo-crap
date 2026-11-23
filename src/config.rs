@@ -57,6 +57,8 @@
 //! ```
 
 use crate::merge::{MissingCoveragePolicy, SortOrder};
+pub use crate::score::DEFAULT_TRY_WEIGHT;
+pub use crate::signals::config::{SignalLimitsConfig, SignalsConfig};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
@@ -157,36 +159,6 @@ pub struct Config {
     pub signals: SignalsConfig,
 }
 
-/// The `[signals]` table (spec 43).
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub struct SignalsConfig {
-    /// Compute and report the signals. Defaults to `false`.
-    pub enabled: Option<bool>,
-
-    /// Signals whose regression trips `--fail-regression`, by name (`-` or
-    /// `_` accepted). Defaults to `nesting`, `bumps`, `bool-ops`, `stubs`.
-    /// Validated against the known names after loading.
-    pub gate: Option<Vec<String>>,
-
-    /// Ceilings for the shape signals of functions new since the baseline.
-    #[serde(default)]
-    pub limits: SignalLimitsConfig,
-}
-
-/// The `[signals.limits]` table, as written. Signed so a negative value
-/// reaches validation and is reported by its key.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub struct SignalLimitsConfig {
-    pub nesting: Option<i64>,
-    pub lines: Option<i64>,
-    pub bumps: Option<i64>,
-    /// Accepted as `bool-ops` (house style) or `bool_ops`.
-    #[serde(alias = "bool_ops")]
-    pub bool_ops: Option<i64>,
-}
-
 /// The `[duplicates]` table.
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -255,10 +227,6 @@ pub const DEFAULT_DUP_THRESHOLD: f64 = 0.82;
 /// configuration.
 pub const DEFAULT_DUP_MIN_NODES: usize = 20;
 
-/// What a `?` operator costs, absent any configuration: one decision point,
-/// the same as an `if`.
-pub const DEFAULT_TRY_WEIGHT: f64 = 1.0;
-
 /// The heaviest `?` weight accepted. Far above any sensible audit weight,
 /// and low enough that CC and CRAP stay finite for any real function. An
 /// overflowed score serializes as `null` and compares false against the
@@ -300,7 +268,64 @@ pub fn find(start: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signals::{Limits, Signal, SignalSettings};
     use std::io::Write;
+
+    fn settings(toml_text: &str) -> anyhow::Result<SignalSettings> {
+        let config: Config = toml::from_str(toml_text).expect("valid TOML");
+        SignalSettings::resolve(&config.signals)
+    }
+
+    #[test]
+    fn signals_are_off_with_the_default_gate_unless_configured() {
+        let s = settings("").expect("valid");
+        assert!(!s.enabled);
+        assert_eq!(s.gate, Signal::DEFAULT_GATE);
+        assert_eq!(s.limits, Limits::default());
+        assert!(
+            settings("[signals]\nenabled = true\n")
+                .expect("valid")
+                .enabled
+        );
+    }
+
+    #[test]
+    fn the_gate_accepts_either_spelling_and_drops_duplicates() {
+        let s =
+            settings("[signals]\ngate = [\"bool-ops\", \"lines\", \"bool_ops\"]\n").expect("valid");
+        assert_eq!(s.gate, [Signal::Lines, Signal::BoolOps]);
+        let none = settings("[signals]\ngate = []\n").expect("valid");
+        assert_eq!(none.gate, Vec::<Signal>::new());
+    }
+
+    #[test]
+    fn an_unknown_signal_in_the_gate_list_is_a_tool_error() {
+        let err = settings("[signals]\ngate = [\"nestng\"]\n").expect_err("rejected");
+        let message = err.to_string();
+        assert!(message.contains("\"nestng\""), "{message}");
+        for name in ["nesting", "lines", "bumps", "bool-ops", "stubs", "panics"] {
+            assert!(message.contains(name), "{name}: {message}");
+        }
+    }
+
+    #[test]
+    fn a_negative_limit_is_a_tool_error() {
+        let err = settings("[signals.limits]\nnesting = -1\n").expect_err("rejected");
+        assert!(err.to_string().contains("signals.limits.nesting"), "{err}");
+        let err = settings("[signals.limits]\nbool-ops = 5000000000\n").expect_err("rejected");
+        assert!(err.to_string().contains("signals.limits.bool-ops"), "{err}");
+    }
+
+    #[test]
+    fn limits_resolve_per_signal() {
+        let s = settings("[signals.limits]\nnesting = 4\nlines = 80\nbumps = 0\nbool_ops = 3\n")
+            .expect("valid");
+        assert_eq!(s.limits.get(Signal::Nesting), Some(4));
+        assert_eq!(s.limits.get(Signal::Lines), Some(80));
+        assert_eq!(s.limits.get(Signal::Bumps), Some(0));
+        assert_eq!(s.limits.get(Signal::BoolOps), Some(3));
+        assert_eq!(s.limits.get(Signal::Stubs), None);
+    }
 
     #[test]
     fn the_signals_table_is_absent_by_default() {
