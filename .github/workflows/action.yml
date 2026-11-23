@@ -850,3 +850,61 @@ jobs:
         run: |
           grep -q 'No CRAP regressions' "$REPORT"
           test "$(git -C "$RUNNER_TEMP/shop" log -1 --format=%s)" = pr
+
+  mixed-comments:
+    name: Both candidate Actions update their own comment
+    if: github.repository == 'minikin/cargo-crap'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_CRAP_TEST_PR_NUMBER: '42'
+      CRAPTS_TEST_PR_NUMBER: '42'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p cargo-crap -p crapts
+      - name: Prepare mixed PR and local services
+        shell: bash
+        run: |
+          dir="$RUNNER_TEMP/mixed"
+          python3 scripts/action/crapts/tests/mixed.py setup "$dir/project"
+          python3 scripts/action/stub.py 18442 "$dir/api.log" github > "$dir/stub.log" 2>&1 &
+          echo 'CARGO_CRAP_TEST_API_URL=http://127.0.0.1:18442' >> "$GITHUB_ENV"
+          echo 'CRAPTS_TEST_API_URL=http://127.0.0.1:18442' >> "$GITHUB_ENV"
+          bash scripts/action/crapts/registry.sh "$dir"
+      - uses: ./
+        with:
+          working-directory: ${{ runner.temp }}/mixed/project/rust
+          binary: ${{ github.workspace }}/target/debug/cargo-crap
+          args: --threshold 0
+          lcov: hits.info
+          base: ''
+          github-token: fixture-token
+      - uses: ./actions/crapts
+        with:
+          working-directory: ${{ runner.temp }}/mixed/project/ts
+          package: ${{ runner.temp }}/mixed/candidate wrapper.tgz
+          args: --threshold 0
+          coverage: hits.info
+          base: ''
+          github-token: fixture-token
+      - run: python3 scripts/action/crapts/tests/mixed.py update "$RUNNER_TEMP/mixed/project" "$CRAPTS_TEST_API_URL"
+      - uses: ./
+        with:
+          working-directory: ${{ runner.temp }}/mixed/project/rust
+          binary: ${{ github.workspace }}/target/debug/cargo-crap
+          args: --threshold 0
+          lcov: hits.info
+          base: ''
+          github-token: fixture-token
+      - uses: ./actions/crapts
+        with:
+          working-directory: ${{ runner.temp }}/mixed/project/ts
+          package: ${{ runner.temp }}/mixed/candidate wrapper.tgz
+          args: --threshold 0
+          coverage: hits.info
+          base: ''
+          github-token: fixture-token
+      - run: python3 scripts/action/crapts/tests/mixed.py check "$RUNNER_TEMP/mixed/project" "$CRAPTS_TEST_API_URL"

@@ -1,5 +1,6 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { jobSummary } from "./delivery.mjs";
 import { withOptions, writeReport } from "./cli.mjs";
 
 function count(summary, key) {
@@ -33,7 +34,7 @@ function score() {
   const outputs = { crappy: count(summary, "crappy"), regressed: count(summary, "regressed"),
     changed: count(summary, "changed_failures"), report, status };
   const settings = readFileSync(path("settings.json"), "utf8");
-  appendFileSync(env.GITHUB_STEP_SUMMARY, readFileSync(report, "utf8") + "\n<details><summary>Effective settings</summary>\n\n```json\n" + settings + "\n```\n</details>\n");
+  appendFileSync(env.GITHUB_STEP_SUMMARY, jobSummary(readFileSync(report, "utf8"), settings));
   appendFileSync(env.GITHUB_OUTPUT, Object.entries(outputs).map(([key, value]) => key + "=" + value + "\n").join(""));
 }
 

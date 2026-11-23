@@ -80,21 +80,28 @@ class ActionTest(unittest.TestCase):
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def history(self, base_files, head_changes, *, base_changes=None):
-        self.git("init", "-q")
-        commits = []
-        for mark, (branch, parent, files) in enumerate([("common", None, base_files), ("base", 1, base_changes or {}),
-                                                       ("pr", 1, head_changes)], start=1):
-            commits.extend([f"commit refs/heads/{branch}", f"mark :{mark}",
-                            f"committer Fixture <fixture@example.invalid> {1000000000 + mark} +0000",
-                            "data 1", str(mark)])
-            if parent:
-                commits.append(f"from :{parent}")
-            for name, body in files.items():
-                if body is None:
-                    commits.append("D " + name)
-                else:
-                    commits.extend(["M 100644 inline " + name, "data " + str(len(body.encode())), body])
-            commits.append("")
-        subprocess.run(["git", "fast-import", "--quiet"], cwd=self.project, input="\n".join(commits).encode(), check=True)
-        self.git("checkout", "-q", "pr")
-        return self.git("rev-parse", "base")
+        return write_history(self.project, base_files, head_changes, base_changes=base_changes)
+
+
+def write_history(project, base_files, head_changes, *, base_changes=None):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=project, text=True).strip()
+
+    git("init", "-q")
+    commits = []
+    for mark, (branch, parent, files) in enumerate([("common", None, base_files), ("base", 1, base_changes or {}),
+                                                   ("pr", 1, head_changes)], start=1):
+        commits.extend([f"commit refs/heads/{branch}", f"mark :{mark}",
+                        f"committer Fixture <fixture@example.invalid> {1000000000 + mark} +0000",
+                        "data 1", str(mark)])
+        if parent:
+            commits.append(f"from :{parent}")
+        for name, body in files.items():
+            if body is None:
+                commits.append("D " + name)
+            else:
+                commits.extend(["M 100644 inline " + name, "data " + str(len(body.encode())), body])
+        commits.append("")
+    subprocess.run(["git", "fast-import", "--quiet"], cwd=project, input="\n".join(commits).encode(), check=True)
+    git("checkout", "-q", "pr")
+    return git("rev-parse", "base")

@@ -115,6 +115,16 @@ runs:
         INPUT_FAIL_ABOVE: ${{ inputs.fail-above }}
         INPUT_COMMENT_MARKER: ${{ inputs.comment-marker }}
       run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/score.mjs"
+    - name: Comment on the pull request
+      shell: bash
+      env:
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_COMMENT_MARKER: ${{ inputs.comment-marker }}
+        CRAPTS_TOKEN: ${{ inputs.github-token }}
+        REPORT: ${{ steps.score.outputs.report }}
+        CRAPTS_PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && env.CRAPTS_TEST_PR_NUMBER) || github.event.pull_request.number }}
+        CRAPTS_API_URL: ${{ (github.repository == 'minikin/cargo-crap' && env.CRAPTS_TEST_API_URL) || github.api_url }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/comment.mjs"
     - name: Return gate status
       shell: bash
       env:
