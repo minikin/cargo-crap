@@ -97,4 +97,5 @@ if [ "$failures" -gt 0 ]; then
     echo "$failures failure(s)"
     exit 1
 fi
+python3 -B "$here/tests/core.py" || exit 1
 echo "all passed"
