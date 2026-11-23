@@ -2117,16 +2117,16 @@ fn a_foreign_baseline_diagnostic_names_the_callers_tool() {
     }
 }
 
-struct TestSection {
+struct TestSection<'a> {
     key: &'static str,
-    raw: &'static str,
+    raw: &'a str,
     text: &'static str,
     github: Option<&'static str>,
     placement: Placement,
     failures: Option<usize>,
 }
 
-impl Section for TestSection {
+impl Section for TestSection<'_> {
     fn json_key(&self) -> &str {
         self.key
     }
@@ -2162,7 +2162,7 @@ impl Section for TestSection {
 fn changed_object(
     spaced: bool,
     fail: usize,
-) -> &'static str {
+) -> String {
     let commit = "a".repeat(40);
     let counts = format!(
         r#"{{"touched":0,"new":0,"ambiguous":0,"modified":0,"worse":0,"fail":{fail},"over":0,"allowed":0,"missing_skipped":0,"coverage_null":0}}"#
@@ -2191,7 +2191,7 @@ fn changed_object(
         .iter()
         .map(|(key, value)| format!("\"{key}\"{colon}{value}"))
         .collect();
-    Box::leak(format!("{open}{}{close}", body.join(comma)).into_boxed_str())
+    format!("{open}{}{close}", body.join(comma))
 }
 
 fn extract_raw_changed_value(raw: &str) -> &str {
@@ -2277,7 +2277,7 @@ fn a_section_contributes_one_ordered_json_object_and_a_count() {
     let supplied = changed_object(true, 0);
     let section = TestSection {
         key: "changed",
-        raw: supplied,
+        raw: &supplied,
         text: "changed result",
         github: None,
         placement: Placement::Lead,
@@ -2306,7 +2306,7 @@ fn a_section_contributes_one_ordered_json_object_and_a_count() {
             let raw = String::from_utf8(out).unwrap();
             let doc: Value = serde_json::from_str(&raw).unwrap();
             assert!(schema.is_valid(&doc), "{raw}");
-            assert_eq!(extract_raw_changed_value(&raw), supplied);
+            assert_eq!(extract_raw_changed_value(&raw), supplied.as_str());
             assert_eq!(doc["summary"]["changed_failures"], 0);
 
             let mut without = Vec::new();
@@ -2558,9 +2558,10 @@ fn section_failures_are_observable_even_when_their_gate_is_off() {
     );
     let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
     let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+    let object = changed_object(false, 2);
     let section = TestSection {
         key: "changed",
-        raw: changed_object(false, 2),
+        raw: &object,
         text: "changed result",
         github: None,
         placement: Placement::Lead,
@@ -2850,9 +2851,10 @@ fn notices_and_sections_preserve_the_grammar_of_each_machine_format() {
     let allow = AllowSet::compile(&[]).unwrap();
     let signals = SignalSettings::default();
     let notices = ["coverage note".to_owned()];
+    let object = changed_object(false, 1);
     let section = TestSection {
         key: "changed",
-        raw: changed_object(false, 1),
+        raw: &object,
         text: "changed result",
         github: Some("::warning::changed result"),
         placement: Placement::Lead,
@@ -3167,7 +3169,7 @@ fn pr_comment_markers_and_links_belong_to_the_invocation() {
 
 #[test]
 fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
-    // Given
+    // Given a baseline so the delta envelope is exercised as well
     let dir = tempfile::tempdir().unwrap();
     let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
     let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
@@ -3183,9 +3185,10 @@ fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
     );
     let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
     let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+    let object = changed_object(false, 0);
     let section = TestSection {
         key: "changed",
-        raw: changed_object(false, 0),
+        raw: &object,
         text: "changed result",
         github: None,
         placement: Placement::Lead,
@@ -3212,10 +3215,10 @@ fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
             .unwrap();
             serde_json::from_slice::<Value>(&out).unwrap()
         };
-        // When
+        // When the changed member is present and when it is omitted
         let mut with = render(&[&section]);
         let without = render(&[]);
-        // Then
+        // Then both validate, since a run without --base writes no changed member
         assert!(schema.is_valid(&with), "{with:#}");
         assert!(schema.is_valid(&without));
         with["changed"].as_object_mut().unwrap().remove("counts");

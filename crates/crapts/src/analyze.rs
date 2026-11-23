@@ -484,22 +484,25 @@ impl<'s> Collector<'s> {
         self.method = enclosing;
     }
 
-    /// A computed key's extent includes its brackets.
+    /// A computed key's extent includes its brackets, which lie between the
+    /// member's start and its function's.
     fn key_extent(
         &self,
         key: &PropertyKey<'_>,
         computed: bool,
+        member: Span,
     ) -> Span {
         let span = key.span();
         if !computed {
             return span;
         }
         let tokens = self.source.tokens;
-        let open = tokens[..tokens.partition_point(|t| t.start() < span.start)]
+        let at = |offset: u32| tokens.partition_point(|t| t.start() < offset);
+        let open = tokens[at(member.start)..at(span.start)]
             .iter()
             .rfind(|t| t.kind() == Kind::LBrack)
             .map_or(span.start, Token::start);
-        let close = tokens[tokens.partition_point(|t| t.start() < span.end)..]
+        let close = tokens[at(span.end)..at(member.end)]
             .iter()
             .find(|t| t.kind() == Kind::RBrack)
             .map_or(span.end, Token::end);
@@ -625,8 +628,9 @@ impl<'a> Visit<'a> for Collector<'_> {
         if method.value.body.is_none() {
             return;
         }
+        let member = Span::new(method.span.start, method.value.span.start);
         let key = (method.kind != MethodDefinitionKind::Constructor)
-            .then(|| self.key_extent(&method.key, method.computed));
+            .then(|| self.key_extent(&method.key, method.computed, member));
         let method_site = Method {
             function: method.value.span,
             start: method.span.start,
@@ -642,10 +646,12 @@ impl<'a> Visit<'a> for Collector<'_> {
         property: &ObjectProperty<'a>,
     ) {
         if property.method || property.kind != PropertyKind::Init {
+            let function = property.value.span();
+            let member = Span::new(property.span.start, function.start);
             let method = Method {
-                function: property.value.span(),
+                function,
                 start: property.span.start,
-                key: Some(self.key_extent(&property.key, property.computed)),
+                key: Some(self.key_extent(&property.key, property.computed, member)),
             };
             self.with_method(method, |v| {
                 walk::walk_object_property(v, property);

@@ -473,3 +473,16 @@ fn long_qualified_type_names_fit_on_a_test_thread_stack() {
         assert_eq!(print("long.ts", &source, "f"), expected);
     }
 }
+
+#[test]
+fn long_import_qualifiers_and_jsdoc_postfix_types_fit_on_a_test_thread_stack() {
+    let count = 100_000;
+    let expected = print("short.ts", "function f() { return 1 }", "f");
+    for declaration in [
+        format!("type I = import(\"m\").A{};", ".B".repeat(count)),
+        format!("type N = string{}?;", "!".repeat(count)),
+    ] {
+        let source = format!("{declaration}\nfunction f() {{ return 1 }}");
+        assert_eq!(print("long.ts", &source, "f"), expected);
+    }
+}

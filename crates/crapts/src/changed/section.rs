@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::Write;
 
 use cargo_crap_core::git::{CommitId, MergeBase};
@@ -11,9 +12,9 @@ use crate::Row;
 const SCHEMA: &str =
     "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/changed-v1.json";
 
-/// What the run compared: `--base` as supplied, the commits it resolved to and the head state.
 #[derive(Clone, Debug)]
 pub struct Comparison {
+    /// The `--base` revision as supplied.
     pub rev: String,
     pub commit: CommitId,
     pub merge_base: MergeBase,
@@ -23,6 +24,7 @@ pub struct Comparison {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum SkipReason {
     Binary,
     Excluded,
@@ -38,6 +40,7 @@ pub struct Skipped {
     pub reason: SkipReason,
 }
 
+#[derive(Debug)]
 pub struct ChangedSection {
     json: Box<RawValue>,
     failures: usize,
@@ -52,7 +55,6 @@ impl ChangedSection {
         comparison: &Comparison,
         judged: &Judged<'_>,
         skipped: &[Skipped],
-        threshold: f64,
     ) -> Self {
         let mut skipped: Vec<&Skipped> = skipped.iter().collect();
         skipped.sort_by(|a, b| a.path.cmp(&b.path));
@@ -60,7 +62,7 @@ impl ChangedSection {
             schema: SCHEMA,
             version: env!("CARGO_PKG_VERSION"),
             name_scheme: 1,
-            threshold,
+            threshold: judged.threshold.get(),
             base: WireBase {
                 rev: &comparison.rev,
                 commit: comparison.commit.as_str(),
@@ -114,8 +116,8 @@ impl Section for ChangedSection {
     }
 }
 
-fn display(row: &Row) -> String {
-    row.file.to_string_lossy().into_owned()
+fn display(row: &Row) -> Cow<'_, str> {
+    row.file.to_string_lossy()
 }
 
 #[derive(Serialize)]
@@ -150,7 +152,7 @@ struct WireHead<'a> {
 
 #[derive(Serialize)]
 struct WireEntry<'a> {
-    file: String,
+    file: Cow<'a, str>,
     function: &'a str,
     line: u32,
     end_line: u32,
@@ -159,7 +161,7 @@ struct WireEntry<'a> {
     crap: f64,
     change: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    base_file: Option<String>,
+    base_file: Option<Cow<'a, str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     base_line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -240,7 +242,7 @@ impl<'a> From<&'a Row> for WireCandidate<'a> {
 
 #[derive(Serialize)]
 struct WireRemoved<'a> {
-    file: String,
+    file: Cow<'a, str>,
     function: &'a str,
     base_line: u32,
     base_cyclomatic: u32,

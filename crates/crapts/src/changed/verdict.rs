@@ -1,12 +1,15 @@
+use std::borrow::Cow;
+use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use cargo_crap_core::entry::CrapEntry;
-use cargo_crap_core::filter::{AllowSet, allow};
+use cargo_crap_core::filter::AllowSet;
 use cargo_crap_core::git::Hunk;
 
 use super::matching::{Ancestry, ChangedFile, Matching, RowId};
 use crate::Row;
+use crate::lines::SourceSpan;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Edits<'h> {
@@ -22,7 +25,6 @@ pub enum Verdict {
     Pass,
 }
 
-/// A touched row's change class, with what its verdict compares against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeClass {
     New,
@@ -30,11 +32,27 @@ pub enum ChangeClass {
     Modified { base_cyclomatic: u32 },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Judgement {
     pub verdict: Verdict,
     pub worse: bool,
     pub reason: String,
+}
+
+/// Finite, so the changed object can publish it as a JSON number.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Threshold(f64);
+
+impl Threshold {
+    #[must_use]
+    pub fn new(value: f64) -> Option<Self> {
+        value.is_finite().then_some(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> f64 {
+        self.0
+    }
 }
 
 /// The threshold comparison is strict and unrounded.
@@ -127,8 +145,10 @@ pub struct Judged<'r> {
     /// Unpaired base rows, sorted by file, base line and function.
     pub removed: Vec<&'r Row>,
     pub counts: Counts,
+    pub threshold: Threshold,
 }
 
+#[derive(Debug)]
 pub struct Inputs<'a, 'r> {
     pub files: &'a [ChangedFile<'r>],
     /// One per file, in the order of `files`.
@@ -137,11 +157,15 @@ pub struct Inputs<'a, 'r> {
     /// Attributed head scores. A touched row with none was skipped for missing coverage.
     pub scores: &'a [CrapEntry],
     pub allow: &'a AllowSet,
-    pub threshold: f64,
+    pub threshold: Threshold,
 }
 
 /// Allow applies before the missing-coverage check, so an allowed row without
 /// a score counts as allowed.
+///
+/// # Panics
+/// When `edits` or `matching` do not hold one entry per file of `files`, or
+/// `matching` was not classified from `files`.
 #[must_use]
 pub fn evaluate<'r>(inputs: &Inputs<'_, 'r>) -> Judged<'r> {
     let scores: HashMap<(&Path, &str), &CrapEntry> = inputs
@@ -152,11 +176,16 @@ pub fn evaluate<'r>(inputs: &Inputs<'_, 'r>) -> Judged<'r> {
     let mut counts = Counts::default();
     let mut entries = Vec::new();
     for (file, changed) in inputs.files.iter().enumerate() {
+        let edits = inputs.edits[file];
+        if matches!(edits, Edits::Hunks([])) {
+            continue;
+        }
+        let nesting = Nesting::new(changed.head);
         for (row, head) in changed.head.iter().enumerate() {
-            let Some(change) = touched_change(inputs, RowId { file, row }) else {
+            let Some(change) = touched_change(inputs, &nesting, RowId { file, row }) else {
                 continue;
             };
-            if is_allowed(inputs.allow, head) {
+            if inputs.allow.is_match(&head.file, &head.name) {
                 counts.allowed += 1;
                 continue;
             }
@@ -164,7 +193,7 @@ pub fn evaluate<'r>(inputs: &Inputs<'_, 'r>) -> Judged<'r> {
                 counts.missing_skipped += 1;
                 continue;
             };
-            let entry = judged_entry(head, change, score, inputs.threshold);
+            let entry = judged_entry(head, change, score, inputs.threshold.get());
             tally(&mut counts, &entry);
             entries.push(entry);
         }
@@ -176,25 +205,22 @@ pub fn evaluate<'r>(inputs: &Inputs<'_, 'r>) -> Judged<'r> {
         .iter()
         .map(|id| &inputs.files[id.file].base[id.row])
         .collect();
-    removed.sort_by_key(|row| row_order(row));
+    removed.sort_by(|a, b| row_order(a).cmp(&row_order(b)));
     Judged {
         entries,
         removed,
         counts,
+        threshold: inputs.threshold,
     }
 }
 
-fn row_order(row: &Row) -> (String, u32, &str) {
-    (
-        row.file.to_string_lossy().into_owned(),
-        row.span.start.line,
-        &row.name,
-    )
+fn row_order(row: &Row) -> (Cow<'_, str>, u32, &str) {
+    (row.file.to_string_lossy(), row.span.start.line, &row.name)
 }
 
-/// The change of a head row the touch rule selects, or `None` when it is untouched.
 fn touched_change<'r>(
     inputs: &Inputs<'_, 'r>,
+    nesting: &Nesting<'_>,
     id: RowId,
 ) -> Option<Change<'r>> {
     let changed = inputs.files[id.file];
@@ -206,7 +232,7 @@ fn touched_change<'r>(
             edited.then_some(Change::Modified(base))
         },
         ancestry => {
-            if !lines_touched(changed.head, id.row, inputs.edits[id.file]) {
+            if !lines_touched(nesting, id.row, inputs.edits[id.file]) {
                 return None;
             }
             Some(match ancestry {
@@ -219,67 +245,92 @@ fn touched_change<'r>(
     }
 }
 
-/// An own line is added, or a deletion point falls between two own lines.
+/// A deletion hunk has a zero head count and a head start naming the line
+/// before the deletion point, as in Git's unified diff.
 fn lines_touched(
-    rows: &[Row],
+    nesting: &Nesting<'_>,
     index: usize,
     edits: Edits<'_>,
 ) -> bool {
     let Edits::Hunks(hunks) = edits else {
         return true;
     };
-    let own = own_lines(rows, index);
+    let own = nesting.own_lines(index);
     hunks.iter().any(|hunk| {
         if hunk.head_count == 0 {
-            own.contains(&hunk.head_start) && own.contains(&(hunk.head_start + 1))
+            own.contains(&hunk.head_start)
+                && hunk
+                    .head_start
+                    .checked_add(1)
+                    .is_some_and(|next| own.contains(&next))
         } else {
-            (hunk.head_start..hunk.head_start + hunk.head_count).any(|line| own.contains(&line))
+            let last = hunk.head_start.saturating_add(hunk.head_count - 1);
+            own.range(hunk.head_start..=last).next().is_some()
         }
     })
 }
 
-/// The row's span and owned regions, minus the open interior of every row
-/// inside them. Rows nest without overlapping, so a row that starts at or after
-/// a region's start is inside it or holds none of its lines in its open
-/// interior. Of two rows with one start, the earlier in source order is outer.
-fn own_lines(
-    rows: &[Row],
-    index: usize,
-) -> BTreeSet<u32> {
-    let row = &rows[index];
-    let regions: Vec<_> = std::iter::once(row.span)
-        .chain(row.body_regions.iter().copied())
-        .collect();
-    let mut lines: BTreeSet<u32> = regions
-        .iter()
-        .flat_map(|region| region.start.line..=region.end.line)
-        .collect();
-    for (other_index, other) in rows.iter().enumerate() {
-        let outer = other_index <= index && other.span.start == row.span.start;
-        if !outer
-            && regions
-                .iter()
-                .any(|region| region.start <= other.span.start)
-        {
-            for line in other.span.start.line + 1..other.span.end.line {
-                lines.remove(&line);
-            }
-        }
-    }
-    lines
+/// One file's head rows by start, the longer of two rows with one start first.
+struct Nesting<'r> {
+    rows: &'r [Row],
+    order: Vec<usize>,
 }
 
-fn is_allowed(
-    set: &AllowSet,
-    row: &Row,
-) -> bool {
-    let mut probe = vec![CrapEntry {
-        file: row.file.clone(),
-        function: row.name.clone(),
-        ..CrapEntry::default()
-    }];
-    allow(&mut probe, set);
-    probe.is_empty()
+impl<'r> Nesting<'r> {
+    fn new(rows: &'r [Row]) -> Self {
+        let mut order: Vec<usize> = (0..rows.len()).collect();
+        order.sort_by_key(|&i| (rows[i].span.start, Reverse(rows[i].span.end), i));
+        Self { rows, order }
+    }
+
+    /// Rows nest without overlapping, so the rows inside `region` follow the
+    /// longer rows that share its start and end before the first row past it.
+    fn inside(
+        &self,
+        region: SourceSpan,
+    ) -> impl Iterator<Item = usize> + '_ {
+        let first = self
+            .order
+            .partition_point(|&i| self.rows[i].span.start < region.start);
+        self.order[first..]
+            .iter()
+            .copied()
+            .skip_while(move |&i| {
+                let span = self.rows[i].span;
+                span.start == region.start && span.end > region.end
+            })
+            .take_while(move |&i| self.rows[i].span.end <= region.end)
+    }
+
+    /// The row's span and owned regions, minus the open interior of every
+    /// region of each row inside them. Of two rows with one start, the earlier
+    /// in source order is outer.
+    fn own_lines(
+        &self,
+        index: usize,
+    ) -> BTreeSet<u32> {
+        let row = &self.rows[index];
+        let regions: Vec<_> = std::iter::once(row.span)
+            .chain(row.body_regions.iter().copied())
+            .collect();
+        let mut lines: BTreeSet<u32> = regions
+            .iter()
+            .flat_map(|region| region.start.line..=region.end.line)
+            .collect();
+        for &region in &regions {
+            for other_index in self.inside(region) {
+                let other = &self.rows[other_index];
+                if other_index <= index && other.span.start == row.span.start {
+                    continue;
+                }
+                for nested in std::iter::once(&other.span).chain(&other.body_regions) {
+                    let (first, last) = (nested.start.line, nested.end.line);
+                    lines.retain(|&line| line <= first || line >= last);
+                }
+            }
+        }
+        lines
+    }
 }
 
 fn judged_entry<'r>(
@@ -327,6 +378,8 @@ fn tally(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
     use crate::{Mode, Side, analyze};
 
@@ -458,6 +511,13 @@ mod tests {
         }
     }
 
+    fn own_lines(
+        rows: &[Row],
+        index: usize,
+    ) -> BTreeSet<u32> {
+        Nesting::new(rows).own_lines(index)
+    }
+
     fn rows(source: &str) -> Vec<Row> {
         analyze(
             Path::new("o.ts"),
@@ -517,6 +577,57 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_constructors_initializer_interior_is_not_the_enclosing_functions() {
+        let source = "function outer() {\n  class C {\n    a = foo(\n      1,\n    )\n    constructor() {\n      go()\n    }\n  }\n}\n";
+        let rows = rows(source);
+        let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["outer", "outer::C::constructor"]);
+        assert_eq!(
+            own_lines(&rows, 0),
+            BTreeSet::from([1, 2, 3, 5, 6, 8, 9, 10])
+        );
+        assert_eq!(own_lines(&rows, 1), BTreeSet::from([3, 4, 5, 6, 7, 8]));
+    }
+
+    #[test]
+    fn an_outer_row_sharing_a_start_leaves_the_inner_rows_children_nested() {
+        let source =
+            "class C {\n  a = () => {\n    f(() => {\n      go()\n    })\n  }\n  b = 1\n}\n";
+        let rows = rows(source);
+        let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["C::constructor", "C::a", "C::a::f()"]);
+        assert_eq!(rows[0].span.start, rows[1].span.start);
+        assert_eq!(own_lines(&rows, 0), BTreeSet::from([2, 6, 7]));
+        assert_eq!(own_lines(&rows, 1), BTreeSet::from([2, 3, 5, 6]));
+        assert_eq!(own_lines(&rows, 2), BTreeSet::from([3, 4, 5]));
+    }
+
+    #[test]
+    fn a_row_in_a_default_parameter_is_nested_past_a_longer_row_sharing_the_start() {
+        let source = "class C {\n  a = (g = () => {\n    go()\n  }) => g\n  b = 1\n}\n";
+        let rows = rows(source);
+        let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["C::constructor", "C::a", "C::a::g"]);
+        assert_eq!(rows[0].span.start, rows[1].span.start);
+        assert_eq!(own_lines(&rows, 1), BTreeSet::from([2, 4]));
+    }
+
+    #[test]
+    fn disjoint_siblings_own_only_their_own_lines() {
+        let count: u32 = 400;
+        let source = (0..count).fold(String::new(), |mut source, i| {
+            writeln!(source, "function f{i}() {{\n  go()\n}}").unwrap();
+            source
+        });
+        let rows = rows(&source);
+        for i in 0..count {
+            let first = 3 * i + 1;
+            let own = own_lines(&rows, i as usize);
+            assert_eq!(own, BTreeSet::from([first, first + 1, first + 2]), "f{i}");
+        }
+    }
+
+    #[test]
     fn entries_and_removals_are_sorted_by_file_line_and_function() {
         let analyzed = |path: &str, source: &str| {
             analyze(Path::new(path), source.as_bytes(), Mode::Strict(Side::Head))
@@ -565,7 +676,7 @@ mod tests {
             matching: &matching,
             scores: &scores,
             allow: &AllowSet::compile(&[]).unwrap(),
-            threshold: 30.0,
+            threshold: Threshold::new(30.0).unwrap(),
         });
         let entries: Vec<_> = judged
             .entries
@@ -580,7 +691,8 @@ mod tests {
     #[test]
     fn a_deletion_point_touches_only_between_two_own_lines() {
         let rows = rows("function a() {\n  go()\n}\nfunction b() {\n  go()\n}\n");
-        let touched = |hunks: &[Hunk], row| lines_touched(&rows, row, Edits::Hunks(hunks));
+        let nesting = Nesting::new(&rows);
+        let touched = |hunks: &[Hunk], row| lines_touched(&nesting, row, Edits::Hunks(hunks));
         assert!(touched(&[hunk(1, 0)], 0));
         assert!(touched(&[hunk(2, 0)], 0));
         assert!(!touched(&[hunk(3, 0)], 0));
@@ -589,7 +701,9 @@ mod tests {
         assert!(touched(&[hunk(3, 1)], 0));
         assert!(!touched(&[hunk(4, 3)], 0));
         assert!(touched(&[hunk(2, 3)], 1));
+        assert!(!touched(&[hunk(2, 2)], 1));
+        assert!(!touched(&[hunk(u32::MAX, 0), hunk(u32::MAX, 2)], 1));
         assert!(!touched(&[], 0));
-        assert!(lines_touched(&rows, 1, Edits::Added));
+        assert!(lines_touched(&nesting, 1, Edits::Added));
     }
 }

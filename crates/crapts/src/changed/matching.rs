@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::Row;
 use crate::fingerprint::Fingerprint;
@@ -48,6 +48,8 @@ pub struct Matching {
 }
 
 impl Matching {
+    /// # Panics
+    /// When `head` names no head row of the classified files.
     #[must_use]
     pub fn ancestry(
         &self,
@@ -57,7 +59,6 @@ impl Matching {
     }
 }
 
-/// The name without a terminal `#` and ASCII digits.
 pub(crate) fn stem(name: &str) -> &str {
     match name.rsplit_once('#') {
         Some((head, digits))
@@ -73,13 +74,33 @@ pub(crate) fn stem(name: &str) -> &str {
 pub fn classify(files: &[ChangedFile<'_>]) -> Matching {
     let mut state = State::new(files);
     for file in 0..files.len() {
-        state.by_body(file);
-        state.by_name(file);
-        state.by_unique_fingerprint(&[file], Stage::Renamed);
+        let repeated = state.repeated_stems(file);
+        state.by_body(file, &repeated);
+        state.by_name(file, &repeated);
+        state.by_unique_fingerprint(file..=file, Stage::Renamed);
     }
-    let all: Vec<usize> = (0..files.len()).collect();
-    state.by_unique_fingerprint(&all, Stage::Moved);
+    state.by_unique_fingerprint(0..files.len(), Stage::Moved);
     state.finish()
+}
+
+#[derive(Clone, Copy, Default)]
+enum Slot {
+    #[default]
+    Empty,
+    One(RowId),
+    Many,
+}
+
+impl Slot {
+    fn add(
+        &mut self,
+        id: RowId,
+    ) {
+        *self = match self {
+            Self::Empty => Self::One(id),
+            _ => Self::Many,
+        };
+    }
 }
 
 struct State<'f, 'r> {
@@ -166,9 +187,9 @@ impl<'f, 'r> State<'f, 'r> {
     fn by_body(
         &mut self,
         file: usize,
+        repeated: &HashSet<&str>,
     ) {
-        let repeated = self.repeated_stems(file);
-        let mut bases: BTreeMap<(&str, Fingerprint), VecDeque<usize>> = BTreeMap::new();
+        let mut bases: HashMap<(&str, Fingerprint), VecDeque<usize>> = HashMap::new();
         for (i, row) in self.open_bases(file) {
             let key = stem(&row.name);
             if repeated.contains(key) {
@@ -199,8 +220,8 @@ impl<'f, 'r> State<'f, 'r> {
     fn by_name(
         &mut self,
         file: usize,
+        repeated: &HashSet<&str>,
     ) {
-        let repeated = self.repeated_stems(file);
         let mut open: HashMap<&str, (usize, usize)> = HashMap::new();
         for (_, row) in self.open_bases(file) {
             open.entry(stem(&row.name)).or_default().0 += 1;
@@ -232,31 +253,29 @@ impl<'f, 'r> State<'f, 'r> {
         }
     }
 
-    /// Pairs each fingerprint that occurs exactly once among the open base
-    /// rows and once among the open head rows of `files`.
     fn by_unique_fingerprint(
         &mut self,
-        files: &[usize],
+        files: impl IntoIterator<Item = usize>,
         stage: Stage,
     ) {
-        let mut seen: HashMap<Fingerprint, (Vec<RowId>, Vec<RowId>)> = HashMap::new();
-        for &file in files {
+        let mut seen: HashMap<Fingerprint, (Slot, Slot)> = HashMap::new();
+        for file in files {
             for (row, base) in self.open_bases(file) {
                 seen.entry(base.fingerprint)
                     .or_default()
                     .0
-                    .push(RowId { file, row });
+                    .add(RowId { file, row });
             }
             for (row, head) in self.open_heads(file) {
                 seen.entry(head.fingerprint)
                     .or_default()
                     .1
-                    .push(RowId { file, row });
+                    .add(RowId { file, row });
             }
         }
-        for (bases, heads) in seen.into_values() {
-            if let ([base], [head]) = (&bases[..], &heads[..]) {
-                self.pair(*base, *head, stage);
+        for slots in seen.into_values() {
+            if let (Slot::One(base), Slot::One(head)) = slots {
+                self.pair(base, head, stage);
             }
         }
     }
@@ -451,6 +470,17 @@ mod tests {
                 paired(0, 2, Stage::Body),
                 paired(0, 1, Stage::Body),
                 Ancestry::New
+            ]
+        );
+        assert_eq!(matching.removed, [RowId { file: 0, row: 0 }]);
+        files[0].1.reverse();
+        let matching = run(&files);
+        assert_eq!(
+            matching.heads[0],
+            [
+                Ancestry::New,
+                paired(0, 1, Stage::Body),
+                paired(0, 2, Stage::Body)
             ]
         );
         assert_eq!(matching.removed, [RowId { file: 0, row: 0 }]);

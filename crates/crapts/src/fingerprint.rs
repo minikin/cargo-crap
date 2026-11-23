@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::fmt::{self, Write as _};
+use std::fmt;
 
 use oxc_ast::ast::{
-    LogicalExpression, Program, StringLiteral, TSQualifiedName, TSType, TemplateElement,
+    LogicalExpression, Program, StringLiteral, TSImportTypeQualifier, TSQualifiedName, TSType,
+    TemplateElement,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{Kind, Token};
@@ -19,7 +20,14 @@ impl Fingerprint {
     pub(crate) const UNSET: Self = Self([0; 32]);
 
     fn of(tokens: &[&str]) -> Self {
-        Self(Sha256::digest(tokens.join("\0").as_bytes()).into())
+        let mut hasher = Sha256::new();
+        for (index, token) in tokens.iter().enumerate() {
+            if index > 0 {
+                hasher.update(b"\0");
+            }
+            hasher.update(token.as_bytes());
+        }
+        Self(hasher.finalize().into())
     }
 }
 
@@ -61,6 +69,9 @@ pub(crate) fn compute(
     program: &Program<'_>,
     rows: &[Regions],
 ) -> Vec<Fingerprint> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
     let literals = literal_values(program);
     let stream = normalized(source, tokens, &literals);
     let mut intervals: Vec<(Span, usize)> = rows
@@ -172,12 +183,11 @@ fn json_quote(units: impl IntoIterator<Item = u16>) -> String {
                 continue;
             },
             Ok(c) => {
-                write!(out, "\\u{:04x}", u32::from(c)).expect("writing to a String cannot fail");
+                push_unicode_escape(&mut out, u16::from(c as u8));
                 continue;
             },
             Err(lone) => {
-                write!(out, "\\u{:04x}", lone.unpaired_surrogate())
-                    .expect("writing to a String cannot fail");
+                push_unicode_escape(&mut out, lone.unpaired_surrogate());
                 continue;
             },
         };
@@ -185,6 +195,17 @@ fn json_quote(units: impl IntoIterator<Item = u16>) -> String {
     }
     out.push('"');
     out
+}
+
+fn push_unicode_escape(
+    out: &mut String,
+    unit: u16,
+) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push_str("\\u");
+    for shift in [12, 8, 4, 0] {
+        out.push(char::from(HEX[usize::from((unit >> shift) & 0xf)]));
+    }
 }
 
 fn quoted(value: JSStr<'_>) -> String {
@@ -203,8 +224,9 @@ struct Literals {
 }
 
 impl<'a> Visit<'a> for Literals {
-    /// Oxc parses `T[][]`, `T['k']['k']` and `A.B.B` in a loop but nests one
-    /// node per suffix, so a recursive walk can exhaust the stack on valid input.
+    /// Oxc parses `T[][]`, `T['k']['k']`, `T!!`, `A.B.B` and `import("m").A.B` in
+    /// a loop but nests one node per suffix, so a recursive walk can exhaust the
+    /// stack on valid input.
     fn visit_ts_type(
         &mut self,
         mut ty: &TSType<'a>,
@@ -212,6 +234,7 @@ impl<'a> Visit<'a> for Literals {
         loop {
             match ty {
                 TSType::TSArrayType(array) => ty = &array.element_type,
+                TSType::JSDocNonNullableType(inner) => ty = &inner.type_annotation,
                 TSType::TSIndexedAccessType(access) => {
                     self.visit_ts_type(&access.index_type);
                     ty = &access.object_type;
@@ -225,6 +248,13 @@ impl<'a> Visit<'a> for Literals {
     fn visit_ts_qualified_name(
         &mut self,
         _: &TSQualifiedName<'a>,
+    ) {
+    }
+
+    /// An import type's qualifier holds identifiers only.
+    fn visit_ts_import_type_qualifier(
+        &mut self,
+        _: &TSImportTypeQualifier<'a>,
     ) {
     }
 
@@ -248,14 +278,17 @@ impl<'a> Visit<'a> for Literals {
         element: &TemplateElement<'a>,
     ) {
         // The element's span starts after the backtick or the `}` that opens its token.
-        if let Some(cooked) = element.value.cooked {
-            self.values.insert(element.span.start - 1, quoted(cooked));
+        if let (Some(cooked), Some(start)) =
+            (element.value.cooked, element.span.start.checked_sub(1))
+        {
+            self.values.insert(start, quoted(cooked));
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
     use std::path::Path;
 
     use super::*;

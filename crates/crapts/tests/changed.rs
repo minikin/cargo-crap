@@ -19,7 +19,9 @@ use cargo_crap_core::score::crap;
 use cargo_crap_core::signals::SignalSettings;
 use crapts::changed::matching::{Ancestry, ChangedFile, Matching, RowId, Stage, classify};
 use crapts::changed::section::{ChangedSection, Comparison, SkipReason, Skipped};
-use crapts::changed::verdict::{Change, Counts, Edits, Inputs, Judged, Verdict, evaluate};
+use crapts::changed::verdict::{
+    Change, Counts, Edits, Inputs, Judged, Threshold, Verdict, evaluate,
+};
 use crapts::{Mode, Row, Side, analyze};
 use proptest::prelude::*;
 use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
@@ -229,6 +231,15 @@ fn judge_files<'r>(
     scores: &[CrapEntry],
     allow: &[&str],
 ) -> Judged<'r> {
+    judge_at(files, scores, allow, 30.0)
+}
+
+fn judge_at<'r>(
+    files: &[(&'r [Row], &'r [Row], Edits<'_>)],
+    scores: &[CrapEntry],
+    allow: &[&str],
+    threshold: f64,
+) -> Judged<'r> {
     let changed: Vec<_> = files
         .iter()
         .map(|&(base, head, _)| ChangedFile { base, head })
@@ -242,7 +253,7 @@ fn judge_files<'r>(
         matching: &matching,
         scores,
         allow: &AllowSet::compile(&patterns).unwrap(),
-        threshold: 30.0,
+        threshold: Threshold::new(threshold).unwrap(),
     })
 }
 
@@ -899,6 +910,26 @@ fn allowed_touched_rows_are_counted_and_never_fail() {
     // Then
     assert_eq!(seen(&judged), []);
     assert_eq!(judged.counts, counts([0, 0, 0, 0, 0, 0, 0, 2, 0, 0]));
+    // When an allowed row also lacks a score
+    let judged = pair.judged(&[], &["legacy"]);
+    // Then the allow wins and only the other row is skipped
+    assert_eq!(seen(&judged), []);
+    assert_eq!(judged.counts, counts([0, 0, 0, 0, 0, 0, 0, 1, 1, 0]));
+    assert_eq!(judged.removed.len(), 0);
+}
+
+#[test]
+fn a_file_pair_without_hunks_touches_nothing() {
+    let pair = legacy_and_fresh();
+    let files = [(
+        pair.base.as_slice(),
+        pair.head.as_slice(),
+        Edits::Hunks(&[]),
+    )];
+    let judged = judge_files(&files, &pair.uncovered(), &[]);
+    assert_eq!(seen(&judged), []);
+    assert_eq!(judged.counts, Counts::default());
+    assert_eq!(judged.removed.len(), 0);
 }
 
 /// A generated source with `G` slots, where any trivia keeps the parse, and
@@ -1162,7 +1193,7 @@ fn recorded_raw() -> String {
         path: "src/dist/x.ts".to_owned(),
         reason: SkipReason::Excluded,
     }];
-    let section = ChangedSection::new(&comparison(), &judged, &skipped, 30.0);
+    let section = ChangedSection::new(&comparison(), &judged, &skipped);
     section.json().get().to_owned()
 }
 
@@ -1226,10 +1257,15 @@ fn element(
 #[test]
 fn changed_v1_rejects_a_malformed_changed_object() {
     let schema = common::compile("schemas/crapts/changed-v1.json");
-    // Given
+    // Given a valid object, so each error below comes from the one mutation
     let valid = recorded();
     assert!(schema.is_valid(&valid), "{valid:#}");
-    let cases: [(&str, Option<Value>, &str); 11] = [
+    let line = |text: String| Some(json!(format!("{text}\n")));
+    let cases: [(&str, Option<Value>, &str); 15] = [
+        ("/version", line("1.2.3".to_owned()), "/version"),
+        ("/base/commit", line("b".repeat(40)), "/base/commit"),
+        ("/base/merge_base", line("a".repeat(40)), "/base/merge_base"),
+        ("/head/commit", line("c".repeat(64)), "/head/commit"),
         ("/entries/0/base_cyclomatic", None, "/entries/0"),
         (
             "/entries/1/candidates",
@@ -1267,7 +1303,7 @@ fn changed_v1_rejects_a_malformed_changed_object() {
         ),
     ];
     for (pointer, value, location) in cases {
-        // When
+        // When one member is replaced or removed
         let mut changed = valid.clone();
         let (parent, key) = pointer.rsplit_once('/').unwrap();
         let object = changed
@@ -1279,7 +1315,7 @@ fn changed_v1_rejects_a_malformed_changed_object() {
             Some(value) => drop(object.insert(key.to_owned(), value)),
             None => drop(object.remove(key)),
         }
-        // Then
+        // Then the error is reported at the member or at the object that constrains it
         let paths: Vec<String> = schema
             .iter_errors(&changed)
             .map(|error| error.instance_path().as_str().to_owned())
@@ -1483,7 +1519,7 @@ fn a_moved_or_ambiguous_entry_names_its_base_file_or_candidates() {
             reason: SkipReason::OutsidePath,
         },
     ];
-    let section = ChangedSection::new(&comparison(), &judged, &skipped, 30.0);
+    let section = ChangedSection::new(&comparison(), &judged, &skipped);
     let changed: Value = serde_json::from_str(section.json().get()).unwrap();
     assert!(schema.is_valid(&changed), "{changed:#}");
     let hook = &changed["entries"][0];
@@ -1611,14 +1647,14 @@ fn report(
 
 #[test]
 fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
-    // Given
+    // Given a section built by crapts itself and a baseline for the delta envelope
     let report_schema = common::compile("schemas/crapts/report-v1.json");
     let delta_schema = common::compile("schemas/crapts/delta-v1.json");
     let base = format!("{}\n{}", func("legacy", 10), func("gone", 3));
     let head = format!("{}\n{}", func("legacy", 11), func("fresh", 2));
     let pair = Pair::new("src/app.ts", &base, &head);
     let judged = pair.judged(&pair.uncovered(), &[]);
-    let section = ChangedSection::new(&comparison(), &judged, &[], 30.0);
+    let section = ChangedSection::new(&comparison(), &judged, &[]);
     let dir = tempfile::tempdir().unwrap();
     let saved = dir.path().join("base.json");
     std::fs::write(&saved, report(None, &[]).to_string()).unwrap();
@@ -1626,10 +1662,10 @@ fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
     let allow = AllowSet::compile(&[]).unwrap();
     let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
     for (baseline, schema) in [(None, &report_schema), (Some(&prepared), &delta_schema)] {
-        // When
+        // When the changed member is present and when it is omitted
         let mut with = report(baseline, &[&section]);
         let without = report(baseline, &[]);
-        // Then
+        // Then both validate, since a run without --base writes no changed member
         assert!(schema.is_valid(&with), "{with:#}");
         assert!(schema.is_valid(&without), "{without:#}");
         assert!(without.get("changed").is_none());
@@ -1648,8 +1684,26 @@ fn the_section_reports_the_fail_count_as_its_failures() {
                 fail,
                 ..Counts::default()
             },
+            threshold: Threshold::new(30.0).unwrap(),
         };
-        let section = ChangedSection::new(&comparison(), &judged, &[], 30.0);
+        let section = ChangedSection::new(&comparison(), &judged, &[]);
         assert_eq!(section.failures(), Some(fail));
+    }
+}
+
+#[test]
+fn the_published_threshold_is_the_one_the_verdicts_used() {
+    let head = analyzed("src/n.ts", &func("fresh", 6), Side::Head);
+    let files = [(&[][..], head.as_slice(), Edits::Added)];
+    let scores = [score(&head[0], Some(0.0), 0.0)];
+    for (threshold, verdict) in [(42.0, "pass"), (41.5, "fail")] {
+        let judged = judge_at(&files, &scores, &[], threshold);
+        let section = ChangedSection::new(&comparison(), &judged, &[]);
+        let changed: Value = serde_json::from_str(section.json().get()).unwrap();
+        assert_eq!(changed["threshold"].as_f64(), Some(threshold));
+        assert_eq!(changed["entries"][0]["verdict"], verdict);
+    }
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(Threshold::new(value), None);
     }
 }
