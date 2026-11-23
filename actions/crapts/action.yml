@@ -101,3 +101,22 @@ runs:
         INPUT_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
         INPUT_COVERAGE_FILE: ${{ inputs.coverage-file }}
       run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/baseline.mjs" "$BASH"
+    - name: Render report and count gate results
+      id: score
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CRAPTS_TEMP: ${{ steps.install.outputs.temp }}
+        CRAPTS_BINARY: ${{ steps.install.outputs.binary }}
+        CRAPTS_PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && env.CRAPTS_TEST_PR_NUMBER) || github.event.pull_request.number }}
+        CRAPTS_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        INPUT_FAIL_REGRESSION: ${{ inputs.fail-regression }}
+        INPUT_FAIL_CHANGED: ${{ inputs.fail-changed }}
+        INPUT_FAIL_ABOVE: ${{ inputs.fail-above }}
+        INPUT_COMMENT_MARKER: ${{ inputs.comment-marker }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/score.mjs"
+    - name: Return gate status
+      shell: bash
+      env:
+        STATUS: ${{ steps.score.outputs.status }}
+      run: exit "$STATUS"

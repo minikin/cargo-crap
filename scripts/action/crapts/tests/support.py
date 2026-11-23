@@ -8,6 +8,9 @@ import tarfile
 import tempfile
 import unittest
 
+os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+
 ROOT = Path(__file__).resolve().parents[4]
 SCRIPTS = ROOT / "scripts/action/crapts"
 ACTION = ROOT / "actions/crapts"
