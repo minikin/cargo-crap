@@ -1,8 +1,9 @@
 use serde_json::Value;
-use std::cell::OnceCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -35,11 +36,32 @@ pub struct Repo {
 
 impl Repo {
     pub fn new() -> Repo {
-        let dir = tempfile::tempdir().unwrap();
+        Repo::in_dir(tempfile::tempdir().unwrap())
+    }
+
+    /// A shared repository lives in a static and is never dropped, so it is
+    /// kept under the target directory and copies older than a day go.
+    fn shared() -> Repo {
+        let parent = Path::new(env!("CARGO_TARGET_TMPDIR")).join("crapts-docs");
+        fs::create_dir_all(&parent).unwrap();
+        let day_ago = SystemTime::now() - Duration::from_hours(24);
+        for entry in fs::read_dir(&parent).unwrap().flatten() {
+            let stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|modified| modified < day_ago);
+            if stale {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+        Repo::in_dir(tempfile::tempdir_in(parent).unwrap())
+    }
+
+    fn in_dir(dir: TempDir) -> Repo {
         let empty_config = dir.path().join(".git-empty-config");
         fs::write(&empty_config, "").unwrap();
-        let root = dir.path().join("repo");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir(dir.path().join("home")).unwrap();
+        fs::create_dir(dir.path().join("repo")).unwrap();
         let repo = Repo { dir, empty_config };
         repo.git(&["init", "--quiet", "--initial-branch=main"]);
         repo
@@ -53,18 +75,29 @@ impl Repo {
         &self,
         cmd: &mut Command,
     ) {
+        let home = self.dir.path().join("home");
         cmd.current_dir(self.root())
             .env("GIT_CONFIG_GLOBAL", &self.empty_config)
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE");
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("XDG_CONFIG_HOME", &home);
+        for key in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_CONFIG",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+        ] {
+            cmd.env_remove(key);
+        }
     }
 
     pub fn git(
         &self,
         args: &[&str],
-    ) {
+    ) -> String {
         let mut cmd = Command::new("git");
         self.isolate(&mut cmd);
         for (key, value) in [
@@ -83,6 +116,7 @@ impl Repo {
             "git {args:?}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        String::from_utf8(out.stdout).unwrap()
     }
 
     pub fn crapts<S: AsRef<std::ffi::OsStr>>(
@@ -163,15 +197,21 @@ pub enum FeatureCoverage {
     KeptFromMain,
 }
 
-/// The cart project: `base` on `main`, `head` on `feature`, prepared and
-/// left on `feature` with `coverage/lcov.info` and `crapts-baseline.json`
-/// untracked.
-pub fn cart() -> Repo {
-    cart_with(FeatureCoverage::Own).unwrap_or_else(|e| panic!("{e}"))
+pub fn cart() -> &'static Repo {
+    static CART: OnceLock<Repo> = OnceLock::new();
+    CART.get_or_init(|| {
+        prepare(Repo::shared(), FeatureCoverage::Own).unwrap_or_else(|e| panic!("{e}"))
+    })
 }
 
 pub fn cart_with(coverage: FeatureCoverage) -> Result<Repo, String> {
-    let repo = Repo::new();
+    prepare(Repo::new(), coverage)
+}
+
+fn prepare(
+    repo: Repo,
+    coverage: FeatureCoverage,
+) -> Result<Repo, String> {
     repo.commit_tree(&fixtures().join("base"), "base");
     repo.git(&["checkout", "--quiet", "-b", "feature"]);
     repo.commit_tree(&fixtures().join("head"), "head");
@@ -249,36 +289,22 @@ pub fn expect_scores(
 
 pub const COMPLEXITY_PAGE: &str = "docs/crapts/reference/complexity.md";
 
-pub fn complexity() -> Repo {
-    let repo = Repo::new();
-    repo.commit_tree(&fixtures().join("complexity"), "complexity");
-    repo.copy("coverage/lcov.data", "coverage/lcov.info");
-    repo
+pub fn complexity() -> &'static Repo {
+    static COMPLEXITY: OnceLock<Repo> = OnceLock::new();
+    COMPLEXITY.get_or_init(|| {
+        let repo = Repo::shared();
+        repo.commit_tree(&fixtures().join("complexity"), "complexity");
+        repo.copy("coverage/lcov.data", "coverage/lcov.info");
+        repo
+    })
 }
 
 /// The complexity reference runs in its own repository so its example
 /// leaves the cart scores and samples unchanged.
-pub struct Repos {
-    pub cart: Repo,
-    complexity: OnceCell<Repo>,
-}
-
-impl Repos {
-    pub fn new() -> Repos {
-        Repos {
-            cart: cart(),
-            complexity: OnceCell::new(),
-        }
-    }
-
-    pub fn for_page(
-        &self,
-        path: &str,
-    ) -> &Repo {
-        if path == COMPLEXITY_PAGE {
-            self.complexity.get_or_init(complexity)
-        } else {
-            &self.cart
-        }
+pub fn repo_for_page(path: &str) -> &'static Repo {
+    if path == COMPLEXITY_PAGE {
+        complexity()
+    } else {
+        cart()
     }
 }

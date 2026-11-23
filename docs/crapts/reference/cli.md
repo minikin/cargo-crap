@@ -143,8 +143,8 @@ Options:
 | Config file | `.crapts.toml`, found by walking up from the working directory to the Git worktree root | `.cargo-crap.toml`, found by walking up from the working directory |
 | Default format | `text`, with `human` accepted as an alias | `human` |
 | Zero rows | `--top 0` exits 2 | `--top 0` prints no rows |
-| Gate population | `--fail-above` counts every eligible row, whatever `--min` and `--top` show | counts the rows left after `--min` |
-| SARIF with a comparison | `--format sarif` with `--baseline` or `--base` exits 2 | SARIF accepts `--baseline` |
+| Gate population | `--fail-above` counts every eligible row, whatever `--min` and `--top` show | `--fail-above` counts only the rows `--min` and `--top` select |
+| SARIF with a comparison | `--format sarif` with `--baseline` or `--base` exits 2 before the comparison input is read | `--format sarif` with `--baseline` exits 2 after the baseline is read |
 | Changed functions | `--base` and `--fail-changed` gate the functions a branch edits | no equivalent |
 
 Exit codes are listed in [Exit codes](exit-codes.md).

@@ -1,4 +1,4 @@
-use crate::fixture::{Repo, Repos, Run, VERSION};
+use crate::fixture::{self, Repo, Run, VERSION};
 use crate::markers::{Marker, Stream};
 use crate::normalize::Normalizer;
 use crate::pages::{self, Page, Sample};
@@ -68,13 +68,10 @@ pub fn check_page(
     Ok(samples)
 }
 
-pub fn check_pages(
-    pages: &[Page],
-    repos: &Repos,
-) -> Result<Vec<Sample>, String> {
+pub fn check_pages(pages: &[Page]) -> Result<Vec<Sample>, String> {
     let mut checked = Vec::new();
     for page in pages {
-        checked.extend(check_page(page, repos.for_page(&page.path))?);
+        checked.extend(check_page(page, fixture::repo_for_page(&page.path))?);
     }
     let outputs = checked
         .iter()

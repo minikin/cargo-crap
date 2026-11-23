@@ -43,7 +43,7 @@ impl Normalizer<'_> {
             .collect();
         if self.windows {
             for path in self.fixture_paths {
-                out = out.replace(&path.replace('/', "\\"), path);
+                out = replace_path(&out, &path.replace('/', "\\"), path);
             }
         }
         out
@@ -72,6 +72,37 @@ impl Normalizer<'_> {
         out.push_str(&stream[copied..]);
         out
     }
+}
+
+fn path_char(c: char) -> bool {
+    c.is_alphanumeric() || "_-\\/".contains(c)
+}
+
+/// Replaces `native` only where it stands as a whole path, so a longer
+/// name that merely contains it keeps its bytes.
+fn replace_path(
+    text: &str,
+    native: &str,
+    portable: &str,
+) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (at, _) in text.match_indices(native) {
+        let before = text[..at].chars().next_back();
+        let rest = &text[at + native.len()..];
+        let mut after = rest.chars();
+        let next = after.next();
+        let continues = next.is_some_and(path_char)
+            || (next == Some('.') && after.next().is_some_and(char::is_alphanumeric));
+        if before.is_some_and(|c| path_char(c) || c == '.') || continues {
+            continue;
+        }
+        out.push_str(&text[copied..at]);
+        out.push_str(portable);
+        copied = at + native.len();
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 pub struct StringValue {

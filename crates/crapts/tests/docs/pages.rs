@@ -147,8 +147,6 @@ pub fn readme_sections(readme: &Page) -> Vec<Page> {
     sections(readme, README_SECTION)
 }
 
-/// Body rows of every table outside fenced blocks, as trimmed cells with
-/// their line numbers. A table's first row is its header and is skipped.
 pub fn table_rows(page: &Page) -> Vec<(usize, Vec<String>)> {
     let mut rows = Vec::new();
     let mut in_table = false;
@@ -332,11 +330,14 @@ pub fn literal_versions(
     page: &Page,
     version: &str,
 ) -> Result<(), String> {
+    let literal = format!("\"{version}\"");
     for line in page.lines() {
-        let Some((_, after)) = line.text.split_once("\"version\":") else {
-            continue;
-        };
-        if after.trim_start().starts_with(&format!("\"{version}\"")) {
+        let found = line
+            .text
+            .split("\"version\":")
+            .skip(1)
+            .any(|after| after.trim_start().starts_with(&literal));
+        if found {
             return Err(format!(
                 "{}: the literal version {version} belongs as <version>",
                 page.at(line.number)
@@ -450,8 +451,19 @@ pub fn links(page: &Page) -> Vec<(usize, String)> {
             }
             rest = &rest[end..];
         }
+        if let Some(target) = reference_definition(line.text) {
+            found.push((line.number, target.to_owned()));
+        }
     }
     found
+}
+
+fn reference_definition(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix('[')?;
+    let (label, target) = rest.split_once("]:")?;
+    let target = target.split_whitespace().next()?;
+    let local = !label.is_empty() && !target.contains("://") && !target.starts_with("mailto:");
+    local.then_some(target.trim_start_matches('<').trim_end_matches('>'))
 }
 
 /// GitHub's anchor for a heading.

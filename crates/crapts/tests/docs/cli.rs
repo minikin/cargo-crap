@@ -11,7 +11,7 @@ pub struct HelpOption {
     pub default: Option<String>,
 }
 
-pub fn help_options(help: &str) -> Vec<HelpOption> {
+pub fn all_help_options(help: &str) -> Vec<HelpOption> {
     let mut options: Vec<HelpOption> = Vec::new();
     for line in help.lines() {
         let indent = line.len() - line.trim_start().len();
@@ -29,6 +29,11 @@ pub fn help_options(help: &str) -> Vec<HelpOption> {
             option.default = Some(rest.trim_end().trim_end_matches(']').to_owned());
         }
     }
+    options
+}
+
+pub fn help_options(help: &str) -> Vec<HelpOption> {
+    let mut options = all_help_options(help);
     options.retain(|o| o.long != "--help" && o.long != "--version");
     options
 }
@@ -52,6 +57,7 @@ pub fn check_flag_rows(
     page: &Page,
     help: &str,
 ) -> Result<(), String> {
+    let heading = pages::section(page, "Flags")?.first_line;
     let mut listed = BTreeSet::new();
     for (long, _, line) in flags_table(page)? {
         if !listed.insert(long.clone()) {
@@ -66,7 +72,7 @@ pub fn check_flag_rows(
     } else {
         Err(format!(
             "{}: the Flags table lacks {missing:?} and lists {extra:?}, which --help does not print",
-            page.path
+            page.at(heading)
         ))
     }
 }
@@ -125,20 +131,32 @@ pub fn check_differences(
     help: &str,
 ) -> Result<usize, String> {
     let section = pages::section(page, "Differences from cargo-crap")?;
-    let printed: BTreeSet<String> = help_options(help).into_iter().map(|o| o.long).collect();
+    let printed: BTreeSet<String> = all_help_options(help).into_iter().map(|o| o.long).collect();
     let mut named = 0;
     for (line, cells) in pages::table_rows(&section) {
         let crapts = cells.get(1).map(String::as_str).unwrap_or_default();
-        for code in crapts.split('`').skip(1).step_by(2) {
-            for flag in code.split_whitespace().filter(|w| w.starts_with("--")) {
-                if !printed.contains(flag) {
-                    return Err(format!("{}: {flag} is not a crapts option", page.at(line)));
-                }
-                named += 1;
+        for flag in long_flags(crapts) {
+            if !printed.contains(&flag) {
+                return Err(format!("{}: {flag} is not a crapts option", page.at(line)));
             }
+            named += 1;
         }
     }
     Ok(named)
+}
+
+pub fn long_flags(text: &str) -> Vec<String> {
+    text.split(|c: char| c.is_whitespace() || c == '`')
+        .filter_map(|word| {
+            let flag: String = word
+                .trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                .strip_prefix("--")?
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            (!flag.is_empty()).then(|| format!("--{flag}"))
+        })
+        .collect()
 }
 
 pub fn exit_codes(page: &Page) -> Result<Vec<(u8, usize)>, String> {

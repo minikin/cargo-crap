@@ -93,12 +93,18 @@ fn quote(word: &str) -> String {
             .chars()
             .any(|c| c.is_whitespace() || "'\"|;>&#".contains(c));
     if plain {
-        word.to_owned()
-    } else if word.contains('"') {
-        format!("'{word}'")
-    } else {
-        format!("\"{word}\"")
+        return word.to_owned();
     }
+    let mut quoted = String::from("\"");
+    for c in word.chars() {
+        if c == '"' {
+            quoted.push_str("\"'\"'\"");
+        } else {
+            quoted.push(c);
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 pub fn split(text: &str) -> Result<Vec<String>, String> {
@@ -115,9 +121,8 @@ pub fn split(text: &str) -> Result<Vec<String>, String> {
             }
             continue;
         }
-        let ends = matches!(c, '|' | ';' | '>')
-            || (c == '&' && chars.peek() == Some(&'&'))
-            || (c == '#' && word.is_none());
+        let ends =
+            matches!(c, '|' | ';' | '>') || (c == '&' && chars.peek() == Some(&'&')) || c == '#';
         if ends {
             break;
         }

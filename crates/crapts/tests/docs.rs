@@ -231,14 +231,8 @@ fn the_fixture_repository_scores_each_revision_with_its_own_coverage() {
         std::fs::read(root.join("coverage/lcov.info")).unwrap(),
         std::fs::read(root.join("coverage/lcov.data")).unwrap()
     );
-    let status = Command::new("git")
-        .current_dir(&root)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .args(["status", "--porcelain", "--untracked-files=all"])
-        .output()
-        .unwrap();
     assert_eq!(
-        String::from_utf8(status.stdout).unwrap(),
+        repo.git(&["status", "--porcelain", "--untracked-files=all"]),
         "?? coverage/lcov.info\n?? crapts-baseline.json\n"
     );
     let message = err(fixture::cart_with(FeatureCoverage::KeptFromMain));
@@ -261,12 +255,10 @@ fn the_score_check_names_the_function_and_both_scores() {
 
 #[test]
 fn every_marked_sample_in_docs_crapts_matches_a_real_run() {
-    let repos = fixture::Repos::new();
-    let checked =
-        check::check_pages(&pages::crapts_pages(), &repos).unwrap_or_else(|e| panic!("{e}"));
+    let checked = check::check_pages(&pages::crapts_pages()).unwrap_or_else(|e| panic!("{e}"));
     assert!(checked.iter().any(|s| s.page == QUICK_START));
     let unmarked = Page::new(QUICK_START, "# crapts\n\nNo samples.\n");
-    let message = err(check::check_pages(&[unmarked], &repos));
+    let message = err(check::check_pages(&[unmarked]));
     assert_names(&message, &["no crapts-output marker"]);
 }
 
@@ -274,21 +266,34 @@ fn every_marked_sample_in_docs_crapts_matches_a_real_run() {
 fn a_drifted_sample_fails_naming_the_page_the_marker_and_the_first_differing_line() {
     let repo = fixture::cart();
     let page = Page::load(QUICK_START);
-    let row = page
+    let marker = "<!-- crapts-output: --coverage coverage/lcov.info -->";
+    let marker_line = page
         .text
         .lines()
-        .find(|l| l.contains("checkout") && l.contains("42.0"))
+        .position(|l| l == marker)
+        .expect("the marker")
+        + 1;
+    let sample = pages::samples(&page)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.line == marker_line)
+        .unwrap();
+    let (offset, row) = sample
+        .block
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("checkout") && l.contains("42.0"))
         .expect("the checkout row of the quick start sample");
     let drifted = page.with(row, &row.replacen("42.0", "41.0", 1));
-    let message = err(check::check_page(&drifted, &repo));
+    let message = err(check::check_page(&drifted, repo));
     assert_names(
         &message,
         &[
-            QUICK_START,
-            "--coverage coverage/lcov.info",
+            &format!("{QUICK_START}:{marker_line}"),
+            marker,
+            &format!("line {} of the block differs", offset + 1),
             "41.0",
             "42.0",
-            "line ",
         ],
     );
 }
@@ -311,7 +316,7 @@ fn a_markers_exit_code_is_checked_as_well_as_its_output() {
         "<!-- crapts-output exit=1: --coverage coverage/lcov.info -->",
         &stdout,
     );
-    let message = err(check::check_page(&wrong, &repo));
+    let message = err(check::check_page(&wrong, repo));
     assert_names(
         &message,
         &[
@@ -324,7 +329,7 @@ fn a_markers_exit_code_is_checked_as_well_as_its_output() {
         "<!-- crapts-output exit=1: --coverage coverage/lcov.info --fail-above -->",
         &stdout,
     );
-    assert_eq!(check::check_page(&right, &repo).unwrap().len(), 1);
+    assert_eq!(check::check_page(&right, repo).unwrap().len(), 1);
 }
 
 #[test]
@@ -386,6 +391,7 @@ fn word() -> impl Strategy<Value = String> {
         "--[a-z]{1,8}",
         "[a-z]{1,4}--[a-z]{1,4}",
         "[a-z]{1,4}( [a-z<>!-]{1,4}){1,3}",
+        "[a-z'\"#]{1,6}",
     ]
 }
 
@@ -430,10 +436,10 @@ fn the_crapts_version_is_written_as_a_placeholder() {
     let repo = fixture::cart();
     let marker = "<!-- crapts-output: --version -->";
     let placeholder = marked_page(marker, "crapts <version>\n");
-    assert!(check::check_page(&placeholder, &repo).is_ok());
+    assert!(check::check_page(&placeholder, repo).is_ok());
     let literal = marked_page(marker, &format!("crapts {VERSION}\n"));
     assert_names(
-        &err(check::check_page(&literal, &repo)),
+        &err(check::check_page(&literal, repo)),
         &["--version", VERSION],
     );
     let page = Page::new(
@@ -446,6 +452,16 @@ fn the_crapts_version_is_written_as_a_placeholder() {
     );
     let placeholder = page.with(&format!("\"{VERSION}\""), "\"<version>\"");
     assert!(pages::literal_versions(&placeholder, VERSION).is_ok());
+    let second = Page::new(
+        "docs/crapts/drift.md",
+        &format!(
+            "# Drift\n\n```json\n[{{\"version\": \"<version>\"}}, {{\"version\": \"{VERSION}\"}}]\n```\n"
+        ),
+    );
+    assert_names(
+        &err(pages::literal_versions(&second, VERSION)),
+        &["docs/crapts/drift.md:4", VERSION],
+    );
 }
 
 #[test]
@@ -477,10 +493,10 @@ fn normalization_touches_only_native_paths_and_version_positions() {
         unix.apply(r#"{"file": "src\\cart.ts"}"#, true),
         r#"{"file": "src\\cart.ts"}"#
     );
-    let text = "src\\cart.ts:1 keeps \\n here\ncrapts 9.8.7\nnot crapts 9.8.7\n";
+    let text = "src\\cart.ts:1 keeps \\n here\ncrapts 9.8.7\nnot crapts 9.8.7\nother\\src\\cart.ts.bak src\\cart.ts.\n";
     assert_eq!(
         windows.apply(text, false),
-        "src/cart.ts:1 keeps \\n here\ncrapts <version>\nnot crapts 9.8.7\n"
+        "src/cart.ts:1 keeps \\n here\ncrapts <version>\nnot crapts 9.8.7\nother\\src\\cart.ts.bak src/cart.ts.\n"
     );
     assert_eq!(
         unix.apply(text, false),
@@ -527,7 +543,8 @@ fn the_splitter_groups_quotes_and_stops_at_shell_operators() {
     assert_eq!(split("a && b"), ["a"]);
     assert_eq!(split("a; b"), ["a"]);
     assert_eq!(split("a # note"), ["a"]);
-    assert_eq!(split("a#b & c"), ["a#b", "&", "c"]);
+    assert_eq!(split("a#b & c"), ["a"]);
+    assert_eq!(split("a'#'b & c"), ["a#b", "&", "c"]);
     assert_eq!(split("'' x"), ["", "x"]);
     assert_eq!(split("'a|b>c;d#e'"), ["a|b>c;d#e"]);
     assert!(markers::split("a 'b").is_err());
@@ -568,13 +585,13 @@ fn documented_command_lines_are_selected_joined_and_stripped() {
 fn every_documented_crapts_command_line_is_accepted_by_the_binary() {
     let repo = fixture::cart();
     let pages = pages::checked_pages();
-    assert!(check::check_commands(&pages, &repo).unwrap_or_else(|e| panic!("{e}")) > 0);
+    assert!(check::check_commands(&pages, repo).unwrap_or_else(|e| panic!("{e}")) > 0);
     let typo = Page::new(
         "docs/crapts/drift.md",
         "```console\n$ crapts --coverage coverage/lcov.info --fail-abvoe\n```\n",
     );
     assert_names(
-        &err(check::check_commands(&[typo], &repo)),
+        &err(check::check_commands(&[typo], repo)),
         &["docs/crapts/drift.md:2", "--fail-abvoe"],
     );
     let help = Page::new(
@@ -583,14 +600,14 @@ fn every_documented_crapts_command_line_is_accepted_by_the_binary() {
     );
     assert_eq!(repo.crapts(&["--fail-abvoe", "--help"]).code, Some(0));
     assert_names(
-        &err(check::check_commands(&[help], &repo)),
+        &err(check::check_commands(&[help], repo)),
         &["docs/crapts/drift.md:2", "--fail-abvoe"],
     );
     let print = Page::new(
         "docs/crapts/drift.md",
         "```bash\ncrapts --print-config\n```\n",
     );
-    assert_eq!(check::check_commands(&[print], &repo), Ok(1));
+    assert_eq!(check::check_commands(&[print], repo), Ok(1));
 }
 
 #[test]
@@ -605,6 +622,14 @@ fn every_relative_link_resolves() {
     assert_names(
         &err(check::check_links(&[broken])),
         &[QUICK_START, "guides/basline.md"],
+    );
+    let reference = Page::new(
+        QUICK_START,
+        "# Q\n\nSee [the guide][g].\n\n[g]: guides/missing.md\n",
+    );
+    assert_names(
+        &err(check::check_links(&[reference])),
+        &[&format!("{QUICK_START}:5"), "guides/missing.md"],
     );
     let anchor = Page::new(
         QUICK_START,
@@ -678,9 +703,10 @@ fn the_flags_table_lists_every_option_in_help_once() {
         .find(|l| l.starts_with("| `--all-rows`"))
         .expect("the --all-rows row");
     let removed = page.with(&format!("{all_rows}\n"), "");
+    let heading = page.text.lines().position(|l| l == "## Flags").unwrap() + 1;
     assert_names(
         &err(cli::check_flag_rows(&removed, &help)),
-        &[cli::CLI, "--all-rows"],
+        &[&format!("{}:{heading}", cli::CLI), "--all-rows"],
     );
     let doubled = page.with(
         &format!("{all_rows}\n"),
@@ -768,6 +794,12 @@ fn the_differences_table_names_only_crapts_options() {
     assert_names(
         &err(cli::check_differences(&drifted, &help)),
         &["--covrage"],
+    );
+    let plain = page.with(row, &row.replacen("LCOV or", "--covrage, LCOV or", 1));
+    assert_names(&err(cli::check_differences(&plain, &help)), &["--covrage"]);
+    assert_eq!(
+        cli::long_flags("`--top 0`, then --help. (--all-rows)"),
+        ["--top", "--help", "--all-rows"]
     );
 }
 
@@ -1056,7 +1088,7 @@ fn the_coverage_guide_reads_both_kinds_of_committed_coverage() {
 fn the_complexity_reference_tells_optional_chaining_from_nullish_coalescing() {
     let page = Page::load(fixture::COMPLEXITY_PAGE);
     let repo = fixture::complexity();
-    let samples = check::check_page(&page, &repo).unwrap_or_else(|e| panic!("{e}"));
+    let samples = check::check_page(&page, repo).unwrap_or_else(|e| panic!("{e}"));
     let rows = samples
         .iter()
         .map(|s| coverage::text_rows(&s.block))
