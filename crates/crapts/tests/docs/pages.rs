@@ -505,3 +505,19 @@ pub fn check_link(
         _ => Ok(()),
     }
 }
+
+pub fn inline_code(text: &str) -> Vec<&str> {
+    text.split('`').skip(1).step_by(2).collect()
+}
+
+pub fn prose_code(page: &Page) -> Vec<(usize, String)> {
+    page.lines()
+        .iter()
+        .filter(|l| !l.fenced && !l.fence)
+        .flat_map(|l| {
+            inline_code(l.text)
+                .into_iter()
+                .map(|c| (l.number, c.to_owned()))
+        })
+        .collect()
+}

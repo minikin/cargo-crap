@@ -4,8 +4,12 @@ mod check;
 mod cli;
 #[path = "docs/config.rs"]
 mod config;
+#[path = "docs/coverage.rs"]
+mod coverage;
 #[path = "docs/fixture.rs"]
 mod fixture;
+#[path = "docs/install.rs"]
+mod install;
 #[path = "docs/markers.rs"]
 mod markers;
 #[path = "docs/normalize.rs"]
@@ -257,12 +261,12 @@ fn the_score_check_names_the_function_and_both_scores() {
 
 #[test]
 fn every_marked_sample_in_docs_crapts_matches_a_real_run() {
-    let repo = fixture::cart();
+    let repos = fixture::Repos::new();
     let checked =
-        check::check_pages(&pages::crapts_pages(), &repo).unwrap_or_else(|e| panic!("{e}"));
+        check::check_pages(&pages::crapts_pages(), &repos).unwrap_or_else(|e| panic!("{e}"));
     assert!(checked.iter().any(|s| s.page == QUICK_START));
     let unmarked = Page::new(QUICK_START, "# crapts\n\nNo samples.\n");
-    let message = err(check::check_pages(&[unmarked], &repo));
+    let message = err(check::check_pages(&[unmarked], &repos));
     assert_names(&message, &["no crapts-output marker"]);
 }
 
@@ -957,5 +961,135 @@ fn a_flag_probe_passes_the_example_value_in_the_flags_shape() {
     assert_eq!(
         probe("epsilon", "--epsilon", 0.5.into()),
         ["--epsilon", "0.5", "--baseline", "crapts-baseline.json"]
+    );
+}
+
+#[test]
+fn the_install_page_matches_the_published_package_metadata() {
+    let page = Page::load(install::INSTALL);
+    let package = install::package_json();
+    let rust = install::rust_version();
+    install::check_install(&page, &package, &rust).unwrap_or_else(|e| panic!("{e}"));
+    let musl = "`@minikin/crapts-linux-x64-musl`";
+    let row = page
+        .text
+        .lines()
+        .find(|l| l.contains(musl))
+        .expect("the musl row");
+    let removed = page.with(&format!("{row}\n"), "");
+    assert_names(
+        &err(install::check_install(&removed, &package, &rust)),
+        &[install::INSTALL, "@minikin/crapts-linux-x64-musl"],
+    );
+    assert_names(
+        &err(install::check_install(&page, &package, "1.0")),
+        &[install::INSTALL, "1.0", &rust],
+    );
+    let mut renamed = package.clone();
+    renamed["name"] = "@minikin/other".into();
+    assert_names(
+        &err(install::check_install(&page, &renamed, &rust)),
+        &["@minikin/crapts", "@minikin/other"],
+    );
+    for command in install::COMMANDS {
+        let line = page
+            .text
+            .lines()
+            .find(|l| l.ends_with(command))
+            .unwrap_or_else(|| panic!("{command}"));
+        let dropped = page.with(&format!("{line}\n"), "");
+        assert_names(
+            &err(install::check_install(&dropped, &package, &rust)),
+            &[command],
+        );
+    }
+}
+
+#[test]
+fn the_coverage_guide_pairs_each_producer_with_the_crapts_command_that_reads_its_file() {
+    let page = Page::load(coverage::COVERAGE);
+    coverage::check_sections(&page).unwrap_or_else(|e| panic!("{e}"));
+    for producer in coverage::PRODUCERS {
+        assert_eq!(pages::sections(&page, producer).len(), 1, "{producer}");
+    }
+    let jest = pages::section(&page, "Jest").unwrap();
+    let producer = pages::command_lines(&jest)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| pages::crapts_arguments(l).unwrap().is_none())
+        .expect("the Jest producer");
+    let removed = page.with(&format!("{producer}\n"), "");
+    assert_names(
+        &err(coverage::check_sections(&removed)),
+        &[coverage::COVERAGE, "Jest", "producer"],
+    );
+    let vitest = pages::section(&page, "Vitest").unwrap();
+    let command = pages::command_lines(&vitest)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| pages::crapts_arguments(l).unwrap().is_some())
+        .expect("the Vitest crapts command");
+    let path =
+        coverage::coverage_argument(&pages::crapts_arguments(&command).unwrap().unwrap()).unwrap();
+    let drifted = page.with(&command, &command.replacen(&path, "out/other.info", 1));
+    assert_names(
+        &err(coverage::check_sections(&drifted)),
+        &["Vitest", &path, "out/other.info"],
+    );
+}
+
+#[test]
+fn the_coverage_guide_reads_both_kinds_of_committed_coverage() {
+    let page = Page::load(coverage::COVERAGE);
+    for (file, kind) in [
+        ("coverage/coverage-final.json", "statements"),
+        ("coverage/lcov.info", "lines"),
+    ] {
+        let (actual, report) = coverage::kind_sample(&page, file).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(actual, kind, "{file}");
+        assert_eq!(coverage::crap_of(&report, "checkout"), Some(42.0), "{file}");
+        assert_eq!(coverage::crap_of(&report, "total"), Some(1.0), "{file}");
+    }
+}
+
+#[test]
+fn the_complexity_reference_tells_optional_chaining_from_nullish_coalescing() {
+    let page = Page::load(fixture::COMPLEXITY_PAGE);
+    let repo = fixture::complexity();
+    let samples = check::check_page(&page, &repo).unwrap_or_else(|e| panic!("{e}"));
+    let rows = samples
+        .iter()
+        .map(|s| coverage::text_rows(&s.block))
+        .find(|rows| rows.iter().any(|r| r.0 == "firstTag"))
+        .expect("a sample with firstTag");
+    let row = |name: &str| rows.iter().find(|r| r.0 == name).cloned().unwrap();
+    assert_eq!(row("firstTag").1, "1");
+    assert_eq!(row("titleOf").1, "2");
+    assert!(row("firstTag").2.ends_with("100.0%") && row("titleOf").2.ends_with("100.0%"));
+    for heading in [
+        "Scored functions",
+        "Decision points",
+        "Coverage attribution",
+    ] {
+        pages::section(&page, heading).unwrap_or_else(|e| panic!("{e}"));
+    }
+    let targets: Vec<String> = pages::links(&page).into_iter().map(|(_, t)| t).collect();
+    for spec in [
+        "specs/50-crapts-oxc-analysis-and-names.md",
+        "specs/52-crapts-coverage-reading-and-attribution.md",
+    ] {
+        assert!(
+            targets.iter().any(|t| t.ends_with(spec)),
+            "{spec} in {targets:?}"
+        );
+    }
+}
+
+#[test]
+fn a_text_table_reader_returns_function_cc_and_coverage() {
+    let block = "\u{2502}   \u{2506} CRAP \u{2506} CC \u{2506} Coverage \u{2506} Function \u{2506} Location \u{2502}\n\u{2502} x \u{2506} 2.0 \u{2506}  2 \u{2506} 100.0% \u{2506} titleOf \u{2506} src/ops.ts:4 \u{2502}\n";
+    assert_eq!(
+        coverage::text_rows(block),
+        [("titleOf".to_owned(), "2".to_owned(), "100.0%".to_owned())]
     );
 }

@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::cell::OnceCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -244,4 +245,40 @@ pub fn expect_scores(
         }
     }
     Ok(())
+}
+
+pub const COMPLEXITY_PAGE: &str = "docs/crapts/reference/complexity.md";
+
+pub fn complexity() -> Repo {
+    let repo = Repo::new();
+    repo.commit_tree(&fixtures().join("complexity"), "complexity");
+    repo.copy("coverage/lcov.data", "coverage/lcov.info");
+    repo
+}
+
+/// The complexity reference runs in its own repository so its example
+/// leaves the cart scores and samples unchanged.
+pub struct Repos {
+    pub cart: Repo,
+    complexity: OnceCell<Repo>,
+}
+
+impl Repos {
+    pub fn new() -> Repos {
+        Repos {
+            cart: cart(),
+            complexity: OnceCell::new(),
+        }
+    }
+
+    pub fn for_page(
+        &self,
+        path: &str,
+    ) -> &Repo {
+        if path == COMPLEXITY_PAGE {
+            self.complexity.get_or_init(complexity)
+        } else {
+            &self.cart
+        }
+    }
 }
