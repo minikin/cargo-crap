@@ -8,6 +8,8 @@ mod config;
 mod coverage;
 #[path = "docs/fixture.rs"]
 mod fixture;
+#[path = "docs/guides.rs"]
+mod guides;
 #[path = "docs/install.rs"]
 mod install;
 #[path = "docs/markers.rs"]
@@ -506,7 +508,7 @@ fn normalization_touches_only_native_paths_and_version_positions() {
 
 #[test]
 fn a_cargo_crap_marker_under_docs_crapts_fails_the_crapts_check() {
-    let page = Page::load(QUICK_START);
+    let page = Page::load(guides::BASELINE);
     let line = page.text.lines().count() + 2;
     let added = Page::new(
         &page.path,
@@ -515,7 +517,10 @@ fn a_cargo_crap_marker_under_docs_crapts_fails_the_crapts_check() {
     let message = err(pages::samples(&added));
     assert_names(
         &message,
-        &[&format!("{QUICK_START}:{line}"), "would run cargo-crap"],
+        &[
+            &format!("{}:{line}", guides::BASELINE),
+            "would run cargo-crap",
+        ],
     );
     let fenced = Page::new(
         &page.path,
@@ -528,7 +533,7 @@ fn a_cargo_crap_marker_under_docs_crapts_fails_the_crapts_check() {
     assert_names(
         &message,
         &[
-            &format!("{QUICK_START}:{}", line + 1),
+            &format!("{}:{}", guides::BASELINE, line + 1),
             "would run cargo-crap",
         ],
     );
@@ -1123,5 +1128,64 @@ fn a_text_table_reader_returns_function_cc_and_coverage() {
     assert_eq!(
         coverage::text_rows(block),
         [("titleOf".to_owned(), "2".to_owned(), "100.0%".to_owned())]
+    );
+}
+
+fn guide_samples(page: &Page) -> Vec<pages::Sample> {
+    check::check_page(page, fixture::cart()).unwrap_or_else(|e| panic!("{e}"))
+}
+
+#[test]
+fn the_baseline_guide_shows_a_regression_tripping_the_gate() {
+    let page = Page::load(guides::BASELINE);
+    let samples = guide_samples(&page);
+    let sample = guides::find_sample(&page, &samples, &guides::REGRESSION_ARGS, 1)
+        .unwrap_or_else(|e| panic!("{e}"));
+    guides::check_regression_sample(&page, sample).unwrap_or_else(|e| panic!("{e}"));
+    assert!(guides::check_baseline_writer(&page).unwrap_or_else(|e| panic!("{e}")) > 0);
+    let mut drifted = sample.clone();
+    drifted.block = sample.block.replacen("+30.0", "+29.0", 1);
+    assert_names(
+        &err(guides::check_regression_sample(&page, &drifted)),
+        &[guides::BASELINE, "checkout"],
+    );
+    let writer = pages::command_lines(&page)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| l.contains("--output"))
+        .expect("the baseline writer");
+    let sliced = page.with(&writer, &writer.replacen(" --all-rows", "", 1));
+    assert_names(
+        &err(guides::check_baseline_writer(&sliced)),
+        &[guides::BASELINE, "--all-rows"],
+    );
+}
+
+#[test]
+fn the_changed_gate_guide_shows_an_edited_function_failing_the_pull_request() {
+    let page = Page::load(guides::CHANGED_GATE);
+    let samples = guide_samples(&page);
+    let changed = guides::find_sample(&page, &samples, &guides::CHANGED_ARGS, 1)
+        .unwrap_or_else(|e| panic!("{e}"));
+    guides::check_changed_entry(changed).unwrap_or_else(|e| panic!("{e}"));
+    let combined = guides::find_sample(&page, &samples, &guides::COMBINED_ARGS, 1)
+        .unwrap_or_else(|e| panic!("{e}"));
+    guides::check_combined(combined).unwrap_or_else(|e| panic!("{e}"));
+    let mut drifted = changed.clone();
+    drifted.block = changed
+        .block
+        .replacen("\"verdict\":\"fail\"", "\"verdict\":\"pass\"", 1);
+    assert_names(
+        &err(guides::check_changed_entry(&drifted)),
+        &["checkout", "pass"],
+    );
+    assert_names(
+        &err(guides::find_sample(
+            &page,
+            &samples,
+            &guides::CHANGED_ARGS,
+            0,
+        )),
+        &[guides::CHANGED_GATE, "expected exit 0"],
     );
 }

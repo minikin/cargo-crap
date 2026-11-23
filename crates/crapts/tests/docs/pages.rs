@@ -267,6 +267,7 @@ fn blocks(lines: &[Line]) -> Vec<Block> {
     found
 }
 
+#[derive(Clone)]
 pub struct Sample {
     pub page: String,
     pub line: usize,
