@@ -9,6 +9,7 @@ description = "JavaScript and TypeScript source analysis for the CRAP metric"
 repository.workspace = true
 homepage.workspace = true
 publish = false
+exclude = ["tests/fixtures/corpus/"]
 
 [[bin]]
 name = "crapts"
@@ -34,6 +35,7 @@ toml = { workspace = true, features = ["parse"] }
 libc.workspace = true
 
 [dev-dependencies]
+flate2 = { workspace = true, features = ["rust_backend"] }
 jsonschema.workspace = true
 unicode-width.workspace = true
 proptest.workspace = true

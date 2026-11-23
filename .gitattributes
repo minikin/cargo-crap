@@ -1,0 +1,2 @@
+crates/crapts/tests/fixtures/corpus/** -text
+*.gz binary
