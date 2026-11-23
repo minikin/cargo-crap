@@ -10,7 +10,7 @@ crapts --coverage coverage/lcov.info --fail-above --threshold 15
 crapts --print-config
 ```
 
-Every option except `--coverage`, `--format`, `--output` and the other per-run settings can also come from `.crapts.toml`, and flags win over the file.
+The thresholds, filters, row limits and gate switches can also come from [`.crapts.toml`](config.md). A flag wins over the file.
 
 ## Flags
 

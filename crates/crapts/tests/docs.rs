@@ -2,6 +2,8 @@
 mod check;
 #[path = "docs/cli.rs"]
 mod cli;
+#[path = "docs/config.rs"]
+mod config;
 #[path = "docs/fixture.rs"]
 mod fixture;
 #[path = "docs/markers.rs"]
@@ -798,4 +800,162 @@ fn every_exit_code_in_the_table_is_demonstrated() {
         .filter(|s| s.marker.stream() == Stream::Stdout)
         .collect();
     assert_names(&err(cli::check_exit_codes(&page, &no_stderr)), &["2"]);
+}
+
+fn key_row<'a>(
+    page: &'a Page,
+    key: &str,
+) -> &'a str {
+    page.text
+        .lines()
+        .find(|l| l.starts_with(&format!("| `{key}`")))
+        .unwrap_or_else(|| panic!("the {key} row"))
+}
+
+#[test]
+fn the_configuration_example_sets_every_config_key_and_the_binary_accepts_it() {
+    let page = Page::load(config::CONFIG);
+    let repo = fixture::Repo::new();
+    config::check_example(&page, &repo).unwrap_or_else(|e| panic!("{e}"));
+    let (_, body, _) = config::example(&page).unwrap();
+    let line = body
+        .lines()
+        .find(|l| l.starts_with("epsilon"))
+        .expect("the epsilon line");
+    let removed = page.with(&format!("{line}\n"), "");
+    assert_names(
+        &err(config::check_example(&removed, &repo)),
+        &[config::CONFIG, "epsilon"],
+    );
+    let typo = page.with(line, &line.replacen("epsilon", "epsilom", 1));
+    assert_names(&err(config::check_example(&typo, &repo)), &["epsilom"]);
+}
+
+#[test]
+fn the_per_run_table_names_exactly_the_per_run_settings() {
+    let page = Page::load(config::CONFIG);
+    config::check_per_run(&page).unwrap_or_else(|e| panic!("{e}"));
+    let rows: Vec<String> = config::per_run_rows(&page)
+        .unwrap()
+        .into_iter()
+        .map(|(_, n)| n)
+        .collect();
+    assert_eq!(rows, config::PER_RUN);
+    let epsilon = key_row(&page, "epsilon");
+    let base = page
+        .text
+        .lines()
+        .find(|l| l.starts_with("| `base`"))
+        .expect("the base row");
+    let moved = page
+        .with(&format!("{epsilon}\n"), "")
+        .with(base, &format!("{base}\n{epsilon}"));
+    assert_names(
+        &err(config::check_per_run(&moved)),
+        &[config::CONFIG, "epsilon"],
+    );
+}
+
+#[test]
+fn the_config_file_refuses_each_per_run_setting_given_a_value_of_its_own_type() {
+    let repo = fixture::Repo::new();
+    for (key, value) in [
+        ("paths", r#"["src"]"#),
+        ("coverage", r#""coverage/lcov.info""#),
+        ("format", r#""json""#),
+        ("summary", "true"),
+        ("all-rows", "true"),
+        ("output", r#""report.json""#),
+        ("repo-url", r#""https://example.com/r""#),
+        ("commit-ref", r#""main""#),
+        ("comment-marker", r#""<!-- x -->""#),
+        ("baseline", r#""crapts-baseline.json""#),
+        ("base", r#""main""#),
+    ] {
+        let run = config::refusal(&repo, &format!("{key} = {value}"));
+        assert_eq!(run.code, Some(2), "{key}");
+        assert_eq!(run.stdout, "", "{key}");
+        assert!(
+            run.stderr.contains(&format!("unknown key {key}\n")),
+            "{key}: {}",
+            run.stderr
+        );
+        assert!(
+            !run.stderr.contains("invalid type"),
+            "{key}: {}",
+            run.stderr
+        );
+    }
+}
+
+#[test]
+fn the_key_table_names_real_aliases_and_the_flag_of_each_key() {
+    let page = Page::load(config::CONFIG);
+    let repo = fixture::Repo::new();
+    let keys: Vec<String> = config::key_rows(&page)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.key)
+        .collect();
+    assert_eq!(keys, config::CONFIG_KEYS);
+    assert_eq!(
+        config::aliases(&page).unwrap(),
+        BTreeSet::from(
+            ["default_excludes", "show_unchanged", "uncovered_hints"].map(str::to_owned)
+        )
+    );
+    config::check_keys(&page, &repo).unwrap_or_else(|e| panic!("{e}"));
+    let run = config::refusal(&repo, "fail_above = true");
+    assert_eq!(run.code, Some(2));
+    assert!(run.stderr.contains("fail_above"), "{}", run.stderr);
+    let (top, min) = (key_row(&page, "top"), key_row(&page, "min"));
+    let swapped = page
+        .with(top, &top.replacen("`--top`", "`--min`", 1))
+        .with(min, &min.replacen("`--min`", "`--top`", 1));
+    assert_names(&err(config::check_keys(&swapped, &repo)), &["top", "min"]);
+    let hints = key_row(&page, "uncovered-hints");
+    let threshold = key_row(&page, "threshold");
+    let two = page.with(
+        threshold,
+        &threshold.replacen("`--threshold`", "config only", 1),
+    );
+    assert_names(
+        &err(config::check_keys(&two, &repo)),
+        &["threshold", "uncovered-hints"],
+    );
+    assert!(hints.contains("config only"));
+}
+
+#[test]
+fn a_flag_probe_passes_the_example_value_in_the_flags_shape() {
+    let probe = |key, flag, value: toml::Value| config::flag_probe(key, flag, &value);
+    assert_eq!(probe("top", "--top", 5.into()), ["--top", "5"]);
+    assert_eq!(
+        probe("missing", "--missing", "skip".into()),
+        ["--missing", "skip"]
+    );
+    assert_eq!(
+        probe("fail-above", "--fail-above", true.into()),
+        ["--fail-above"]
+    );
+    assert_eq!(
+        probe(
+            "exclude",
+            "--exclude",
+            toml::Value::Array(vec!["a".into(), "b".into()])
+        ),
+        ["--exclude", "a", "--exclude", "b"]
+    );
+    assert_eq!(
+        probe(
+            "default-excludes",
+            "--no-default-excludes",
+            toml::Value::Array(vec!["a".into()])
+        ),
+        ["--no-default-excludes"]
+    );
+    assert_eq!(
+        probe("epsilon", "--epsilon", 0.5.into()),
+        ["--epsilon", "0.5", "--baseline", "crapts-baseline.json"]
+    );
 }
