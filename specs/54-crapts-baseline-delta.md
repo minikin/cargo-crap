@@ -331,7 +331,7 @@ And   JSON summary counts and removed entries are identical across all valid --t
 
 ## Tasks
 
-- [ ] **T1 - Verify baseline pre-I/O guards, companion checks, and print-config while keeping the Spec 53 refusal.**
+- [x] **T1 - Verify baseline pre-I/O guards, companion checks, and print-config while keeping the Spec 53 refusal.**
   Keep Spec 53's temporary `--baseline is not implemented yet` refusal in place until T3 wires delta execution (preventing a silent false pass if `--baseline` were accepted before delta wiring lands). Verify `--fail-regression needs --baseline`, `--show-unchanged needs --baseline`, `--format sarif` refusal with `--baseline` before reading it or creating output, and `--print-config --baseline ...` without baseline I/O.
   Scenarios: _Companion checks and print-config still guard baseline flags without baseline I/O_, _SARIF refuses baseline before reading it or creating output_.
   Tests: unit + acceptance (`crates/crapts/tests/{cli,baseline}.rs`).

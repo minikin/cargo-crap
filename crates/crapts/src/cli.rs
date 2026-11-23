@@ -701,6 +701,45 @@ mod writer_tests {
     }
 
     #[test]
+    fn sarif_and_companion_checks_precede_every_baseline_and_coverage_read() {
+        let dir = tempfile::tempdir().unwrap();
+        for (extra, expected) in [
+            (
+                &["--format", "sarif", "--baseline", "absent.json"][..],
+                "SARIF does not support --baseline",
+            ),
+            (
+                &[
+                    "--format",
+                    "sarif",
+                    "--baseline",
+                    "absent.json",
+                    "--fail-regression",
+                ][..],
+                "SARIF does not support --baseline",
+            ),
+            (
+                &["--fail-regression"][..],
+                "--fail-regression needs --baseline",
+            ),
+        ] {
+            let mut args = vec![OsString::from("--coverage"), "absent.info".into()];
+            args.extend(extra.iter().map(OsString::from));
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            assert_eq!(
+                run(dir.path(), &args, &mut out, &mut err),
+                ExitCode::from(2)
+            );
+            assert_eq!(out.as_slice(), b"");
+            assert_eq!(
+                String::from_utf8(err).unwrap(),
+                format!("error: {expected}\n")
+            );
+        }
+    }
+
+    #[test]
     fn a_flush_only_error_overrides_the_runners_verdict() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(

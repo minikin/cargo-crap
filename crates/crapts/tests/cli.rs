@@ -1,45 +1,12 @@
+mod common;
 mod support;
+
+use common::{binary, check, invoke};
 
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
-
-fn binary(cwd: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_crapts"));
-    cmd.current_dir(cwd);
-    for key in [
-        "GITHUB_REPOSITORY",
-        "GITHUB_SERVER_URL",
-        "GITHUB_SHA",
-        "NO_COLOR",
-        "FORCE_COLOR",
-        "COLUMNS",
-    ] {
-        cmd.env_remove(key);
-    }
-    cmd
-}
-
-fn invoke(
-    cwd: &Path,
-    args: &[&str],
-) -> Output {
-    binary(cwd).args(args).output().unwrap()
-}
-
-fn check(
-    out: &Output,
-    code: i32,
-) {
-    assert_eq!(
-        out.status.code(),
-        Some(code),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
 
 fn settings(
     cwd: &Path,
@@ -583,13 +550,8 @@ fn json_score(
 }
 
 fn validated_report(bytes: &[u8]) -> Value {
-    static SCHEMA: std::sync::LazyLock<jsonschema::Validator> = std::sync::LazyLock::new(|| {
-        let schema =
-            serde_json::from_str(include_str!("../../../schemas/crapts/report-v1.json")).unwrap();
-        jsonschema::validator_for(&schema).unwrap()
-    });
-    let doc = serde_json::from_slice(bytes).unwrap();
-    SCHEMA.validate(&doc).unwrap();
+    let doc = common::validated(bytes);
+    assert!(doc["regression_gate"].is_null(), "{doc:#}");
     doc
 }
 
