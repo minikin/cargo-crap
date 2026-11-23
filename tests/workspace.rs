@@ -174,9 +174,21 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
                 .expect("dependency name")
         })
         .collect();
-    let required_helpers = ["globset", "sha2"];
+    let required_helpers = [
+        "cargo-crap-core",
+        "globset",
+        "libc",
+        "serde",
+        "serde_json",
+        "sha2",
+    ];
     let expected: BTreeSet<_> = parser_pins.into_iter().chain(required_helpers).collect();
     assert_eq!(declared, expected, "direct dependencies of crapts");
+    let json = dependencies
+        .iter()
+        .find(|dep| dep["name"] == "serde_json")
+        .unwrap();
+    assert_eq!(json["features"], serde_json::json!(["raw_value"]));
     let sha2 = &shared["workspace"]["dependencies"]["sha2"];
     assert_eq!(sha2["version"].as_str(), Some("=0.10.9"));
     assert_eq!(sha2["default-features"].as_bool(), Some(false));
@@ -187,9 +199,17 @@ fn add_the_analysis_library_and_its_pinned_dependencies() {
             "{name}"
         );
     }
-    for name in expected {
+    for name in expected
+        .into_iter()
+        .filter(|name| *name != "cargo-crap-core")
+    {
         assert_eq!(
-            member["dependencies"][name]["workspace"].as_bool(),
+            if name == "libc" {
+                &member["target"]["cfg(unix)"]["dependencies"]
+            } else {
+                &member["dependencies"]
+            }[name]["workspace"]
+                .as_bool(),
             Some(true),
             "{name}"
         );
@@ -281,24 +301,16 @@ fn the_lock_retains_the_spec_45_ids_and_adds_only_the_crapts_closure() {
 }
 
 #[test]
-fn the_root_resolves_exactly_the_local_core() {
-    let declared = metadata(&root(), &["--locked"]);
-    let core_edges: Vec<&Value> = package(&declared, "cargo-crap")["dependencies"]
-        .as_array()
-        .expect("dependencies array")
-        .iter()
-        .filter(|dep| dep["name"] == "cargo-crap-core")
-        .collect();
-
-    assert_eq!(core_edges.len(), 1, "{core_edges:#?}");
-    let edge = core_edges[0];
-    assert_eq!(edge["req"], "=0.1.0");
-    assert_eq!(edge["kind"], Value::Null, "a normal dependency");
-    assert_eq!(edge["optional"], false);
-
+fn the_crapts_library_uses_the_version_of_core_pinned_by_the_workspace() {
     let resolved: Value = serde_json::from_str(&cargo(
         &root(),
-        &["metadata", "--format-version", "1", "--locked"],
+        &[
+            "metadata",
+            "--all-features",
+            "--format-version",
+            "1",
+            "--locked",
+        ],
     ))
     .expect("cargo metadata prints JSON");
     let core = package(&resolved, "cargo-crap-core");
@@ -310,25 +322,48 @@ fn the_root_resolves_exactly_the_local_core() {
             .expect("manifest directory"),
         &root().join("crates/cargo-crap-core")
     ));
-    let tool_id = &package(&resolved, "cargo-crap")["id"];
-    let tool_node = resolved["resolve"]["nodes"]
+    let nodes = resolved["resolve"]["nodes"]
         .as_array()
-        .expect("resolve nodes")
-        .iter()
-        .find(|node| node["id"] == *tool_id)
-        .expect("cargo-crap's resolve node");
-    let core_deps: Vec<&Value> = tool_node["deps"]
+        .expect("resolve nodes");
+    let node_for = |id: &Value| {
+        nodes
+            .iter()
+            .find(|node| &node["id"] == id)
+            .expect("package resolve node")
+    };
+    for consumer in ["cargo-crap", "crapts"] {
+        let pkg = package(&resolved, consumer);
+        let edges: Vec<_> = pkg["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|dep| dep["name"] == "cargo-crap-core")
+            .collect();
+        assert_eq!(edges.len(), 1, "{consumer} edges: {edges:?}");
+        assert_eq!(edges[0]["req"], "=0.1.0", "{consumer}");
+        assert_eq!(edges[0]["kind"], Value::Null);
+        assert_eq!(edges[0]["optional"], false);
+        let resolved_edges: Vec<_> = node_for(&pkg["id"])["deps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|dep| dep["pkg"] == core["id"])
+            .collect();
+        assert_eq!(resolved_edges.len(), 1, "{consumer}");
+        assert_eq!(
+            resolved_edges[0]["dep_kinds"],
+            serde_json::json!([{ "kind": null, "target": null }])
+        );
+    }
+    let json_features = node_for(&package(&resolved, "serde_json")["id"])["features"]
         .as_array()
-        .expect("resolved deps")
-        .iter()
-        .filter(|dep| dep["pkg"] == core["id"])
-        .collect();
-    assert_eq!(core_deps.len(), 1, "{core_deps:#?}");
-    assert_eq!(
-        core_deps[0]["dep_kinds"],
-        serde_json::json!([{ "kind": null, "target": null }])
-    );
+        .unwrap();
+    assert!(json_features.iter().any(|f| f == "raw_value"));
+    assert!(json_features.iter().all(|f| f != "preserve_order"));
+}
 
+#[test]
+fn both_front_ends_lock_the_same_local_core() {
     let lock: toml::Table = std::fs::read_to_string(root().join("Cargo.lock"))
         .expect("reading Cargo.lock")
         .parse()
@@ -365,14 +400,18 @@ fn the_root_resolves_exactly_the_local_core() {
     let tool = named("cargo-crap");
     assert_eq!(tool.len(), 1, "cargo-crap entries in Cargo.lock");
     assert_eq!(tool[0]["version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
-    assert!(
-        tool[0]["dependencies"]
-            .as_array()
-            .expect("cargo-crap's locked dependencies")
-            .iter()
-            .any(|d| d.as_str() == Some("cargo-crap-core")),
-        "cargo-crap does not list cargo-crap-core in Cargo.lock"
-    );
+    for name in ["cargo-crap", "crapts"] {
+        let package = named(name);
+        assert_eq!(package.len(), 1, "{name} entries in Cargo.lock");
+        assert!(
+            package[0]["dependencies"]
+                .as_array()
+                .expect("locked dependencies")
+                .iter()
+                .any(|d| d.as_str() == Some("cargo-crap-core")),
+            "{name} does not lock cargo-crap-core"
+        );
+    }
 }
 
 /// Every file below `dir`, as its path relative to `dir` with `/` separators.
@@ -488,40 +527,55 @@ fn mutants_of_the_core_run_the_whole_workspace_s_tests() {
 }
 
 #[test]
-fn the_core_dependency_graph_excludes_language_parsers() {
-    let tree = cargo(
-        &root(),
-        &[
-            "tree",
-            "-p",
+fn parser_dependencies_are_isolated_in_every_workspace_member() {
+    for (name, required, forbidden) in [
+        (
             "cargo-crap-core",
-            "--all-features",
-            "-e",
-            "no-proc-macro",
-            "--prefix",
-            "none",
-            "--locked",
-        ],
-    );
-    let lines: Vec<&str> = tree.lines().collect();
-
-    assert!(
-        lines
-            .first()
-            .is_some_and(|l| l.starts_with("cargo-crap-core ")),
-        "{tree}"
-    );
-    for dependency in ["lcov ", "comfy-table "] {
-        assert!(
-            lines.iter().any(|l| l.starts_with(dependency)),
-            "no {dependency:?} line in:\n{tree}"
+            &["lcov ", "comfy-table "][..],
+            &["oxc_", "syn "][..],
+        ),
+        ("cargo-crap", &["syn ", "cargo-crap-core "], &["oxc_"]),
+        (
+            "crapts",
+            &["oxc_parser ", "cargo-crap-core "],
+            &["syn ", "cargo-crap "],
+        ),
+    ] {
+        let tree = cargo(
+            &root(),
+            &[
+                "tree",
+                "-p",
+                name,
+                "--all-features",
+                "--target",
+                "all",
+                "-e",
+                "normal,build,no-proc-macro",
+                "--prefix",
+                "none",
+                "--locked",
+            ],
         );
+        assert!(
+            tree.lines()
+                .next()
+                .is_some_and(|line| line.starts_with(&format!("{name} "))),
+            "{tree}"
+        );
+        for prefix in required {
+            assert!(
+                tree.lines().any(|line| line.starts_with(prefix)),
+                "{name} missing {prefix}"
+            );
+        }
+        for prefix in forbidden {
+            assert!(
+                tree.lines().all(|line| !line.starts_with(prefix)),
+                "{name} links {prefix}"
+            );
+        }
     }
-    let parsers: Vec<&&str> = lines
-        .iter()
-        .filter(|l| l.starts_with("syn ") || l.starts_with("oxc_"))
-        .collect();
-    assert!(parsers.is_empty(), "{parsers:?}");
 }
 
 /// Every recorded seed file, by the package directory that replays it and

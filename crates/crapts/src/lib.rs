@@ -1,6 +1,8 @@
 //! JavaScript and TypeScript source analysis for the CRAP metric.
 
 mod analyze;
+pub mod attribute;
+pub mod coverage;
 mod discover;
 mod lines;
 mod names;

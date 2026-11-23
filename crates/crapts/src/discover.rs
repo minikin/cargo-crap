@@ -437,7 +437,7 @@ fn worktree(cwd: &Path) -> Result<Option<PathBuf>, InputError> {
     )))
 }
 
-fn resolve(
+pub(crate) fn resolve(
     base: &Path,
     path: &Path,
 ) -> PathBuf {

@@ -144,3 +144,226 @@ fn a_core_only_caller_can_report_a_scored_function() {
     assert_eq!(outcome.crappy, 1);
     assert_eq!(outcome.exit_code(), ExitCode::from(1));
 }
+
+mod coverage_spelling {
+    use super::Path;
+    use cargo_crap_core::entry::StrayFiles;
+    use cargo_crap_core::paths::{Assignment, TiePolicy, assign_by_key};
+
+    fn files(sources: &[&str]) -> tempfile::TempDir {
+        let cwd = tempfile::tempdir().unwrap();
+        for name in sources {
+            let file = cwd.path().join(name);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "function f() { return 1 }").unwrap();
+        }
+        cwd
+    }
+
+    fn assign(
+        cwd: &Path,
+        sources: &[&str],
+        keys: &[&str],
+    ) -> Assignment {
+        assign_by_key(cwd, sources, keys, TiePolicy::Unmatched)
+    }
+
+    #[test]
+    fn match_whole_path_components_across_checkout_and_platform_spellings() {
+        let cases: &[(&[&str], &str, Option<&str>)] = &[
+            (&["pkg/src/a.ts"], r".\src\a.ts", Some("pkg/src/a.ts")),
+            (
+                &["src/a.ts", "vendor/src/a.ts"],
+                "src/a.ts",
+                Some("src/a.ts"),
+            ),
+            (&["src/a.ts"], "work/src/a.ts", None),
+            (&["src/a.ts"], "/ci/work/src/a.ts", Some("src/a.ts")),
+            (
+                &["a.ts", "src/a.ts"],
+                r"D:\ci\work\src\a.ts",
+                Some("src/a.ts"),
+            ),
+            (&["src/a.ts"], "/ci/osrc/a.ts", None),
+            (&["oofoo/bar.ts"], "foo/bar.ts", None),
+            (&["src/a.ts"], "src/A.ts", None),
+            (&["src/a.ts"], "./", None),
+        ];
+        for &(sources, key, owner) in cases {
+            let cwd = files(sources);
+            let result = assign(cwd.path(), sources, &[key]);
+            for (&source, binding) in sources.iter().zip(result.bindings) {
+                let expected: Vec<_> = (Some(source) == owner).then_some(0).into_iter().collect();
+                assert_eq!(binding, expected, "{source} with {key}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_absolute_alias_resolves_through_the_filesystem_and_a_relative_alias_stays_lexical() {
+        let sources = ["lib/real.ts"];
+        let cwd = files(&sources);
+        let alias = cwd.path().join("alias.ts");
+        std::os::unix::fs::symlink(cwd.path().join(sources[0]), &alias).unwrap();
+        let keys = ["alias.ts", alias.to_str().unwrap()];
+        assert_eq!(
+            assign(cwd.path(), &sources, &keys[..1]).bindings,
+            [Vec::<usize>::new()]
+        );
+        assert_eq!(assign(cwd.path(), &sources, &keys[1..]).bindings, [vec![0]]);
+    }
+
+    #[test]
+    fn a_real_path_group_takes_precedence_over_every_lexical_key() {
+        let sources = ["src/a.ts"];
+        let cwd = files(&sources);
+        let absolute = cwd
+            .path()
+            .join(sources[0])
+            .to_str()
+            .unwrap()
+            .replace('/', "\\");
+        let keys = ["a.ts", sources[0], &absolute];
+        for (keys, expected) in [(&keys[..], 2), (&keys[..2], 1)] {
+            assert_eq!(
+                assign(cwd.path(), &sources, keys).bindings,
+                [vec![expected]]
+            );
+        }
+    }
+
+    #[test]
+    fn preserve_a_shared_key_tie_even_when_one_source_has_better_coverage() {
+        let sources = ["packages/b/src/index.ts", "packages/a/src/index.ts"];
+        let cwd = files(&sources);
+        let absolute = cwd.path().join(sources[1]);
+        for extra in [
+            None,
+            Some("a/src/index.ts"),
+            Some(sources[1]),
+            absolute.to_str(),
+        ] {
+            let mut keys = vec!["src/index.ts"];
+            keys.extend(extra);
+            let result = assign(cwd.path(), &sources, &keys);
+            let expected: Vec<usize> = extra.map(|_| 1).into_iter().collect();
+            assert_eq!(result.bindings, [vec![], expected]);
+            assert_eq!(result.ties.len(), 1);
+            assert_eq!(result.ties[0].keys, [0]);
+            let mut owners = result.ties[0].sources.clone();
+            owners.sort_unstable();
+            assert_eq!(owners, [0, 1]);
+        }
+    }
+
+    #[test]
+    fn stray_examples_sort_original_strings_before_taking_the_first_ten() {
+        let pair = StrayFiles::from_raw_spellings(&["a/b.ts", "a-b/c.ts"]);
+        assert_eq!(
+            pair.examples
+                .iter()
+                .map(|p| p.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["a-b/c.ts", "a/b.ts"]
+        );
+        let mut names = vec!["a/b.ts".to_owned(), "a-b/c.ts".to_owned()];
+        names.extend((0..9).rev().map(|i| format!("{i:02}.ts")));
+        let refs: Vec<_> = names.iter().map(String::as_str).collect();
+        let stray = StrayFiles::from_raw_spellings(&refs);
+        assert_eq!(stray.count, 11);
+        let mut expected: Vec<_> = (0..9).map(|i| format!("{i:02}.ts")).collect();
+        expected.push("a-b/c.ts".to_owned());
+        assert_eq!(
+            stray
+                .examples
+                .iter()
+                .map(|p| p.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn diagnostics_retain_separator_aliases_and_sort_supplementary_characters_by_utf16() {
+        let names = [
+            "src/a.ts",
+            "src/./a.ts",
+            r"src\a.ts",
+            "\u{e000}.ts",
+            "\u{10000}.ts",
+        ];
+        let stray = StrayFiles::from_raw_spellings(&names);
+        assert_eq!(stray.count, 5);
+        assert_eq!(
+            stray
+                .examples
+                .iter()
+                .map(|p| p.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            [names[1], names[0], names[2], names[4], names[3]]
+        );
+    }
+}
+
+#[test]
+fn resume_strict_lcov_counts_across_records_and_ignore_unrelated_records() {
+    use cargo_crap_core::coverage::{StrictLcovFile, read_strict_lcov};
+    let report = "TN:suite\r\nSF:./src/a.ts\r\nDA:4,0\r\nDA:4,2,checksum\r\nFN:not,a,proper,record\r\nSF:src/b.ts\r\nDA:4,7\r\nend_of_record\r\nSF:./src/a.ts\r\nDA:4,3\r\nSF:empty.ts";
+    let files: Vec<StrictLcovFile> = read_strict_lcov(report, Path::new("cov.info")).unwrap();
+    let keys: Vec<_> = files.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, ["./src/a.ts", "src/b.ts", "empty.ts"]);
+    assert_eq!(files[0].lines[&4], 5.0);
+    assert_eq!(files[1].lines[&4], 7.0);
+    assert_eq!(files[2].lines.len(), 0);
+}
+
+#[test]
+fn strict_lcov_errors_identify_the_physical_record() {
+    use cargo_crap_core::coverage::read_strict_lcov;
+    let cases = [
+        ("TN:x\nDA:8,1\nSF:a.ts", 2, "DA outside an SF record"),
+        ("TN:x\nDA:malformed\nSF:a.ts", 2, "DA outside an SF record"),
+        (
+            "SF:a.ts\nend_of_record\nDA:8,1",
+            3,
+            "DA outside an SF record",
+        ),
+        ("SF:a.ts\nSF:", 2, "missing SF path"),
+        ("SF:a.ts\nDA:0,1", 2, "invalid DA number"),
+        ("SF:a.ts\nDA:9007199254740992,1", 2, "invalid DA number"),
+        ("SF:a.ts\nDA:+1,+2", 2, "invalid DA record"),
+        ("SF:a.ts\nDA:1,-1", 2, "invalid DA record"),
+        ("SF:a.ts\nDA:1,1.5", 2, "invalid DA record"),
+        ("SF:a.ts\nDA:1,1,", 2, "invalid DA record"),
+        ("SF:a.ts\nDA:1,1,checksum,extra", 2, "invalid DA record"),
+    ];
+    for (text, line, reason) in cases {
+        let error = read_strict_lcov(text, Path::new("cov.info")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("cov.info: line {line}: {reason}"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn read_strict_lcov_at_its_numeric_boundaries() {
+    use cargo_crap_core::coverage::read_strict_lcov;
+    let report = "SF:a.ts\nDA:4294967296,1\nDA:9007199254740991,0\nDA:1,18446744073709551616";
+    let files = read_strict_lcov(report, Path::new("cov.info")).unwrap();
+    assert_eq!(
+        files[0].lines,
+        [
+            (1, 2_f64.powi(64)),
+            (4_294_967_296, 1.0),
+            (9_007_199_254_740_991, 0.0)
+        ]
+        .into()
+    );
+    let huge = format!("1{}", "0".repeat(308));
+    let overflow = format!("SF:a\nDA:2,{huge}\nDA:2,{huge}");
+    let error = read_strict_lcov(&overflow, Path::new("cov.info")).unwrap_err();
+    assert_eq!(error.to_string(), "cov.info: line 3: invalid DA number");
+}

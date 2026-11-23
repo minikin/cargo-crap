@@ -11,6 +11,7 @@ homepage.workspace = true
 publish = false
 
 [dependencies]
+cargo-crap-core = { path = "../cargo-crap-core", version = "=0.1.0" }
 globset.workspace = true
 oxc_allocator.workspace = true
 oxc_ast.workspace = true
@@ -19,7 +20,12 @@ oxc_parser.workspace = true
 oxc_span.workspace = true
 oxc_str.workspace = true
 oxc_syntax = { workspace = true, features = ["to_js_string"] }
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

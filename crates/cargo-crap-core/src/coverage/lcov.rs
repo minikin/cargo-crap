@@ -205,11 +205,243 @@ pub fn parse_lcov_with(
     Ok(files)
 }
 
+/// Counts follow binary64 addition in physical record order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StrictLcovFile {
+    pub key: String,
+    pub lines: BTreeMap<u64, f64>,
+}
+
+#[derive(Default)]
+struct StrictReader<'a> {
+    files: Vec<StrictLcovFile>,
+    indices: HashMap<&'a str, usize>,
+    current: Option<usize>,
+}
+
+impl<'a> StrictReader<'a> {
+    fn record(
+        &mut self,
+        record: &'a str,
+    ) -> Result<(), &'static str> {
+        if let Some(key) = record.strip_prefix("SF:") {
+            if key.is_empty() {
+                return Err("missing SF path");
+            }
+            let index = self.indices.entry(key).or_insert_with(|| {
+                let i = self.files.len();
+                self.files.push(StrictLcovFile {
+                    key: key.to_owned(),
+                    lines: BTreeMap::new(),
+                });
+                i
+            });
+            self.current = Some(*index);
+        } else if record == "end_of_record" {
+            self.current = None;
+        } else if let Some(data) = record.strip_prefix("DA:") {
+            let i = self.current.ok_or("DA outside an SF record")?;
+            add_strict_line(&mut self.files[i].lines, data)?;
+        }
+        Ok(())
+    }
+}
+
+fn decimal(field: &str) -> bool {
+    !field.is_empty() && field.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn add_strict_line(
+    lines: &mut BTreeMap<u64, f64>,
+    data: &str,
+) -> Result<(), &'static str> {
+    let mut fields = data.split(',');
+    let line = fields
+        .next()
+        .filter(|s| decimal(s))
+        .ok_or("invalid DA record")?;
+    let hits = fields
+        .next()
+        .filter(|s| decimal(s))
+        .ok_or("invalid DA record")?;
+    if fields.next() == Some("") || fields.next().is_some() {
+        return Err("invalid DA record");
+    }
+    let line = line
+        .parse::<u64>()
+        .ok()
+        .filter(|n| (1..=9_007_199_254_740_991).contains(n))
+        .ok_or("invalid DA number")?;
+    let count = lines.entry(line).or_default();
+    *count += hits.parse::<f64>().map_err(|_| "invalid DA number")?;
+    if !count.is_finite() {
+        return Err("invalid DA number");
+    }
+    Ok(())
+}
+
+/// The caller removes the initial BOM and decodes lossy UTF-8 before parsing records.
+///
+/// # Errors
+/// An invalid SF or DA names the report and the one-based physical line.
+pub fn read_strict_lcov(
+    text: &str,
+    label: &Path,
+) -> Result<Vec<StrictLcovFile>> {
+    let mut reader = StrictReader::default();
+    for (i, line) in text.split('\n').enumerate() {
+        reader
+            .record(line.strip_suffix('\r').unwrap_or(line))
+            .map_err(|reason| anyhow::anyhow!("{}: line {}: {reason}", label.display(), i + 1))?;
+    }
+    Ok(reader.files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
     use std::path::Path;
+
+    fn read_strict(text: &str) -> Result<Vec<StrictLcovFile>> {
+        read_strict_lcov(text, Path::new("reports/cov.info"))
+    }
+
+    #[test]
+    fn strict_files_keep_first_sf_order_and_resume_previous_counts() {
+        let text = "TN:suite\r\nSF:./a.ts\r\nDA:4,0\r\nDA:4,2,checksum\r\nFN:not,a,record\r\nSF:b.ts\r\nDA:4,7\r\nend_of_record\r\nSF:./a.ts\r\nDA:4,3\r\nSF:a.ts\r";
+        let actual = read_strict(text).unwrap();
+        assert_eq!(
+            actual.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(),
+            ["./a.ts", "b.ts", "a.ts"]
+        );
+        assert_eq!(actual[0].lines, BTreeMap::from([(4, 5.0)]));
+        assert_eq!(actual[1].lines, BTreeMap::from([(4, 7.0)]));
+        assert_eq!(actual[2].lines, BTreeMap::new());
+        assert_eq!(read_strict(&format!("{text}\n")).unwrap(), actual);
+        let names = ["src/a\u{feff}b.ts", r"\\ci\share\a.ts", "trailing.ts "];
+        let report = format!("SF:{}\n", names.join("\nSF:"));
+        let files = read_strict(&report).unwrap();
+        assert_eq!(
+            files.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(),
+            names
+        );
+        let one_cr = read_strict("SF:a.ts\r\r\nend_of_record \nDA:1,1").unwrap();
+        assert_eq!(one_cr[0].key, "a.ts\r");
+        assert_eq!(one_cr[0].lines[&1], 1.0);
+    }
+
+    #[test]
+    fn strict_record_errors_include_the_path_physical_line_and_first_failed_check() {
+        for (text, expected) in [
+            ("TN:x\nDA:8,1\nSF:a.ts", "2: DA outside an SF record"),
+            ("TN:x\nDA:malformed\nSF:a.ts", "2: DA outside an SF record"),
+            (
+                "SF:a.ts\nend_of_record\nDA:8,1",
+                "3: DA outside an SF record",
+            ),
+            ("SF:a.ts\nSF:", "2: missing SF path"),
+            ("SF:a.ts\nDA:0,1", "2: invalid DA number"),
+            ("SF:a.ts\nDA:9007199254740992,1", "2: invalid DA number"),
+            (
+                "SF:a.ts\nDA:9999999999999999999999,1",
+                "2: invalid DA number",
+            ),
+        ] {
+            assert_eq!(
+                read_strict(text).unwrap_err().to_string(),
+                format!("reports/cov.info: line {expected}")
+            );
+        }
+        for data in [
+            "",
+            "3",
+            ",",
+            ",2",
+            "1,",
+            "+1,+2",
+            "1,-1",
+            "1,1.5",
+            "1,1,",
+            "0,1,checksum,extra",
+            "1a,3",
+            "1,3a",
+            " 1,1",
+            "1, 1",
+            "\u{661},1",
+            "1,\u{661}",
+        ] {
+            let text = format!("\nSF:a.ts\nDA:{data}");
+            assert_eq!(
+                read_strict(&text).unwrap_err().to_string(),
+                "reports/cov.info: line 3: invalid DA record",
+                "{data:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_numbers_round_each_decimal_and_each_addition_as_binary64() {
+        let report = "SF:a\nDA:4294967296,1\nDA:9007199254740991,0\nDA:1,18446744073709551616\nDA:2,9007199254740993\nDA:2,1\nDA:2,1\nDA:3,9007199254740995\nDA:00004,00013";
+        assert_eq!(
+            read_strict(report).unwrap()[0].lines,
+            BTreeMap::from([
+                (4_294_967_296, 1.0),
+                (9_007_199_254_740_991, 0.0),
+                (1, 2_f64.powi(64)),
+                (2, 9_007_199_254_740_992.0),
+                (3, 9_007_199_254_740_996.0),
+                (4, 13.0)
+            ])
+        );
+        let huge = format!("1{}", "0".repeat(308));
+        for (report, line) in [
+            (format!("SF:a\nDA:2,{huge}\nDA:2,{huge}"), 3),
+            (format!("SF:a\nDA:1,{huge}0"), 2),
+        ] {
+            assert_eq!(
+                read_strict(&report).unwrap_err().to_string(),
+                format!("reports/cov.info: line {line}: invalid DA number")
+            );
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn permuting_complete_strict_records_preserves_line_sums(
+            records in proptest::collection::vec((
+                0..5_u8, 1..8_u64, 0..50_u16, proptest::num::u32::ANY,
+                proptest::bool::ANY, proptest::bool::ANY
+            ), 0..32)
+        ) {
+            use std::fmt::Write as _;
+            use std::collections::HashSet;
+            let key = |id, dotted| if dotted { format!("./{id}.ts") } else { format!("{id}.ts") };
+            let mut expected = BTreeMap::<String, BTreeMap<u64, f64>>::new();
+            for &(file, line, hits, _, dotted, _) in &records {
+                *expected.entry(key(file, dotted)).or_default().entry(line).or_default() += f64::from(hits);
+            }
+            let mut reordered = records.clone();
+            reordered.sort_by_key(|r| r.3);
+            for items in [records, reordered] {
+                let mut text = String::new();
+                let mut order = Vec::new();
+                for (file, line, hits, _, dotted, closed) in items {
+                    let name = key(file, dotted);
+                    writeln!(text, "SF:{name}\nDA:{line},{hits}").unwrap();
+                    if closed { text.push_str("end_of_record\n"); }
+                    if !order.contains(&name) { order.push(name); }
+                }
+                let files = read_strict(&text).unwrap();
+                proptest::prop_assert_eq!(files.len(), expected.len());
+                let names: Vec<_> = files.iter().map(|f| &f.key).collect();
+                proptest::prop_assert_eq!(names.iter().collect::<HashSet<_>>().len(), files.len());
+                proptest::prop_assert_eq!(names, order.iter().collect::<Vec<_>>());
+                let sums: BTreeMap<_, _> = files.into_iter().map(|f| (f.key, f.lines)).collect();
+                proptest::prop_assert_eq!(&sums, &expected);
+            }
+        }
+    }
 
     #[test]
     fn unknown_lcov_records_are_skipped_not_fatal() {

@@ -127,6 +127,22 @@ pub struct StrayFiles {
 }
 
 impl StrayFiles {
+    /// Retains producer spellings, including aliases that compare equal as paths.
+    #[must_use]
+    pub fn from_raw_spellings(spellings: &[&str]) -> Self {
+        let mut names = spellings.to_vec();
+        names.sort_unstable_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+        names.dedup();
+        Self {
+            count: names.len(),
+            examples: names
+                .into_iter()
+                .take(SCOPE_EXAMPLE_CAP)
+                .map(PathBuf::from)
+                .collect(),
+        }
+    }
+
     pub(crate) fn new(mut files: Vec<PathBuf>) -> Self {
         files.sort_by(components_then_spelling);
         let count = files.len();
@@ -169,6 +185,41 @@ pub struct ScopeDiagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_strays_keep_utf16_order_exact_spelling_and_full_count() {
+        let ordered = [
+            "a",
+            "a-b/c.ts",
+            "a/b.ts",
+            "src/./a.ts",
+            "src/a.ts",
+            r"src\a.ts",
+            "\u{10000}.ts",
+            "\u{e000}.ts",
+        ];
+        let mut input = ordered.to_vec();
+        input.reverse();
+        input.push("a");
+        let stray = StrayFiles::from_raw_spellings(&input);
+        assert_eq!(stray.count, ordered.len());
+        assert_eq!(
+            stray
+                .examples
+                .iter()
+                .map(|p| p.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ordered
+        );
+        let many = [
+            "a/b.ts", "a-b/c.ts", "08.ts", "07.ts", "06.ts", "05.ts", "04.ts", "03.ts", "02.ts",
+            "01.ts", "00.ts",
+        ];
+        let capped = StrayFiles::from_raw_spellings(&many);
+        assert_eq!(capped.count, 11);
+        assert_eq!(capped.examples.len(), 10);
+        assert_eq!(capped.examples[9].to_str(), Some("a-b/c.ts"));
+    }
 
     #[test]
     fn stray_examples_are_capped_but_count_is_exact() {
