@@ -1,7 +1,7 @@
 use super::{Effective, Format, InputError, Result, StdoutSink};
 use crate::attribute::{Attribution, attribute};
 use crate::changed::matching::{ChangedFile, classify};
-use crate::changed::section::ChangedSection;
+use crate::changed::section::{ChangedSection, Presentation};
 use crate::changed::select::{FileEdits, Selection, select};
 use crate::changed::verdict::{Edits, Inputs, Threshold, evaluate};
 use crate::coverage::{Coverage, CoverageUnit, read_coverage};
@@ -203,10 +203,14 @@ fn changed_section(
         allow: &options.allow_set,
         threshold,
     });
-    Ok(ChangedSection::new(
+    Ok(ChangedSection::presented(
         &selection.comparison,
         &judged,
         &selection.skipped,
+        Presentation {
+            top: top(options),
+            min: options.min.value,
+        },
     ))
 }
 
@@ -234,6 +238,13 @@ fn analysis(
         coverage_kind: Some(coverage_kind(result.unit)),
         notices: &[],
     }
+}
+
+fn top(options: &Effective) -> Option<usize> {
+    options
+        .top
+        .value
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
 }
 
 fn color_enabled(
@@ -305,10 +316,7 @@ pub(super) fn score(
     let settings = Settings {
         allow: &options.allow_set,
         min: options.min.value,
-        top: options
-            .top
-            .value
-            .map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+        top: top(options),
         sort: options.sort.value,
         threshold: options.threshold.value,
         epsilon: options.epsilon.value,
@@ -329,7 +337,7 @@ pub(super) fn score(
         repo_prefix: Some(discovery.scope.repo_prefix()),
         cwd,
         workspace_root: None,
-        fail_sections: false,
+        fail_sections: options.fail_changed.value,
     };
     let sections: Vec<&dyn Section> = section.iter().map(|s| s as &dyn Section).collect();
     let report = analysis(result, &scope);

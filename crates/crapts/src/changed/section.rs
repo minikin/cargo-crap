@@ -40,6 +40,13 @@ pub struct Skipped {
     pub reason: SkipReason,
 }
 
+/// How a run shows the changed rows. Counts and verdicts never depend on it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Presentation {
+    pub top: Option<usize>,
+    pub min: Option<f64>,
+}
+
 #[derive(Debug)]
 pub struct ChangedSection {
     json: Box<RawValue>,
@@ -55,6 +62,18 @@ impl ChangedSection {
         comparison: &Comparison,
         judged: &Judged<'_>,
         skipped: &[Skipped],
+    ) -> Self {
+        Self::presented(comparison, judged, skipped, Presentation::default())
+    }
+
+    /// # Panics
+    /// Never, as for [`ChangedSection::new`].
+    #[must_use]
+    pub fn presented(
+        comparison: &Comparison,
+        judged: &Judged<'_>,
+        skipped: &[Skipped],
+        presentation: Presentation,
     ) -> Self {
         let mut skipped: Vec<&Skipped> = skipped.iter().collect();
         skipped.sort_by(|a, b| a.path.cmp(&b.path));
@@ -74,7 +93,10 @@ impl ChangedSection {
                 commit: comparison.head.as_str(),
                 dirty: comparison.dirty,
             },
-            entries: judged.entries.iter().map(WireEntry::from).collect(),
+            entries: shown(&judged.entries, presentation)
+                .into_iter()
+                .map(WireEntry::from)
+                .collect(),
             removed: judged
                 .removed
                 .iter()
@@ -114,6 +136,24 @@ impl Section for ChangedSection {
     fn failures(&self) -> Option<usize> {
         Some(self.failures)
     }
+}
+
+/// `--min` keeps scores at or above it and `--top` the highest scores, as
+/// the core selects report rows. The entries arrive in file, line and
+/// function order, which breaks ties and is the order they are written in.
+fn shown<'e, 'r>(
+    entries: &'e [Entry<'r>],
+    presentation: Presentation,
+) -> Vec<&'e Entry<'r>> {
+    let mut kept: Vec<usize> = (0..entries.len())
+        .filter(|&i| presentation.min.is_none_or(|min| entries[i].crap >= min))
+        .collect();
+    if let Some(top) = presentation.top {
+        kept.sort_by(|&a, &b| entries[b].crap.total_cmp(&entries[a].crap).then(a.cmp(&b)));
+        kept.truncate(top);
+        kept.sort_unstable();
+    }
+    kept.into_iter().map(|i| &entries[i]).collect()
 }
 
 fn display(row: &Row) -> Cow<'_, str> {

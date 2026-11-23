@@ -20,7 +20,7 @@ use cargo_crap_core::run::{
 use cargo_crap_core::score::crap;
 use cargo_crap_core::signals::SignalSettings;
 use crapts::changed::matching::{Ancestry, ChangedFile, Matching, RowId, Stage, classify};
-use crapts::changed::section::{ChangedSection, Comparison, SkipReason, Skipped};
+use crapts::changed::section::{ChangedSection, Comparison, Presentation, SkipReason, Skipped};
 use crapts::changed::verdict::{
     Change, Counts, Edits, Inputs, Judged, Threshold, Verdict, evaluate,
 };
@@ -1696,6 +1696,31 @@ fn the_section_reports_the_fail_count_as_its_failures() {
 }
 
 #[test]
+fn min_and_top_select_shown_entries_as_they_select_report_rows() {
+    let head = format!("{}\n{}\n{}", func("a", 2), func("b", 6), func("c", 6));
+    let pair = Pair::new("src/p.ts", "", &head);
+    let judged = pair.judged(&pair.uncovered(), &[]);
+    let shown = |top, min| {
+        let section =
+            ChangedSection::presented(&comparison(), &judged, &[], Presentation { top, min });
+        let changed: Value = serde_json::from_str(section.json().get()).unwrap();
+        assert_eq!(changed["counts"]["touched"], 3);
+        changed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["function"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(shown(None, None), ["a", "b", "c"]);
+    assert_eq!(shown(None, Some(6.0)), ["a", "b", "c"]);
+    assert_eq!(shown(None, Some(6.5)), ["b", "c"]);
+    assert_eq!(shown(Some(1), None), ["b"]);
+    assert_eq!(shown(Some(3), None), ["a", "b", "c"]);
+    assert_eq!(shown(Some(1), Some(6.5)), ["b"]);
+}
+
+#[test]
 fn the_published_threshold_is_the_one_the_verdicts_used() {
     let head = analyzed("src/n.ts", &func("fresh", 6), Side::Head);
     let files = [(&[][..], head.as_slice(), Edits::Added)];
@@ -2838,8 +2863,6 @@ mod cli {
         assert!(repo.root().join("out.json").is_dir());
     }
 
-    const BINARY: &[u8] = b"\x00\xff\x0a";
-
     pub(super) fn binary_transition(
         base: &[u8],
         head: &[u8],
@@ -2851,39 +2874,6 @@ mod cli {
         repo.git(&["checkout", "-q", "-b", "feat"]);
         repo.write("src/a.ts", head);
         repo
-    }
-
-    #[test]
-    fn each_side_of_a_binary_transition_is_judged_by_its_own_bytes() {
-        let binary = json!([{"path": "src/a.ts", "reason": "binary"}]);
-        let repo = binary_transition(BINARY, func("fresh", 6).as_bytes());
-        let out = repo.run(&[]);
-        common::check(&out, 0);
-        assert_eq!(stderr(&out), "");
-        let changed = &report_of(&out.stdout)["changed"];
-        assert_eq!(changed["skipped"], binary);
-        let entry = only_entry(changed);
-        assert_eq!(entry["function"], "fresh");
-        assert_eq!(
-            (&entry["change"], &entry["verdict"]),
-            (&json!("new"), &json!("fail"))
-        );
-        assert_eq!(changed["removed"], json!([]));
-
-        let repo = binary_transition(func("gone", 3).as_bytes(), BINARY);
-        let out = repo.run(&[]);
-        common::check(&out, 0);
-        assert_eq!(stderr(&out), "");
-        let report = report_of(&out.stdout);
-        let changed = &report["changed"];
-        assert_eq!(changed["skipped"], binary);
-        assert_eq!(changed["entries"], json!([]));
-        assert_eq!(names(&changed["removed"]), ["src/a.ts::gone"]);
-        assert!(
-            names(&report["entries"])
-                .iter()
-                .all(|name| !name.starts_with("src/a.ts::"))
-        );
     }
 
     fn only_entry(changed: &Value) -> &Value {
@@ -3064,5 +3054,701 @@ mod cli {
             names(&changed["removed"]),
             ["src/k.ts::A::m", "src/k.ts::A::n"]
         );
+    }
+}
+
+/// Gates, coverage policies and coexistence with `--baseline`, through the real command.
+mod gates {
+    use std::fmt::Write as _;
+
+    use proptest::prelude::*;
+    use serde_json::{Value, json};
+
+    use super::cli::{Repo, app, binary_transition, names, report_of};
+    use super::{callback, common, func, outer_with_member, support};
+
+    fn code(out: &std::process::Output) -> i32 {
+        out.status.code().unwrap()
+    }
+
+    fn only_entry(changed: &Value) -> &Value {
+        let entries = changed["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "{changed:#}");
+        &entries[0]
+    }
+
+    fn with_fresh(cc: usize) -> Repo {
+        let repo = Repo::standard();
+        repo.write(
+            "src/app.ts",
+            format!("{}{}", app(6, 2, 1), func("fresh", cc)),
+        );
+        repo
+    }
+
+    #[test]
+    fn the_changed_gate_trips_only_when_it_is_requested() {
+        let rows: [(&str, &[&str], i32); 6] = [
+            ("", &["--base", "main"], 0),
+            ("", &["--base", "main", "--fail-changed"], 1),
+            ("fail-changed = true\n", &["--base", "main"], 1),
+            ("fail-changed = true\n", &[], 0),
+            (
+                "fail-changed = true\n",
+                &["--threshold", "50", "--base", "main"],
+                0,
+            ),
+            ("", &["--base", "main", "--fail-above"], 1),
+        ];
+        for (config, flags, expected) in rows {
+            let repo = with_fresh(6);
+            repo.write(".crapts.toml", config);
+            repo.uncovered();
+            let args = [&["--coverage", "cov.info", "--format", "json"][..], flags].concat();
+            let out = repo.run_in(&repo.root(), &args);
+            common::check(&out, expected);
+            let report = report_of(&out.stdout);
+            let changed = &report["changed"];
+            match flags {
+                [] => {
+                    assert!(report.get("changed").is_none());
+                    assert_eq!(report["summary"]["changed_failures"], Value::Null);
+                },
+                [.., "50", _, _] => assert_eq!(changed["entries"][0]["verdict"], "pass"),
+                [.., "--fail-above"] => {
+                    assert_eq!(report["summary"]["crappy"], 2);
+                    assert_eq!(changed["counts"]["fail"], 1);
+                },
+                _ => {
+                    assert_eq!(changed["counts"]["fail"], 1, "{config} {flags:?}");
+                    assert_eq!(report["summary"]["changed_failures"], 1);
+                },
+            }
+        }
+    }
+
+    fn baseline(
+        repo: &Repo,
+        edge: f64,
+        version: Option<&str>,
+    ) {
+        repo.uncovered();
+        let out = repo.run_in(
+            &repo.root(),
+            &["--coverage", "cov.info", "--format", "json"],
+        );
+        common::check(&out, 0);
+        let mut doc = report_of(&out.stdout);
+        for row in doc["entries"].as_array_mut().unwrap() {
+            if row["function"] == "edge" {
+                row["crap"] = json!(edge);
+            }
+        }
+        if let Some(version) = version {
+            doc["version"] = json!(version);
+        }
+        repo.write("base.json", serde_json::to_vec_pretty(&doc).unwrap());
+    }
+
+    #[test]
+    fn base_with_baseline_reports_both_comparisons_and_trips_each_gate_alone() {
+        type Row<'a> = (usize, f64, &'a [&'a str], usize, usize, i32);
+        let rows: [Row<'_>; 8] = [
+            (6, 2.0, &[], 1, 1, 0),
+            (6, 2.0, &["--fail-changed"], 1, 1, 1),
+            (6, 2.0, &["--fail-regression"], 1, 1, 1),
+            (6, 2.0, &["--fail-changed", "--fail-regression"], 1, 1, 1),
+            (5, 2.0, &["--fail-changed"], 1, 0, 0),
+            (5, 2.0, &["--fail-regression"], 1, 0, 1),
+            (6, 6.0, &["--fail-regression"], 0, 1, 0),
+            (6, 6.0, &["--fail-changed"], 0, 1, 1),
+        ];
+        for (cc, edge, flags, regressed, failures, expected) in rows {
+            let repo = Repo::standard();
+            baseline(&repo, edge, None);
+            repo.write(
+                "src/app.ts",
+                format!("{}{}", app(6, 2, 1), func("fresh", cc)),
+            );
+            let out = repo.run(&[&["--baseline", "base.json"][..], flags].concat());
+            common::check(&out, expected);
+            let report = common::validated_delta(&out.stdout);
+            for member in ["regression_gate", "removed", "changed"] {
+                assert!(report.get(member).is_some(), "{member}");
+            }
+            assert_eq!(
+                report["summary"]["regressed"], regressed,
+                "{cc} {edge} {flags:?}"
+            );
+            assert_eq!(
+                report["summary"]["changed_failures"], failures,
+                "{cc} {edge} {flags:?}"
+            );
+        }
+        let repo = Repo::standard();
+        let (major, rest) = env!("CARGO_PKG_VERSION").split_once('.').unwrap();
+        let minor: u64 = rest.split('.').next().unwrap().parse().unwrap();
+        baseline(&repo, 2.0, Some(&format!("{major}.{}.0", minor + 1)));
+        repo.write(
+            "src/app.ts",
+            format!("{}{}", app(6, 2, 1), func("fresh", 6)),
+        );
+        let out = repo.run(&[
+            "--baseline",
+            "base.json",
+            "--fail-changed",
+            "--fail-regression",
+        ]);
+        common::check(&out, 1);
+        let report = common::validated_delta(&out.stdout);
+        assert_eq!(report["regression_gate"]["skipped"], true);
+        assert_eq!(report["summary"]["changed_failures"], 1);
+    }
+
+    #[test]
+    fn each_side_of_a_binary_transition_is_judged_by_its_own_bytes() {
+        let binary: &[u8] = b"\x00\xff\x0a";
+        for (base, head, expected) in [
+            (binary.to_vec(), func("fresh", 6).into_bytes(), 1),
+            (func("gone", 3).into_bytes(), binary.to_vec(), 0),
+        ] {
+            let repo = binary_transition(&base, &head);
+            let out = repo.run(&["--fail-changed"]);
+            common::check(&out, expected);
+            assert_eq!(out.stderr.as_slice(), b"");
+            let changed = &report_of(&out.stdout)["changed"];
+            assert_eq!(
+                changed["skipped"],
+                json!([{"path": "src/a.ts", "reason": "binary"}])
+            );
+        }
+    }
+
+    #[test]
+    fn top_and_min_choose_changed_rows_without_changing_counts_or_the_verdict() {
+        let repo = Repo::standard();
+        repo.write(
+            "src/app.ts",
+            format!("{}{}\n{}", app(7, 2, 1), func("fresh", 6), func("small", 2)),
+        );
+        let top = repo.report(&["--top", "1", "--fail-changed"], 1);
+        let changed = &top["changed"];
+        assert_eq!(names(&changed["entries"]), ["src/app.ts::hot"]);
+        assert_eq!(
+            (&changed["counts"]["touched"], &changed["counts"]["fail"]),
+            (&json!(3), &json!(2))
+        );
+        let min = repo.report(&["--min", "10", "--fail-changed"], 1);
+        assert_eq!(
+            names(&min["changed"]["entries"]),
+            ["src/app.ts::hot", "src/app.ts::fresh"]
+        );
+        assert_eq!(min["changed"]["counts"], changed["counts"]);
+    }
+
+    #[test]
+    fn a_staged_removal_with_a_working_tree_replacement_keeps_its_ancestry() {
+        let original = app(6, 2, 1);
+        let edited = original.replacen("return 1\n", "return 11\n", 1).replacen(
+            "return 2\n",
+            "return 12\n",
+            1,
+        );
+        for head in [original.clone(), edited] {
+            let repo = Repo::standard();
+            repo.git(&["rm", "-q", "--cached", "src/app.ts"]);
+            repo.write("src/app.ts", &head);
+            let changed = repo.report(&["--fail-changed"], 0)["changed"].clone();
+            assert_eq!(changed["removed"], json!([]));
+            if head == original {
+                assert_eq!(changed["entries"], json!([]));
+                assert_eq!(changed["counts"]["touched"], 0);
+            } else {
+                let entry = only_entry(&changed);
+                assert_eq!(entry["function"], "hot");
+                assert_eq!(
+                    (&entry["change"], &entry["verdict"]),
+                    (&json!("modified"), &json!("over"))
+                );
+                assert_eq!(
+                    entry["reason"],
+                    "complexity did not rise (6 to 6), CRAP 42.0 above 30"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_edited_function_with_two_same_stem_base_candidates_fails_as_ambiguous() {
+        let repo = Repo::with(&[(
+            "src/hooks.ts",
+            &format!("{}{}", callback(5, "first"), callback(15, "second")),
+        )]);
+        repo.write("src/hooks.ts", callback(12, "third"));
+        let changed = repo.report(&["--fail-changed"], 1)["changed"].clone();
+        let entry = only_entry(&changed);
+        assert_eq!(entry["function"], "useEffect()");
+        assert_eq!(
+            (&entry["change"], &entry["verdict"]),
+            (&json!("ambiguous"), &json!("fail"))
+        );
+        assert_eq!(
+            entry["reason"],
+            "no unique base match among 2 candidates, CRAP 156.0 above 30"
+        );
+        assert_eq!(
+            entry["candidates"],
+            json!([
+                {"function": "useEffect()", "line": 1, "cyclomatic": 5},
+                {"function": "useEffect()#2", "line": 8, "cyclomatic": 15},
+            ])
+        );
+        assert_eq!(
+            names(&changed["removed"]),
+            ["src/hooks.ts::useEffect()", "src/hooks.ts::useEffect()#2"]
+        );
+        assert_eq!(
+            (&changed["counts"]["ambiguous"], &changed["counts"]["fail"]),
+            (&json!(1), &json!(1))
+        );
+    }
+
+    #[test]
+    fn a_split_keeps_the_surviving_name_and_judges_the_extracted_function_on_its_own() {
+        let repo = Repo::with(&[("src/s.ts", &func("big", 12))]);
+        let mut head = String::from("export function big(x: number) {\n  if (part(x)) return 1\n");
+        for i in 7..12 {
+            writeln!(head, "  if (x === {i}) return {i}").unwrap();
+        }
+        head.push_str("  return 0\n}\n\n");
+        head.push_str(&func("part", 6));
+        repo.write("src/s.ts", head);
+        let changed = repo.report(&["--fail-changed"], 1)["changed"].clone();
+        assert_eq!(
+            names(&changed["entries"]),
+            ["src/s.ts::big", "src/s.ts::part"]
+        );
+        let (big, part) = (&changed["entries"][0], &changed["entries"][1]);
+        assert_eq!(
+            (&big["change"], &big["verdict"]),
+            (&json!("modified"), &json!("over"))
+        );
+        assert_eq!(
+            big["reason"],
+            "complexity did not rise (12 to 7), CRAP 56.0 above 30"
+        );
+        assert_eq!(
+            (&part["change"], &part["verdict"]),
+            (&json!("new"), &json!("fail"))
+        );
+        assert_eq!(part["reason"], "new function, CRAP 42.0 above 30");
+    }
+
+    #[test]
+    fn a_deletion_only_hunk_inside_a_function_touches_it() {
+        let base = func("legacy", 12);
+        let repo = Repo::with(&[("src/l.ts", &base)]);
+        repo.write("src/l.ts", base.replace("  if (x === 5) return 5\n", ""));
+        let changed = repo.report(&["--fail-changed"], 0)["changed"].clone();
+        let entry = only_entry(&changed);
+        assert_eq!(entry["function"], "legacy");
+        assert_eq!(
+            (
+                &entry["cyclomatic"],
+                &entry["base_cyclomatic"],
+                &entry["cyclomatic_delta"],
+                &entry["verdict"]
+            ),
+            (&json!(11), &json!(12), &json!(-1), &json!("over"))
+        );
+        assert_eq!(
+            entry["reason"],
+            "complexity did not rise (12 to 11), CRAP 132.0 above 30"
+        );
+    }
+
+    #[test]
+    fn a_decision_added_in_a_nested_methods_decorator_or_key_touches_the_enclosing_function() {
+        for (base, head, method_entry) in [
+            ("  @dec(x) m() {}", "  @dec(x ? 1 : 2) m() {}", true),
+            ("  [x]() {}", "  [x ? 1 : 2]() {}", false),
+        ] {
+            let repo = Repo::with(&[("src/d.ts", &outer_with_member(base))]);
+            repo.write("src/d.ts", outer_with_member(head));
+            let changed = repo.report(&["--fail-changed"], 1)["changed"].clone();
+            let outer = &changed["entries"][0];
+            assert_eq!(outer["function"], "outer");
+            assert_eq!(
+                (
+                    &outer["change"],
+                    &outer["base_cyclomatic"],
+                    &outer["cyclomatic"],
+                    &outer["verdict"]
+                ),
+                (&json!("modified"), &json!(5), &json!(6), &json!("fail"))
+            );
+            assert_eq!(
+                outer["reason"],
+                "complexity rose from 5 to 6, CRAP 42.0 above 30"
+            );
+            assert_eq!(changed["counts"]["fail"], 1);
+            let fails: Vec<_> = changed["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["verdict"] == "fail")
+                .collect();
+            assert_eq!(fails, [outer]);
+            if method_entry {
+                assert_eq!(
+                    names(&changed["entries"]),
+                    ["src/d.ts::outer", "src/d.ts::outer::K::m"]
+                );
+                let method = &changed["entries"][1];
+                assert_eq!(
+                    (
+                        &method["change"],
+                        &method["base_cyclomatic"],
+                        &method["cyclomatic"],
+                        &method["verdict"]
+                    ),
+                    (&json!("modified"), &json!(1), &json!(1), &json!("pass"))
+                );
+                let counts = &changed["counts"];
+                assert_eq!(
+                    (&counts["touched"], &counts["modified"], &counts["worse"]),
+                    (&json!(2), &json!(2), &json!(1))
+                );
+            } else {
+                assert_eq!(names(&changed["entries"]), ["src/d.ts::outer"]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_complexity_increase_fails_even_when_historical_crap_may_have_fallen() {
+        let repo = Repo::with(&[("src/q.ts", &func("legacy", 10))]);
+        let head = func("legacy", 12);
+        repo.write("src/q.ts", &head);
+        let statements: Vec<usize> = (2..=13).collect();
+        let mut lcov = String::from("SF:src/q.ts\n");
+        for (i, line) in statements.iter().enumerate() {
+            writeln!(lcov, "DA:{line},{}", u32::from(i < 3)).unwrap();
+        }
+        lcov.push_str("end_of_record\n");
+        repo.write("cov.info", lcov);
+        let out = repo.run_in(
+            &repo.root(),
+            &[
+                "--coverage",
+                "cov.info",
+                "--base",
+                "main",
+                "--format",
+                "json",
+                "--fail-changed",
+            ],
+        );
+        common::check(&out, 1);
+        let changed = &report_of(&out.stdout)["changed"];
+        let entry = only_entry(changed);
+        assert_eq!(
+            (
+                &entry["cyclomatic_delta"],
+                &entry["coverage"],
+                &entry["crap"],
+                &entry["verdict"]
+            ),
+            (&json!(2), &json!(25.0), &json!(72.75), &json!("fail"))
+        );
+    }
+
+    #[test]
+    fn a_branch_neutral_edit_to_a_function_above_the_threshold_is_over_and_passes_the_gate() {
+        let base = func("legacy", 12);
+        let repo = Repo::with(&[("src/l.ts", &base)]);
+        repo.write(
+            "src/l.ts",
+            base.replace("return 3\n", "return 33\n")
+                .replace("return 4\n", "return 44\n"),
+        );
+        let changed = repo.report(&["--fail-changed"], 0)["changed"].clone();
+        let entry = only_entry(&changed);
+        assert_eq!(
+            (&entry["change"], &entry["verdict"]),
+            (&json!("modified"), &json!("over"))
+        );
+        assert_eq!(
+            entry["reason"],
+            "complexity did not rise (12 to 12), CRAP 156.0 above 30"
+        );
+        assert_eq!(
+            (&changed["counts"]["over"], &changed["counts"]["fail"]),
+            (&json!(1), &json!(0))
+        );
+    }
+
+    fn other_only(
+        repo: &Repo,
+        flags: &[&str],
+    ) -> std::process::Output {
+        let other = repo.read("src/other.ts");
+        let mut lcov = String::from("SF:src/other.ts\n");
+        for line in 1..=other.lines().count() {
+            writeln!(lcov, "DA:{line},0").unwrap();
+        }
+        lcov.push_str("end_of_record\n");
+        repo.write("cov.info", lcov);
+        let args = [
+            &[
+                "--coverage",
+                "cov.info",
+                "--base",
+                "main",
+                "--format",
+                "json",
+            ][..],
+            flags,
+        ]
+        .concat();
+        repo.run_in(&repo.root(), &args)
+    }
+
+    fn legacy_and_fresh() -> Repo {
+        let repo = Repo::with(&[
+            ("src/m.ts", &func("legacy", 10)),
+            ("src/other.ts", &func("other", 1)),
+        ]);
+        repo.write(
+            "src/m.ts",
+            format!("{}\n{}", func("legacy", 11), func("fresh", 6)),
+        );
+        repo
+    }
+
+    fn seen(entries: &Value) -> Vec<(String, Value, Value, Value)> {
+        entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["function"].as_str().unwrap().to_owned(),
+                    e["coverage"].clone(),
+                    e["crap"].clone(),
+                    e["verdict"].clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn missing_head_coverage_follows_the_selected_policy() {
+        let entry = |name: &str, crap: f64, verdict: &str| {
+            (name.to_owned(), Value::Null, json!(crap), json!(verdict))
+        };
+        for (policy, entries, skipped, nulls, fail, expected) in [
+            (
+                "pessimistic",
+                vec![entry("legacy", 132.0, "fail"), entry("fresh", 42.0, "fail")],
+                0,
+                2,
+                2,
+                1,
+            ),
+            (
+                "optimistic",
+                vec![entry("legacy", 11.0, "pass"), entry("fresh", 6.0, "pass")],
+                0,
+                2,
+                0,
+                0,
+            ),
+            ("skip", vec![], 2, 0, 0, 0),
+        ] {
+            let repo = legacy_and_fresh();
+            let out = other_only(&repo, &["--missing", policy, "--fail-changed"]);
+            common::check(&out, expected);
+            let changed = &report_of(&out.stdout)["changed"];
+            assert_eq!(seen(&changed["entries"]), entries, "{policy}");
+            let counts = &changed["counts"];
+            assert_eq!(
+                (
+                    &counts["missing_skipped"],
+                    &counts["coverage_null"],
+                    &counts["fail"]
+                ),
+                (&json!(skipped), &json!(nulls), &json!(fail)),
+                "{policy}"
+            );
+            assert_eq!(changed["removed"], json!([]));
+        }
+    }
+
+    #[test]
+    fn a_matched_empty_coverage_record_is_measured_zero_and_the_null_count_ignores_slicing() {
+        let heavy = ("heavy".to_owned(), json!(0.0), json!(42.0), json!("fail"));
+        let light = ("light".to_owned(), Value::Null, json!(6.0), json!("pass"));
+        for (flags, entries, touched, nulls, skipped) in [
+            (
+                &["--missing", "pessimistic"][..],
+                vec![heavy.clone(), light],
+                2,
+                1,
+                0,
+            ),
+            (
+                &["--missing", "pessimistic", "--min", "10"][..],
+                vec![heavy.clone()],
+                2,
+                1,
+                0,
+            ),
+            (
+                &["--missing", "pessimistic", "--top", "1"][..],
+                vec![heavy.clone()],
+                2,
+                1,
+                0,
+            ),
+            (&["--missing", "skip"][..], vec![heavy.clone()], 1, 0, 1),
+        ] {
+            let repo = Repo::standard();
+            repo.write("src/e.ts", func("heavy", 6));
+            repo.write("src/n.ts", func("light", 2));
+            let app_lines = repo.read("src/app.ts").lines().count();
+            let mut lcov = String::from("SF:src/app.ts\n");
+            for line in 1..=app_lines {
+                writeln!(lcov, "DA:{line},0").unwrap();
+            }
+            lcov.push_str("end_of_record\nSF:src/e.ts\nend_of_record\n");
+            repo.write("cov.info", lcov);
+            let args = [
+                &[
+                    "--coverage",
+                    "cov.info",
+                    "--base",
+                    "main",
+                    "--format",
+                    "json",
+                ][..],
+                flags,
+            ]
+            .concat();
+            let out = repo.run_in(&repo.root(), &args);
+            common::check(&out, 0);
+            let changed = &report_of(&out.stdout)["changed"];
+            assert_eq!(seen(&changed["entries"]), entries, "{flags:?}");
+            let counts = &changed["counts"];
+            assert_eq!(
+                (
+                    &counts["touched"],
+                    &counts["coverage_null"],
+                    &counts["missing_skipped"]
+                ),
+                (&json!(touched), &json!(nulls), &json!(skipped)),
+                "{flags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allowed_touched_rows_are_counted_and_never_fail() {
+        let repo = Repo::with(&[("src/m.ts", &func("legacy", 10))]);
+        repo.write(
+            "src/m.ts",
+            format!("{}\n{}", func("legacy", 11), func("fresh", 6)),
+        );
+        let changed = repo.report(&["--allow", "legacy", "--fail-changed"], 1)["changed"].clone();
+        let entry = only_entry(&changed);
+        assert_eq!(
+            (&entry["function"], &entry["verdict"]),
+            (&json!("fresh"), &json!("fail"))
+        );
+        assert_eq!(
+            (&changed["counts"]["allowed"], &changed["counts"]["fail"]),
+            (&json!(1), &json!(1))
+        );
+        assert_eq!(changed["removed"], json!([]));
+        let changed = repo.report(
+            &["--allow", "legacy", "--allow", "fresh", "--fail-changed"],
+            0,
+        )["changed"]
+            .clone();
+        assert_eq!(changed["entries"], json!([]));
+        assert_eq!(changed["counts"]["allowed"], 2);
+    }
+
+    /// One file's functions as `(name, cyclomatic)`.
+    fn functions() -> impl Strategy<Value = Vec<(String, usize)>> {
+        proptest::collection::btree_map("[a-e]", 1usize..=8, 0..=4)
+            .prop_map(|map| map.into_iter().collect())
+    }
+
+    fn source(functions: &[(String, usize)]) -> String {
+        functions
+            .iter()
+            .map(|(name, cc)| func(name, *cc))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Every flag that shapes presentation, and none that changes the verdict.
+    fn presentation() -> impl Strategy<Value = Vec<String>> {
+        (
+            proptest::option::of(1usize..=3),
+            proptest::option::of(0u32..=60),
+            proptest::bool::ANY,
+        )
+            .prop_map(|(top, min, by_file)| {
+                let mut flags = Vec::new();
+                if let Some(top) = top {
+                    flags.extend(["--top".to_owned(), top.to_string()]);
+                }
+                if let Some(min) = min {
+                    flags.extend(["--min".to_owned(), min.to_string()]);
+                }
+                if by_file {
+                    flags.extend(["--sort".to_owned(), "file".to_owned()]);
+                }
+                flags
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 6, ..support::proptest_config() })]
+        #[test]
+        fn the_changed_verdict_and_counts_are_invariant_under_presentation(
+            base in functions(),
+            head in functions(),
+            shown in presentation(),
+            summary in proptest::bool::ANY,
+            gate in proptest::bool::ANY,
+        ) {
+            let repo = Repo::with(&[("src/p.ts", &source(&base))]);
+            repo.write("src/p.ts", source(&head));
+            let gate: &[&str] = if gate { &["--fail-changed"] } else { &[] };
+            let oracle = repo.run(gate);
+            let expected = code(&oracle);
+            let oracle = report_of(&oracle.stdout);
+            let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
+            let json = repo.run(&[gate, &shown].concat());
+            prop_assert_eq!(code(&json), expected);
+            let json = report_of(&json.stdout);
+            prop_assert_eq!(&json["changed"]["counts"], &oracle["changed"]["counts"]);
+            prop_assert_eq!(&json["summary"]["changed_failures"], &oracle["summary"]["changed_failures"]);
+            let all = oracle["changed"]["entries"].as_array().unwrap();
+            for entry in json["changed"]["entries"].as_array().unwrap() {
+                prop_assert!(all.contains(entry));
+            }
+            for format in ["text", "markdown", "pr-comment", "github", "shields"] {
+                let mut args = [&["--coverage", "cov.info", "--base", "main", "--format", format][..], gate, &shown].concat();
+                if summary && matches!(format, "text" | "markdown" | "pr-comment") {
+                    args.push("--summary");
+                }
+                let out = repo.run_in(&repo.root(), &args);
+                prop_assert_eq!(code(&out), expected, "{}", format);
+            }
+        }
     }
 }
