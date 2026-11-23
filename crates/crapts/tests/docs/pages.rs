@@ -502,10 +502,10 @@ pub fn clickable_links(page: &Page) -> Vec<(usize, String)> {
     let mut all = found.inline;
     for (line, label, target) in found.defined {
         let shortcut = format!("[{label}]");
-        let used = found
-            .prose
-            .match_indices(&shortcut)
-            .any(|(at, _)| !found.prose[at + shortcut.len()..].starts_with(['(', ':']));
+        let used = found.prose.match_indices(&shortcut).any(|(at, _)| {
+            let after = &found.prose[at + shortcut.len()..];
+            !after.starts_with(['(', ':']) && (!after.starts_with('[') || after.starts_with("[]"))
+        });
         if used {
             all.push((line, target));
         }

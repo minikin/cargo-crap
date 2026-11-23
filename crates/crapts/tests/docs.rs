@@ -1564,6 +1564,16 @@ fn the_workflow_reader_reads_the_subset_and_refuses_the_rest() {
         action::parse_yaml("on: [pull_request\n", 1).unwrap_err().0,
         1
     );
+    for bad_on in ["on: [[pull_request]]\n", "on: pull_request]\n"] {
+        let page = Page::new(
+            action::ACTION_GUIDE,
+            &format!("# G\n\n```yaml\n{bad_on}```\n"),
+        );
+        assert_names(
+            &err(action::workflows(&page).map(|_| ())),
+            &[&format!("{}:4", action::ACTION_GUIDE)],
+        );
+    }
     assert_eq!(action::parse_yaml("a: {b: c}\n", 1).unwrap_err().0, 1);
     let listed = action::parse_yaml(
         "jobs:\n  a:\n    steps:\n      - uses: x@1\n        with:\n          coverage-command: [a, b]\n",
@@ -1891,6 +1901,12 @@ fn a_change_to_the_crapts_docs_or_their_sources_runs_the_crapts_docs_check() {
     assert!(!index::runs_crapts_docs(
         "echo cargo nextest run --workspace --test docs"
     ));
+    assert!(!index::runs_crapts_docs(
+        "cargo nextest list --workspace --test docs"
+    ));
+    assert!(!index::runs_root_docs(
+        "cargo nextest list --workspace --test docs"
+    ));
     assert!(!index::runs_root_docs(
         "cargo nextest run -p crapts --test docs"
     ));
@@ -1934,6 +1950,14 @@ fn the_index_counts_only_links_a_reader_can_follow() {
         ),
     );
     index::check_index(&used, &pages).unwrap();
+    let shadowed = index.with(
+        line,
+        "[unused][real]\n\n[unused]: reference/complexity.md\n[real]: reference/cli.md",
+    );
+    assert_names(
+        &err(index::check_index(&shadowed, &pages)),
+        &["docs/crapts/reference/complexity.md"],
+    );
 }
 
 #[test]

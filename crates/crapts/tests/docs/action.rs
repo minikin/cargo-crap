@@ -278,18 +278,32 @@ fn flat_scalar(node: &Node) -> Result<String, Failure> {
     }
 }
 
-fn triggers(node: &Node) -> Vec<String> {
-    if node.children.is_empty() {
-        node.value
-            .trim_start_matches('[')
-            .trim_end_matches(']')
+fn triggers(node: &Node) -> Result<Vec<String>, Failure> {
+    if !node.children.is_empty() {
+        return Ok(node.children.iter().map(|c| c.key.clone()).collect());
+    }
+    let raw = node.value.trim();
+    if raw.starts_with('[') || raw.ends_with(']') {
+        let Some(inner) = raw.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+            return Err(outside(node.line, &format!("on: {}", node.value)));
+        };
+        if inner.contains(['[', ']']) {
+            return Err(outside(node.line, &format!("on: {}", node.value)));
+        }
+        let items: Vec<String> = inner
             .split(',')
             .map(|t| t.trim().to_owned())
             .filter(|t| !t.is_empty())
-            .collect()
-    } else {
-        node.children.iter().map(|c| c.key.clone()).collect()
+            .collect();
+        if items.is_empty() {
+            return Err(outside(node.line, &format!("on: {}", node.value)));
+        }
+        return Ok(items);
     }
+    if raw.is_empty() || raw.contains(['[', ']', ',']) {
+        return Err(outside(node.line, &format!("on: {}", node.value)));
+    }
+    Ok(vec![raw.to_owned()])
 }
 
 fn permissions(node: Option<&Node>) -> Result<Option<BTreeMap<String, String>>, Failure> {
@@ -349,7 +363,10 @@ pub fn workflow(
         .unwrap_or_default();
     Ok(Workflow {
         line,
-        triggers: child(nodes, "on").map(triggers).unwrap_or_default(),
+        triggers: child(nodes, "on")
+            .map(triggers)
+            .transpose()?
+            .unwrap_or_default(),
         permissions: permissions(child(nodes, "permissions"))?,
         jobs,
     })

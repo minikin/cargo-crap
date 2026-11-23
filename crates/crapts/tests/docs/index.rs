@@ -145,8 +145,9 @@ pub fn job_runs(
 
 fn cargo_test(command: &str) -> Option<Vec<&str>> {
     let words: Vec<&str> = command.split_whitespace().collect();
-    let runs =
-        words.first() == Some(&"cargo") && matches!(words.get(1), Some(&("test" | "nextest")));
+    let runs = words.first() == Some(&"cargo")
+        && (words.get(1) == Some(&"test")
+            || (words.get(1) == Some(&"nextest") && words.get(2) == Some(&"run")));
     runs.then_some(words)
 }
 
