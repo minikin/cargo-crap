@@ -4954,7 +4954,8 @@ fn the_foreign_key_probe_preserves_cargo_craps_original_parse_errors() {
 
     let snap =
         std::fs::read_to_string(manifest.join("tests/snapshots/golden__p_baseline_bare.snap"))
-            .expect("read snap");
+            .expect("read snap")
+            .replace("\r\n", "\n");
     let (_, after_stderr) = snap.split_once("stderr:\n").expect("stderr header");
     let (expected_p_bare_stderr, _) = after_stderr.split_once("<<end>>").expect("stderr end");
 
