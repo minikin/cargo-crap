@@ -369,7 +369,7 @@ fn the_lock_retains_the_spec_45_ids_and_adds_only_the_crapts_closure() {
         package: Vec<LockedPackage>,
     }
 
-    // Both products release independently of the third-party versions recorded in this fixture.
+    // Releases can change the first-party package versions recorded in this fixture.
     let base: BTreeSet<_> = include_str!("fixtures/spec45-package-ids.txt")
         .lines()
         .filter(|line| {

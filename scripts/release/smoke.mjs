@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
+import resolver from "../../npm/crapts/lib/resolve.js";
 
 const { values } = parseArgs({
   options: {
@@ -23,6 +25,36 @@ function npmCommand(tool) {
   ];
 }
 
+async function waitForPackage(name, version) {
+  const spec = name + "@" + version;
+  const [npm, ...args] = npmCommand("npm");
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const result = spawnSync(
+      npm,
+      [
+        ...args,
+        "view",
+        spec,
+        "version",
+        "--prefer-online",
+        "--fetch-retries=0",
+        "--fetch-timeout=10000",
+      ],
+      { cwd: dir, encoding: "utf8" },
+    );
+    if (result.error) throw result.error;
+    if (result.status === 0 && result.stdout.trim() === version) return;
+    if (
+      attempt === 3 ||
+      (result.status !== 0 && !/\b(E404|ETARGET)\b/.test(result.stderr))
+    )
+      throw Error(
+        spec + ": " + (result.stderr.trim() || "version unavailable"),
+      );
+    await delay(3000 * attempt);
+  }
+}
+
 try {
   if (!values.version || Boolean(values.npm) === Boolean(values.binary))
     throw Error("expected --version and one of --npm or --binary");
@@ -30,20 +62,30 @@ try {
   if (values.npm) {
     writeFileSync(join(dir, "package.json"), '{"private":true}');
     const spec = "@minikin/crapts@" + values.version;
+    const libc = process.platform === "linux" ? resolver.detectLibc() : "none";
+    const host = resolver.resolveTarget(process.platform, process.arch, libc);
+    await waitForPackage("@minikin/crapts", values.version);
+    await waitForPackage(host.name, values.version);
     const [npm, ...args] = npmCommand("npm");
     execFileSync(
       npm,
-      [...args, "install", "--ignore-scripts", "--no-audit", "--no-fund", spec],
+      [
+        ...args,
+        "install",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--prefer-online",
+        spec,
+      ],
       { cwd: dir, stdio: "inherit" },
     );
     if (values["expect-package"]) {
       const local = createRequire(join(dir, "package.json"));
-      const { resolveTarget, detectLibc } = local(
-        "@minikin/crapts/lib/resolve.js",
-      );
-      const host = resolveTarget(process.platform, process.arch, detectLibc());
-      assert.equal(host.name, values["expect-package"]);
-      local.resolve(host.name + "/" + host.binary);
+      const { resolveTarget } = local("@minikin/crapts/lib/resolve.js");
+      const installed = resolveTarget(process.platform, process.arch, libc);
+      assert.equal(installed.name, values["expect-package"]);
+      local.resolve(installed.name + "/" + installed.binary);
     }
     command = [
       ...npmCommand("npx"),

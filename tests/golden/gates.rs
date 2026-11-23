@@ -296,10 +296,14 @@ fn a_change_to_a_core_proptest_seed_runs_the_rust_jobs() {
 
 #[test]
 fn a_change_to_a_core_test_fixture_runs_the_rust_jobs() {
-    assert!(any_glob_matches(
-        &globs(CI, "            rust:"),
-        "crates/cargo-crap-core/src/coverage/p_bad_known.info"
-    ));
+    let rust = globs(CI, "            rust:");
+    for fixture in [
+        "crates/cargo-crap-core/src/coverage/p_bad_known.info",
+        "crates/cargo-crap-core/src/report/cargo_crap_tool.inc",
+        "crates/cargo-crap-core/src/report/second_tool.inc",
+    ] {
+        assert!(any_glob_matches(&rust, fixture), "{fixture}");
+    }
 }
 
 #[test]

@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Tests for scripts/release/prep.sh. Run: bash scripts/release/test.sh
-#
-# Each case copies the repository's own release files into a temp dir, so a
-# change to their layout that prep.sh no longer understands fails here.
+# Requires Bash, Git, Perl, Python 3.11+, Ruby with minitest, curl and rustup.
+# The locked offline builds need a toolchain that supports crapts and a warm Cargo cache.
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
@@ -106,6 +104,7 @@ if [ "$failures" -gt 0 ]; then
     echo "$failures failure(s)"
     exit 1
 fi
+python3 -m py_compile "$here"/*.py "$here"/tests/*.py || exit 1
 python3 -B "$here/tests/core.py" || exit 1
 python3 -B "$here/tests/prep.py" || exit 1
 ruby "$here/tests/workflows.rb" || exit 1

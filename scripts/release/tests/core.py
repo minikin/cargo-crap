@@ -133,11 +133,13 @@ class CoreRelease(unittest.TestCase):
         self.git("add", ".")
         self.git("commit", "-qm", "Release fixture")
 
-    def helper(self, name, *args, code=0, message=None):
+    def helper(self, name, *args, code=0, message=()):
         res = self.cmd(["bash", str(SCRIPTS / (name + ".sh")), *args], False)
         self.assertEqual(res.returncode, code, (res.stdout, res.stderr))
-        if message:
-            self.assertIn(message, res.stderr if code else res.stdout)
+        if isinstance(message, str):
+            message = (message,)
+        for part in message:
+            self.assertIn(part, res.stderr if code else res.stdout)
         return res.stdout.strip()
 
     def check(self, **kw):
@@ -155,10 +157,11 @@ class CoreRelease(unittest.TestCase):
     ):
         self.check(message="unpublished")
         self.status = 200
-        self.check(code=1, message="--recover-tag")
+        self.check(code=1, message=(TAG, "--recover-tag"))
         self.status = 404
         self.tag()
-        self.check(code=1, message=TAG)
+        self.check(code=1, message=(TAG, "404"))
+        self.publish(code=1, message=(TAG, "404"))
         self.status = 503
         self.check(code=1, message="503")
         self.assertEqual(self.uploads, 0)
@@ -166,11 +169,25 @@ class CoreRelease(unittest.TestCase):
     def test_core_diff_check_stops_a_release_when_published_core_has_local_or_inherited_manifest_edits(
         self,
     ):
+        member = CORE + "/Cargo.toml"
+        self.write(
+            member,
+            (self.repo / member).read_text()
+            + "[dev-dependencies]\nsyn.workspace=true\n"
+            "[build-dependencies]\nquote.workspace=true\n"
+            "[target.'cfg(unix)'.dependencies]\nlibc.workspace=true\n",
+        )
+        root = self.repo / "Cargo.toml"
+        self.write("Cargo.toml", root.read_text() + 'quote="1"\nlibc="0.2"\n')
+        self.commit()
         self.tag()
         self.status = 200
         for path, before, after in [
             (CORE + "/src/lib.rs", "7", "8"),
             ("Cargo.toml", 'anyhow="1"', 'anyhow="1.0"'),
+            ("Cargo.toml", 'syn="2"', 'syn="2.0"'),
+            ("Cargo.toml", 'quote="1"', 'quote="1.0"'),
+            ("Cargo.toml", 'libc="0.2"', 'libc="0.2.0"'),
             ("Cargo.toml", 'license="MIT"', 'license="ISC"'),
             ("Cargo.toml", '"warn"', '"deny"'),
         ]:
@@ -178,7 +195,8 @@ class CoreRelease(unittest.TestCase):
                 current = (self.repo / path).read_text()
                 self.write(path, current.replace(before, after))
                 self.commit()
-                self.check(code=1, message="bump")
+                drift = "inherited manifest" if path == "Cargo.toml" else "core tree"
+                self.check(code=1, message=(TAG, "0.2.0", drift, "bump"))
                 self.write(path, current)
                 self.commit()
 
@@ -194,24 +212,67 @@ class CoreRelease(unittest.TestCase):
         self.write("src/main.rs", "fn main() {}")
         self.commit()
         self.git("push", "-q", "origin", "main")
-        shallow = self.base / "shallow"
-        self.git("clone", "--no-tags", "--depth=1", self.remote.as_uri(), str(shallow))
-        self.repo = shallow
-        self.assertEqual(self.git("tag"), "")
-        self.check(message="published")
-        self.assertEqual(self.git("rev-parse", TAG + "^{commit}").strip(), self.initial)
+        self.git("tag", "unrelated")
+        self.git("push", "-q", "origin", "unrelated")
+        for command in ("check-core", "publish-core"):
+            with self.subTest(command=command):
+                shallow = self.base / command
+                self.git(
+                    "clone",
+                    "--no-tags",
+                    "--depth=1",
+                    self.remote.as_uri(),
+                    str(shallow),
+                )
+                self.repo = shallow
+                self.assertEqual(self.git("tag"), "")
+                self.helper(command, "--api-base", self.api, message="published")
+                self.assertEqual(self.git("tag").splitlines(), [TAG])
+                self.assertEqual(
+                    self.git("rev-parse", TAG + "^{commit}").strip(), self.initial
+                )
+        self.assertEqual(self.uploads, 0)
+
+    def package(self):
+        target = self.base / "package-target"
+        self.cmd(
+            [
+                "cargo",
+                "package",
+                "--locked",
+                "--offline",
+                "-p",
+                "cargo-crap-core",
+                "--target-dir",
+                str(target),
+            ]
+        )
+        return (target / "package/cargo-crap-core-0.2.0.crate").read_bytes()
 
     def test_core_publication_handles_interruption_recovery_and_competing_releases_safely(
         self,
     ):
-        self.cmd(["cargo", "package", "--locked", "--offline", "-p", "cargo-crap-core"])
-        archive = next((self.repo / "target/package").glob("*.crate")).read_bytes()
+        archive = self.package()
         self.status = 200
-        self.check(code=1, message="--recover-tag")
-        for name, replacement in [
-            ("src/lib.rs", b"bad"),
-            (".cargo_vcs_info.json", b'{"git":{"sha1":"' + b"f" * 40 + b'"}}'),
-            (".cargo_vcs_info.json", None),
+        self.check(code=1, message=(TAG, "--recover-tag"))
+        for name, replacement, diagnostic in [
+            ("src/lib.rs", b"bad", "packaged contents differ"),
+            (
+                ".cargo_vcs_info.json",
+                b'{"git":{"sha1":"' + b"f" * 40 + b'"}}',
+                "f" * 40,
+            ),
+            (".cargo_vcs_info.json", None, ".cargo_vcs_info.json"),
+            (
+                ".cargo_vcs_info.json",
+                json.dumps({"git": {"sha1": self.initial, "dirty": True}}).encode(),
+                "invalid source commit metadata",
+            ),
+            (
+                ".cargo_vcs_info.json",
+                b'{"git":{"sha1":"short"}}',
+                "invalid source commit metadata",
+            ),
         ]:
             dest = io.BytesIO()
             with (
@@ -227,7 +288,7 @@ class CoreRelease(unittest.TestCase):
                     member.size = len(data)
                     new.addfile(member, io.BytesIO(data))
             self.archive = dest.getvalue()
-            self.publish("--recover-tag", code=1)
+            self.publish("--recover-tag", code=1, message=diagnostic)
             self.assertEqual(self.git("ls-remote", "--tags", "origin"), "")
         self.archive = archive
         self.write("frontend", "release")
@@ -235,6 +296,30 @@ class CoreRelease(unittest.TestCase):
         self.publish("--recover-tag")
         self.assertEqual(self.git("rev-parse", TAG + "^{commit}").strip(), self.initial)
         self.publish()
+        self.assertEqual(self.uploads, 0)
+
+    def test_recovery_requires_publication_and_preserves_an_existing_tag(self):
+        self.publish("--recover-tag", code=1, message=(TAG, "unpublished"))
+        self.assertEqual(self.git("ls-remote", "--tags", "origin"), "")
+        self.tag()
+        self.status = 200
+        self.publish("--recover-tag", message="published")
+        self.assertEqual(
+            self.git("ls-remote", "--tags", "origin").split(),
+            [self.initial, "refs/tags/" + TAG],
+        )
+        self.assertEqual(self.uploads, 0)
+
+    def test_recovery_tags_the_verified_source_but_rejects_core_drift_at_head(self):
+        self.archive = self.package()
+        self.status = 200
+        self.write(CORE + "/src/lib.rs", "pub fn changed() {}")
+        self.commit()
+        self.publish("--recover-tag", code=1, message=(TAG, "core tree", "bump"))
+        self.assertEqual(
+            self.git("ls-remote", "--tags", "origin").split(),
+            [self.initial, "refs/tags/" + TAG],
+        )
         self.assertEqual(self.uploads, 0)
 
     def test_competing_release_rechecks_core_tree_and_inherited_fields_after_upload_race(

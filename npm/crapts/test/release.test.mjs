@@ -15,7 +15,8 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
 import { createServer } from "node:http";
 import { once } from "node:events";
 
@@ -47,7 +48,7 @@ function npm(args, cwd) {
   );
 }
 
-function fixture(t, native) {
+function fixture(t, native, packageVersion = version) {
   const dir = mkdtempSync(join(tmpdir(), "crapts-npm-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const archives = join(dir, "archives");
@@ -80,7 +81,7 @@ function fixture(t, native) {
         "--out",
         out,
         "--version",
-        version,
+        packageVersion,
       ],
       { stdio: "pipe" },
     );
@@ -397,6 +398,102 @@ test("the release verifier rejects a malformed Sigstore bundle", async (t) => {
   );
 });
 
+test("npm smoke waits for the wrapper and host package and bounds registry retries", async (t) => {
+  const host = resolver.resolveTarget(
+    process.platform,
+    process.arch,
+    process.platform === "linux" ? resolver.detectLibc() : "none",
+  );
+  const current = manifest(join(root, "npm/crapts")).version;
+  const native = resolve(
+    process.env.CRAPTS_BINARY ||
+      join(root, "target/debug", windows ? "crapts.exe" : "crapts"),
+  );
+  const { dir, out } = fixture(t, { name: host.name, path: native }, current);
+  const wrapper = "@minikin/crapts";
+  const packages = new Map();
+  const tarballs = new Map();
+  const lookups = [];
+  let mode = "delayed";
+  const server = createServer((req, res) => {
+    const path = decodeURIComponent(req.url.slice(1));
+    if (tarballs.has(path)) return res.end(readFileSync(tarballs.get(path)));
+    const pkg = packages.get(path);
+    const required = path === wrapper || path === host.name;
+    const delayed = required && !lookups.includes(path);
+    if (required) lookups.push(path);
+    if (!pkg || delayed || mode !== "delayed") {
+      res.writeHead(mode === "denied" ? 403 : 404);
+      return res.end(JSON.stringify({ error: mode }));
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        name: path,
+        "dist-tags": { next: current },
+        versions: { [current]: pkg },
+      }),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const registry = "http://127.0.0.1:" + server.address().port;
+  for (const folder of readdirSync(out)) {
+    const pkg = manifest(join(out, folder));
+    const archive = folder + ".tgz";
+    if ([wrapper, host.name].includes(pkg.name)) {
+      const [packed] = JSON.parse(
+        npm(
+          ["pack", "--ignore-scripts", "--json", "--pack-destination", dir],
+          join(out, folder),
+        ),
+      );
+      tarballs.set(archive, join(dir, packed.filename));
+    }
+    packages.set(pkg.name, {
+      ...pkg,
+      dist: { tarball: registry + "/" + archive },
+    });
+  }
+  const smoke = () =>
+    promisify(execFile)(
+      process.execPath,
+      [
+        join(release, "smoke.mjs"),
+        "--npm",
+        "--version",
+        current,
+        "--expect-package",
+        host.name,
+      ],
+      {
+        env: {
+          ...process.env,
+          npm_config_registry: registry,
+          npm_config_cache: join(dir, mode),
+          npm_config_fetch_retries: "0",
+        },
+      },
+    );
+  await smoke();
+  assert.deepEqual(lookups.slice(0, 4), [
+    wrapper,
+    wrapper,
+    host.name,
+    host.name,
+  ]);
+  for (const [failure, attempts, error] of [
+    ["absent", 3, /E404/],
+    ["denied", 1, /E403/],
+  ]) {
+    mode = failure;
+    lookups.length = 0;
+    await assert.rejects(smoke, error);
+    assert.deepEqual(lookups, Array(attempts).fill(wrapper));
+  }
+});
+
 test("archive smoke verifies all six checksums and exercises the selected native release", async (t) => {
   const { createHash } = await import("node:crypto");
   const host = resolver.resolveTarget(
@@ -431,6 +528,15 @@ test("archive smoke verifies all six checksums and exercises the selected native
       { stdio: "pipe" },
     );
   verify();
+  assert.throws(
+    () => verify("unknown-triple"),
+    /unknown target unknown-triple/,
+  );
+  for (const extra of [sums[0], "0".repeat(64) + "  unexpected.tar.gz"]) {
+    writeFileSync(checksums, [...sums, extra].join("\n"));
+    assert.throws(verify, /invalid SHA256SUMS entry/);
+  }
+  writeFileSync(checksums, sums.join("\n"));
   verify(host.triple);
   execFileSync(process.execPath, [
     join(release, "smoke.mjs"),

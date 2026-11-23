@@ -6,6 +6,14 @@ require 'open3'
 
 class ReleaseWorkflows < Minitest::Test
   DIR = File.expand_path('../../../.github/workflows', __dir__)
+  BUILD_RUNNERS = {
+    'x86_64-unknown-linux-gnu' => 'ubuntu-latest',
+    'aarch64-unknown-linux-gnu' => 'ubuntu-latest',
+    'x86_64-unknown-linux-musl' => 'ubuntu-latest',
+    'x86_64-apple-darwin' => 'macos-latest',
+    'aarch64-apple-darwin' => 'macos-latest',
+    'x86_64-pc-windows-msvc' => 'windows-latest'
+  }.freeze
   def workflow(name)
     YAML.safe_load(File.read(File.join(DIR, name + '.yml')))
   end
@@ -39,6 +47,7 @@ class ReleaseWorkflows < Minitest::Test
       expected << 'x86_64-unknown-linux-musl' if name == 'release-crapts'
       assert_equal expected.sort, targets.map { |v| v['target'] }.sort
       targets.each do |row|
+        assert_equal BUILD_RUNNERS.fetch(row.fetch('target')), row.fetch('os')
         assert_equal %w[aarch64-unknown-linux-gnu x86_64-unknown-linux-musl].include?(row['target']), row['use_cross']
       end
       assert_includes commands(jobs['release']), 'SHA256SUMS'
@@ -72,6 +81,8 @@ class ReleaseWorkflows < Minitest::Test
     end
     other = workflow('release')['jobs']['publish']
     [other,jobs['publish-crates']].each do |job|
+      checkout = job.fetch('steps').find { |step| step['uses'].to_s.start_with?('actions/checkout@') }
+      assert_equal [0, true], checkout.fetch('with').values_at('fetch-depth', 'fetch-tags')
       assert_equal({'contents'=>'write'},job['permissions'])
       assert_includes job['env']['CARGO_REGISTRY_TOKEN'],'secrets.CARGO_REGISTRY_TOKEN'
       run = commands(job)
@@ -81,13 +92,20 @@ class ReleaseWorkflows < Minitest::Test
     targets = JSON.parse(jobs['build']['with']['targets']).map { |row| row['target'] }
     smoke = jobs['archive-smoke']['strategy']['matrix']['include']
     assert_equal targets.sort, smoke.map { |row| row['target'] }.sort
+    assert_equal BUILD_RUNNERS.merge('aarch64-unknown-linux-gnu' => 'ubuntu-24.04-arm'),
+                 smoke.to_h { |row| row.values_at('target', 'os') }
+    assert_equal '${{ matrix.os }}', jobs['archive-smoke']['runs-on']
+    rosetta = jobs['archive-smoke']['steps'].find { |s| s['run'].to_s.include?('softwareupdate --install-rosetta') }
+    assert_equal "matrix.target == 'x86_64-apple-darwin'", rosetta.fetch('if')
     assert_includes commands(jobs['archive-smoke']), 'verify-archives.mjs'
     assert_includes commands(jobs['archive-smoke']), 'smoke.mjs'
     assert_includes commands(jobs['publish-npm']), 'verify-archives.mjs'
     assert_includes commands(jobs['publish-npm']), 'stage-npm.mjs'
     assert_includes commands(jobs['publish-npm']), 'publish-npm.mjs'
     assert_equal %w[alpine macos ubuntu windows], jobs['npm-smoke']['strategy']['matrix']['include'].map { |row| row['host'] }.sort
-    assert_includes commands(jobs['npm-smoke']), 'node:24-alpine'
+    alpine = jobs['npm-smoke']['steps'].find { |s| s['if'] == "matrix.host == 'alpine'" }
+    assert_includes alpine.fetch('run'), 'node:24-alpine'
+    assert_includes alpine.fetch('run'), '--expect-package @minikin/crapts-linux-x64-musl'
     assert_includes commands(jobs['promote-npm']), 'npm dist-tag add'
   end
   def test_frontend_publication_skips_existing_versions_and_fails_closed_on_registry_errors
@@ -108,10 +126,46 @@ class ReleaseWorkflows < Minitest::Test
       assert_equal 'publish --locked -p crapts', File.read(upload)
     end
   end
+  def test_frontend_publication_retries_only_core_index_lag_and_stops_after_three_attempts
+    script = File.expand_path('../publish-frontend.sh', __dir__)
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, 'curl'), "#!/bin/sh\necho 404\n")
+      File.write(File.join(dir, 'sleep'), "#!/bin/sh\necho \"$1\" >> waits\n")
+      File.write(File.join(dir, 'cargo'), <<~'SH')
+        #!/bin/sh
+        echo "$*" >> attempts
+        if [ "$(wc -l < attempts)" -le "$FAILURES" ]; then
+          echo "$DIAGNOSTIC" >&2
+          exit 101
+        fi
+      SH
+      File.chmod(0755, *%w[cargo curl sleep].map { |name| File.join(dir, name) })
+      missing = 'error: no matching package named `cargo-crap-core` found'
+      mismatch = 'error: failed to select a version for the requirement `cargo-crap-core = "=0.2.0"`'
+      denied = 'error: permission denied while publishing a crate that depends on cargo-crap-core'
+      [[missing, 1, 2, 0], [mismatch, 3, 3, 101], [denied, 1, 1, 101]].each do |message, failures, attempts, code|
+        File.write(File.join(dir, 'attempts'), '')
+        File.write(File.join(dir, 'waits'), '')
+        env = {'PATH'=>dir + ':' + ENV.fetch('PATH'), 'FAILURES'=>failures.to_s, 'DIAGNOSTIC'=>message}
+        out, status = Open3.capture2e(env, 'bash', script, 'crapts', '0.2.0', chdir: dir)
+        assert_equal code, status.exitstatus, out
+        assert_includes out, message
+        assert_equal ['publish --locked -p crapts'] * attempts, File.readlines(File.join(dir, 'attempts'), chomp: true)
+        assert_equal attempts - 1, File.readlines(File.join(dir, 'waits')).size
+      end
+    end
+  end
   def test_reusable_build_and_ci_contract
     w = workflow('_build')
     assert_equal %w[binary features package targets],w.fetch(true).fetch('workflow_call')['inputs'].keys.sort
-    run = commands(w.fetch('jobs').fetch('build'))
+    build = w.fetch('jobs').fetch('build')
+    assert_equal '${{ matrix.os }}', build.fetch('runs-on')
+    install = build.fetch('steps').find { |s| s.dig('with', 'tool') == 'cross' }
+    assert_equal 'matrix.use_cross', install.fetch('if')
+    compile = build.fetch('steps').find { |s| s['name'] == 'Build' }
+    assert_equal "${{ matrix.use_cross && 'cross' || 'cargo' }}", compile.fetch('env').fetch('BUILDER')
+    assert_includes compile.fetch('run'), '"$BUILDER" build "${args[@]}"'
+    run = commands(build)
     %w[--locked --release --features --target .tar.gz .zip].each { |token| assert_includes run, token }
     ci = workflow('ci')['jobs']
     assert_equal %w[macos-latest ubuntu-latest windows-latest], ci['npm-wrapper']['strategy']['matrix']['os'].sort

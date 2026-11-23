@@ -104,6 +104,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Point v1 at the release commit
+        # A push with GITHUB_TOKEN starts no workflow, so moving v1 cannot loop.
         run: |
           git tag -f v1 "$GITHUB_SHA"
           git push -f origin v1
@@ -123,6 +124,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          fetch-tags: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Verify and publish the shared core
