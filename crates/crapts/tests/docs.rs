@@ -15,6 +15,8 @@ mod fixture;
 mod formats;
 #[path = "docs/guides.rs"]
 mod guides;
+#[path = "docs/index.rs"]
+mod index;
 #[path = "docs/install.rs"]
 mod install;
 #[path = "docs/markers.rs"]
@@ -1628,4 +1630,118 @@ fn every_report_and_delta_sample_validates_against_its_schema() {
             &[&combined.marker.to_string()],
         );
     }
+}
+
+#[test]
+fn the_index_links_every_page() {
+    let pages = pages::crapts_pages();
+    assert!(pages.len() >= 12, "{}", pages.len());
+    let index = Page::load(index::INDEX);
+    index::check_index(&index, &pages).unwrap_or_else(|e| panic!("{e}"));
+    let line = index
+        .text
+        .lines()
+        .find(|l| l.contains("(reference/complexity.md)"))
+        .expect("the complexity link");
+    let removed = index.with(&format!("{line}\n"), "");
+    assert_names(
+        &err(index::check_index(&removed, &pages)),
+        &[index::INDEX, "docs/crapts/reference/complexity.md"],
+    );
+}
+
+#[test]
+fn the_readme_introduces_crapts_in_one_section() {
+    let readme = Page::load("README.md");
+    assert_eq!(pages::readme_sections(&readme).len(), 1);
+    index::check_readme_section(&readme).unwrap_or_else(|e| panic!("{e}"));
+    let section = pages::section(&readme, pages::README_SECTION).unwrap();
+    let twice = Page::new("README.md", &format!("{}\n{}", readme.text, section.text));
+    assert_names(
+        &err(index::check_readme_section(&twice)),
+        &["2 sections", pages::README_SECTION],
+    );
+    let heading = format!("## {}", pages::README_SECTION);
+    for (from, to, name) in [
+        (
+            "(docs/crapts/install.md)",
+            "(docs/install.md)",
+            "docs/crapts/install.md",
+        ),
+        (
+            "npx @minikin/crapts --coverage",
+            "npm install -g @minikin/crapts --coverage",
+            "npm install",
+        ),
+    ] {
+        let drifted = readme.with(from, to);
+        assert_names(&err(index::check_readme_section(&drifted)), &[name]);
+    }
+    for marker in [
+        "<!-- crapts-output: --top 3 -->",
+        "<!-- output: --lcov lcov.info -->",
+    ] {
+        let marked = readme.with(&heading, &format!("{heading}\n\n{marker}"));
+        assert_names(&err(index::check_readme_section(&marked)), &["marker"]);
+    }
+}
+
+#[test]
+fn the_root_docs_check_passes_with_docs_crapts_present() {
+    let mut pages = pages::crapts_pages();
+    pages.extend(pages::readme_sections(&Page::load("README.md")));
+    assert_eq!(index::root_markers(&pages), Vec::<String>::new());
+    let mut cargo_crap = vec![Page::load("README.md")];
+    for entry in std::fs::read_dir(pages::repo_root().join("docs")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "md") {
+            let relative = path.strip_prefix(pages::repo_root()).unwrap();
+            cargo_crap.push(Page::load(&relative.to_string_lossy().replace('\\', "/")));
+        }
+    }
+    assert!(
+        index::root_markers(&cargo_crap).len() >= 2,
+        "the README and getting-started samples"
+    );
+    assert!(!pages::read("tests/docs.rs").contains("crapts"));
+}
+
+#[test]
+fn a_change_to_the_crapts_docs_or_their_sources_runs_the_crapts_docs_check() {
+    let ci = pages::read(index::CI);
+    let (docs, rust) = (
+        index::filter_globs(&ci, "docs"),
+        index::filter_globs(&ci, "rust"),
+    );
+    assert!(!docs.is_empty() && !rust.is_empty());
+    assert!(index::matches(&docs, "docs/crapts/guides/baseline.md"));
+    assert!(!index::matches(&rust, "docs/crapts/guides/baseline.md"));
+    let action = "actions/crapts/action.yml";
+    assert!(index::matches(&docs, action) || index::matches(&rust, action));
+    assert!(index::matches(&docs, "README.md"));
+    let docs_job = index::job_runs(&ci, "docs");
+    assert!(
+        docs_job.iter().any(|r| index::runs_crapts_docs(r)),
+        "{docs_job:?}"
+    );
+    assert!(
+        docs_job.iter().any(|r| index::runs_root_docs(r)),
+        "{docs_job:?}"
+    );
+    let test_job = index::job_runs(&ci, "test");
+    assert!(
+        test_job.iter().any(|r| index::runs_crapts_docs(r)),
+        "{test_job:?}"
+    );
+    assert!(index::runs_crapts_docs(
+        "cargo nextest run --workspace --test docs"
+    ));
+    assert!(index::runs_crapts_docs(
+        "cargo nextest run -p cargo-crap -p crapts --test docs"
+    ));
+    assert!(!index::runs_crapts_docs("cargo nextest run --test docs"));
+    assert!(index::runs_root_docs("cargo nextest run --test docs"));
+    assert!(!index::runs_root_docs(
+        "cargo nextest run -p crapts --test docs"
+    ));
 }

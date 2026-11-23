@@ -36,3 +36,9 @@ On a project with a `checkout` with five `if` branches that no test reaches and 
 ```
 
 `checkout` scores 6 squared plus 6, which is 42, and `total` scores its complexity of 1. Add `--fail-above` to exit 1 when any function is above the threshold.
+
+## Documentation
+
+- Getting it: [install](install.md) and [coverage input](coverage.md) for Vitest, Jest, Istanbul and LCOV.
+- Gating a pull request: [baseline regressions](guides/baseline.md), [the changed-function gate](guides/changed-gate.md) and [the GitHub Action](guides/github-action.md).
+- Reference: [command line](reference/cli.md), [configuration](reference/config.md), [output formats](reference/output-formats.md), [JSON report](reference/json.md), [exit codes](reference/exit-codes.md) and [what gets a score](reference/complexity.md).
