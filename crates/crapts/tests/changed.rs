@@ -1963,6 +1963,7 @@ mod cli {
             fs::read_to_string(self.root().join(path)).unwrap()
         }
 
+        #[cfg(unix)]
         pub(super) fn remove(
             &self,
             path: &str,
@@ -3963,7 +3964,9 @@ mod rendering {
     use serde_json::{Value, json};
 
     use super::cli::{Repo, app, line_of, recorded_tree};
-    use super::{common, func};
+    #[cfg(unix)]
+    use super::common;
+    use super::func;
 
     const ARROW: &str = "\u{2192}";
     const DASH: &str = "\u{2014}";
