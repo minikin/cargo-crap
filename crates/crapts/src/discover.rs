@@ -97,7 +97,6 @@ pub struct Discovery {
     pub unused_excludes: Vec<ExcludePattern>,
 }
 
-/// Where a path falls against the scored file set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Placement {
     Scored,
@@ -112,6 +111,7 @@ pub struct DiscoveryScope {
     invoked: PathBuf,
     worktree: Worktree,
     directories: Vec<PathBuf>,
+    file_roots: BTreeSet<PathBuf>,
     leaves: BTreeSet<PathBuf>,
     selected: BTreeSet<OsString>,
     defaults: Exclusions,
@@ -145,7 +145,6 @@ impl DiscoveryScope {
         Ok(self.place(&absolute, true)? == Placement::Scored)
     }
 
-    /// The spelling discovery and the reports give an absolute path.
     pub(crate) fn display(
         &self,
         absolute: &Path,
@@ -153,7 +152,6 @@ impl DiscoveryScope {
         PathBuf::from(relative(&self.cwd, absolute))
     }
 
-    /// A working-tree file is scored exactly when discovery selected it.
     pub(crate) fn place_present(
         &self,
         absolute: &Path,
@@ -162,20 +160,24 @@ impl DiscoveryScope {
         if self.selected.contains(&name) {
             return Placement::Scored;
         }
-        self.rejection(Path::new(&name), absolute)
+        self.rejection(Path::new(&name), absolute, false)
             .unwrap_or(Placement::Excluded)
     }
 
-    /// Judges the path alone, so a file that no longer exists, or that a
-    /// symbolic link has replaced, is placed as its own rules say.
-    ///
-    /// # Errors
-    /// A Git ignore check can fail.
+    /// Judges the spelling alone: the working tree may hold a symbolic link
+    /// at the path or at a directory above it, or nothing. The path was
+    /// tracked at the merge base, and Git applies no ignore rule to a tracked
+    /// file, as discovery's `ls-files --cached` does not.
     pub(crate) fn place_historical(
         &self,
         absolute: &Path,
-    ) -> Result<Placement, InputError> {
-        self.place(absolute, false)
+    ) -> Placement {
+        let name = relative(&self.cwd, absolute);
+        if self.selected.contains(&name) {
+            return Placement::Scored;
+        }
+        self.rejection(Path::new(&name), absolute, true)
+            .unwrap_or(Placement::Scored)
     }
 
     fn place(
@@ -188,7 +190,7 @@ impl DiscoveryScope {
             return Ok(Placement::Scored);
         }
         let local = Path::new(&name);
-        if let Some(rejected) = self.rejection(local, absolute) {
+        if let Some(rejected) = self.rejection(local, absolute, false) {
             return Ok(rejected);
         }
         if present_rejects && file_type(absolute)?.is_some() {
@@ -216,10 +218,11 @@ impl DiscoveryScope {
         &self,
         local: &Path,
         absolute: &Path,
+        lexical: bool,
     ) -> Option<Placement> {
         if source_extension(local).is_none() {
             Some(Placement::Unsupported)
-        } else if !self.below_directory(absolute) {
+        } else if !self.file_roots.contains(absolute) && !self.below_directory(absolute, lexical) {
             Some(Placement::OutsidePath)
         } else if self.defaults.is_match(local) || self.extras.is_match(local) {
             Some(Placement::Excluded)
@@ -238,11 +241,12 @@ impl DiscoveryScope {
     fn below_directory(
         &self,
         path: &Path,
+        lexical: bool,
     ) -> bool {
         path.parent().is_some_and(|parent| {
             self.directories
                 .iter()
-                .any(|root| parent.starts_with(root) && !through_symlink(parent, root))
+                .any(|root| parent.starts_with(root) && (lexical || !through_symlink(parent, root)))
         })
     }
 
@@ -322,6 +326,11 @@ pub(crate) fn discover_probed(
         .filter(|root| root.is_dir)
         .map(|root| root.absolute.clone())
         .collect();
+    let file_roots = resolved
+        .iter()
+        .filter(|root| !root.is_dir)
+        .map(|root| root.absolute.clone())
+        .collect();
     let inputs: Vec<_> = resolved.into_iter().map(|root| root.absolute).collect();
     let listing = if worktree.indexed {
         git_files(&cwd, &inputs)?
@@ -335,6 +344,7 @@ pub(crate) fn discover_probed(
         cwd,
         invoked,
         directories,
+        file_roots,
         worktree,
         leaves: listing.leaves,
         selected: BTreeSet::new(),

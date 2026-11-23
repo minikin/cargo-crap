@@ -1721,6 +1721,20 @@ fn min_and_top_select_shown_entries_as_they_select_report_rows() {
 }
 
 #[test]
+fn top_breaks_score_ties_by_file_function_and_line_as_the_core_does() {
+    let head = format!("{}\n{}", func("zed", 2), func("abe", 2));
+    let pair = Pair::new("src/p.ts", "", &head);
+    let judged = pair.judged(&pair.uncovered(), &[]);
+    let presentation = Presentation {
+        top: Some(1),
+        ..Presentation::default()
+    };
+    let section = ChangedSection::presented(&comparison(), &judged, &[], presentation);
+    let changed: Value = serde_json::from_str(section.json().get()).unwrap();
+    assert_eq!(changed["entries"][0]["function"], "abe");
+}
+
+#[test]
 fn the_published_threshold_is_the_one_the_verdicts_used() {
     let head = analyzed("src/n.ts", &func("fresh", 6), Side::Head);
     let files = [(&[][..], head.as_slice(), Edits::Added)];
@@ -1737,7 +1751,6 @@ fn the_published_threshold_is_the_one_the_verdicts_used() {
     }
 }
 
-/// The real command against scratch repositories.
 mod cli {
     use std::fmt::Write as _;
     use std::fs;
@@ -1879,7 +1892,6 @@ mod cli {
             self.git_in(&self.root(), args)
         }
 
-        /// A git command allowed to fail, such as a merge that conflicts.
         pub(super) fn git_status(
             &self,
             args: &[&str],
@@ -1944,7 +1956,8 @@ mod cli {
             self.git(&["commit", "-q", "--allow-empty", "-m", message]);
         }
 
-        /// LCOV that lists every line of every regular source file with count 0.
+        /// LCOV that lists every line of every regular file with one of the
+        /// eight supported extensions, each with count 0.
         pub(super) fn uncovered(&self) {
             let mut text = String::new();
             let mut pending = vec![self.root()];
@@ -1956,7 +1969,11 @@ mod cli {
                     if kind.is_dir() && entry.file_name() != ".git" {
                         pending.push(path);
                     } else if kind.is_file()
-                        && path.extension().is_some_and(|e| e == "ts" || e == "tsx")
+                        && path.extension().is_some_and(|e| {
+                            ["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"]
+                                .iter()
+                                .any(|supported| e == *supported)
+                        })
                     {
                         let bytes = fs::read(&path).unwrap();
                         let lines = bytes.split(|&b| b == b'\n').count();
@@ -1972,11 +1989,10 @@ mod cli {
             self.write("cov.info", text);
         }
 
-        pub(super) fn run_in(
+        pub(super) fn crapts(
             &self,
             dir: &Path,
-            args: &[&str],
-        ) -> Output {
+        ) -> Command {
             let mut command = self.command(Path::new(env!("CARGO_BIN_EXE_crapts")), dir);
             for key in [
                 "GITHUB_REPOSITORY",
@@ -1988,10 +2004,49 @@ mod cli {
             ] {
                 command.env_remove(key);
             }
-            command.args(args).output().unwrap()
+            command
         }
 
-        /// The command with the scenario's flags, against fresh coverage.
+        pub(super) fn run_in(
+            &self,
+            dir: &Path,
+            args: &[&str],
+        ) -> Output {
+            self.crapts(dir).args(args).output().unwrap()
+        }
+
+        /// The command with a `git` on `PATH` that records each call, so a
+        /// refusal can be shown to come before any Git work.
+        #[cfg(unix)]
+        pub(super) fn run_without_git(
+            &self,
+            args: &[&str],
+        ) -> Output {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = self.dir.path().join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            let log = self.dir.path().join("git.log");
+            let git = bin.join("git");
+            fs::write(
+                &git,
+                format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 1\n", log.display()),
+            )
+            .unwrap();
+            fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+            let out = self
+                .crapts(&self.root())
+                .env("PATH", &bin)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                !log.exists(),
+                "git ran: {}",
+                fs::read_to_string(&log).unwrap()
+            );
+            out
+        }
+
         pub(super) fn run(
             &self,
             extra: &[&str],
@@ -2539,7 +2594,6 @@ mod cli {
         assert_eq!(fresh["reason"], "CRAP 6.0 at or below 30");
     }
 
-    /// The working tree of the scenario that records every touched row.
     pub(super) fn recorded_tree() -> Repo {
         let repo = Repo::with(&[
             (
@@ -2575,19 +2629,20 @@ mod cli {
     fn sarif_refuses_base_before_any_git_or_output_work() {
         let repo = Repo::bare();
         repo.write("out.sarif", "keep");
-        let out = repo.run_in(
-            &repo.root(),
-            &[
-                "--coverage",
-                "absent.info",
-                "--base",
-                "nope",
-                "--format",
-                "sarif",
-                "--output",
-                "out.sarif",
-            ],
-        );
+        #[cfg(unix)]
+        let run = |args: &[&str]| repo.run_without_git(args);
+        #[cfg(not(unix))]
+        let run = |args: &[&str]| repo.run_in(&repo.root(), args);
+        let out = run(&[
+            "--coverage",
+            "absent.info",
+            "--base",
+            "nope",
+            "--format",
+            "sarif",
+            "--output",
+            "out.sarif",
+        ]);
         let err = refused(&out);
         assert_eq!(repo.read("out.sarif"), "keep");
         assert!(err.contains("SARIF does not support --base"), "{err}");
@@ -2628,7 +2683,7 @@ mod cli {
         repo.write("out.json", "keep");
         let base = format!("--base={rev}");
         for output in ["out.json", "fresh.json"] {
-            let mut command = repo.command(Path::new(env!("CARGO_BIN_EXE_crapts")), &repo.root());
+            let mut command = repo.crapts(&repo.root());
             if let Some(path) = path {
                 command.env("PATH", path);
             }
@@ -2648,12 +2703,10 @@ mod cli {
         let outside = Repo::bare();
         outside.write("src/app.ts", app(6, 2, 1));
         git_failure(&outside, "main", None, &["--base needs a Git worktree"]);
-        git_failure(
-            &Repo::standard(),
-            "-main",
-            None,
-            &["--base", "must not start with -"],
-        );
+        let dashed = Repo::standard();
+        git_failure(&dashed, "-main", None, &["--base", "must not start with -"]);
+        #[cfg(unix)]
+        refused(&dashed.run_without_git(&["--coverage", "cov.info", "--base=-main"]));
         git_failure(
             &Repo::standard(),
             "nope",
@@ -2772,9 +2825,9 @@ mod cli {
         common::check(&out, 0);
         let err = stderr(&out);
         assert_eq!(err.lines().count(), 1, "{err}");
-        assert!(
-            err.starts_with("warning: ") && err.contains("src/old.ts"),
-            "{err}"
+        assert_eq!(
+            err,
+            "warning: src/old.ts: parse error: Missing initializer in const declaration\n"
         );
         assert_eq!(
             names(&report_of(&out.stdout)["changed"]["entries"]),
@@ -2876,6 +2929,64 @@ mod cli {
         repo
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_replaced_by_a_symbolic_link_keeps_its_files_removals() {
+        let repo = Repo::with(&[
+            ("src/app.ts", &app(6, 2, 1)),
+            ("src/pkg/a.ts", &func("alpha", 3)),
+            ("lib/readme.md", "lib\n"),
+        ]);
+        repo.git(&["rm", "-q", "-r", "src/pkg"]);
+        repo.symlink("../lib", "src/pkg");
+        repo.git(&["add", "src/pkg"]);
+        let changed = repo.changed(&[]);
+        assert_eq!(names(&changed["removed"]), ["src/pkg/a.ts::alpha"]);
+        assert_eq!(
+            changed["skipped"],
+            json!([{"path": "src/pkg", "reason": "symlink"}])
+        );
+    }
+
+    #[test]
+    fn an_explicitly_named_and_excluded_file_is_skipped_as_excluded() {
+        let repo = Repo::with(&[("src/app.ts", &app(6, 2, 1))]);
+        repo.write("src/app.ts", app(7, 2, 1));
+        repo.uncovered();
+        let out = repo.run_in(
+            &repo.root(),
+            &[
+                "src/app.ts",
+                "--exclude",
+                "src/app.ts",
+                "--coverage",
+                "cov.info",
+                "--base",
+                "main",
+                "--format",
+                "json",
+            ],
+        );
+        common::check(&out, 0);
+        let changed = &report_of(&out.stdout)["changed"];
+        assert_eq!(
+            changed["skipped"],
+            json!([{"path": "src/app.ts", "reason": "excluded"}])
+        );
+    }
+
+    #[test]
+    fn changed_files_are_analyzed_in_the_display_order_discovery_uses() {
+        let repo = Repo::standard();
+        repo.write("src/a.ts", FATAL);
+        repo.write("src/a/x.ts", FATAL);
+        let err = refused(&repo.run(&[]));
+        assert!(
+            err.contains("src/a.ts") && !err.contains("src/a/x.ts"),
+            "{err}"
+        );
+    }
+
     fn only_entry(changed: &Value) -> &Value {
         let entries = changed["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1, "{changed:#}");
@@ -2936,8 +3047,8 @@ mod cli {
         let copy = func("edge", 2).replace("function edge(", "function edgeCopy(");
         repo.write("src/app.ts", format!("{}{copy}", app(6, 2, 1)));
         let changed = repo.changed(&[]);
+        assert_eq!(names(&changed["entries"]), ["src/app.ts::edgeCopy"]);
         let entry = only_entry(&changed);
-        assert_eq!(entry["function"], "edgeCopy");
         assert_eq!(
             (&entry["change"], &entry["verdict"], &entry["crap"]),
             (&json!("new"), &json!("pass"), &json!(6.0))
@@ -3010,8 +3121,8 @@ mod cli {
             source("    if (x) return 1\n    if (y) return 2\n"),
         );
         let changed = repo.changed(&[]);
+        assert_eq!(names(&changed["entries"]), ["src/n.ts::outer::inner"]);
         let entry = only_entry(&changed);
-        assert_eq!(entry["function"], "outer::inner");
         assert_eq!(
             (
                 &entry["change"],
@@ -3030,8 +3141,8 @@ mod cli {
         )]);
         repo.write("src/c.ts", "class Cart {\n  items = []\n  mode = a ? 1 : 2\n  add(x: number) { this.items.push(x) }\n}\n");
         let changed = repo.changed(&[]);
+        assert_eq!(names(&changed["entries"]), ["src/c.ts::Cart::constructor"]);
         let entry = only_entry(&changed);
-        assert_eq!(entry["function"], "Cart::constructor");
         assert_eq!(
             (
                 &entry["change"],
@@ -3057,7 +3168,6 @@ mod cli {
     }
 }
 
-/// Gates, coverage policies and coexistence with `--baseline`, through the real command.
 mod gates {
     use std::fmt::Write as _;
 
@@ -3216,11 +3326,29 @@ mod gates {
             let out = repo.run(&["--fail-changed"]);
             common::check(&out, expected);
             assert_eq!(out.stderr.as_slice(), b"");
-            let changed = &report_of(&out.stdout)["changed"];
+            let report = report_of(&out.stdout);
+            let changed = &report["changed"];
             assert_eq!(
                 changed["skipped"],
                 json!([{"path": "src/a.ts", "reason": "binary"}])
             );
+            if expected == 1 {
+                assert_eq!(names(&changed["entries"]), ["src/a.ts::fresh"]);
+                let entry = only_entry(changed);
+                assert_eq!(
+                    (&entry["change"], &entry["verdict"]),
+                    (&json!("new"), &json!("fail"))
+                );
+                assert_eq!(changed["removed"], json!([]));
+            } else {
+                assert_eq!(changed["entries"], json!([]));
+                assert_eq!(names(&changed["removed"]), ["src/a.ts::gone"]);
+                assert!(
+                    names(&report["entries"])
+                        .iter()
+                        .all(|name| !name.starts_with("src/a.ts::"))
+                );
+            }
         }
     }
 
@@ -3693,7 +3821,6 @@ mod gates {
             .join("\n")
     }
 
-    /// Every flag that shapes presentation, and none that changes the verdict.
     fn presentation() -> impl Strategy<Value = Vec<String>> {
         (
             proptest::option::of(1usize..=3),

@@ -38,13 +38,19 @@ pub(crate) struct Selection {
 struct Eligible {
     path: PathBuf,
     display: PathBuf,
+    /// A head side's bytes, read once for both the binary test and analysis.
+    bytes: Option<Vec<u8>>,
+}
+
+enum Fate {
+    Eligible(Option<Vec<u8>>),
+    Skipped(SkipReason),
 }
 
 #[derive(Debug)]
 struct Planned {
     base: Option<Eligible>,
     head: Option<Eligible>,
-    /// Hunks are read only for a pair of eligible sides of one change.
     change: Option<Change>,
 }
 
@@ -55,10 +61,6 @@ impl Planned {
     }
 }
 
-/// The `--base` comparison up to strict analysis: the repository state, the
-/// changed paths placed against the scored file set, their hunks and both
-/// sides' rows.
-///
 /// # Errors
 /// A Git failure, an unresolved merge, an unreadable side or a side that
 /// does not parse cleanly.
@@ -96,7 +98,13 @@ pub(crate) fn select(
             },
         )?;
     }
-    planned.sort_by(|a, b| a.key().cmp(b.key()));
+    planned.sort_by_cached_key(|planned| {
+        planned
+            .key()
+            .to_string_lossy()
+            .encode_utf16()
+            .collect::<Vec<_>>()
+    });
     let read = read_sides(&repo, &merge_base.commit, planned)?;
     let (files, heads) = analyze_sides(read)?;
     Ok(Selection {
@@ -193,24 +201,15 @@ fn eligible(
 ) -> Result<Option<Eligible>, InputError> {
     let absolute = root.join(&side.path);
     let display = scope.display(&absolute);
-    let reason = match side.mode {
-        mode if mode.is_regular() => {
-            let placement = if is_head {
-                scope.place_present(&absolute)
-            } else {
-                scope.place_historical(&absolute)?
-            };
-            placement_reason(placement, side.binary)
+    let reason = match fate(scope, side, &absolute, &display, is_head)? {
+        Fate::Eligible(bytes) => {
+            return Ok(Some(Eligible {
+                path: side.path.clone(),
+                display,
+                bytes,
+            }));
         },
-        Mode::SYMLINK => Some(SkipReason::Symlink),
-        Mode::GITLINK => Some(SkipReason::Submodule),
-        _ => Some(SkipReason::Unsupported),
-    };
-    let Some(reason) = reason else {
-        return Ok(Some(Eligible {
-            path: side.path.clone(),
-            display,
-        }));
+        Fate::Skipped(reason) => reason,
     };
     if is_head {
         outcome.skipped_heads.insert(display.clone());
@@ -221,15 +220,47 @@ fn eligible(
     Ok(None)
 }
 
-fn placement_reason(
-    placement: Placement,
-    binary: bool,
-) -> Option<SkipReason> {
+fn fate(
+    scope: &DiscoveryScope,
+    side: &Side,
+    absolute: &Path,
+    display: &Path,
+    is_head: bool,
+) -> Result<Fate, InputError> {
+    match side.mode {
+        mode if mode.is_regular() => {},
+        Mode::SYMLINK => return Ok(Fate::Skipped(SkipReason::Symlink)),
+        Mode::GITLINK => return Ok(Fate::Skipped(SkipReason::Submodule)),
+        _ => return Ok(Fate::Skipped(SkipReason::Unsupported)),
+    }
+    let placement = if is_head {
+        scope.place_present(absolute)
+    } else {
+        scope.place_historical(absolute)
+    };
+    if let Some(reason) = placement_reason(placement) {
+        return Ok(Fate::Skipped(reason));
+    }
+    if !is_head {
+        return Ok(if side.binary {
+            Fate::Skipped(SkipReason::Binary)
+        } else {
+            Fate::Eligible(None)
+        });
+    }
+    let bytes = std::fs::read(absolute).map_err(|e| InputError::at(display, e))?;
+    Ok(if bytes.iter().take(8000).any(|&byte| byte == 0) {
+        Fate::Skipped(SkipReason::Binary)
+    } else {
+        Fate::Eligible(Some(bytes))
+    })
+}
+
+fn placement_reason(placement: Placement) -> Option<SkipReason> {
     match placement {
         Placement::Unsupported => Some(SkipReason::Unsupported),
         Placement::OutsidePath => Some(SkipReason::OutsidePath),
         Placement::Excluded => Some(SkipReason::Excluded),
-        Placement::Scored if binary => Some(SkipReason::Binary),
         Placement::Scored => None,
     }
 }
@@ -271,17 +302,10 @@ fn read_sides(
                     })
                 })
                 .transpose()?;
-            let head = planned
-                .head
-                .map(|side| {
-                    let bytes = std::fs::read(repo.root().join(&side.path))
-                        .map_err(|e| InputError::at(&side.display, e))?;
-                    Ok::<_, InputError>(ReadSide {
-                        display: side.display,
-                        bytes,
-                    })
-                })
-                .transpose()?;
+            let head = planned.head.map(|side| ReadSide {
+                display: side.display,
+                bytes: side.bytes.unwrap_or_default(),
+            });
             Ok(Read { base, head, edits })
         })
         .collect()

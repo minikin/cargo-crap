@@ -120,9 +120,6 @@ fn read_inputs(
     Ok((coverage, baseline))
 }
 
-/// A changed file's strict head analysis stands in for its ordinary one,
-/// and a changed file whose head side was skipped, as a binary one is, is
-/// not decoded at all.
 fn measure(
     cwd: &Path,
     settings: &Effective,

@@ -34,7 +34,7 @@ impl<T> Setting<T> {
         Self { value, origin }
     }
 }
-fn last<T: Clone + Send + Sync + 'static>(
+pub(super) fn last<T: Clone + Send + Sync + 'static>(
     args: &ArgMatches,
     key: &str,
 ) -> Option<T> {

@@ -138,9 +138,9 @@ impl Section for ChangedSection {
     }
 }
 
-/// `--min` keeps scores at or above it and `--top` the highest scores, as
-/// the core selects report rows. The entries arrive in file, line and
-/// function order, which breaks ties and is the order they are written in.
+/// `--min` keeps scores at or above it and `--top` the highest scores, with
+/// ties broken by file, function and line, as the core selects report rows.
+/// The survivors keep the file, line and function order they arrive in.
 fn shown<'e, 'r>(
     entries: &'e [Entry<'r>],
     presentation: Presentation,
@@ -149,11 +149,25 @@ fn shown<'e, 'r>(
         .filter(|&i| presentation.min.is_none_or(|min| entries[i].crap >= min))
         .collect();
     if let Some(top) = presentation.top {
-        kept.sort_by(|&a, &b| entries[b].crap.total_cmp(&entries[a].crap).then(a.cmp(&b)));
+        kept.sort_by(|&a, &b| {
+            entries[b]
+                .crap
+                .total_cmp(&entries[a].crap)
+                .then_with(|| tie_key(&entries[a]).cmp(&tie_key(&entries[b])))
+        });
         kept.truncate(top);
         kept.sort_unstable();
     }
     kept.into_iter().map(|i| &entries[i]).collect()
+}
+
+fn tie_key<'e>(entry: &'e Entry<'_>) -> (String, &'e str, u32) {
+    let head = entry.head;
+    (
+        head.file.to_string_lossy().replace('\\', "/"),
+        &head.name,
+        head.span.start.line,
+    )
 }
 
 fn display(row: &Row) -> Cow<'_, str> {
