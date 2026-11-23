@@ -754,3 +754,28 @@ fn recorded_property_test_seeds_follow_the_tests_that_replay_them() {
         }
     }
 }
+
+#[test]
+fn wrapper_version_stays_synchronized_with_crates_crapts() {
+    let wrapper: Value =
+        serde_json::from_slice(&std::fs::read(root().join("npm/crapts/package.json")).unwrap())
+            .unwrap();
+    let member = manifest(&root().join("crates/crapts"));
+    let version = member["package"]["version"].as_str().unwrap();
+    assert_eq!(wrapper["version"], version);
+    let deps = wrapper["optionalDependencies"].as_object().unwrap();
+    assert_eq!(deps.len(), 6);
+    for suffix in [
+        "darwin-arm64",
+        "darwin-x64",
+        "linux-x64-gnu",
+        "linux-arm64-gnu",
+        "linux-x64-musl",
+        "win32-x64-msvc",
+    ] {
+        assert_eq!(deps[&format!("@minikin/crapts-{suffix}")], version);
+    }
+    for script in ["preinstall", "install", "postinstall", "prepare"] {
+        assert!(wrapper["scripts"].get(script).is_none());
+    }
+}

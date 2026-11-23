@@ -1,0 +1,7 @@
+{
+  "name": "crapts-release-tools",
+  "private": true,
+  "dependencies": {
+    "sigstore": "4.1.1"
+  }
+}
