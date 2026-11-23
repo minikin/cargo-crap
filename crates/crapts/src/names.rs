@@ -319,7 +319,7 @@ fn call_name(
 ) -> String {
     let label = match first {
         Some(Expression::StringLiteral(s)) => quoted(s.value),
-        Some(Expression::TemplateLiteral(t)) => t.single_quasi().map(quoted).unwrap_or_default(),
+        Some(Expression::TemplateLiteral(t)) => t.single_quasi().map_or_default(quoted),
         Some(Expression::NumericLiteral(n)) => n.value.to_js_string(),
         _ => String::new(),
     };
