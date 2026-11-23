@@ -1305,7 +1305,6 @@ fn changed_v1_rejects_a_malformed_changed_object() {
         ),
     ];
     for (pointer, value, location) in cases {
-        // When one member is replaced or removed
         let mut changed = valid.clone();
         let (parent, key) = pointer.rsplit_once('/').unwrap();
         let object = changed
@@ -1668,7 +1667,6 @@ fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
     let allow = AllowSet::compile(&[]).unwrap();
     let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
     for (baseline, schema) in [(None, &report_schema), (Some(&prepared), &delta_schema)] {
-        // When the changed member is present and when it is omitted
         let mut with = report(baseline, &[&section]);
         let without = report(baseline, &[]);
         // Then both validate, since a run without --base writes no changed member
@@ -1682,16 +1680,16 @@ fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
 
 #[test]
 fn the_section_reports_the_fail_count_as_its_failures() {
-    for fail in [0, 2] {
-        let judged = Judged {
-            entries: Vec::new(),
-            removed: Vec::new(),
-            counts: Counts {
-                fail,
-                ..Counts::default()
-            },
-            threshold: Threshold::new(30.0).unwrap(),
-        };
+    let head = analyzed(
+        "src/n.ts",
+        &format!("{}\n{}", func("one", 6), func("two", 6)),
+        Side::Head,
+    );
+    let scores: Vec<_> = head.iter().map(|row| score(row, Some(0.0), 0.0)).collect();
+    for (rows, fail) in [(&head[..0], 0), (&head[..], 2)] {
+        let files = [(&[][..], rows, Edits::Added)];
+        let judged = judge_at(&files, &scores, &[], 30.0);
+        assert_eq!(judged.counts.fail, fail);
         let section = ChangedSection::new(&comparison(), &judged, &[]);
         assert_eq!(section.failures(), Some(fail));
     }

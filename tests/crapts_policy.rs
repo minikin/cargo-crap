@@ -3215,7 +3215,6 @@ fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
             .unwrap();
             serde_json::from_slice::<Value>(&out).unwrap()
         };
-        // When the changed member is present and when it is omitted
         let mut with = render(&[&section]);
         let without = render(&[]);
         // Then both validate, since a run without --base writes no changed member

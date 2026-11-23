@@ -235,6 +235,7 @@ impl<'a> Visit<'a> for Literals {
             match ty {
                 TSType::TSArrayType(array) => ty = &array.element_type,
                 TSType::JSDocNonNullableType(inner) => ty = &inner.type_annotation,
+                TSType::JSDocNullableType(inner) => ty = &inner.type_annotation,
                 TSType::TSIndexedAccessType(access) => {
                     self.visit_ts_type(&access.index_type);
                     ty = &access.object_type;

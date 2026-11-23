@@ -481,6 +481,9 @@ fn long_import_qualifiers_and_jsdoc_postfix_types_fit_on_a_test_thread_stack() {
     for declaration in [
         format!("type I = import(\"m\").A{};", ".B".repeat(count)),
         format!("type N = string{}?;", "!".repeat(count)),
+        // The parser recurses on a prefix `?` and overflows before the
+        // visitor would, so this depth stays far below `count`.
+        format!("type M = {}string;", "? ".repeat(500)),
     ] {
         let source = format!("{declaration}\nfunction f() {{ return 1 }}");
         assert_eq!(print("long.ts", &source, "f"), expected);

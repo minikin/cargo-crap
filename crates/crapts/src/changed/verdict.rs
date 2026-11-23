@@ -145,7 +145,15 @@ pub struct Judged<'r> {
     /// Unpaired base rows, sorted by file, base line and function.
     pub removed: Vec<&'r Row>,
     pub counts: Counts,
-    pub threshold: Threshold,
+    threshold: Threshold,
+}
+
+impl Judged<'_> {
+    /// Private, so the published threshold is always the one the verdicts used.
+    #[must_use]
+    pub const fn threshold(&self) -> Threshold {
+        self.threshold
+    }
 }
 
 #[derive(Debug)]
@@ -270,7 +278,6 @@ fn lines_touched(
     })
 }
 
-/// One file's head rows by start, the longer of two rows with one start first.
 struct Nesting<'r> {
     rows: &'r [Row],
     order: Vec<usize>,
@@ -302,9 +309,31 @@ impl<'r> Nesting<'r> {
             .take_while(move |&i| self.rows[i].span.end <= region.end)
     }
 
+    /// Two rows with one span arise when an implied constructor owns a
+    /// single initializer that is itself a function. The constructor is the
+    /// one whose owned region holds the other's whole span. Names, unique
+    /// within a file, break any remaining tie, so the answer never depends on
+    /// the order of the rows.
+    fn outranks(
+        &self,
+        outer: usize,
+        inner: usize,
+    ) -> bool {
+        let (a, b) = (&self.rows[outer], &self.rows[inner]);
+        let holds = |row: &Row, span: SourceSpan| {
+            row.body_regions
+                .iter()
+                .any(|region| region.start <= span.start && span.end <= region.end)
+        };
+        match (holds(a, b.span), holds(b, a.span)) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => a.name < b.name,
+        }
+    }
+
     /// The row's span and owned regions, minus the open interior of every
-    /// region of each row inside them. Of two rows with one start, the earlier
-    /// in source order is outer.
+    /// region of each row inside them.
     fn own_lines(
         &self,
         index: usize,
@@ -313,24 +342,56 @@ impl<'r> Nesting<'r> {
         let regions: Vec<_> = std::iter::once(row.span)
             .chain(row.body_regions.iter().copied())
             .collect();
-        let mut lines: BTreeSet<u32> = regions
-            .iter()
-            .flat_map(|region| region.start.line..=region.end.line)
-            .collect();
+        let mut interiors = Vec::new();
         for &region in &regions {
             for other_index in self.inside(region) {
                 let other = &self.rows[other_index];
-                if other_index <= index && other.span.start == row.span.start {
+                if other_index == index
+                    || (other.span == row.span && self.outranks(other_index, index))
+                {
                     continue;
                 }
-                for nested in std::iter::once(&other.span).chain(&other.body_regions) {
-                    let (first, last) = (nested.start.line, nested.end.line);
-                    lines.retain(|&line| line <= first || line >= last);
-                }
+                interiors.extend(
+                    std::iter::once(&other.span)
+                        .chain(&other.body_regions)
+                        .filter_map(|nested| open_interior(nested.start.line, nested.end.line)),
+                );
             }
         }
-        lines
+        let interiors = merged(interiors);
+        regions
+            .iter()
+            .flat_map(|region| region.start.line..=region.end.line)
+            .filter(|&line| !covers(&interiors, line))
+            .collect()
     }
+}
+
+fn open_interior(
+    first: u32,
+    last: u32,
+) -> Option<(u32, u32)> {
+    (last.saturating_sub(first) >= 2).then(|| (first + 1, last - 1))
+}
+
+fn merged(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    ranges.sort_unstable();
+    let mut out: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        match out.last_mut() {
+            Some(last) if start <= last.1.saturating_add(1) => last.1 = last.1.max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out
+}
+
+fn covers(
+    ranges: &[(u32, u32)],
+    line: u32,
+) -> bool {
+    let after = ranges.partition_point(|&(start, _)| start <= line);
+    after > 0 && line <= ranges[after - 1].1
 }
 
 fn judged_entry<'r>(
@@ -549,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_initializers_and_equal_spans_belong_to_the_earlier_row() {
+    fn owned_initializers_and_equal_spans_belong_to_the_constructor() {
         let source = "class C {\n  a = 1\n  m() {\n    go()\n  }\n  b = x =>\n    x\n}\n";
         let rows = rows(source);
         let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
@@ -600,6 +661,106 @@ mod tests {
         assert_eq!(own_lines(&rows, 0), BTreeSet::from([2, 6, 7]));
         assert_eq!(own_lines(&rows, 1), BTreeSet::from([2, 3, 5, 6]));
         assert_eq!(own_lines(&rows, 2), BTreeSet::from([3, 4, 5]));
+    }
+
+    fn touched_names(
+        rows: &[Row],
+        hunks: &[Hunk],
+    ) -> BTreeSet<String> {
+        let files = [ChangedFile {
+            base: &[],
+            head: rows,
+        }];
+        let matching = super::super::matching::classify(&files);
+        let scores: Vec<CrapEntry> = rows
+            .iter()
+            .map(|row| CrapEntry {
+                file: row.file.clone(),
+                function: row.name.clone(),
+                crap: 1.0,
+                ..CrapEntry::default()
+            })
+            .collect();
+        let judged = evaluate(&Inputs {
+            files: &files,
+            edits: &[Edits::Hunks(hunks)],
+            matching: &matching,
+            scores: &scores,
+            allow: &AllowSet::compile(&[]).unwrap(),
+            threshold: Threshold::new(30.0).unwrap(),
+        });
+        judged.entries.iter().map(|e| e.head.name.clone()).collect()
+    }
+
+    #[test]
+    fn ownership_of_rows_sharing_a_start_ignores_their_order_in_the_slice() {
+        for source in [
+            "class C {\n  a = () => {\n    f(() => {\n      go()\n    })\n  }\n  b = 1\n}\n",
+            "class C {\n  b = x =>\n    x +\n    1\n}\n",
+        ] {
+            let analyzed = rows(source);
+            let mut reversed = rows(source);
+            reversed.reverse();
+            for (index, row) in analyzed.iter().enumerate() {
+                let mirrored = analyzed.len() - 1 - index;
+                assert_eq!(
+                    own_lines(&analyzed, index),
+                    own_lines(&reversed, mirrored),
+                    "{}",
+                    row.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_edit_inside_the_shorter_of_two_rows_sharing_a_start_spares_the_longer() {
+        let source =
+            "class C {\n  a = () => {\n    f(() => {\n      go()\n    })\n  }\n  b = 1\n}\n";
+        let analyzed = rows(source);
+        let mut reversed = rows(source);
+        reversed.reverse();
+        let expected = BTreeSet::from(["C::a".to_owned(), "C::a::f()".to_owned()]);
+        for order in [&analyzed, &reversed] {
+            assert_eq!(touched_names(order, &[hunk(3, 1)]), expected);
+            assert_eq!(
+                touched_names(order, &[hunk(7, 1)]),
+                BTreeSet::from(["C::constructor".to_owned()])
+            );
+        }
+    }
+
+    #[test]
+    fn rows_with_one_span_and_no_owning_region_are_ranked_by_a_strict_name_order() {
+        let named = |name: &str| {
+            let mut row = rows("function a() {\n  go()\n}\n").remove(0);
+            name.clone_into(&mut row.name);
+            row.body_regions.clear();
+            row
+        };
+        let pair = [named("a"), named("b")];
+        let nesting = Nesting::new(&pair);
+        assert!(nesting.outranks(0, 1));
+        assert!(!nesting.outranks(1, 0));
+        assert_eq!(nesting.own_lines(0), BTreeSet::from([1, 3]));
+        assert_eq!(nesting.own_lines(1), BTreeSet::from([1, 2, 3]));
+        let twins = [named("a"), named("a")];
+        let nesting = Nesting::new(&twins);
+        assert!(!nesting.outranks(0, 1) && !nesting.outranks(1, 0));
+    }
+
+    #[test]
+    fn single_line_callbacks_leave_every_line_to_the_enclosing_function() {
+        let count: u32 = 20_000;
+        let mut source = String::from("function outer() {\n");
+        for _ in 0..count {
+            source.push_str("  f(() => go())\n");
+        }
+        source.push_str("}\n");
+        let rows = rows(&source);
+        assert_eq!(rows.len(), count as usize + 1);
+        assert_eq!(own_lines(&rows, 0), (1..=count + 2).collect());
+        assert_eq!(own_lines(&rows, 1), BTreeSet::from([2]));
     }
 
     #[test]

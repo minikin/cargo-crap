@@ -62,7 +62,7 @@ impl ChangedSection {
             schema: SCHEMA,
             version: env!("CARGO_PKG_VERSION"),
             name_scheme: 1,
-            threshold: judged.threshold.get(),
+            threshold: judged.threshold().get(),
             base: WireBase {
                 rev: &comparison.rev,
                 commit: comparison.commit.as_str(),

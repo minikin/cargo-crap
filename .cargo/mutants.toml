@@ -30,3 +30,8 @@ cap_lints = true
 skip_calls_defaults = true
 
 exclude_globs = ["tests/**/*.rs"]
+
+# Unwrapping `?T` in a loop only saves stack, and the pinned parser recurses
+# on `?T` itself, so it overflows first: no input distinguishes the arm from
+# the recursive fallback.
+exclude_re = ["delete match arm TSType::JSDocNullableType"]

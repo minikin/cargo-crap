@@ -1,4 +1,7 @@
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test crate that includes this module uses a different subset"
+)]
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
