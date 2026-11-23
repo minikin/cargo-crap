@@ -2,7 +2,7 @@ use crate::coverage;
 use crate::markers::Stream;
 use crate::pages::{self, Page, Sample};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const OUTPUT_FORMATS: &str = "docs/crapts/reference/output-formats.md";
 pub const JSON: &str = "docs/crapts/reference/json.md";
@@ -27,7 +27,12 @@ pub fn check_output_formats(page: &Page) -> Result<(), String> {
             continue;
         };
         let args = sample.marker.args();
-        if args.iter().any(|a| a == "--baseline" || a == "--base") {
+        let compares = |a: &String| {
+            ["--baseline", "--base"]
+                .iter()
+                .any(|f| a == f || a.starts_with(&format!("{f}=")))
+        };
+        if args.iter().any(compares) {
             return Err(format!(
                 "{}: an absolute sample passes a comparison",
                 sample.label()
@@ -149,22 +154,35 @@ pub fn field_state(
     }
 }
 
+/// Checked-in schemas by `$id`, so an external `$ref` resolves offline.
+pub fn schemas_by_id() -> BTreeMap<String, Value> {
+    SCHEMA_FILES
+        .iter()
+        .map(|f| schema(f))
+        .filter_map(|s| Some((s["$id"].as_str()?.to_owned(), s)))
+        .collect()
+}
+
 fn resolve<'a>(
     root: &'a Value,
     node: &'a Value,
-) -> Option<&'a Value> {
+    external: &'a BTreeMap<String, Value>,
+) -> Option<(&'a Value, &'a Value)> {
     let Some(reference) = node["$ref"].as_str() else {
-        return Some(node);
+        return Some((root, node));
     };
-    let name = reference.strip_prefix("#/definitions/")?;
-    root["definitions"].get(name)
+    match reference.strip_prefix("#/definitions/") {
+        Some(name) => root["definitions"].get(name).map(|n| (root, n)),
+        None => external.get(reference).map(|s| (s, s)),
+    }
 }
 
 pub fn admits_null(
     root: &Value,
     node: &Value,
+    external: &BTreeMap<String, Value>,
 ) -> bool {
-    let Some(node) = resolve(root, node) else {
+    let Some((root, node)) = resolve(root, node, external) else {
         return false;
     };
     let typed = match &node["type"] {
@@ -176,7 +194,7 @@ pub fn admits_null(
         .iter()
         .filter_map(|k| node[*k].as_array())
         .flatten()
-        .any(|branch| admits_null(root, branch));
+        .any(|branch| admits_null(root, branch, external));
     typed || branches || node.get("const").is_some_and(Value::is_null)
 }
 
@@ -209,6 +227,7 @@ pub fn check_fields(
     page: &Page,
     report: &Value,
     delta: &Value,
+    external: &BTreeMap<String, Value>,
 ) -> Result<(), String> {
     let properties: BTreeSet<String> = [report, delta]
         .iter()
@@ -235,7 +254,7 @@ pub fn check_fields(
         let nullable = [report, delta].iter().any(|schema| {
             schema["properties"]
                 .get(&row.field)
-                .is_some_and(|node| admits_null(schema, node))
+                .is_some_and(|node| admits_null(schema, node, external))
         });
         let expected = (
             field_state(report, &row.field),
@@ -260,5 +279,30 @@ pub fn check_fields(
         Ok(())
     } else {
         Err(format!("{}: the field table lacks {missing:?}", page.path))
+    }
+}
+
+/// Validates a report or delta sample against the schema its `$schema`
+/// names, with `<version>` read back as the package version.
+pub fn check_against_schema(sample: &Sample) -> Result<(), String> {
+    let text = sample
+        .block
+        .replace("\"<version>\"", &format!("\"{}\"", crate::fixture::VERSION));
+    let value: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", sample.label()))?;
+    let id = value["$schema"].as_str().unwrap_or_default();
+    let file = SCHEMA_FILES
+        .iter()
+        .find(|f| id == format!("{SCHEMA_PREFIX}{f}"))
+        .ok_or_else(|| format!("{}: {id} is not a report schema", sample.label()))?;
+    let validator = crate::common::compile(&format!("schemas/crapts/{file}"));
+    let errors: Vec<String> = validator
+        .iter_errors(&value)
+        .map(|e| e.to_string())
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{}: {}", sample.label(), errors.join("; ")))
     }
 }

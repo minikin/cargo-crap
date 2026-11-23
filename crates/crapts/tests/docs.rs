@@ -4,6 +4,7 @@ mod action;
 mod check;
 #[path = "docs/cli.rs"]
 mod cli;
+mod common;
 #[path = "docs/config.rs"]
 mod config;
 #[path = "docs/coverage.rs"]
@@ -1295,7 +1296,8 @@ fn the_json_reference_tables_the_top_level_fields() {
         formats::schema("report-v1.json"),
         formats::schema("delta-v1.json"),
     );
-    formats::check_fields(&page, &report, &delta).unwrap_or_else(|e| panic!("{e}"));
+    let external = formats::schemas_by_id();
+    formats::check_fields(&page, &report, &delta, &external).unwrap_or_else(|e| panic!("{e}"));
     let rows: Vec<String> = formats::field_rows(&page)
         .unwrap()
         .into_iter()
@@ -1305,7 +1307,7 @@ fn the_json_reference_tables_the_top_level_fields() {
     assert!(
         pages::links(&page)
             .iter()
-            .any(|(_, t)| t.starts_with("../guides/changed-gate.md")),
+            .any(|(_, t)| t == "../guides/changed-gate.md#combined-with-a-baseline"),
         "the combined sample link"
     );
     let row = page
@@ -1315,12 +1317,12 @@ fn the_json_reference_tables_the_top_level_fields() {
         .expect("the regression_gate row");
     let drifted = page.with(row, &row.replacen("| absent |", "| required |", 1));
     assert_names(
-        &err(formats::check_fields(&drifted, &report, &delta)),
+        &err(formats::check_fields(&drifted, &report, &delta, &external)),
         &["regression_gate"],
     );
     let doubled = page.with(row, &format!("{row}\n{row}"));
     assert_names(
-        &err(formats::check_fields(&doubled, &report, &delta)),
+        &err(formats::check_fields(&doubled, &report, &delta, &external)),
         &["regression_gate", "second row"],
     );
 }
@@ -1338,9 +1340,28 @@ fn null_is_found_through_references_and_branches() {
             serde_json::json!({"$ref": "https://example.invalid/x.json"}),
             false,
         ),
+        (
+            serde_json::json!({"$ref": "https://example.invalid/n.json"}),
+            true,
+        ),
     ] {
-        assert_eq!(formats::admits_null(&root, &node), expected, "{node}");
+        let external = std::collections::BTreeMap::from([(
+            "https://example.invalid/n.json".to_owned(),
+            serde_json::json!({"type": ["object", "null"]}),
+        )]);
+        assert_eq!(
+            formats::admits_null(&root, &node, &external),
+            expected,
+            "{node}"
+        );
     }
+    let real = formats::schemas_by_id();
+    let report = formats::schema("report-v1.json");
+    assert!(!formats::admits_null(
+        &report,
+        &report["properties"]["changed"],
+        &real
+    ));
     let schema = serde_json::json!({"required": ["a"], "properties": {"a": {}, "b": {}}});
     assert_eq!(formats::field_state(&schema, "a"), "required");
     assert_eq!(formats::field_state(&schema, "b"), "optional");
@@ -1552,4 +1573,59 @@ fn every_reference_to_the_crapts_action_uses_its_own_path_and_tag() {
         &err(action::check_uses_lines(&wrong)),
         &[action::ACTION_GUIDE, "minikin/cargo-crap@v1"],
     );
+}
+
+#[test]
+fn an_absolute_sample_refuses_either_spelling_of_a_comparison() {
+    for args in [
+        "--base=main",
+        "--baseline=crapts-baseline.json",
+        "--base main",
+    ] {
+        let page = Page::new(
+            formats::OUTPUT_FORMATS,
+            &format!(
+                "<!-- crapts-output: --coverage coverage/lcov.info --format shields {args} -->\n```json\n```\n"
+            ),
+        );
+        assert_names(&err(formats::check_output_formats(&page)), &["comparison"]);
+    }
+}
+
+#[test]
+fn every_report_and_delta_sample_validates_against_its_schema() {
+    let samples: Vec<_> = all_samples()
+        .into_iter()
+        .filter(|s| {
+            s.marker.stream() == Stream::Stdout
+                && s.marker.effective_format().as_deref() == Some("json")
+        })
+        .collect();
+    assert!(samples.len() >= 4);
+    for sample in &samples {
+        formats::check_against_schema(sample).unwrap_or_else(|e| panic!("{e}"));
+    }
+    let combined = samples
+        .iter()
+        .find(|s| s.block.contains("\"changed\": {") && s.block.contains("\"regression_gate\""))
+        .expect("the combined sample");
+    for (from, to) in [
+        (",\"counts\":{", ",\"tallies\":{"),
+        (
+            "\"name_scheme\":1,\"threshold\"",
+            "\"name_scheme\":1,\"extra\":1,\"threshold\"",
+        ),
+        (
+            "\"threshold\":30.0,\"base\"",
+            "\"threshold\":\"30\",\"base\"",
+        ),
+    ] {
+        let mut drifted = combined.clone();
+        assert!(combined.block.contains(from), "{from}");
+        drifted.block = combined.block.replacen(from, to, 1);
+        assert_names(
+            &err(formats::check_against_schema(&drifted)),
+            &[&combined.marker.to_string()],
+        );
+    }
 }

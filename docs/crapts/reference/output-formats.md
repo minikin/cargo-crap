@@ -1,8 +1,8 @@
 # Output formats
 
-`--format` picks one of seven renderers. Every sample on this page scores the cart project from the [crapts index](../README.md) with `--coverage coverage/lcov.info` and no comparison. With `--baseline` the formats compare each function with the baseline, and with `--base` the text, markdown, pr-comment, github and JSON formats add the changed functions. See the [baseline](../guides/baseline.md) and [changed-function](../guides/changed-gate.md) guides.
+`--format` picks one of seven renderers. Every sample on this page scores the cart project from the [crapts index](../README.md) with `--coverage coverage/lcov.info` and no comparison. With `--baseline` the formats compare each function with the baseline, except two: shields renders the same absolute badge, and sarif exits 2. With `--base` the text, markdown, pr-comment, github and JSON formats add the changed functions, and sarif exits 2. See the [baseline](../guides/baseline.md) and [changed-function](../guides/changed-gate.md) guides.
 
-`--output <file>` writes any format to a file instead of stdout. The exit code does not depend on the format.
+`--output <file>` writes any format to a file instead of stdout. When the format supports the requested comparison, the exit code does not depend on the format.
 
 ## text
 
