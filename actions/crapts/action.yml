@@ -90,3 +90,14 @@ runs:
         INPUT_COVERAGE_FILE: ${{ inputs.coverage-file }}
         INPUT_COVERAGE: ${{ inputs.coverage }}
       run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/prepare.mjs" "$BASH"
+    - name: Select or generate score baseline
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CRAPTS_TEMP: ${{ steps.install.outputs.temp }}
+        CRAPTS_BINARY: ${{ steps.install.outputs.binary }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_INSTALL_COMMAND: ${{ inputs.install-command }}
+        INPUT_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
+        INPUT_COVERAGE_FILE: ${{ inputs.coverage-file }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/baseline.mjs" "$BASH"

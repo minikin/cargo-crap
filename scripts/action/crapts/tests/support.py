@@ -39,10 +39,12 @@ class ActionTest(unittest.TestCase):
         self.project.mkdir()
         self.run_dir = self.temp / "run"
         self.run_dir.mkdir()
+        (self.run_dir / "args.json").write_text("[]")
         self.env = dict(os.environ, RUNNER_TEMP=str(self.temp), GITHUB_ACTION_PATH=str(ACTION),
                         GITHUB_PATH=str(self.temp / "path"), GITHUB_ENV=str(self.temp / "env"),
                         GITHUB_OUTPUT=str(self.temp / "outputs"), GITHUB_STEP_SUMMARY=str(self.temp / "summary"),
-                        CRAPTS_TEMP=str(self.run_dir), INPUT_BASE="", INPUT_COVERAGE="", INPUT_COVERAGE_COMMAND="",
+                        CRAPTS_TEMP=str(self.run_dir), CRAPTS_BINARY=str(BINARY), ARG_TRACE=str(self.temp / "args.log"),
+                        INPUT_BASELINE="", INPUT_BASE="", INPUT_COVERAGE="", INPUT_COVERAGE_COMMAND="",
                         INPUT_INSTALL_COMMAND="", INPUT_COVERAGE_FILE="coverage/coverage-final.json", INPUT_ARGS="", INPUT_FAIL_ABOVE="false", INPUT_FAIL_CHANGED="true",
                         INPUT_FAIL_REGRESSION="true", INPUT_COMMENT="true", INPUT_COMMENT_MARKER="<!-- crapts-report -->",
                         INPUT_VERSION=VERSION, INPUT_PACKAGE="", npm_config_cache=str(self.temp / "cache"),
@@ -65,3 +67,31 @@ class ActionTest(unittest.TestCase):
 
     def git(self, *args):
         return self.command(["git", *args]).stdout.strip()
+
+    def stage(self, name, status=0, **env):
+        return self.command(["node", "--import", (SCRIPTS / "tests/trace.mjs").as_uri(), str(SCRIPTS / (name + ".mjs")),
+                             self.env.get("CRAPTS_TEST_BASH") or shutil.which("bash")], status, **env)
+
+    def calls(self):
+        path = Path(self.env["ARG_TRACE"])
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def history(self, base_files, head_changes, *, base_changes=None):
+        self.git("init", "-q")
+        commits = []
+        for mark, (branch, parent, files) in enumerate([("common", None, base_files), ("base", 1, base_changes or {}),
+                                                       ("pr", 1, head_changes)], start=1):
+            commits.extend([f"commit refs/heads/{branch}", f"mark :{mark}",
+                            f"committer Fixture <fixture@example.invalid> {1000000000 + mark} +0000",
+                            "data 1", str(mark)])
+            if parent:
+                commits.append(f"from :{parent}")
+            for name, body in files.items():
+                if body is None:
+                    commits.append("D " + name)
+                else:
+                    commits.extend(["M 100644 inline " + name, "data " + str(len(body.encode())), body])
+            commits.append("")
+        subprocess.run(["git", "fast-import", "--quiet"], cwd=self.project, input="\n".join(commits).encode(), check=True)
+        self.git("checkout", "-q", "pr")
+        return self.git("rev-parse", "base")

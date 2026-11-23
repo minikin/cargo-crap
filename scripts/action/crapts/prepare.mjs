@@ -35,8 +35,9 @@ function resolveBase(revision) {
     ": the base is not in this repository's history");
 }
 
-function projectCommand(command, label, cwd, bash) {
-  const result = spawnSync(bash, ["-c", command], { cwd, stdio: "inherit" });
+function projectCommand(command, label, cwd, bash, coverageFile) {
+  const env = { ...process.env, INPUT_COVERAGE_FILE: coverageFile };
+  const result = spawnSync(bash, ["-c", command], { cwd, env, stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw Error(label + " failed with status " + (result.status ?? result.signal));
 }
@@ -46,12 +47,12 @@ function file(path, label) {
   return path;
 }
 
-export function generateCoverage(cwd, label, bash) {
-  const { INPUT_INSTALL_COMMAND: install, INPUT_COVERAGE_COMMAND: command, INPUT_COVERAGE_FILE: name } = process.env;
+export function generateCoverage(cwd, label, bash, name = process.env.INPUT_COVERAGE_FILE) {
+  const { INPUT_INSTALL_COMMAND: install, INPUT_COVERAGE_COMMAND: command } = process.env;
   const path = resolve(cwd, name);
-  if (install) projectCommand(install, label + " install command", cwd, bash);
+  if (install) projectCommand(install, label + " install command", cwd, bash, name);
   rmSync(path, { force: true });
-  projectCommand(command, label + " coverage command", cwd, bash);
+  projectCommand(command, label + " coverage command", cwd, bash, name);
   return file(path, label + " coverage command did not produce coverage-file " + name);
 }
 
