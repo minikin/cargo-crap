@@ -1701,8 +1701,16 @@ fn min_and_top_select_shown_entries_as_they_select_report_rows() {
     let pair = Pair::new("src/p.ts", "", &head);
     let judged = pair.judged(&pair.uncovered(), &[]);
     let shown = |top, min| {
-        let section =
-            ChangedSection::presented(&comparison(), &judged, &[], Presentation { top, min });
+        let section = ChangedSection::presented(
+            &comparison(),
+            &judged,
+            &[],
+            Presentation {
+                top,
+                min,
+                ..Presentation::default()
+            },
+        );
         let changed: Value = serde_json::from_str(section.json().get()).unwrap();
         assert_eq!(changed["counts"]["touched"], 3);
         changed["entries"]
@@ -3875,7 +3883,608 @@ mod gates {
                 }
                 let out = repo.run_in(&repo.root(), &args);
                 prop_assert_eq!(code(&out), expected, "{}", format);
+                let body = String::from_utf8(out.stdout).unwrap();
+                match format {
+                    "text" | "markdown" | "pr-comment" => {
+                        let line = stated_counts(&oracle["changed"]["counts"], summary);
+                        prop_assert!(
+                            body.lines().any(|l| l.starts_with(&line)),
+                            "{}: {} not in {}", format, line, body
+                        );
+                    },
+                    "github" => {
+                        for annotation in body.lines().filter(|l| l.contains("title=Changed function::")) {
+                            let (_, message) = annotation.split_once("title=Changed function::").unwrap();
+                            let (name, _) = message.split_once(": ").unwrap();
+                            prop_assert!(
+                                all.iter().any(|e| e["function"] == name && e["verdict"] == "fail"),
+                                "{}", annotation
+                            );
+                        }
+                    },
+                    _ => {},
+                }
             }
         }
+    }
+
+    fn stated_counts(
+        counts: &Value,
+        summary: bool,
+    ) -> String {
+        let count = |name: &str| counts[name].as_u64().unwrap();
+        let (touched, fail, over) = (count("touched"), count("fail"), count("over"));
+        if summary {
+            format!("Changed functions: {touched} touched, {fail} fail.")
+        } else if touched == 0 {
+            "No touched functions against main.".to_owned()
+        } else {
+            let noun = if touched == 1 {
+                "function"
+            } else {
+                "functions"
+            };
+            format!(
+                "{fail} fail, {over} over, {} pass among {touched} touched {noun}",
+                touched - fail - over
+            )
+        }
+    }
+}
+
+mod rendering {
+    use std::fmt::Write as _;
+
+    use serde_json::{Value, json};
+
+    use super::cli::{Repo, app, line_of, recorded_tree};
+    use super::{common, func};
+
+    const ARROW: &str = "\u{2192}";
+    const DASH: &str = "\u{2014}";
+
+    fn text(
+        repo: &Repo,
+        format: &str,
+        extra: &[&str],
+    ) -> (String, i32) {
+        repo.uncovered();
+        let args = [
+            &[
+                "--coverage",
+                "cov.info",
+                "--base",
+                "main",
+                "--format",
+                format,
+            ][..],
+            extra,
+        ]
+        .concat();
+        let out = repo.run_in(&repo.root(), &args);
+        (
+            String::from_utf8(out.stdout).unwrap(),
+            out.status.code().unwrap(),
+        )
+    }
+
+    fn nonempty(body: &str) -> Vec<&str> {
+        body.lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect()
+    }
+
+    fn table_rows<'b>(lines: &[&'b str]) -> Vec<&'b str> {
+        lines
+            .iter()
+            .skip_while(|line| !line.starts_with("| Verdict"))
+            .skip(2)
+            .take_while(|line| line.starts_with('|'))
+            .copied()
+            .collect()
+    }
+
+    fn cells(row: &str) -> Vec<&str> {
+        row.trim_matches('|').split(" | ").map(str::trim).collect()
+    }
+
+    #[test]
+    fn a_pr_comment_leads_with_the_changed_section_directly_after_the_marker() {
+        let repo = recorded_tree();
+        for format in ["pr-comment", "markdown"] {
+            let (body, code) = text(&repo, format, &[]);
+            assert_eq!(code, 0, "{body}");
+            let lines = nonempty(&body);
+            let start = if format == "pr-comment" {
+                assert_eq!(body.lines().next(), Some("<!-- crapts-report -->"));
+                1
+            } else {
+                lines
+                    .iter()
+                    .position(|line| *line == "## Changed functions")
+                    .unwrap()
+            };
+            assert_eq!(lines[start], "## Changed functions", "{body}");
+            assert_eq!(
+                lines[start + 1],
+                "1 fail, 0 over, 1 pass among 2 touched functions against main."
+            );
+            assert_eq!(
+                lines[start + 2],
+                format!(
+                    "| Verdict | Function | Location | CC (base {ARROW} head) | Coverage | CRAP | Change |"
+                )
+            );
+            let rows = table_rows(&lines);
+            assert_eq!(rows.len(), 2, "{body}");
+            let legacy = cells(rows[0]);
+            assert_eq!(legacy[0], "fail");
+            assert_eq!(legacy[1], "`legacy`");
+            assert_eq!(
+                &legacy[3..],
+                [
+                    format!("10 {ARROW} 11").as_str(),
+                    "0.0",
+                    "132.0",
+                    "modified"
+                ]
+            );
+            let fresh = cells(rows[1]);
+            assert_eq!(fresh[0], "pass");
+            assert_eq!(fresh[1], "`fresh`");
+            assert_eq!(
+                &fresh[3..],
+                [format!("{DASH} {ARROW} 2").as_str(), "0.0", "6.0", "new"]
+            );
+            let after = lines.iter().position(|line| *line == rows[1]).unwrap() + 1;
+            assert_eq!(lines[after], "Removed: 1 function. Skipped: 1 path.");
+            let heading = lines
+                .iter()
+                .skip(after)
+                .position(|line| line.starts_with("## "))
+                .unwrap();
+            assert!(heading > 0, "{body}");
+        }
+    }
+
+    #[test]
+    fn the_text_report_shows_failures_first_then_the_removed_and_skipped_summary() {
+        let repo = recorded_tree();
+        let b = repo.rev("main");
+        let (body, code) = text(&repo, "text", &[]);
+        assert_eq!(code, 0, "{body}");
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(
+            lines[0],
+            format!("Changed functions against main (merge base {})", &b[..12])
+        );
+        let header = lines
+            .iter()
+            .position(|line| line.contains("Verdict"))
+            .unwrap();
+        for column in [
+            "Verdict",
+            "Function",
+            "Location",
+            &format!("CC (base {ARROW} head)"),
+            "Coverage",
+            "CRAP",
+            "Change",
+        ] {
+            assert!(lines[header].contains(column), "{column}: {body}");
+        }
+        let legacy = lines
+            .iter()
+            .position(|line| line.contains("legacy"))
+            .unwrap();
+        let fresh = lines
+            .iter()
+            .position(|line| line.contains("fresh"))
+            .unwrap();
+        assert!(header < legacy && legacy < fresh, "{body}");
+        assert!(lines[legacy].starts_with("fail "), "{body}");
+        assert!(lines[fresh].starts_with("pass "), "{body}");
+        let counts = lines
+            .iter()
+            .position(|line| *line == "1 fail, 0 over, 1 pass among 2 touched functions.")
+            .unwrap_or_else(|| panic!("{body}"));
+        assert!(counts > fresh);
+        assert_eq!(lines[counts + 1], "Removed: 1 function. Skipped: 1 path.");
+        assert!(
+            lines[counts + 2..]
+                .iter()
+                .any(|line| line.contains("cold") || line.contains("legacy")),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_touched_rows_says_so_in_every_text_format() {
+        let repo = Repo::standard();
+        for (format, heading) in [
+            ("text", "Changed functions against main (merge base"),
+            ("markdown", "## Changed functions"),
+            ("pr-comment", "## Changed functions"),
+        ] {
+            let (body, _) = text(&repo, format, &[]);
+            let lines = nonempty(&body);
+            let at = lines
+                .iter()
+                .position(|line| line.starts_with(heading))
+                .unwrap_or_else(|| panic!("{format}: {body}"));
+            assert_eq!(
+                lines[at + 1],
+                "No touched functions against main.",
+                "{format}"
+            );
+            assert!(!lines[at + 2].contains("Verdict"), "{format}: {body}");
+        }
+    }
+
+    fn many(count: usize) -> String {
+        (1..=count).fold(String::new(), |mut source, i| {
+            writeln!(source, "{}", func(&format!("f{i:02}"), 6)).unwrap();
+            source
+        })
+    }
+
+    #[test]
+    fn the_pr_comment_caps_the_changed_table_at_25_rows() {
+        let repo = Repo::standard();
+        repo.write("src/many.ts", many(30));
+        let (body, _) = text(&repo, "pr-comment", &[]);
+        let lines = nonempty(&body);
+        let rows = table_rows(&lines);
+        let names: Vec<String> = rows
+            .iter()
+            .map(|row| cells(row)[1].trim_matches('`').to_owned())
+            .collect();
+        let expected: Vec<String> = (1..=25).map(|i| format!("f{i:02}")).collect();
+        assert_eq!(names, expected);
+        let after = lines
+            .iter()
+            .position(|line| *line == *rows.last().unwrap())
+            .unwrap()
+            + 1;
+        assert_eq!(lines[after], "and 5 more changed functions");
+        assert!(
+            lines.contains(&"30 fail, 0 over, 0 pass among 30 touched functions against main.")
+        );
+    }
+
+    #[test]
+    fn github_annotates_failing_changed_rows_by_gate_setting() {
+        let repo = Repo::standard();
+        let source = format!("{}{}\n{}", app(6, 2, 1), func("fresh", 6), func("small", 2));
+        repo.write("src/app.ts", &source);
+        let line = line_of(&source, "fresh");
+        for (flags, level) in [(&[][..], "::warning"), (&["--fail-changed"][..], "::error")] {
+            for dir in [repo.root(), repo.root().join("src")] {
+                repo.uncovered();
+                let coverage = repo.root().join("cov.info");
+                let args = [
+                    &[
+                        "--coverage",
+                        coverage.to_str().unwrap(),
+                        "--base",
+                        "main",
+                        "--format",
+                        "github",
+                    ][..],
+                    flags,
+                ]
+                .concat();
+                let out = repo.run_in(&dir, &args);
+                let body = String::from_utf8(out.stdout).unwrap();
+                let changed: Vec<&str> = body
+                    .lines()
+                    .filter(|l| l.contains("title=Changed function"))
+                    .collect();
+                assert_eq!(
+                    changed,
+                    [format!(
+                        "{level} file=src/app.ts,line={line},title=Changed function::fresh: new function, CRAP 42.0 above 30"
+                    )],
+                    "{body}"
+                );
+                assert!(body.starts_with(changed[0]), "{body}");
+                assert!(body.lines().count() > 1, "{body}");
+            }
+        }
+    }
+
+    #[test]
+    fn summary_mode_keeps_a_one_line_changed_result() {
+        let repo = recorded_tree();
+        for format in ["text", "markdown", "pr-comment"] {
+            let (body, _) = text(&repo, format, &["--summary"]);
+            let lines = nonempty(&body);
+            assert!(
+                lines.contains(&"Changed functions: 2 touched, 1 fail."),
+                "{format}: {body}"
+            );
+            if format == "pr-comment" {
+                assert_eq!(lines[1], "Changed functions: 2 touched, 1 fail.", "{body}");
+            }
+        }
+    }
+
+    #[test]
+    fn text_formats_show_the_touched_rows_the_gate_did_not_judge() {
+        let cases: [(&[&str], &str, &str, &str); 3] = [
+            (
+                &["--missing", "skip"],
+                "No touched functions against main.",
+                "Also: 2 skipped for missing coverage.",
+                "Changed functions: 0 touched, 0 fail.",
+            ),
+            (
+                &["--missing", "pessimistic"],
+                "2 fail, 0 over, 0 pass among 2 touched functions",
+                "Also: 2 scored without coverage data.",
+                "Changed functions: 2 touched, 2 fail.",
+            ),
+            (
+                &["--missing", "skip", "--allow", "legacy"],
+                "No touched functions against main.",
+                "Also: 1 allowed, 1 skipped for missing coverage.",
+                "Changed functions: 0 touched, 0 fail.",
+            ),
+        ];
+        for (flags, full, also, summary) in cases {
+            let repo = Repo::with(&[
+                ("src/m.ts", &func("legacy", 10)),
+                ("src/other.ts", &func("other", 1)),
+            ]);
+            repo.write(
+                "src/m.ts",
+                format!("{}\n{}", func("legacy", 11), func("fresh", 6)),
+            );
+            repo.write(
+                "cov.info",
+                "SF:src/other.ts\nDA:1,0\nDA:2,0\nend_of_record\n",
+            );
+            for format in ["text", "markdown", "pr-comment"] {
+                for summarized in [false, true] {
+                    let args = [
+                        &[
+                            "--coverage",
+                            "cov.info",
+                            "--base",
+                            "main",
+                            "--format",
+                            format,
+                        ][..],
+                        flags,
+                        if summarized { &["--summary"][..] } else { &[] },
+                    ]
+                    .concat();
+                    let out = repo.run_in(&repo.root(), &args);
+                    let body = String::from_utf8(out.stdout).unwrap();
+                    let lines = nonempty(&body);
+                    let first = if summarized { summary } else { full };
+                    let at = lines
+                        .iter()
+                        .position(|line| line.starts_with(first))
+                        .unwrap_or_else(|| panic!("{format} {flags:?} {summarized}: {body}"));
+                    assert_eq!(
+                        lines[at + 1],
+                        also,
+                        "{format} {flags:?} {summarized}: {body}"
+                    );
+                    let has_table = lines.iter().any(|line| line.contains("CC (base"));
+                    assert_eq!(
+                        has_table,
+                        !summarized && flags.len() == 2 && flags[1] == "pessimistic",
+                        "{format} {flags:?}: {body}"
+                    );
+                    if has_table && format != "text" {
+                        for row in table_rows(&lines) {
+                            assert_eq!(cells(row)[4], DASH, "{body}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_shields_badge_shows_current_scores_while_the_changed_gate_still_trips() {
+        let repo = Repo::standard();
+        repo.write(
+            "src/app.ts",
+            format!("{}{}", app(6, 2, 1), func("fresh", 6)),
+        );
+        let (body, code) = text(&repo, "shields", &["--fail-changed"]);
+        assert_eq!(code, 1);
+        let badge: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            (&badge["message"], &badge["color"]),
+            (&json!("2 crappy"), &json!("yellow"))
+        );
+        assert!(!body.contains("Changed"), "{body}");
+    }
+
+    /// GitHub's limit can be reached only with paths longer than macOS
+    /// allows, so these cases run where `PATH_MAX` is 4096.
+    #[cfg(target_os = "linux")]
+    mod budget {
+        use super::*;
+
+        /// A directory path of `length` characters under `src`, in components a
+        /// file system accepts, whose last character is `last`.
+        fn long_dir(
+            length: usize,
+            last: char,
+        ) -> String {
+            let mut dir = String::from("src");
+            while dir.len() + 1 < length {
+                let room = (length - dir.len() - 1).min(200);
+                dir.push('/');
+                dir.push_str(&"d".repeat(room));
+            }
+            dir.pop();
+            dir.push(last);
+            dir
+        }
+
+        /// The PR comment, its UTF-16 length and exit code for 30 new functions
+        /// below `dir`, with the exit code of the same run in JSON.
+        fn sized(
+            dir: &str,
+            marker: &str,
+        ) -> (String, usize, i32, i32) {
+            let repo = Repo::standard();
+            repo.write(&format!("{dir}/many.ts"), many(30));
+            let (json, json_code) = text(&repo, "json", &[]);
+            assert_ne!(json.len(), 0);
+            let (body, code) = text(&repo, "pr-comment", &["--comment-marker", marker]);
+            let units = body.encode_utf16().count();
+            (body, units, code, json_code)
+        }
+
+        /// A 60-character marker whose first `wide` characters are supplementary,
+        /// two code units each.
+        fn marker(wide: usize) -> String {
+            let mut marker: String = "\u{1F600}".repeat(wide);
+            marker.push_str(&"m".repeat(60 - wide));
+            marker
+        }
+
+        /// A directory and marker whose complete comment has `target` units, with
+        /// one supplementary character ending the directory when `wide_path`.
+        fn tuned(
+            target: usize,
+            wide_path: bool,
+        ) -> (String, String) {
+            let (_, short, ..) = sized(&long_dir(40, 'd'), &marker(0));
+            let (_, longer, ..) = sized(&long_dir(41, 'd'), &marker(0));
+            let per_char = longer - short;
+            let extra = if wide_path { per_char } else { 0 };
+            let room = target - extra - short;
+            let length = 40 + room / per_char;
+            let wide = room % per_char;
+            let last = if wide_path { '\u{1F600}' } else { 'd' };
+            let dir = long_dir(length, 'd');
+            let (_, plain, ..) = sized(&dir, &marker(0));
+            assert_eq!(plain + extra + wide, target);
+            (long_dir(length, last), marker(wide))
+        }
+
+        #[test]
+        fn the_whole_pr_comment_fits_the_65536_unit_comment_limit() {
+            let counts = "30 fail, 0 over, 0 pass among 30 touched functions against main.";
+            let (dir, mark) = tuned(65_536, false);
+            let (body, units, code, json_code) = sized(&dir, &mark);
+            assert_eq!(units, 65_536);
+            assert_eq!(code, json_code);
+            let lines = nonempty(&body);
+            assert_eq!(lines[0], mark);
+            assert!(lines.contains(&"## Changed functions") && lines.contains(&counts));
+            assert_eq!(table_rows(&lines).len(), 25);
+            assert!(lines.contains(&"and 5 more changed functions"));
+            assert!(
+                body.contains("| CRAP | CC |"),
+                "the core report is complete"
+            );
+
+            let (dir, mark) = tuned(65_538, true);
+            let (body, units, code, json_code) = sized(&dir, &mark);
+            assert!(units <= 65_536, "{units}");
+            assert_eq!(code, json_code);
+            let lines = nonempty(&body);
+            assert_eq!(lines[0], mark);
+            assert!(lines.contains(&counts));
+            assert_eq!(table_rows(&lines).len(), 25);
+            assert!(
+                !body.contains("| CRAP | CC |"),
+                "the core report is in its summary form"
+            );
+
+            let (body, units, code, json_code) = sized(&long_dir(3_000, 'd'), &marker(0));
+            assert!(units <= 65_536, "{units}");
+            assert_eq!(code, json_code);
+            let lines = nonempty(&body);
+            assert!(lines.contains(&counts));
+            let rows = table_rows(&lines);
+            let kept = rows.len();
+            assert!(kept < 25, "{kept}");
+            let after = lines
+                .iter()
+                .position(|line| *line == *rows.last().unwrap())
+                .unwrap()
+                + 1;
+            assert_eq!(
+                lines[after],
+                format!("and {} more changed functions", 30 - kept)
+            );
+        }
+    }
+
+    /// Long source links grow every row as a long path would, without a
+    /// path that macOS refuses, so this case runs everywhere.
+    #[test]
+    fn a_comment_still_over_the_limit_keeps_the_longest_prefix_of_changed_rows() {
+        let repo = Repo::standard();
+        repo.write("src/many.ts", many(30));
+        let reference = "r".repeat(1_400);
+        let link_flags = [
+            "--repo-url",
+            "https://example.invalid/o/r",
+            "--commit-ref",
+            reference.as_str(),
+        ];
+        let (body, code) = text(&repo, "pr-comment", &link_flags);
+        let (_, json_code) = text(&repo, "json", &[]);
+        assert_eq!(code, json_code, "{body}");
+        assert!(body.encode_utf16().count() <= 65_536);
+        assert!(
+            !body.contains("| CRAP | CC |"),
+            "the core report is in its summary form"
+        );
+        let lines = nonempty(&body);
+        let rows = table_rows(&lines);
+        let kept = rows.len();
+        assert!(kept > 0 && kept < 25, "{kept}");
+        assert!(rows.iter().all(|row| row.contains(&reference)));
+        let after = lines
+            .iter()
+            .position(|line| *line == *rows.last().unwrap())
+            .unwrap()
+            + 1;
+        assert_eq!(
+            lines[after],
+            format!("and {} more changed functions", 30 - kept)
+        );
+    }
+
+    #[test]
+    fn a_pr_comment_that_cannot_fit_even_without_changed_rows_exits_2() {
+        let repo = Repo::standard();
+        repo.write(
+            "src/app.ts",
+            format!("{}{}", app(6, 2, 1), func("fresh", 6)),
+        );
+        repo.uncovered();
+        let marker = "m".repeat(65_536);
+        let out = repo.run_in(
+            &repo.root(),
+            &[
+                "--coverage",
+                "cov.info",
+                "--base",
+                "main",
+                "--format",
+                "pr-comment",
+                "--comment-marker",
+                &marker,
+                "--output",
+                "out.md",
+            ],
+        );
+        common::check(&out, 2);
+        assert_eq!(out.stdout.as_slice(), b"");
+        assert!(!repo.root().join("out.md").exists());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("65536"));
     }
 }

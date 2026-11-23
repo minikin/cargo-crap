@@ -1,13 +1,18 @@
+mod text;
+
 use std::borrow::Cow;
 use std::io::Write;
+use std::path::Path;
 
 use cargo_crap_core::git::{CommitId, MergeBase};
-use cargo_crap_core::report::{Format, Placement, Section, WriteResult};
+use cargo_crap_core::report::{Format, Placement, Section, SourceLinks, WriteResult};
 use serde::Serialize;
 use serde_json::value::RawValue;
 
 use super::verdict::{Change, Counts, Entry, Judged, Verdict};
 use crate::Row;
+pub use text::{PR_COMMENT_ROWS, utf16_len};
+use text::{Text, TextInputs};
 
 const SCHEMA: &str =
     "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/changed-v1.json";
@@ -42,15 +47,22 @@ pub struct Skipped {
 
 /// How a run shows the changed rows. Counts and verdicts never depend on it.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Presentation {
+pub struct Presentation<'a> {
     pub top: Option<usize>,
     pub min: Option<f64>,
+    /// The effective `fail-changed`, which makes a GitHub annotation an error.
+    pub fail_changed: bool,
+    pub summary: bool,
+    pub links: Option<&'a SourceLinks>,
+    /// Where the invocation sits in the repository, for annotation paths.
+    pub repo_prefix: Option<&'a Path>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ChangedSection {
     json: Box<RawValue>,
     failures: usize,
+    text: Text,
 }
 
 impl ChangedSection {
@@ -73,10 +85,23 @@ impl ChangedSection {
         comparison: &Comparison,
         judged: &Judged<'_>,
         skipped: &[Skipped],
-        presentation: Presentation,
+        presentation: Presentation<'_>,
     ) -> Self {
         let mut skipped: Vec<&Skipped> = skipped.iter().collect();
         skipped.sort_by(|a, b| a.path.cmp(&b.path));
+        let shown = shown(&judged.entries, presentation);
+        let text = Text::new(&TextInputs {
+            shown: &shown,
+            counts: judged.counts,
+            removed: judged.removed.len(),
+            skipped: skipped.len(),
+            rev: &comparison.rev,
+            merge_base: comparison.merge_base.commit.as_str(),
+            fail_changed: presentation.fail_changed,
+            summary: presentation.summary,
+            links: presentation.links,
+            repo_prefix: presentation.repo_prefix,
+        });
         let wire = Wire {
             schema: SCHEMA,
             version: env!("CARGO_PKG_VERSION"),
@@ -93,10 +118,7 @@ impl ChangedSection {
                 commit: comparison.head.as_str(),
                 dirty: comparison.dirty,
             },
-            entries: shown(&judged.entries, presentation)
-                .into_iter()
-                .map(WireEntry::from)
-                .collect(),
+            entries: shown.iter().map(|entry| WireEntry::from(*entry)).collect(),
             removed: judged
                 .removed
                 .iter()
@@ -108,7 +130,24 @@ impl ChangedSection {
         Self {
             json: serde_json::value::to_raw_value(&wire).expect("the changed object serializes"),
             failures: judged.counts.fail,
+            text,
         }
+    }
+
+    #[must_use]
+    pub fn with_row_limit(
+        &self,
+        limit: usize,
+    ) -> Self {
+        let mut section = self.clone();
+        section.text.row_limit = limit;
+        section
+    }
+
+    /// The rows the text forms show before any row limit.
+    #[must_use]
+    pub fn shown_rows(&self) -> usize {
+        self.text.rows()
     }
 }
 
@@ -123,9 +162,16 @@ impl Section for ChangedSection {
 
     fn write(
         &self,
-        _: Format,
-        _: &mut dyn Write,
+        format: Format,
+        out: &mut dyn Write,
     ) -> WriteResult {
+        match format {
+            Format::Human => self.text.human(out)?,
+            Format::Markdown => self.text.markdown(None, out)?,
+            Format::PrComment => self.text.markdown(Some(self.text.row_limit), out)?,
+            Format::GitHub => self.text.github(out)?,
+            Format::Json | Format::Sarif | Format::Shields => {},
+        }
         Ok(())
     }
 

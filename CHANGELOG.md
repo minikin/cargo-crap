@@ -62,6 +62,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (crapts library):** `crapts::Row` gains `fingerprint: crapts::fingerprint::Fingerprint`.
+  Set it in row literals or use `..` in exhaustive patterns. crapts JSON rows
+  now carry `fingerprint`, and `crapts --base <rev>` with `--fail-changed`
+  gates the functions a change adds or edits. `cargo-crap-core` adds the
+  `git` module. cargo-crap output is unchanged.
+- crapts PR comments now fit GitHub's limit of 65,536 UTF-16 code units. A
+  longer body is written with the core report in its summary form, then with
+  fewer changed rows, and a body that cannot fit exits 2 before the output
+  opens.
 - **Breaking library API.** Core `Policy` literals gain `notice_spacing`.
   Set it to `NoticeSpacing::Separated` to keep the blank line between a
   Markdown or pr-comment marker and the notices after it. crapts uses

@@ -1,7 +1,7 @@
 use super::{Effective, Format, InputError, Result, StdoutSink};
 use crate::attribute::{Attribution, attribute};
 use crate::changed::matching::{ChangedFile, classify};
-use crate::changed::section::{ChangedSection, Presentation};
+use crate::changed::section::{ChangedSection, PR_COMMENT_ROWS, Presentation, utf16_len};
 use crate::changed::select::{FileEdits, Selection, select};
 use crate::changed::verdict::{Edits, Inputs, Threshold, evaluate};
 use crate::coverage::{Coverage, CoverageUnit, read_coverage};
@@ -9,7 +9,9 @@ use crate::discover::{Worktree, discover_probed};
 use crate::{Discovery, DiscoveryScope, FileAnalysis, Mode, analyze};
 use cargo_crap_core::coverage::CoverageKind;
 use cargo_crap_core::delta::{CraptsBaseline, load_crapts_baseline};
+use cargo_crap_core::entry::{CrapEntry, ScopeDiagnostics};
 use cargo_crap_core::filter::AllowSet;
+use cargo_crap_core::gate::GateOutcome;
 use cargo_crap_core::policy::{
     EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder,
 };
@@ -163,6 +165,7 @@ fn changed_section(
     files: &[FileAnalysis],
     result: &Attribution,
     options: &Effective,
+    presentation: Presentation<'_>,
 ) -> Result<ChangedSection> {
     let threshold = Threshold::new(options.threshold.value)
         .ok_or_else(|| InputError::message("--threshold must be a finite number"))?;
@@ -204,10 +207,7 @@ fn changed_section(
         &selection.comparison,
         &judged,
         &selection.skipped,
-        Presentation {
-            top: top(options),
-            min: options.min.value,
-        },
+        presentation,
     ))
 }
 
@@ -222,19 +222,6 @@ fn prepare(
     let prepared = BaselineFilter::new(scope, allow).prepare_crapts(baseline);
     scope.checked()?;
     Ok(Some(prepared))
-}
-
-fn analysis(
-    result: Attribution,
-    scope: &dyn Scope,
-) -> Analysis<'_> {
-    Analysis {
-        entries: result.rows.into_iter().map(|row| row.entry).collect(),
-        diagnostics: Some(result.diagnostics),
-        scope,
-        coverage_kind: Some(coverage_kind(result.unit)),
-        notices: &[],
-    }
 }
 
 fn top(options: &Effective) -> Option<usize> {
@@ -293,67 +280,181 @@ pub(super) fn score(
     let (files, result) = measure(cwd, options, &coverage, &discovery, selection.as_mut(), err)?;
     let scope = ScoringScope::new(&discovery.scope);
     let prepared = prepare(baseline, &scope, &options.allow_set)?;
-    let section = selection
-        .as_ref()
-        .map(|selection| changed_section(selection, &files, &result, options))
-        .transpose()?;
-    drop(files);
-    let output = options.output.value.as_deref();
-    let to_stdout = output.is_none();
-    let color = color_enabled(
-        to_stdout,
-        sink.terminal,
-        std::env::var_os("NO_COLOR").as_deref(),
-        std::env::var_os("FORCE_COLOR").as_deref(),
-    );
     let links = source_links(
         options.repo_url.value.as_deref(),
         options.commit_ref.value.as_deref(),
     );
-    let settings = Settings {
-        allow: &options.allow_set,
-        min: options.min.value,
+    let presentation = Presentation {
         top: top(options),
-        sort: options.sort.value,
-        threshold: options.threshold.value,
-        epsilon: options.epsilon.value,
-        signals: &SignalSettings::default(),
-        fail_above: options.fail_above.value,
-        fail_regression: options.fail_regression.value,
-        format: options.format.value,
+        min: options.min.value,
+        fail_changed: options.fail_changed.value,
         summary: options.summary.value,
-        show_unchanged: options.show_unchanged.value,
-        uncovered_hints: options.uncovered_hints.value,
+        links: links.as_ref(),
+        repo_prefix: Some(discovery.scope.repo_prefix()),
+    };
+    let section = selection
+        .as_ref()
+        .map(|selection| changed_section(selection, &files, &result, options, presentation))
+        .transpose()?;
+    drop(files);
+    let output = options.output.value.as_deref();
+    let to_stdout = output.is_none();
+    let render = Render {
+        options,
+        cwd,
+        links: links.as_ref(),
+        repo_prefix: discovery.scope.repo_prefix(),
         width: if to_stdout {
             sink.width
         } else {
             report::output_width(false)
         },
-        links: links.as_ref(),
-        pr_comment_marker: Some(&options.comment_marker.value),
-        repo_prefix: Some(discovery.scope.repo_prefix()),
-        cwd,
-        workspace_root: None,
-        fail_sections: options.fail_changed.value,
+        color: color_enabled(
+            to_stdout,
+            sink.terminal,
+            std::env::var_os("NO_COLOR").as_deref(),
+            std::env::var_os("FORCE_COLOR").as_deref(),
+        ),
+        entries: result.rows.into_iter().map(|row| row.entry).collect(),
+        diagnostics: result.diagnostics,
+        unit: coverage_kind(result.unit),
+        scope: &scope,
+        prepared: prepared.as_ref(),
+        destination: output.unwrap_or(Path::new("stdout")),
     };
-    let sections: Vec<&dyn Section> = section.iter().map(|s| s as &dyn Section).collect();
-    let report = analysis(result, &scope);
-    let mut rendered = Vec::new();
-    let verdict = report::with_color(color, || {
-        run::run(
-            &TOOL,
-            &settings,
-            report,
-            prepared.as_ref(),
-            &sections,
-            &RenderExtras::default(),
-            &mut rendered,
-        )
-    })
-    .map_err(|e| InputError::at(output.unwrap_or(Path::new("stdout")), format!("{e:#}")))?;
+    let (rendered, verdict) = render.fitted(section.as_ref())?;
     write_destination(cwd, output, stdout, &rendered)?;
     machine_notice(err, options.format.value, prepared.as_ref())?;
     Ok(verdict.exit_code())
+}
+
+/// GitHub posts a comment body of at most this many UTF-16 code units.
+const COMMENT_LIMIT: usize = 65_536;
+
+/// One run's report, which can be rendered more than once from the same
+/// inputs while a PR comment is fitted to [`COMMENT_LIMIT`].
+struct Render<'a> {
+    options: &'a Effective,
+    cwd: &'a Path,
+    links: Option<&'a SourceLinks>,
+    repo_prefix: &'a Path,
+    width: Option<usize>,
+    color: bool,
+    entries: Vec<CrapEntry>,
+    diagnostics: ScopeDiagnostics,
+    unit: CoverageKind,
+    scope: &'a dyn Scope,
+    prepared: Option<&'a PreparedBaseline>,
+    destination: &'a Path,
+}
+
+impl Render<'_> {
+    fn once(
+        &self,
+        summary: bool,
+        section: Option<&ChangedSection>,
+    ) -> Result<(Vec<u8>, GateOutcome)> {
+        let options = self.options;
+        let settings = Settings {
+            allow: &options.allow_set,
+            min: options.min.value,
+            top: top(options),
+            sort: options.sort.value,
+            threshold: options.threshold.value,
+            epsilon: options.epsilon.value,
+            signals: &SignalSettings::default(),
+            fail_above: options.fail_above.value,
+            fail_regression: options.fail_regression.value,
+            format: options.format.value,
+            summary,
+            show_unchanged: options.show_unchanged.value,
+            uncovered_hints: options.uncovered_hints.value,
+            width: self.width,
+            links: self.links,
+            pr_comment_marker: Some(&options.comment_marker.value),
+            repo_prefix: Some(self.repo_prefix),
+            cwd: self.cwd,
+            workspace_root: None,
+            fail_sections: options.fail_changed.value,
+        };
+        let analysis = Analysis {
+            entries: self.entries.clone(),
+            diagnostics: Some(self.diagnostics.clone()),
+            scope: self.scope,
+            coverage_kind: Some(self.unit),
+            notices: &[],
+        };
+        let sections: Vec<&dyn Section> = section.iter().map(|s| *s as &dyn Section).collect();
+        let mut rendered = Vec::new();
+        let verdict = report::with_color(self.color, || {
+            run::run(
+                &TOOL,
+                &settings,
+                analysis,
+                self.prepared,
+                &sections,
+                &RenderExtras::default(),
+                &mut rendered,
+            )
+        })
+        .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
+        Ok((rendered, verdict))
+    }
+
+    fn fitted(
+        &self,
+        section: Option<&ChangedSection>,
+    ) -> Result<(Vec<u8>, GateOutcome)> {
+        let summary = self.options.summary.value;
+        if self.options.format.value != Format::PrComment {
+            return self.once(summary, section);
+        }
+        let rows = section.map_or(0, |s| s.shown_rows().min(PR_COMMENT_ROWS));
+        let body = fit(
+            rows,
+            |(body, _): &(Vec<u8>, GateOutcome)| fits(body),
+            |summarized, limit| match (section, limit) {
+                (Some(section), Some(limit)) => {
+                    self.once(true, Some(&section.with_row_limit(limit)))
+                },
+                _ => self.once(summary || summarized, section),
+            },
+        )?;
+        body.ok_or_else(|| {
+            InputError::message(format!(
+                "the PR comment needs more than {COMMENT_LIMIT} UTF-16 code units, GitHub's limit, \
+                 even with the core report summarized and no changed rows"
+            ))
+        })
+    }
+}
+
+/// The first rendering that fits: the complete body, then the body with the
+/// core report summarized, then that body with the longest prefix of its
+/// `rows` changed rows. `render` takes whether to summarize the core report
+/// and the row limit, if any.
+fn fit<T, E>(
+    rows: usize,
+    fits: impl Fn(&T) -> bool,
+    mut render: impl FnMut(bool, Option<usize>) -> Result<T, E>,
+) -> Result<Option<T>, E> {
+    for summarized in [false, true] {
+        let body = render(summarized, None)?;
+        if fits(&body) {
+            return Ok(Some(body));
+        }
+    }
+    for limit in (0..rows).rev() {
+        let body = render(true, Some(limit))?;
+        if fits(&body) {
+            return Ok(Some(body));
+        }
+    }
+    Ok(None)
+}
+
+fn fits(body: &[u8]) -> bool {
+    utf16_len(&String::from_utf8_lossy(body)) <= COMMENT_LIMIT
 }
 
 /// The report is rendered in memory first, so a failure before this point
@@ -400,6 +501,64 @@ fn machine_notice(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fake rendering's size: 100 for the complete body, 60 with the core
+    /// summarized, and 10 more per changed row on top of a summarized 30.
+    fn size(
+        summarized: bool,
+        limit: Option<usize>,
+    ) -> usize {
+        match (summarized, limit) {
+            (false, _) => 100,
+            (true, None) => 60,
+            (true, Some(rows)) => 30 + 10 * rows,
+        }
+    }
+
+    fn fitted_at(
+        budget: usize,
+        rows: usize,
+    ) -> (Option<usize>, Vec<(bool, Option<usize>)>) {
+        let mut tried = Vec::new();
+        let body = fit(
+            rows,
+            |size: &usize| *size <= budget,
+            |summarized, limit| {
+                tried.push((summarized, limit));
+                Ok::<_, ()>(size(summarized, limit))
+            },
+        )
+        .unwrap();
+        (body, tried)
+    }
+
+    #[test]
+    fn a_comment_is_fitted_by_summarizing_the_core_then_dropping_changed_rows() {
+        assert_eq!(fitted_at(100, 3).0, Some(100));
+        assert_eq!(fitted_at(100, 3).1, [(false, None)]);
+        assert_eq!(fitted_at(99, 3).0, Some(60));
+        assert_eq!(fitted_at(59, 3).0, Some(50));
+        assert_eq!(
+            fitted_at(59, 3).1,
+            [(false, None), (true, None), (true, Some(2))]
+        );
+        assert_eq!(fitted_at(45, 3).0, Some(40));
+        assert_eq!(fitted_at(30, 3).0, Some(30));
+        assert_eq!(
+            fitted_at(29, 3),
+            (
+                None,
+                vec![
+                    (false, None),
+                    (true, None),
+                    (true, Some(2)),
+                    (true, Some(1)),
+                    (true, Some(0))
+                ]
+            )
+        );
+        assert_eq!(fitted_at(29, 0).0, None);
+    }
 
     #[test]
     fn the_tool_owns_its_package_version_schemas_and_gate_population() {
