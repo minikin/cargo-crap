@@ -22,6 +22,10 @@ check() {
 files=(
     Cargo.toml
     crates/cargo-crap-core/Cargo.toml
+    crates/cargo-crap-core/CHANGELOG.md
+    crates/crapts/Cargo.toml
+    crates/crapts/CHANGELOG.md
+    npm/crapts/package.json
     CHANGELOG.md
     action.yml
     .github/ISSUE_TEMPLATE/bug_report.yml
@@ -70,6 +74,10 @@ check "the old version's link is kept" "1" \
     "$(grep -c "^\[$current\]: " "$dir/CHANGELOG.md")"
 check "release prep bumps cargo-crap and leaves the core alone" "$core_before" \
     "$(awk -F'"' '/^version = /{print $2; exit}' "$dir/crates/cargo-crap-core/Cargo.toml")"
+for isolated in crates/cargo-crap-core/{Cargo.toml,CHANGELOG.md} crates/crapts/{Cargo.toml,CHANGELOG.md} npm/crapts/package.json; do
+    cmp -s "$repo/$isolated" "$dir/$isolated"
+    check "existing cargo-crap release prep stays isolated from $isolated" "0" "$?"
+done
 rm -rf "$dir"
 
 # Nothing to release: an empty [Unreleased] is refused, and no file changes.
@@ -99,4 +107,5 @@ if [ "$failures" -gt 0 ]; then
     exit 1
 fi
 python3 -B "$here/tests/core.py" || exit 1
+python3 -B "$here/tests/prep.py" || exit 1
 echo "all passed"
