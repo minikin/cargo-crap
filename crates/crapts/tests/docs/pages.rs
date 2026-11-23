@@ -13,6 +13,7 @@ pub fn repo_root() -> PathBuf {
 pub fn read(relative: &str) -> String {
     fs::read_to_string(repo_root().join(relative))
         .unwrap_or_else(|e| panic!("reading {relative}: {e}"))
+        .replace("\r\n", "\n")
 }
 
 /// Markdown text and where it came from: `path` is relative to the
@@ -32,7 +33,7 @@ impl Page {
         Page {
             path: path.to_owned(),
             first_line: 1,
-            text: text.to_owned(),
+            text: text.replace("\r\n", "\n"),
         }
     }
 

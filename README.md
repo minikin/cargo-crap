@@ -195,7 +195,13 @@ explains what each one counts and why there is no single score.
 
 ## crapts for TypeScript
 
-crapts brings the same score to JavaScript and TypeScript. It reads the LCOV or Istanbul coverage that Vitest, Jest, nyc or c8 writes, and shares cargo-crap's report formats and baseline gate. It has its own GitHub Action. It also gates the functions a pull request changes without a saved baseline. Run it without installing:
+crapts brings the same score to JavaScript and TypeScript. It reads the LCOV or Istanbul coverage that Vitest, Jest, nyc or c8 writes, and shares cargo-crap's report formats and baseline gate. It has its own GitHub Action. It also gates the functions a pull request changes without a saved baseline. The npm package needs no install step:
+
+```bash
+npx @minikin/crapts
+```
+
+Without arguments it asks for a coverage file. Point it at one:
 
 ```bash
 npx @minikin/crapts --coverage coverage/lcov.info

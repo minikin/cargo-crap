@@ -125,8 +125,6 @@ struct Raw {
     text: String,
 }
 
-/// Reads the YAML subset a workflow example uses: mappings, `- ` items,
-/// scalars, flow lists kept as text, and `|` or `>` block scalars.
 pub fn parse_yaml(
     body: &str,
     first_line: usize,

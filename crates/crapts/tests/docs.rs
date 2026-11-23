@@ -1673,6 +1673,7 @@ fn the_readme_introduces_crapts_in_one_section() {
             "npm install -g @minikin/crapts --coverage",
             "npm install",
         ),
+        ("```bash\nnpx @minikin/crapts\n```\n", "", "install line"),
     ] {
         let drifted = readme.with(from, to);
         assert_names(&err(index::check_readme_section(&drifted)), &[name]);
@@ -1744,4 +1745,10 @@ fn a_change_to_the_crapts_docs_or_their_sources_runs_the_crapts_docs_check() {
     assert!(!index::runs_root_docs(
         "cargo nextest run -p crapts --test docs"
     ));
+}
+
+#[test]
+fn a_crlf_page_reads_as_lf() {
+    let page = Page::new("docs/crapts/x.md", "# X\r\n\r\n| a |\r\n");
+    assert_eq!(page.text, "# X\n\n| a |\n");
 }

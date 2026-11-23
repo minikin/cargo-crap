@@ -71,9 +71,9 @@ pub fn check_readme_section(readme: &Page) -> Result<(), String> {
         .into_iter()
         .filter(|(_, l)| ["npx ", "npm ", "cargo "].iter().any(|p| l.starts_with(p)))
         .collect();
-    if installs.is_empty() {
+    if !installs.iter().any(|(_, l)| l == "npx @minikin/crapts") {
         return Err(format!(
-            "{}: the crapts section has no install line",
+            "{}: the crapts section has no install line `npx @minikin/crapts`",
             readme.path
         ));
     }
