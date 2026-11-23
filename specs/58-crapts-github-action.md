@@ -514,7 +514,7 @@ After the first stable promotion of `crapts-v1`, run a mixed-language PR in a co
 ## Tasks
 
 - [x] **T1 - Define the composite interface and verify package selection.** Scenarios: S01, S02, S03, S06, S30. Test manifest defaults, argument validation and splitting in `scripts/action/crapts/test.sh`, and exercise registry and tarball installs.
-- [ ] **T2 - Resolve head coverage and Git history.** Needs: T1. Scenarios: S04, S05, S07, S08, S29. Check the prepared coverage file with the CLI and compare the fetch log and merge base against a full clone of the fixture.
+- [x] **T2 - Resolve head coverage and Git history.** Needs: T1. Scenarios: S04, S05, S07, S08, S29. Check the prepared coverage file with the CLI and compare the fetch log and merge base against a full clone of the fixture.
 - [ ] **T3 - Select and produce score baselines.** Needs: T2. Scenarios: S12, S13, S28, S32. Exercise baseline preparation directly. Inspect its files, command arguments, lockfiles and worktree state on success and failure.
 - [ ] **T4 - Render reports and publish gate results.** Needs: T3. Scenarios: S09, S11, S14, S15, S16, S18. Check real CLI results, the readable report, config gates, display limits and the four Action outputs.
 - [ ] **T5 - Deliver PR comments and exercise both Actions.** Needs: T4. Scenarios: S10, S17, S19, S20, S21, S22, S23, S31. Run the candidate fixtures against the local API. Check request order, bodies, IDs, summary size and final status. Exercise the any-valid-marker property in `scripts/action/crapts/test.sh`.

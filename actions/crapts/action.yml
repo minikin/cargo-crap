@@ -79,3 +79,14 @@ runs:
         INPUT_COMMENT: ${{ inputs.comment }}
         INPUT_COMMENT_MARKER: ${{ inputs.comment-marker }}
       run: bash "$GITHUB_ACTION_PATH/../../scripts/action/crapts/install.sh"
+    - name: Prepare head coverage and Git history
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CRAPTS_TEMP: ${{ steps.install.outputs.temp }}
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_INSTALL_COMMAND: ${{ inputs.install-command }}
+        INPUT_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
+        INPUT_COVERAGE_FILE: ${{ inputs.coverage-file }}
+        INPUT_COVERAGE: ${{ inputs.coverage }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/prepare.mjs" "$BASH"
