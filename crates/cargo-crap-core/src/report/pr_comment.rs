@@ -1747,4 +1747,12 @@ mod tests {
             "integral CC:\n{s}"
         );
     }
+
+    #[test]
+    fn empty_entries_renders_no_functions_found() {
+        let mut buf = Vec::new();
+        render(&[], &opts(30.0, Format::PrComment), &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("_No functions found._"), "empty comment:\n{s}");
+    }
 }
