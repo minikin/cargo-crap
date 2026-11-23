@@ -1,4 +1,5 @@
 mod common;
+mod support;
 
 use common::{check, invoke, validated};
 use serde_json::{Value, json};
@@ -1071,4 +1072,612 @@ fn baseline_entries_are_filtered_by_current_scope_and_allow_rules_before_pairing
         0,
     );
     assert_eq!(removed_functions(&doc), ["gone"]);
+}
+
+#[test]
+fn top_and_min_slice_delta_output_while_gates_and_summary_count_every_eligible_entry() {
+    // Given hot=12, edge=2, cold=1 and gone=5 in the baseline, and edge=6 now
+    let d = app(false, false, true);
+    base(
+        d.path(),
+        &[
+            row("src/app.ts", "hot", 1, 12.0),
+            row("src/app.ts", "edge", 6, 2.0),
+            row("src/app.ts", "cold", 10, 1.0),
+            row("src/app.ts", "gone", 14, 5.0),
+        ],
+    );
+    // When --min 13 hides every row
+    let doc = quiet_delta(
+        d.path(),
+        &with(&["--threshold", "10", "--min", "13", "--fail-regression"]),
+        1,
+    );
+    // Then the gate and the counts still see every eligible entry
+    assert_eq!(doc["entries"], json!([]));
+    assert_eq!(doc["selection"], json!({"top": null, "min": 13.0}));
+    assert_eq!(
+        doc["removed"],
+        json!([{"file": "src/app.ts", "function": "gone", "baseline_crap": 5.0}])
+    );
+    assert_eq!(
+        doc["summary"],
+        json!({"total": 3, "crappy": 1, "regressed": 1, "improved": 0, "new": 0, "moved": 0, "unchanged": 2, "removed": 1, "changed_failures": null})
+    );
+    // When --top 1 keeps only the worst row
+    let args = with(&[
+        "--threshold",
+        "10",
+        "--top",
+        "1",
+        "--sort",
+        "file",
+        "--fail-regression",
+    ]);
+    let sliced = quiet_delta(d.path(), &args, 1);
+    assert_eq!(sliced["selection"], json!({"top": 1, "min": null}));
+    assert_eq!(sliced["entries"].as_array().unwrap().len(), 1);
+    assert_row(&sliced, "hot", "unchanged", Some(12.0), 12.0);
+    assert_eq!(sliced["summary"], doc["summary"]);
+    // And text with --min 10 shows that no displayed row changed
+    base(
+        d.path(),
+        &[
+            row("src/app.ts", "hot", 1, 12.0),
+            row("src/app.ts", "edge", 6, 2.0),
+        ],
+    );
+    let (out, err) = text(
+        d.path(),
+        &with(&[
+            "--threshold",
+            "10",
+            "--min",
+            "10",
+            "--fail-regression",
+            "--format",
+            "text",
+        ]),
+        1,
+    );
+    assert_eq!(err, "");
+    let mut lines = out.lines();
+    assert_eq!(
+        lines.next(),
+        Some("No changes among the rows shown."),
+        "{out}"
+    );
+    assert!(
+        lines.next().unwrap().starts_with("\u{2191} 1 regressed"),
+        "{out}"
+    );
+    assert_eq!(lines.next(), None, "{out}");
+}
+
+#[test]
+fn all_rows_clears_limits_so_a_report_becomes_a_reusable_complete_baseline() {
+    // Given a config with top = 1 and min = 10, and hot=12, edge=6, cold=1
+    let d = app(false, false, true);
+    fs::write(d.path().join(".crapts.toml"), "top = 1\nmin = 10\n").unwrap();
+    let save = |name: &str, extra: &[&str]| {
+        let args = [
+            &[
+                "--coverage",
+                "hits.info",
+                "--format",
+                "json",
+                "--output",
+                name,
+            ][..],
+            extra,
+        ]
+        .concat();
+        check(&invoke(d.path(), &args), 0);
+        validated(&fs::read(d.path().join(name)).unwrap())
+    };
+    let step1 = save("step1.json", &[]);
+    let full = save("full.json", &["--all-rows"]);
+    // Then the sliced report is refused and the complete one is admitted
+    assert_eq!(step1["selection"], json!({"top": 1, "min": 10.0}));
+    let (_, err) = refused(
+        d.path(),
+        &["--coverage", "hits.info", "--baseline", "step1.json"],
+    );
+    assert!(err.contains("is not a complete baseline"), "{err}");
+    assert_eq!(full["selection"], Value::Null);
+    let against = |baseline: &str, extra: &[&str]| {
+        let args = [
+            &["--coverage", "hits.info", "--baseline", baseline][..],
+            extra,
+        ]
+        .concat();
+        quiet_delta(d.path(), &args, 0)
+    };
+    for baseline in ["full.json", "delta.json"] {
+        if baseline == "delta.json" {
+            let delta = save("delta.json", &["--baseline", "full.json", "--all-rows"]);
+            assert!(delta["regression_gate"].is_object());
+        }
+        let doc = against(baseline, &[]);
+        assert_eq!(doc["selection"], json!({"top": 1, "min": 10.0}));
+        assert_eq!(doc["entries"].as_array().unwrap().len(), 1);
+        assert_row(&doc, "hot", "unchanged", Some(12.0), 12.0);
+        assert_eq!(doc["summary"]["unchanged"], 3);
+        assert_eq!(doc["removed"], json!([]));
+        let all = against(baseline, &["--all-rows"]);
+        assert_eq!(all["selection"], Value::Null);
+        assert_eq!(all["entries"].as_array().unwrap().len(), 3);
+    }
+    // And without a config a large --top still marks the report as sliced
+    fs::remove_file(d.path().join(".crapts.toml")).unwrap();
+    let top = save("top.json", &["--top", "10"]);
+    assert_eq!(top["selection"], json!({"top": 10, "min": null}));
+    assert_eq!(top["entries"].as_array().unwrap().len(), 3);
+    refused(
+        d.path(),
+        &["--coverage", "hits.info", "--baseline", "top.json"],
+    );
+    save("cleared.json", &["--top", "10", "--all-rows"]);
+    against("cleared.json", &[]);
+}
+
+#[test]
+fn malformed_delta_baselines_exit_2_before_creating_or_modifying_output() {
+    let d = app(false, true, true);
+    base(d.path(), &[row("src/app.ts", "hot", 1, 3.0)]);
+    let out = invoke(d.path(), &with(&["--format", "json"]));
+    check(&out, 0);
+    let delta = validated(&out.stdout);
+    let mut norem = delta.clone();
+    norem.as_object_mut().unwrap().remove("removed");
+    let mut badst = delta;
+    badst["entries"][0]["status"] = json!("unknown");
+    for (name, doc, detail) in [
+        ("norem.json", norem, "removed"),
+        ("badst.json", badst, "status"),
+    ] {
+        fs::write(d.path().join(name), doc.to_string()).unwrap();
+        refused_without_output(
+            d.path(),
+            &["--coverage", "hits.info", "--baseline", name],
+            &[name.to_owned(), detail.to_owned()],
+        );
+    }
+}
+
+const FORMATS_APP: &str = "export function hot(a: boolean, b: boolean) {\n  if (a) return 1\n  if (b) return 2\n  return 0\n}\nexport function stay() {\n  return 1\n}\nexport function fresh() {\n  return 1\n}\n";
+
+/// hot regresses 3 to 12, reloc moves from src/old.ts, stay is unchanged,
+/// fresh is new and gone is removed.
+fn formats(reloc_base: f64) -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    fs::create_dir(d.path().join("src")).unwrap();
+    fs::write(d.path().join("src/app.ts"), FORMATS_APP).unwrap();
+    fs::write(
+        d.path().join("src/new.ts"),
+        "export function reloc() {\n  return 1\n}\n",
+    )
+    .unwrap();
+    let mut app = span(1..=5, false);
+    app.extend(span(6..=8, true));
+    app.extend(span(9..=11, false));
+    fs::write(
+        d.path().join("hits.info"),
+        lcov(&[("src/app.ts", &app), ("src/new.ts", &span(1..=3, false))]),
+    )
+    .unwrap();
+    base(
+        d.path(),
+        &[
+            row("src/app.ts", "hot", 1, 3.0),
+            row("src/old.ts", "reloc", 1, reloc_base),
+            row("src/app.ts", "stay", 6, 1.0),
+            row("src/app.ts", "gone", 20, 4.0),
+        ],
+    );
+    d
+}
+
+fn render(
+    cwd: &Path,
+    format: &str,
+    extra: &[&str],
+) -> String {
+    let args = [COV, &["--threshold", "10", "--format", format], extra].concat();
+    let (out, err) = text(cwd, &args, 0);
+    assert_eq!(err, "", "{format} {extra:?}");
+    out
+}
+
+fn table_row<'a>(
+    out: &'a str,
+    function: &str,
+) -> Option<&'a str> {
+    out.lines().find(|l| {
+        l.split(['\u{2506}', '|', '\u{2502}'])
+            .any(|cell| cell.trim().trim_matches('`') == function)
+    })
+}
+
+#[test]
+fn supported_delta_formats_render_delta_rows_moves_removals_and_unchanged_visibility() {
+    let d = formats(2.0);
+    let cwd = d.path();
+    let out = render(cwd, "text", &[]);
+    assert!(table_row(&out, "hot").unwrap().contains("+9.0"), "{out}");
+    assert!(table_row(&out, "fresh").unwrap().contains("NEW"), "{out}");
+    assert!(
+        table_row(&out, "reloc")
+            .unwrap()
+            .contains("\u{2190} src/old.ts"),
+        "{out}"
+    );
+    assert!(table_row(&out, "stay").is_none(), "{out}");
+    let removed = out.find("Removed since baseline:").unwrap();
+    assert!(out[removed..].contains("gone (was 4.0)"), "{out}");
+    let last = out.lines().last().unwrap();
+    assert!(
+        last.starts_with("\u{2191} 1 regressed") && last.ends_with("1 removed"),
+        "{out}"
+    );
+    assert_eq!(render(cwd, "human", &[]), out);
+    let shown = render(cwd, "text", &["--show-unchanged"]);
+    for function in ["stay", "hot", "fresh", "reloc"] {
+        assert!(table_row(&shown, function).is_some(), "{function}: {shown}");
+    }
+    assert_eq!(render(cwd, "text", &["--summary"]), format!("{last}\n"));
+    markdown_delta(cwd, last);
+    pr_comment_delta(cwd, last);
+    machine_delta(cwd);
+}
+
+fn markdown_delta(
+    cwd: &Path,
+    last: &str,
+) {
+    let md = render(cwd, "markdown", &[]);
+    assert_eq!(md.lines().next(), Some("<!-- crapts-report -->"));
+    assert!(md.contains("1 CRAP regression"), "{md}");
+    for function in ["hot", "fresh", "reloc"] {
+        assert!(table_row(&md, function).is_some(), "{function}: {md}");
+    }
+    assert!(table_row(&md, "stay").is_none(), "{md}");
+    assert!(
+        md.contains("**Removed since baseline:**\n- `gone` (was 4.0)"),
+        "{md}"
+    );
+    assert!(
+        md.trim_end()
+            .lines()
+            .last()
+            .unwrap()
+            .contains("1 regressed"),
+        "{md}"
+    );
+    let md_all = render(cwd, "markdown", &["--show-unchanged"]);
+    assert!(table_row(&md_all, "stay").is_some(), "{md_all}");
+    let md_summary = render(cwd, "markdown", &["--summary"]);
+    let lines = md_summary
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(lines, ["<!-- crapts-report -->", last], "{md_summary}");
+}
+
+fn pr_comment_delta(
+    cwd: &Path,
+    last: &str,
+) {
+    let pr = render(cwd, "pr-comment", &["--comment-marker", "<!-- m -->"]);
+    assert_eq!(pr.lines().next(), Some("<!-- m -->"));
+    assert!(pr.contains("1 CRAP regression"), "{pr}");
+    let moved = pr
+        .find("<details><summary>\u{2194} 1 moved</summary>")
+        .unwrap();
+    let gone = pr
+        .find("<details><summary>\u{2014} 1 removed</summary>")
+        .unwrap();
+    for function in ["hot", "fresh"] {
+        assert!(
+            table_row(&pr[..moved], function).is_some(),
+            "{function}: {pr}"
+        );
+    }
+    assert!(table_row(&pr[moved..gone], "reloc").is_some(), "{pr}");
+    assert!(pr[gone..].contains("`gone` (was 4.0)"), "{pr}");
+    assert!(table_row(&pr, "stay").is_none(), "{pr}");
+    let pr_all = render(cwd, "pr-comment", &["--show-unchanged"]);
+    assert!(table_row(&pr_all, "stay").is_none(), "{pr_all}");
+    let pr_summary = render(
+        cwd,
+        "pr-comment",
+        &["--summary", "--comment-marker", "<!-- m -->"],
+    );
+    let lines = pr_summary
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(lines, ["<!-- m -->", last], "{pr_summary}");
+}
+
+fn machine_delta(cwd: &Path) {
+    let gh = render(
+        cwd,
+        "github",
+        &["--repo-url", "https://x", "--commit-ref", "sha"],
+    );
+    let warnings = gh.lines().collect::<Vec<_>>();
+    assert_eq!(warnings.len(), 1, "{gh}");
+    assert!(
+        warnings[0].starts_with("::warning file=src/app.ts,line=1,")
+            && warnings[0].contains("::hot "),
+        "{gh}"
+    );
+    assert_eq!(
+        render(
+            cwd,
+            "github",
+            &[
+                "--repo-url",
+                "https://x",
+                "--commit-ref",
+                "sha",
+                "--summary"
+            ]
+        ),
+        gh
+    );
+    let badge = render(cwd, "shields", &[]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&badge).unwrap(),
+        json!({"schemaVersion": 1, "label": "CRAP > 10", "message": "1 crappy", "color": "yellow"})
+    );
+    assert_eq!(render(cwd, "shields", &["--summary"]), badge);
+}
+
+#[test]
+fn a_regressed_move_is_annotated_with_its_previous_file() {
+    let d = formats(1.0);
+    let gh = render(d.path(), "github", &[]);
+    let reloc = gh
+        .lines()
+        .find(|l| l.contains("::reloc "))
+        .unwrap_or_else(|| panic!("{gh}"));
+    assert!(reloc.contains("(moved from src/old.ts)"), "{gh}");
+}
+
+#[test]
+fn markdown_formats_link_delta_cells_to_the_commit() {
+    let d = formats(2.0);
+    for format in ["markdown", "pr-comment"] {
+        let out = render(
+            d.path(),
+            format,
+            &["--repo-url", "https://x", "--commit-ref", "sha"],
+        );
+        let target = "](https://x/blob/sha/src/app.ts#L1)";
+        let line = out
+            .lines()
+            .find(|l| l.contains(&format!("[`hot`{target}")))
+            .unwrap_or_else(|| panic!("{out}"));
+        assert_eq!(line.matches(target).count(), 2, "{format}: {line}");
+    }
+}
+
+#[test]
+fn text_delta_hides_unchanged_rows_and_caps_quiet_rows_until_asked() {
+    // Every row unchanged and nothing removed
+    let d = app(false, true, true);
+    base(
+        d.path(),
+        &[
+            row("src/app.ts", "hot", 1, 12.0),
+            row("src/app.ts", "edge", 6, 2.0),
+            row("src/app.ts", "cold", 10, 1.0),
+        ],
+    );
+    let out = render(d.path(), "text", &[]);
+    let mut lines = out.lines();
+    assert_eq!(lines.next(), Some("No changes since baseline."), "{out}");
+    assert!(lines.next().unwrap().contains("3 unchanged"), "{out}");
+    assert_eq!(lines.next(), None, "{out}");
+    let shown = render(d.path(), "text", &["--show-unchanged"]);
+    assert!(table_row(&shown, "edge").is_some(), "{shown}");
+    // Twelve quiet new rows
+    let quiet = tempfile::tempdir().unwrap();
+    fs::create_dir(quiet.path().join("src")).unwrap();
+    let mut source = String::new();
+    for i in 0..12 {
+        writeln!(source, "export function q{i}() {{\n  return 1\n}}").unwrap();
+    }
+    fs::write(quiet.path().join("src/q.ts"), source).unwrap();
+    fs::write(
+        quiet.path().join("hits.info"),
+        lcov(&[("src/q.ts", &span(1..=36, false))]),
+    )
+    .unwrap();
+    base(quiet.path(), &[]);
+    let capped = render(quiet.path(), "text", &[]);
+    let rows = (0..12)
+        .filter(|i| table_row(&capped, &format!("q{i}")).is_some())
+        .count();
+    assert_eq!(rows, 10, "{capped}");
+    assert!(
+        capped.contains("2 more below threshold")
+            && capped
+                .contains("--top, --min 0, --show-unchanged, or --format markdown to see them."),
+        "{capped}"
+    );
+    let all = render(quiet.path(), "text", &["--show-unchanged"]);
+    let rows = (0..12)
+        .filter(|i| table_row(&all, &format!("q{i}")).is_some())
+        .count();
+    assert_eq!(rows, 12, "{all}");
+}
+
+#[test]
+fn a_delta_written_to_a_file_leaves_stdout_empty_and_is_replaced_by_the_next_run() {
+    let d = app(false, true, true);
+    base(d.path(), &[row("src/app.ts", "hot", 1, 3.0)]);
+    let out_path = d.path().join("out.json");
+    let (out, err) = text(
+        d.path(),
+        &with(&[
+            "--format",
+            "json",
+            "--output",
+            "out.json",
+            "--fail-regression",
+        ]),
+        1,
+    );
+    assert_eq!((out.as_str(), err.as_str()), ("", ""));
+    let doc = validated(&fs::read(&out_path).unwrap());
+    assert_row(&doc, "hot", "regressed", Some(3.0), 12.0);
+    base(d.path(), &[row("src/app.ts", "hot", 1, 12.0)]);
+    let (out, err) = text(
+        d.path(),
+        &with(&[
+            "--format",
+            "json",
+            "--output",
+            "out.json",
+            "--fail-regression",
+        ]),
+        0,
+    );
+    assert_eq!((out.as_str(), err.as_str()), ("", ""));
+    let doc = validated(&fs::read(&out_path).unwrap());
+    assert_row(&doc, "hot", "unchanged", Some(12.0), 12.0);
+}
+
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// One single-line function per entry: `decisions` ifs and an optional covering hit.
+    fn project(functions: &[(u8, bool)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let mut source = String::new();
+        let mut lines = Vec::new();
+        for (i, (decisions, covered)) in functions.iter().enumerate() {
+            writeln!(
+                source,
+                "export function f{i}(a: boolean) {{ {}return 0 }}",
+                "if (a) return 1; ".repeat(usize::from(*decisions))
+            )
+            .unwrap();
+            lines.push((u32::try_from(i).unwrap() + 1, u32::from(*covered)));
+        }
+        fs::write(dir.path().join("rows.ts"), source).unwrap();
+        fs::write(dir.path().join("hits.info"), lcov(&[("rows.ts", &lines)])).unwrap();
+        dir
+    }
+
+    fn score(
+        decisions: u8,
+        covered: bool,
+    ) -> f64 {
+        let cc = f64::from(decisions) + 1.0;
+        if covered { cc } else { cc * cc + cc }
+    }
+
+    fn all_unchanged(doc: &Value) -> Result<(), TestCaseError> {
+        prop_assert_eq!(&doc["regression_gate"]["skipped"], &json!(false));
+        prop_assert_eq!(&doc["removed"], &json!([]));
+        for e in doc["entries"].as_array().unwrap() {
+            prop_assert_eq!(&e["status"], &json!("unchanged"), "{:#}", e);
+            prop_assert!(near(&e["delta"], 0.0), "{:#}", e);
+        }
+        Ok(())
+    }
+
+    fn quiet(
+        cwd: &Path,
+        args: &[&str],
+        code: i32,
+    ) -> Result<Output, TestCaseError> {
+        let out = invoke(cwd, args);
+        prop_assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        prop_assert_eq!(out.stderr.as_slice(), b"");
+        Ok(out)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 16, ..support::proptest_config() })]
+        #[test]
+        fn any_unsliced_json_report_round_trips_as_a_baseline_with_zero_changes(
+            functions in prop::collection::vec((0u8..4, any::<bool>()), 0..10),
+        ) {
+            let dir = project(&functions);
+            let cwd = dir.path();
+            let report = quiet(cwd, &["--coverage", "hits.info", "--all-rows", "--format", "json", "--output", "base.json"], 0)?;
+            prop_assert!(report.stdout.is_empty());
+            validated(&fs::read(cwd.join("base.json")).unwrap());
+            for baseline in ["base.json", "delta.json"] {
+                let out = quiet(cwd, &["--coverage", "hits.info", "--baseline", baseline, "--fail-regression", "--format", "json"], 0)?;
+                let doc = validated(&out.stdout);
+                prop_assert_eq!(doc["entries"].as_array().unwrap().len(), functions.len());
+                all_unchanged(&doc)?;
+                fs::write(cwd.join("delta.json"), &out.stdout).unwrap();
+            }
+        }
+
+        #[test]
+        fn regression_gate_verdict_and_full_counts_are_invariant_under_display_slicing_and_format(
+            functions in prop::collection::vec(
+                (0u8..4, any::<bool>(), prop::option::of(prop::sample::select(vec![1.0, 2.0, 3.5, 6.0, 12.0, 20.0]))),
+                0..9,
+            ),
+            removed in 0usize..3,
+            epsilon in prop::sample::select(vec!["0", "0.25", "4"]),
+            top in prop::option::of(1u8..6),
+            min in prop::option::of(0u8..15),
+            by_file in any::<bool>(),
+            summary in any::<bool>(),
+            show_unchanged in any::<bool>(),
+            format in prop::sample::select(vec!["text", "json", "markdown", "pr-comment", "github", "shields"]),
+        ) {
+            let shape = functions.iter().map(|&(d, c, _)| (d, c)).collect::<Vec<_>>();
+            let dir = project(&shape);
+            let cwd = dir.path();
+            let names = (0..functions.len()).map(|i| format!("f{i}")).chain((0..removed).map(|j| format!("g{j}"))).collect::<Vec<_>>();
+            let mut rows = Vec::new();
+            for (i, &(_, _, recorded)) in functions.iter().enumerate() {
+                if let Some(crap) = recorded {
+                    rows.push(row("rows.ts", &names[i], u32::try_from(i).unwrap() + 1, crap));
+                }
+            }
+            for name in &names[functions.len()..] {
+                rows.push(row("rows.ts", name, 90, 5.0));
+            }
+            base(cwd, &rows);
+            let eps: f64 = epsilon.parse().unwrap();
+            let regressed = functions
+                .iter()
+                .filter(|&&(d, c, recorded)| recorded.is_some_and(|b| score(d, c) - b > eps))
+                .count();
+            let code = i32::from(regressed > 0);
+            let gate = ["--coverage", "hits.info", "--baseline", "base.json", "--threshold", "10", "--epsilon", epsilon, "--fail-regression"];
+            let reference = validated(&quiet(cwd, &[&gate[..], &["--format", "json"]].concat(), code)?.stdout);
+            prop_assert_eq!(reference["summary"]["regressed"].as_u64(), Some(regressed as u64));
+            prop_assert_eq!(reference["summary"]["removed"].as_u64(), Some(removed as u64));
+            let top = top.map(|n| n.to_string());
+            let min = min.map(|n| n.to_string());
+            let mut display = vec!["--sort", if by_file { "file" } else { "crap" }];
+            if let Some(n) = &top { display.extend(["--top", n]); }
+            if let Some(n) = &min { display.extend(["--min", n]); }
+            if show_unchanged { display.push("--show-unchanged"); }
+            let sliced = validated(&quiet(cwd, &[&gate[..], &display, &["--format", "json"]].concat(), code)?.stdout);
+            prop_assert_eq!(&sliced["summary"], &reference["summary"]);
+            prop_assert_eq!(&sliced["removed"], &reference["removed"]);
+            if summary { display.push("--summary"); }
+            quiet(cwd, &[&gate[..], &display, &["--format", format]].concat(), code)?;
+        }
+    }
 }
