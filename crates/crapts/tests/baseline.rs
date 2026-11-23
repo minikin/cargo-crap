@@ -1825,6 +1825,25 @@ fn crapts_json_rows_carry_the_row_fingerprint() {
             "fingerprint"
         ]
     );
+    fs::write(d.path().join("base.json"), &bare.stdout).unwrap();
+    let bare_delta = invoke(
+        d.path(),
+        &[
+            "src/f.ts",
+            "--coverage",
+            "cov.info",
+            "--baseline",
+            "base.json",
+            "--format",
+            "json",
+        ],
+    );
+    check(&bare_delta, 0);
+    validated_delta(&bare_delta.stdout);
+    assert_eq!(
+        first_row_members(&bare_delta.stdout)[5..8],
+        ["crap", "fingerprint", "baseline_crap"]
+    );
 }
 
 #[test]

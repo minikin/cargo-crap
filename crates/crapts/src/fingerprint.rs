@@ -221,6 +221,10 @@ fn literal_values(program: &Program<'_>) -> HashMap<u32, String> {
 #[derive(Default)]
 struct Literals {
     values: HashMap<u32, String>,
+    #[cfg(test)]
+    depth: usize,
+    #[cfg(test)]
+    deepest: usize,
 }
 
 impl<'a> Visit<'a> for Literals {
@@ -231,6 +235,11 @@ impl<'a> Visit<'a> for Literals {
         &mut self,
         mut ty: &TSType<'a>,
     ) {
+        #[cfg(test)]
+        {
+            self.depth += 1;
+            self.deepest = self.deepest.max(self.depth);
+        }
         loop {
             match ty {
                 TSType::TSArrayType(array) => ty = &array.element_type,
@@ -240,8 +249,12 @@ impl<'a> Visit<'a> for Literals {
                     self.visit_ts_type(&access.index_type);
                     ty = &access.object_type;
                 },
-                _ => return walk::walk_ts_type(self, ty),
+                _ => break walk::walk_ts_type(self, ty),
             }
+        }
+        #[cfg(test)]
+        {
+            self.depth -= 1;
         }
     }
 
@@ -304,6 +317,28 @@ mod tests {
             panic!("{source} produced {:?}", file.rows)
         };
         row.fingerprint
+    }
+
+    /// The parser itself recurses on a prefix `?`, so only a depth count, not
+    /// a stack overflow, can show that the visitor unwraps it in a loop.
+    #[test]
+    fn wrapper_types_are_unwrapped_without_recursion() {
+        let wrapped = [
+            format!("type A = string{};", "[]".repeat(500)),
+            format!("type N = string{}?;", "!".repeat(500)),
+            format!("type M = {}string;", "? ".repeat(500)),
+            "type S = string;\n".repeat(50),
+        ];
+        for source in wrapped {
+            let allocator = oxc_allocator::Allocator::default();
+            let parsed =
+                oxc_parser::Parser::new(&allocator, &source, oxc_span::SourceType::ts()).parse();
+            assert!(parsed.diagnostics.is_empty(), "{source}");
+            let mut literals = Literals::default();
+            literals.visit_program(&parsed.program);
+            assert_eq!(literals.depth, 0, "{source}");
+            assert!(literals.deepest <= 2, "{}: {source}", literals.deepest);
+        }
     }
 
     #[test]

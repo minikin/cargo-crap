@@ -358,12 +358,13 @@ impl<'r> Nesting<'r> {
                 );
             }
         }
-        let interiors = merged(interiors);
-        regions
-            .iter()
-            .flat_map(|region| region.start.line..=region.end.line)
-            .filter(|&line| !covers(&interiors, line))
-            .collect()
+        let spans = merged(
+            regions
+                .iter()
+                .map(|region| (region.start.line, region.end.line))
+                .collect(),
+        );
+        outside(&spans, &merged(interiors)).into_iter().collect()
     }
 }
 
@@ -386,12 +387,26 @@ fn merged(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     out
 }
 
-fn covers(
+/// The lines of `ranges` outside every range of `holes`, both sorted and
+/// merged. The holes slice only shrinks, so each hole is passed once.
+fn outside(
     ranges: &[(u32, u32)],
-    line: u32,
-) -> bool {
-    let after = ranges.partition_point(|&(start, _)| start <= line);
-    after > 0 && line <= ranges[after - 1].1
+    mut holes: &[(u32, u32)],
+) -> Vec<u32> {
+    let mut lines = Vec::new();
+    for &(start, end) in ranges {
+        holes = &holes[holes.partition_point(|&(_, last)| last < start)..];
+        let mut next = Some(start);
+        for &(first, last) in holes.iter().take_while(|&&(first, _)| first <= end) {
+            let Some(line) = next else { break };
+            lines.extend(line..first);
+            next = last.checked_add(1);
+        }
+        if let Some(line) = next {
+            lines.extend(line..=end);
+        }
+    }
+    lines
 }
 
 fn judged_entry<'r>(
@@ -747,6 +762,37 @@ mod tests {
         let twins = [named("a"), named("a")];
         let nesting = Nesting::new(&twins);
         assert!(!nesting.outranks(0, 1) && !nesting.outranks(1, 0));
+    }
+
+    #[test]
+    fn multiline_callbacks_lose_their_interiors_and_keep_their_boundaries() {
+        let count: u32 = 2_000;
+        let mut source = String::from("function outer() {\n");
+        for _ in 0..count {
+            source.push_str("  f(() => {\n    go()\n  })\n");
+        }
+        source.push_str("}\n");
+        let rows = rows(&source);
+        let expected: BTreeSet<u32> = std::iter::once(1)
+            .chain((0..count).flat_map(|i| [2 + 3 * i, 4 + 3 * i]))
+            .chain(std::iter::once(2 + 3 * count))
+            .collect();
+        assert_eq!(own_lines(&rows, 0), expected);
+        assert_eq!(own_lines(&rows, 1), BTreeSet::from([2, 3, 4]));
+    }
+
+    #[test]
+    fn a_hole_reaching_the_last_line_number_ends_the_sweep() {
+        let top = u32::MAX;
+        assert_eq!(outside(&[(top - 2, top)], &[(top - 1, top)]), [top - 2]);
+        assert_eq!(
+            outside(&[(1, 3), (7, 9)], &[(2, 2), (4, 6), (9, 12)]),
+            [1, 3, 7, 8]
+        );
+        assert_eq!(outside(&[(5, 6)], &[]), [5, 6]);
+        assert_eq!(outside(&[(1, 3)], &[(10, 12)]), [1, 2, 3]);
+        assert_eq!(outside(&[(5, 8)], &[(3, 5)]), [6, 7, 8]);
+        assert_eq!(outside(&[(1, 2), (6, 9)], &[(2, 7)]), [1, 8, 9]);
     }
 
     #[test]
