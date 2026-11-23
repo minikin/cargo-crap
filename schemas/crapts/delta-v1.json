@@ -1,0 +1,299 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/delta-v1.json",
+  "title": "crapts delta report (v1)",
+  "description": "Wire format produced by crapts --format json --baseline FILE.",
+  "type": "object",
+  "required": [
+    "version",
+    "name_scheme",
+    "coverage_kind",
+    "threshold",
+    "selection",
+    "regression_gate",
+    "notices",
+    "summary",
+    "entries",
+    "removed",
+    "diagnostics"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the JSON Schema this document conforms to."
+    },
+    "version": {
+      "$ref": "#/definitions/SemVer",
+      "description": "Tool version that produced this report."
+    },
+    "name_scheme": {
+      "type": "integer",
+      "const": 1,
+      "description": "Function naming scheme version."
+    },
+    "coverage_kind": {
+      "type": "string",
+      "enum": ["statements", "lines"],
+      "description": "Measured coverage unit."
+    },
+    "threshold": {
+      "type": "number",
+      "minimum": 0,
+      "description": "CRAP threshold above which a function counts as crappy."
+    },
+    "selection": {
+      "$ref": "#/definitions/Selection",
+      "description": "Effective display slice, or null when unsliced."
+    },
+    "regression_gate": {
+      "$ref": "#/definitions/RegressionGate",
+      "description": "Regression gate status and compared tool versions."
+    },
+    "notices": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Ordered diagnostics attached to this report."
+    },
+    "summary": {
+      "$ref": "#/definitions/Summary",
+      "description": "Full-population summary counts."
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/DeltaEntry" },
+      "description": "Shown current function rows annotated with baseline deltas."
+    },
+    "removed": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/RemovedEntry" },
+      "description": "Eligible baseline functions absent from the current run."
+    },
+    "changed": {
+      "type": "object",
+      "description": "Optional changed-function section payload."
+    },
+    "diagnostics": {
+      "$ref": "#/definitions/ScopeDiagnostics",
+      "description": "Source and coverage scope overlap."
+    }
+  },
+  "definitions": {
+    "SemVer": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$"
+    },
+    "Selection": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["top", "min"],
+          "additionalProperties": false,
+          "properties": {
+            "top": {
+              "type": ["integer", "null"],
+              "minimum": 1
+            },
+            "min": {
+              "type": ["number", "null"]
+            }
+          },
+          "anyOf": [
+            { "properties": { "top": { "type": "integer", "minimum": 1 } } },
+            { "properties": { "min": { "type": "number" } } }
+          ]
+        }
+      ]
+    },
+    "RegressionGate": {
+      "type": "object",
+      "required": ["skipped", "baseline_version", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "skipped": { "type": "boolean" },
+        "baseline_version": { "$ref": "#/definitions/SemVer" },
+        "version": { "$ref": "#/definitions/SemVer" }
+      }
+    },
+    "Summary": {
+      "type": "object",
+      "required": [
+        "total",
+        "crappy",
+        "regressed",
+        "improved",
+        "new",
+        "moved",
+        "unchanged",
+        "removed",
+        "changed_failures"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "crappy": { "type": "integer", "minimum": 0 },
+        "regressed": { "type": "integer", "minimum": 0 },
+        "improved": { "type": "integer", "minimum": 0 },
+        "new": { "type": "integer", "minimum": 0 },
+        "moved": { "type": "integer", "minimum": 0 },
+        "unchanged": { "type": "integer", "minimum": 0 },
+        "removed": { "type": "integer", "minimum": 0 },
+        "changed_failures": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "DeltaEntry": {
+      "type": "object",
+      "required": [
+        "file",
+        "function",
+        "line",
+        "cyclomatic",
+        "coverage",
+        "crap",
+        "baseline_crap",
+        "delta",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "^([^./\\\\]|\\.[^/\\\\])[^\\\\]*$",
+          "not": { "pattern": "^[A-Za-z]:/" }
+        },
+        "function": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "cyclomatic": { "type": "integer", "minimum": 1 },
+        "coverage": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100
+        },
+        "crap": { "type": "number", "minimum": 1 },
+        "uncovered": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/LineRange" }
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "baseline_crap": {
+          "type": ["number", "null"],
+          "minimum": 1
+        },
+        "delta": { "type": ["number", "null"] },
+        "status": {
+          "type": "string",
+          "enum": ["regressed", "improved", "new", "unchanged", "moved"]
+        },
+        "previous_file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reasons": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Reason" }
+        }
+      },
+      "if": {
+        "properties": { "status": { "const": "new" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "baseline_crap": { "type": "null" },
+          "delta": { "type": "null" }
+        },
+        "not": { "required": ["previous_file"] }
+      },
+      "else": {
+        "properties": {
+          "baseline_crap": { "type": "number", "minimum": 1 },
+          "delta": { "type": "number" }
+        }
+      }
+    },
+    "Reason": {
+      "type": "object",
+      "required": ["signal", "value", "gating", "action", "spans"],
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "enum": ["nesting", "lines", "bumps", "bool_ops", "stubs", "panics", "crap"]
+        },
+        "value": { "type": "number", "minimum": 0 },
+        "baseline": { "type": "number", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 0 },
+        "gating": { "type": "boolean" },
+        "action": {
+          "enum": [
+            "flatten-nesting",
+            "split-function",
+            "extract-condition",
+            "remove-stub",
+            "handle-error",
+            "add-tests"
+          ]
+        },
+        "spans": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/LineRange" }
+        }
+      }
+    },
+    "RemovedEntry": {
+      "type": "object",
+      "required": ["file", "function", "baseline_crap"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "function": { "type": "string", "minLength": 1 },
+        "baseline_crap": { "type": "number", "minimum": 1 }
+      }
+    },
+    "LineRange": {
+      "type": "object",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": { "type": "integer", "minimum": 1 },
+        "end": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "ScopeDiagnostics": {
+      "type": "object",
+      "required": [
+        "analyzed_files",
+        "coverage_files",
+        "matched_files",
+        "source_only",
+        "coverage_only"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "analyzed_files": { "type": "integer", "minimum": 0 },
+        "coverage_files": { "type": "integer", "minimum": 0 },
+        "matched_files": { "type": "integer", "minimum": 0 },
+        "source_only": { "$ref": "#/definitions/StrayFiles" },
+        "coverage_only": { "$ref": "#/definitions/StrayFiles" }
+      }
+    },
+    "StrayFiles": {
+      "type": "object",
+      "required": ["count", "examples"],
+      "additionalProperties": false,
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "examples": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

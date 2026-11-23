@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING (library API):** `run::run` takes a sections slice between the
+  prepared baseline and extras. Cargo-crap callers pass `&[]`. Add
+  `coverage_kind: None` and `notices: &[]` to existing `Analysis` literals
+  and `fail_sections: false` to `Settings`. `GateOutcome.section_failures`
+  reports the supplied sections' failure count, including when gating is off.
+  The cargo-crap baseline loaders now reject a top-level `name_scheme`. To
+  load a crapts report with its measured coverage unit, use
+  `delta::load_crapts_baseline` followed by `BaselineFilter::prepare_crapts`.
+
 - **BREAKING (library API):** A `report::Tool` literal must supply its
   report and gate policy. Add `policy: cargo_crap::tool::CARGO_CRAP_POLICY`
   to retain cargo-crap's behavior (spec 47).

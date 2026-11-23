@@ -9581,6 +9581,7 @@ fn pipeline_settings<'a>(
         links: None,
         cwd: Path::new(""),
         workspace_root: None,
+        fail_sections: false,
     }
 }
 
@@ -9596,6 +9597,8 @@ fn pipeline_report(
         entries,
         diagnostics: None,
         scope,
+        coverage_kind: None,
+        notices: &[],
     };
     let mut out = Vec::new();
     let verdict = run::run(
@@ -9603,6 +9606,7 @@ fn pipeline_report(
         settings,
         analysis,
         baseline,
+        &[],
         &RenderExtras::default(),
         &mut out,
     )
@@ -9706,10 +9710,21 @@ fn the_library_renders_the_callers_duplicate_group_and_weight() {
         entries: vec![],
         diagnostics: None,
         scope: &Roots(&["src"]),
+        coverage_kind: None,
+        notices: &[],
     };
 
     let mut out = Vec::new();
-    run::run(&SECOND_TOOL, &settings, analysis, None, &extras, &mut out).unwrap();
+    run::run(
+        &SECOND_TOOL,
+        &settings,
+        analysis,
+        None,
+        &[],
+        &extras,
+        &mut out,
+    )
+    .unwrap();
 
     let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(doc["try_weight"], 0.5);
@@ -9771,12 +9786,15 @@ fn write_tripped_report(out: &mut CheckedWriter) -> anyhow::Result<cargo_crap::g
         entries: vec![scored_row("src/a.rs", "hot", 40.0)],
         diagnostics: None,
         scope: &Roots(&["src"]),
+        coverage_kind: None,
+        notices: &[],
     };
     run::run(
         &SECOND_TOOL,
         &settings,
         analysis,
         None,
+        &[],
         &RenderExtras::default(),
         out,
     )
@@ -10289,4 +10307,82 @@ fn cargo_craps_json_delta_omits_a_callers_fingerprint() {
     let mut out = Vec::new();
     cargo_crap::report::render_delta(&delta, &json_options(), &mut out).unwrap();
     assert_untagged_json(&out, "schemas/delta-v2.json");
+}
+
+#[test]
+fn cargo_crap_keeps_its_recorded_reports() {
+    use cargo_crap::{filter::AllowSet, run::BaselineFilter, signals::SignalSettings};
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = pipeline_settings(&allow, &signals);
+    let scope = Roots(&["src"]);
+    let current = fingerprinted_row();
+    let baseline = BaselineFilter::new(&scope, &allow).prepare(scored_baseline(vec![
+        cargo_crap::merge::CrapEntry {
+            crap: 2.0,
+            fingerprint: None,
+            ..current.clone()
+        },
+    ]));
+    for tool in [&cargo_crap::tool::CARGO_CRAP, &SECOND_TOOL] {
+        let (absolute, _) = pipeline_report(tool, &settings, &scope, vec![current.clone()], None);
+        let (delta, _) = pipeline_report(
+            tool,
+            &settings,
+            &scope,
+            vec![current.clone()],
+            Some(&baseline),
+        );
+        assert_untagged_json(&absolute, "schemas/report-v1.json");
+        assert_untagged_json(&delta, "schemas/delta-v2.json");
+        for (out, schema) in [
+            (&absolute, tool.schemas.report),
+            (&delta, tool.schemas.delta),
+        ] {
+            let doc: serde_json::Value = serde_json::from_slice(out).unwrap();
+            assert_eq!(doc["version"], tool.version);
+            assert_eq!(doc["$schema"], schema);
+        }
+    }
+    let sarif_settings = cargo_crap::run::Settings {
+        format: cargo_crap::report::Format::Sarif,
+        ..settings
+    };
+    let (sarif_bytes, _) = pipeline_report(
+        &SECOND_TOOL,
+        &sarif_settings,
+        &scope,
+        vec![current.clone()],
+        None,
+    );
+    let sarif: serde_json::Value = serde_json::from_slice(&sarif_bytes).unwrap();
+    let driver = &sarif["runs"][0]["tool"]["driver"];
+    assert_eq!(driver["version"], SECOND_TOOL.version);
+    assert_eq!(driver["informationUri"], SECOND_TOOL.info_uri);
+    assert_eq!(driver["rules"][0]["helpUri"], SECOND_TOOL.info_uri);
+    for format in [
+        cargo_crap::report::Format::Markdown,
+        cargo_crap::report::Format::PrComment,
+    ] {
+        let fmt_settings = cargo_crap::run::Settings { format, ..settings };
+        for base in [None, Some(&baseline)] {
+            let (out, _) = pipeline_report(
+                &SECOND_TOOL,
+                &fmt_settings,
+                &scope,
+                vec![current.clone()],
+                base,
+            );
+            let text = String::from_utf8(out).unwrap();
+            assert!(text.starts_with(SECOND_TOOL.comment_marker), "{text}");
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let malformed = dir.path().join("base.json");
+    std::fs::write(&malformed, "{").unwrap();
+    let error = cargo_crap::delta::load_baseline(&malformed, &SECOND_TOOL).unwrap_err();
+    assert!(
+        format!("{error:#}").contains(SECOND_TOOL.baseline_hint),
+        "{error:#}"
+    );
 }

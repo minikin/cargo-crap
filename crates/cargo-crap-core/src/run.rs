@@ -1,13 +1,20 @@
 //! Prepare a baseline, select and render score rows, then return the verdict after flushing.
 
-use crate::delta::{Baseline, DeltaCounts, attach_reasons, compute_delta, gating_signal_count};
+use crate::coverage::CoverageKind;
+use crate::delta::{
+    Baseline, CraptsBaseline, DeltaCounts, DeltaReport, attach_reasons, compare,
+    gating_signal_count,
+};
 use crate::duplicates::{
     compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, verdict::Assessment,
 };
 use crate::entry::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::filter::{self, AllowSet};
-use crate::gate::{GateOutcome, threshold_count};
-use crate::report::{self, Format, RenderOptions, SourceLinks, Tool, TriagedBy};
+use crate::gate::{GateInput, GateOutcome, threshold_count};
+use crate::policy::EnvelopeKind;
+use crate::report::{
+    self, Format, Placement, RenderOptions, Section, SourceLinks, Tool, TriagedBy,
+};
 use crate::score::DEFAULT_TRY_WEIGHT;
 use crate::signals::SignalSettings;
 use anyhow::{Context, Result};
@@ -48,24 +55,81 @@ impl<'a> BaselineFilter<'a> {
         &self,
         mut baseline: Baseline,
     ) -> PreparedBaseline {
-        baseline.entries.retain(|row| self.scope.keeps(&row.file));
-        filter::allow(&mut baseline.entries, self.allow);
+        self.filter_entries(&mut baseline.entries);
         if let Some(groups) = &mut baseline.duplicate_groups {
             for group in groups {
                 group.retain(|member| self.scope.keeps(&member.file));
             }
         }
-        PreparedBaseline(baseline)
+        PreparedBaseline {
+            baseline,
+            crapts: None,
+        }
+    }
+
+    #[must_use]
+    pub fn prepare_crapts(
+        &self,
+        mut baseline: CraptsBaseline,
+    ) -> PreparedBaseline {
+        self.filter_entries(&mut baseline.entries);
+        PreparedBaseline {
+            baseline: Baseline {
+                entries: baseline.entries,
+                try_weight: DEFAULT_TRY_WEIGHT,
+                duplicate_groups: None,
+            },
+            crapts: Some(CraptsPreparedMeta {
+                baseline_version: baseline.baseline_version,
+                regression_gate_skipped: baseline.regression_gate_skipped,
+                notice: baseline.notice,
+            }),
+        }
+    }
+
+    fn filter_entries(
+        &self,
+        entries: &mut Vec<CrapEntry>,
+    ) {
+        entries.retain(|row| self.scope.keeps(&row.file));
+        filter::allow(entries, self.allow);
     }
 }
 
 #[derive(Debug)]
-pub struct PreparedBaseline(Baseline);
+struct CraptsPreparedMeta {
+    baseline_version: String,
+    regression_gate_skipped: bool,
+    notice: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct PreparedBaseline {
+    baseline: Baseline,
+    crapts: Option<CraptsPreparedMeta>,
+}
 
 impl PreparedBaseline {
     #[must_use]
     pub fn as_baseline(&self) -> &Baseline {
-        &self.0
+        &self.baseline
+    }
+
+    #[must_use]
+    pub fn notice(&self) -> Option<&str> {
+        self.crapts.as_ref().and_then(|meta| meta.notice.as_deref())
+    }
+
+    pub(crate) fn baseline_version(&self) -> Option<&str> {
+        self.crapts
+            .as_ref()
+            .map(|meta| meta.baseline_version.as_str())
+    }
+
+    pub(crate) fn regression_gate_skipped(&self) -> bool {
+        self.crapts
+            .as_ref()
+            .is_some_and(|meta| meta.regression_gate_skipped)
     }
 }
 
@@ -76,6 +140,10 @@ pub struct Analysis<'a> {
     pub diagnostics: Option<ScopeDiagnostics>,
     /// The predicate used to prepare this run's baseline.
     pub scope: &'a dyn Scope,
+    /// The measured coverage unit, which the crapts envelope requires.
+    pub coverage_kind: Option<CoverageKind>,
+    /// Emitted before any baseline notice, in caller order.
+    pub notices: &'a [String],
 }
 
 #[expect(
@@ -107,6 +175,7 @@ pub struct Settings<'a> {
     /// Working directory for relative duplicate paths.
     pub cwd: &'a Path,
     pub workspace_root: Option<&'a Path>,
+    pub fail_sections: bool,
 }
 
 pub struct RenderExtras<'a> {
@@ -158,13 +227,20 @@ pub fn run(
     settings: &Settings<'_>,
     analysis: Analysis<'_>,
     baseline: Option<&PreparedBaseline>,
+    sections: &[&dyn Section],
     extras: &RenderExtras<'_>,
     out: &mut dyn Write,
 ) -> Result<GateOutcome> {
     let mut eligible = analysis.entries;
     filter::allow(&mut eligible, settings.allow);
     keep_signals(&mut eligible, settings.signals.enabled);
-    let slice = filter::slice(&mut eligible, settings.min, settings.top, settings.sort);
+    let slice = filter::slice_with_ties(
+        &mut eligible,
+        settings.min,
+        settings.top,
+        settings.sort,
+        tool.policy.tie_order,
+    );
     let shown = slice.as_deref().unwrap_or(&eligible);
     let options = RenderOptions {
         tool,
@@ -188,60 +264,367 @@ pub fn run(
         try_weight: extras.try_weight,
     };
     let summary = tool.policy.use_summary(settings.summary, settings.format);
-    let (regressed, gating_signals) = if let Some(baseline) = baseline {
-        let before = &baseline.as_baseline().entries;
-        let mut delta = compute_delta(&eligible, before, settings.epsilon);
-        if settings.signals.enabled {
-            attach_reasons(
-                &mut delta,
-                settings.signals,
-                before.iter().any(|row| row.signals.is_some()),
-            );
-        } else {
-            for row in &mut delta.entries {
-                row.baseline_signals = None;
-            }
-        }
-        // Both the summary and the gates describe the full comparison, including hidden rows.
-        let counts = delta.counts();
-        let gating_signals = gating_signal_count(&delta);
-        delta.restrict_to(shown);
-        delta.sort(settings.sort);
-        if summary {
-            render_delta_summary_lines(&counts, gating_signals, out)?;
-        } else {
-            report::render_delta(
-                &delta,
-                &RenderOptions {
-                    delta_counts: Some(counts),
-                    ..options
-                },
-                out,
-            )?;
-        }
-        (counts.regressed, gating_signals)
+    let crappy = threshold_count(
+        tool.policy.fail_above_counts,
+        &eligible,
+        shown,
+        settings.threshold,
+    );
+    let (section_counts, section_failures) = collect_section_failures(sections)?;
+    let changed = if settings.format == Format::Json {
+        validate_json_sections(tool.policy.envelope, sections, &section_counts)?
     } else {
-        if summary {
-            report::render_summary(shown, settings.threshold, settings.width, out)?;
-        } else {
-            report::render(shown, &options, out)?;
-        }
-        (0, 0)
+        None
     };
+    let staged = stage_sections(settings.format, sections)?;
+    let notices = collect_notices(analysis.notices, baseline);
+    let include_marker = write_prefix(tool, settings.format, &notices, &staged, out)?;
+    let body = RunBody {
+        tool,
+        settings,
+        eligible: &eligible,
+        shown,
+        crappy,
+        coverage_kind: analysis.coverage_kind,
+        diagnostics: analysis.diagnostics.as_ref(),
+        notices: &notices,
+        baseline,
+        changed: changed.as_ref(),
+        options: &options,
+    };
+    let (regressed, gating_signals) = write_report_body(&body, summary, include_marker, out)?;
     report::render_duplicates(&options, out).context("writing duplicate report")?;
+    write_suffix(settings.format, &staged, out)?;
     out.flush().context("flushing output")?;
-    Ok(GateOutcome::from_counts(
-        threshold_count(
-            tool.policy.fail_above_counts,
-            &eligible,
-            shown,
-            settings.threshold,
-        ),
+    let regression_skipped = baseline.is_some_and(PreparedBaseline::regression_gate_skipped);
+    Ok(GateOutcome::evaluate(GateInput {
+        crappy,
         regressed,
         gating_signals,
-        settings.fail_above,
-        settings.fail_regression,
-    ))
+        section_failures,
+        fail_above: settings.fail_above,
+        fail_regression: settings.fail_regression && !regression_skipped,
+        fail_sections: settings.fail_sections,
+    }))
+}
+
+fn collect_section_failures(sections: &[&dyn Section]) -> Result<(Vec<Option<usize>>, usize)> {
+    let mut per_section = Vec::with_capacity(sections.len());
+    let mut total: usize = 0;
+    for section in sections {
+        let count = section.failures();
+        if let Some(n) = count {
+            total = total
+                .checked_add(n)
+                .ok_or_else(|| anyhow::anyhow!("section failure count overflowed usize"))?;
+        }
+        per_section.push(count);
+    }
+    Ok((per_section, total))
+}
+
+fn validate_json_sections(
+    envelope: EnvelopeKind,
+    sections: &[&dyn Section],
+    failures: &[Option<usize>],
+) -> Result<Option<report::CraptsChangedSection>> {
+    match envelope {
+        EnvelopeKind::CraptsV1 => report::extract_crapts_changed(sections, failures),
+        EnvelopeKind::CargoCrapV1 => {
+            report::reject_cargo_crap_json_sections(sections)?;
+            Ok(None)
+        },
+    }
+}
+
+struct RunBody<'a> {
+    tool: &'a Tool,
+    settings: &'a Settings<'a>,
+    eligible: &'a [CrapEntry],
+    shown: &'a [CrapEntry],
+    crappy: usize,
+    coverage_kind: Option<CoverageKind>,
+    diagnostics: Option<&'a ScopeDiagnostics>,
+    notices: &'a [&'a str],
+    baseline: Option<&'a PreparedBaseline>,
+    changed: Option<&'a report::CraptsChangedSection>,
+    options: &'a RenderOptions<'a>,
+}
+
+fn write_report_body(
+    body: &RunBody<'_>,
+    summary: bool,
+    include_marker: bool,
+    out: &mut dyn Write,
+) -> Result<(usize, usize)> {
+    if summary {
+        return write_summary(
+            body.settings,
+            body.eligible,
+            body.shown,
+            body.baseline,
+            body.tool,
+            out,
+        );
+    }
+    if body.settings.format == Format::Json && body.tool.policy.envelope == EnvelopeKind::CraptsV1 {
+        return write_crapts_json(body, out);
+    }
+    if let Some(baseline) = body.baseline {
+        write_delta(
+            body.settings,
+            body.eligible,
+            body.shown,
+            baseline,
+            body.options,
+            include_marker,
+            out,
+        )
+    } else {
+        report::render_inner(body.shown, body.options, include_marker, out)?;
+        Ok((0, 0))
+    }
+}
+
+struct StagedSections {
+    lead: Vec<Vec<u8>>,
+    trail: Vec<Vec<u8>>,
+}
+
+impl StagedSections {
+    fn is_empty(&self) -> bool {
+        self.lead.is_empty() && self.trail.is_empty()
+    }
+}
+
+fn stage_sections(
+    format: Format,
+    sections: &[&dyn Section],
+) -> Result<StagedSections> {
+    let mut staged = StagedSections {
+        lead: Vec::new(),
+        trail: Vec::new(),
+    };
+    if !matches!(
+        format,
+        Format::Human | Format::Markdown | Format::PrComment | Format::GitHub
+    ) {
+        return Ok(staged);
+    }
+    for section in sections {
+        let placement = section.placement();
+        let mut buf = Vec::new();
+        section.write(format, &mut buf)?;
+        if buf.last().is_some_and(|&b| b != b'\n') {
+            buf.push(b'\n');
+        }
+        match placement {
+            Placement::Lead => staged.lead.push(buf),
+            Placement::Trail => staged.trail.push(buf),
+        }
+    }
+    Ok(staged)
+}
+
+fn write_prefix(
+    tool: &Tool,
+    format: Format,
+    notices: &[&str],
+    staged: &StagedSections,
+    out: &mut dyn Write,
+) -> Result<bool> {
+    match format {
+        Format::Human | Format::Markdown | Format::PrComment => {
+            write_text_prefix(tool, format, notices, staged, out)
+        },
+        Format::GitHub => {
+            write_staged(&staged.lead, "", "", out)?;
+            Ok(true)
+        },
+        Format::Json | Format::Sarif | Format::Shields => Ok(true),
+    }
+}
+
+fn write_text_prefix(
+    tool: &Tool,
+    format: Format,
+    notices: &[&str],
+    staged: &StagedSections,
+    out: &mut dyn Write,
+) -> Result<bool> {
+    if notices.is_empty() && staged.is_empty() {
+        return Ok(true);
+    }
+    let markdown = matches!(format, Format::Markdown | Format::PrComment);
+    if markdown {
+        report::write_pr_comment_marker(tool, out)?;
+    }
+    if !notices.is_empty() {
+        for notice in notices {
+            if markdown {
+                writeln!(out, "> **Note:** {notice}")?;
+            } else {
+                writeln!(out, "{notice}")?;
+            }
+        }
+        writeln!(out)?;
+    }
+    write_staged(&staged.lead, "", "\n", out)?;
+    Ok(!markdown)
+}
+
+fn write_suffix(
+    format: Format,
+    staged: &StagedSections,
+    out: &mut dyn Write,
+) -> Result<()> {
+    match format {
+        Format::Human | Format::Markdown | Format::PrComment => {
+            write_staged(&staged.trail, "\n", "", out)
+        },
+        Format::GitHub => write_staged(&staged.trail, "", "", out),
+        Format::Json | Format::Sarif | Format::Shields => Ok(()),
+    }
+}
+
+fn write_staged(
+    blocks: &[Vec<u8>],
+    before: &str,
+    after: &str,
+    out: &mut dyn Write,
+) -> Result<()> {
+    for block in blocks {
+        out.write_all(before.as_bytes())?;
+        out.write_all(block)?;
+        out.write_all(after.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn collect_notices<'a>(
+    caller: &'a [String],
+    baseline: Option<&'a PreparedBaseline>,
+) -> Vec<&'a str> {
+    let mut all: Vec<&str> = caller.iter().map(String::as_str).collect();
+    if let Some(notice) = baseline.and_then(PreparedBaseline::notice) {
+        all.push(notice);
+    }
+    all
+}
+
+fn compute_prepared_delta(
+    settings: &Settings<'_>,
+    eligible: &[CrapEntry],
+    shown: &[CrapEntry],
+    baseline: &PreparedBaseline,
+    tool: &Tool,
+) -> (DeltaReport, DeltaCounts, usize) {
+    let before = &baseline.as_baseline().entries;
+    let mut delta = compare(eligible, before, settings.epsilon, tool.policy.pairing);
+    if settings.signals.enabled {
+        attach_reasons(
+            &mut delta,
+            settings.signals,
+            before.iter().any(|row| row.signals.is_some()),
+        );
+    } else {
+        for row in &mut delta.entries {
+            row.baseline_signals = None;
+        }
+    }
+    let counts = delta.counts();
+    let gating_signals = gating_signal_count(&delta);
+    delta.restrict_to(shown);
+    delta.sort_with_ties(settings.sort, tool.policy.tie_order);
+    (delta, counts, gating_signals)
+}
+
+fn write_crapts_json(
+    body: &RunBody<'_>,
+    out: &mut dyn Write,
+) -> Result<(usize, usize)> {
+    let coverage_kind = body
+        .coverage_kind
+        .ok_or_else(|| anyhow::anyhow!("crapts JSON requires coverage_kind"))?;
+    let diagnostics = body
+        .diagnostics
+        .ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
+    let selection = report::CraptsSelection::from_limits(body.settings.top, body.settings.min)?;
+    let ctx = report::CraptsJsonContext {
+        tool: body.tool,
+        coverage_kind,
+        threshold: body.settings.threshold,
+        selection,
+        notices: body.notices,
+        total: body.eligible.len(),
+        crappy: body.crappy,
+        changed: body.changed,
+        diagnostics,
+    };
+    let Some(baseline) = body.baseline else {
+        report::render_crapts_json(body.shown, &ctx, out)?;
+        return Ok((0, 0));
+    };
+    let baseline_version = baseline.baseline_version().ok_or_else(|| {
+        anyhow::anyhow!("crapts delta JSON requires a baseline prepared with prepare_crapts")
+    })?;
+    let (delta, counts, gating_signals) = compute_prepared_delta(
+        body.settings,
+        body.eligible,
+        body.shown,
+        baseline,
+        body.tool,
+    );
+    report::render_crapts_delta_json(
+        &delta,
+        &counts,
+        baseline_version,
+        baseline.regression_gate_skipped(),
+        &ctx,
+        out,
+    )?;
+    Ok((counts.regressed, gating_signals))
+}
+
+fn write_summary(
+    settings: &Settings<'_>,
+    eligible: &[CrapEntry],
+    shown: &[CrapEntry],
+    baseline: Option<&PreparedBaseline>,
+    tool: &Tool,
+    out: &mut dyn Write,
+) -> Result<(usize, usize)> {
+    let Some(baseline) = baseline else {
+        report::render_summary(shown, settings.threshold, settings.width, out)?;
+        return Ok((0, 0));
+    };
+    let (_, counts, gating_signals) =
+        compute_prepared_delta(settings, eligible, shown, baseline, tool);
+    render_delta_summary_lines(&counts, gating_signals, out)?;
+    Ok((counts.regressed, gating_signals))
+}
+
+fn write_delta(
+    settings: &Settings<'_>,
+    eligible: &[CrapEntry],
+    shown: &[CrapEntry],
+    baseline: &PreparedBaseline,
+    options: &RenderOptions<'_>,
+    include_marker: bool,
+    out: &mut dyn Write,
+) -> Result<(usize, usize)> {
+    let (delta, counts, gating_signals) =
+        compute_prepared_delta(settings, eligible, shown, baseline, options.tool);
+    report::render_delta_inner(
+        &delta,
+        &RenderOptions {
+            delta_counts: Some(counts),
+            ..*options
+        },
+        include_marker,
+        out,
+    )?;
+    Ok((counts.regressed, gating_signals))
 }
 
 fn render_delta_summary_lines(
@@ -340,6 +723,7 @@ mod tests {
             links: None,
             cwd: Path::new(""),
             workspace_root: None,
+            fail_sections: false,
         };
         let mut row = sample().remove(0);
         row.signals = Some(Signals {
@@ -356,18 +740,714 @@ mod tests {
             entries: vec![row],
             diagnostics: None,
             scope: &AllFiles,
+            coverage_kind: None,
+            notices: &[],
         };
         let outcome = run(
             &SECOND_TOOL,
             &settings,
             analysis,
             Some(&baseline),
+            &[],
             &RenderExtras::default(),
             &mut Vec::new(),
         )
         .unwrap();
         assert_eq!(outcome.regressed, 0);
         assert_eq!(outcome.exit_code(), std::process::ExitCode::SUCCESS);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_display_slice_leaves_the_full_name_comparison_whole(
+            head in proptest::collection::btree_map((0..3usize, 0..4usize), 1u32..40, 0..10),
+            base in proptest::collection::btree_map((0..3usize, 0..4usize), 1u32..40, 0..10),
+            top in proptest::option::of(1usize..6),
+            min in proptest::option::of(1u32..40),
+        ) {
+            use crate::policy::PairPolicy;
+            use crate::report::test_support::SECOND_TOOL;
+            use proptest::prop_assert_eq;
+            let tool = Tool {
+                policy: crate::policy::Policy {
+                    pairing: PairPolicy::FileFunction,
+                    ..SECOND_TOOL.policy
+                },
+                ..SECOND_TOOL
+            };
+            let rows = |picks: &std::collections::BTreeMap<(usize, usize), u32>| {
+                let mut rows: Vec<CrapEntry> = picks
+                    .iter()
+                    .map(|(&(f, n), &crap)| CrapEntry {
+                        file: ["a.ts", "src/a.ts", "b.ts"][f].into(),
+                        function: ["f", "h()", "h()#2", "h()#3"][n].into(),
+                        line: 1,
+                        cyclomatic: 1.0,
+                        crap: f64::from(crap),
+                        ..CrapEntry::default()
+                    })
+                    .collect();
+                crate::entry::sort_entries(&mut rows, SortOrder::Crap);
+                rows
+            };
+            let allow = AllowSet::compile(&[]).unwrap();
+            let signals = SignalSettings::default();
+            let report = |top: Option<usize>, min: Option<u32>, format: Format| {
+                let settings = Settings {
+                    allow: &allow,
+                    min: min.map(f64::from),
+                    top,
+                    sort: SortOrder::Crap,
+                    threshold: 30.0,
+                    epsilon: crate::delta::DEFAULT_EPSILON,
+                    signals: &signals,
+                    fail_above: false,
+                    fail_regression: true,
+                    format,
+                    summary: format == Format::Human,
+                    show_unchanged: false,
+                    uncovered_hints: false,
+                    width: None,
+                    links: None,
+                    cwd: Path::new(""),
+                    workspace_root: None,
+                    fail_sections: false,
+                };
+                let baseline = BaselineFilter::new(&AllFiles, &allow).prepare(Baseline {
+                    entries: rows(&base),
+                    try_weight: DEFAULT_TRY_WEIGHT,
+                    duplicate_groups: None,
+                });
+                let analysis = Analysis {
+                    entries: rows(&head),
+                    diagnostics: None,
+                    scope: &AllFiles,
+                    coverage_kind: None,
+                    notices: &[],
+                };
+                let mut out = Vec::new();
+                let outcome = run(&tool, &settings, analysis, Some(&baseline), &[], &RenderExtras::default(), &mut out).unwrap();
+                (out, outcome)
+            };
+            let json = |(out, outcome): (Vec<u8>, GateOutcome)| {
+                (serde_json::from_slice::<serde_json::Value>(&out).unwrap(), outcome)
+            };
+            let (full, whole) = json(report(None, None, Format::Json));
+            let (sliced, part) = json(report(top, min, Format::Json));
+            prop_assert_eq!(report(None, None, Format::Human).0, report(top, min, Format::Human).0);
+            prop_assert_eq!(&full["removed"], &sliced["removed"]);
+            prop_assert_eq!(whole.regressed, part.regressed);
+            let all = full["entries"].as_array().unwrap();
+            for row in sliced["entries"].as_array().unwrap() {
+                proptest::prop_assert!(all.contains(row), "{row} not in {all:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_outcome_sums_the_failures_each_section_reports() {
+        use crate::report::test_support::{FixedSection, SECOND_TOOL};
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let settings = Settings {
+            allow: &allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: crate::delta::DEFAULT_EPSILON,
+            signals: &signals,
+            fail_above: false,
+            fail_regression: false,
+            format: Format::Human,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: false,
+        };
+        let outcome = |sections: &[&dyn Section], fail_sections: bool| {
+            let analysis = Analysis {
+                entries: Vec::new(),
+                diagnostics: None,
+                scope: &AllFiles,
+                coverage_kind: None,
+                notices: &[],
+            };
+            run(
+                &SECOND_TOOL,
+                &Settings {
+                    fail_sections,
+                    ..settings
+                },
+                analysis,
+                None,
+                sections,
+                &RenderExtras::default(),
+                &mut Vec::new(),
+            )
+            .unwrap()
+        };
+        let (two, none, one) = (
+            FixedSection::failing(Some(2)),
+            FixedSection::failing(None),
+            FixedSection::failing(Some(1)),
+        );
+        assert_eq!(outcome(&[], false).section_failures, 0);
+        assert_eq!(outcome(&[&two, &none, &one], false).section_failures, 3);
+        assert!(!outcome(&[&two], false).tripped);
+        assert!(outcome(&[&two], true).tripped);
+        assert!(!outcome(&[&none], true).tripped);
+    }
+
+    #[test]
+    fn prepare_crapts_matches_prepare_filtering_and_preserves_notice() {
+        struct UnderSrc;
+        impl Scope for UnderSrc {
+            fn keeps(
+                &self,
+                file: &Path,
+            ) -> bool {
+                file.starts_with("src")
+            }
+        }
+        let sample = crate::report::test_support::sample().remove(0);
+        let rows = vec![
+            CrapEntry {
+                file: "src/keep.ts".into(),
+                function: "keep".into(),
+                ..sample.clone()
+            },
+            CrapEntry {
+                file: "src/skip.ts".into(),
+                function: "skip".into(),
+                ..sample.clone()
+            },
+            CrapEntry {
+                file: "other/out.ts".into(),
+                function: "out".into(),
+                ..sample
+            },
+        ];
+        let allow = AllowSet::compile(&["skip".into()]).unwrap();
+        let filter = BaselineFilter::new(&UnderSrc, &allow);
+        let prepared_plain = filter.prepare(Baseline {
+            entries: rows.clone(),
+            try_weight: DEFAULT_TRY_WEIGHT,
+            duplicate_groups: None,
+        });
+        let prepared_crapts = filter.prepare_crapts(CraptsBaseline {
+            entries: rows.clone(),
+            baseline_version: "0.1.9".into(),
+            regression_gate_skipped: true,
+            notice: Some("skip note".into()),
+        });
+        let prepared_same_minor = filter.prepare_crapts(CraptsBaseline {
+            entries: rows,
+            baseline_version: "0.2.3-rc.1+build.7".into(),
+            regression_gate_skipped: false,
+            notice: None,
+        });
+        let names = |p: &PreparedBaseline| -> Vec<String> {
+            p.as_baseline()
+                .entries
+                .iter()
+                .map(|e| e.function.clone())
+                .collect()
+        };
+        assert_eq!(names(&prepared_crapts), names(&prepared_plain));
+        assert_eq!(names(&prepared_crapts), ["keep"]);
+        assert_eq!(prepared_crapts.as_baseline().try_weight, DEFAULT_TRY_WEIGHT);
+        assert!(prepared_crapts.as_baseline().duplicate_groups.is_none());
+        assert_eq!(prepared_plain.notice(), None);
+        assert_eq!(prepared_plain.baseline_version(), None);
+        assert!(!prepared_plain.regression_gate_skipped());
+        assert_eq!(prepared_crapts.notice(), Some("skip note"));
+        assert_eq!(prepared_crapts.baseline_version(), Some("0.1.9"));
+        assert!(prepared_crapts.regression_gate_skipped());
+        assert_eq!(prepared_same_minor.notice(), None);
+        assert_eq!(
+            prepared_same_minor.baseline_version(),
+            Some("0.2.3-rc.1+build.7")
+        );
+        assert!(!prepared_same_minor.regression_gate_skipped());
+    }
+
+    fn crapts_test_tool() -> Tool {
+        use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+        Tool {
+            policy: Policy {
+                envelope: EnvelopeKind::CraptsV1,
+                pairing: PairPolicy::FileFunction,
+                fail_above_counts: Population::All,
+                summary_formats: &[Format::Human],
+                tie_order: TieOrder::FileFunctionLine,
+            },
+            version: "0.2.3",
+            ..crate::report::test_support::SECOND_TOOL
+        }
+    }
+
+    fn empty_test_diag() -> ScopeDiagnostics {
+        ScopeDiagnostics {
+            analyzed_files: 0,
+            lcov_files: 0,
+            matched_files: 0,
+            source_only: crate::entry::StrayFiles {
+                count: 0,
+                examples: Vec::new(),
+            },
+            lcov_only: crate::entry::StrayFiles {
+                count: 0,
+                examples: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn crapts_json_rejects_missing_metadata_and_orders_notices() {
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let settings = Settings {
+            allow: &allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: crate::delta::DEFAULT_EPSILON,
+            signals: &signals,
+            fail_above: false,
+            fail_regression: false,
+            format: Format::Json,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: false,
+        };
+        let run_case = |kind: Option<CoverageKind>,
+                        diag: Option<ScopeDiagnostics>,
+                        base: Option<&PreparedBaseline>| {
+            let mut out = Vec::new();
+            let res = run(
+                &tool,
+                &settings,
+                Analysis {
+                    entries: Vec::new(),
+                    diagnostics: diag,
+                    scope: &AllFiles,
+                    coverage_kind: kind,
+                    notices: &[],
+                },
+                base,
+                &[],
+                &RenderExtras::default(),
+                &mut out,
+            );
+            (res.unwrap_err().to_string(), out)
+        };
+
+        let (err, out) = run_case(None, Some(empty_test_diag()), None);
+        assert!(err.contains("coverage_kind") && out.is_empty(), "{err}");
+        let (err, out) = run_case(Some(CoverageKind::Lines), None, None);
+        assert!(err.contains("diagnostics") && out.is_empty(), "{err}");
+        let plain_base = BaselineFilter::new(&AllFiles, &allow).prepare(Baseline {
+            entries: Vec::new(),
+            try_weight: DEFAULT_TRY_WEIGHT,
+            duplicate_groups: None,
+        });
+        let (err, out) = run_case(
+            Some(CoverageKind::Lines),
+            Some(empty_test_diag()),
+            Some(&plain_base),
+        );
+        assert!(err.contains("prepare_crapts") && out.is_empty(), "{err}");
+
+        let cross_base = BaselineFilter::new(&AllFiles, &allow).prepare_crapts(CraptsBaseline {
+            entries: Vec::new(),
+            baseline_version: "0.1.9".into(),
+            regression_gate_skipped: true,
+            notice: Some("baseline notice".into()),
+        });
+        let caller_notices = ["caller notice".to_owned()];
+        let mut out = Vec::new();
+        run(
+            &tool,
+            &settings,
+            Analysis {
+                entries: Vec::new(),
+                diagnostics: Some(empty_test_diag()),
+                scope: &AllFiles,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &caller_notices,
+            },
+            Some(&cross_base),
+            &[],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            doc["notices"],
+            serde_json::json!(["caller notice", "baseline notice"])
+        );
+        assert_eq!(doc["regression_gate"]["skipped"], true);
+    }
+
+    #[test]
+    fn crapts_json_rejects_invalid_selection_before_writing() {
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let base = Settings {
+            allow: &allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: crate::delta::DEFAULT_EPSILON,
+            signals: &signals,
+            fail_above: false,
+            fail_regression: false,
+            format: Format::Json,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: false,
+        };
+        for (min, top) in [(None, Some(0)), (Some(f64::NAN), None)] {
+            let mut out = Vec::new();
+            let err = run(
+                &tool,
+                &Settings { min, top, ..base },
+                Analysis {
+                    entries: Vec::new(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                None,
+                &[],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("selection") && out.is_empty(), "{err}");
+        }
+    }
+
+    #[test]
+    fn text_notices_precede_human_and_markdown_bodies_and_stay_out_of_machine_formats() {
+        let mut tool = crapts_test_tool();
+        tool.policy.summary_formats = &[Format::Human, Format::Markdown, Format::PrComment];
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let caller_notices = ["first note".to_owned()];
+        let render_with = |format: Format, summary: bool| {
+            let settings = Settings {
+                allow: &allow,
+                min: None,
+                top: None,
+                sort: SortOrder::Crap,
+                threshold: 30.0,
+                epsilon: crate::delta::DEFAULT_EPSILON,
+                signals: &signals,
+                fail_above: false,
+                fail_regression: false,
+                format,
+                summary,
+                show_unchanged: false,
+                uncovered_hints: false,
+                width: None,
+                links: None,
+                cwd: Path::new(""),
+                workspace_root: None,
+                fail_sections: false,
+            };
+            let mut out = Vec::new();
+            run(
+                &tool,
+                &settings,
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &caller_notices,
+                },
+                None,
+                &[],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        for summary in [false, true] {
+            let human = render_with(Format::Human, summary);
+            assert!(
+                human.starts_with("first note\n\n"),
+                "summary={summary}: {human}"
+            );
+            assert_eq!(human.matches("first note").count(), 1);
+
+            for format in [Format::Markdown, Format::PrComment] {
+                let md = render_with(format, summary);
+                assert!(
+                    md.starts_with(&format!(
+                        "{}\n\n> **Note:** first note\n\n",
+                        tool.comment_marker
+                    )),
+                    "{format:?} summary={summary}: {md}"
+                );
+                assert_eq!(
+                    md.matches(tool.comment_marker).count(),
+                    1,
+                    "{format:?} summary={summary}"
+                );
+                assert_eq!(
+                    md.matches("first note").count(),
+                    1,
+                    "{format:?} summary={summary}"
+                );
+            }
+        }
+
+        for format in [Format::GitHub, Format::Sarif, Format::Shields] {
+            let out = render_with(format, false);
+            assert!(!out.contains("first note"), "{format:?}: {out}");
+        }
+    }
+
+    struct NonJsonSection {
+        label: &'static str,
+        placement: Placement,
+        failures: Option<usize>,
+        forbid_write: bool,
+    }
+
+    impl Section for NonJsonSection {
+        fn json_key(&self) -> &str {
+            panic!("non-JSON renderer must not call json_key");
+        }
+        fn json(&self) -> Box<serde_json::value::RawValue> {
+            panic!("non-JSON renderer must not call json");
+        }
+        fn write(
+            &self,
+            _: Format,
+            out: &mut dyn Write,
+        ) -> Result<()> {
+            assert!(!self.forbid_write, "format must not write section text");
+            writeln!(out, "{}", self.label)?;
+            Ok(())
+        }
+        fn placement(&self) -> Placement {
+            self.placement
+        }
+        fn failures(&self) -> Option<usize> {
+            self.failures
+        }
+    }
+
+    fn section_settings<'a>(
+        allow: &'a AllowSet,
+        signals: &'a SignalSettings,
+        format: Format,
+    ) -> Settings<'a> {
+        Settings {
+            allow,
+            min: None,
+            top: None,
+            sort: SortOrder::Crap,
+            threshold: 30.0,
+            epsilon: crate::delta::DEFAULT_EPSILON,
+            signals,
+            fail_above: false,
+            fail_regression: false,
+            format,
+            summary: false,
+            show_unchanged: false,
+            uncovered_hints: false,
+            width: None,
+            links: None,
+            cwd: Path::new(""),
+            workspace_root: None,
+            fail_sections: true,
+        }
+    }
+
+    #[test]
+    fn text_sections_render_in_placement_and_caller_order() {
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let (t1, l1, t2, l2) = (
+            NonJsonSection {
+                label: "trail-1",
+                placement: Placement::Trail,
+                failures: Some(1),
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "lead-1",
+                placement: Placement::Lead,
+                failures: Some(0),
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "trail-2",
+                placement: Placement::Trail,
+                failures: None,
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "lead-2",
+                placement: Placement::Lead,
+                failures: Some(2),
+                forbid_write: false,
+            },
+        );
+        let ordered: [&dyn Section; 4] = [&t1, &l1, &t2, &l2];
+
+        for format in [Format::Human, Format::Markdown, Format::PrComment] {
+            let mut out = Vec::new();
+            let outcome = run(
+                &tool,
+                &section_settings(&allow, &signals, format),
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                None,
+                &ordered,
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            assert_eq!(outcome.section_failures, 3);
+            assert!(outcome.tripped);
+            let text = String::from_utf8(out).unwrap();
+            let expected_start = if format == Format::Human {
+                "lead-1\n\nlead-2\n\n".to_owned()
+            } else {
+                format!("{}\n\nlead-1\n\nlead-2\n\n", tool.comment_marker)
+            };
+            assert!(text.starts_with(&expected_start), "{format:?}: {text}");
+            assert!(
+                text.ends_with("\n\ntrail-1\n\ntrail-2\n"),
+                "{format:?}: {text}"
+            );
+            assert!(text.find("lead-2").unwrap() < text.find("crappy").unwrap());
+            assert!(text.find("crappy").unwrap() < text.find("trail-1").unwrap());
+        }
+    }
+
+    #[test]
+    fn machine_sections_preserve_github_lines_and_skip_sarif_shields_writes() {
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let (t1, l1, t2, l2) = (
+            NonJsonSection {
+                label: "::warning::trail-1",
+                placement: Placement::Trail,
+                failures: Some(1),
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "::warning::lead-1",
+                placement: Placement::Lead,
+                failures: Some(0),
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "::warning::trail-2",
+                placement: Placement::Trail,
+                failures: None,
+                forbid_write: false,
+            },
+            NonJsonSection {
+                label: "::warning::lead-2",
+                placement: Placement::Lead,
+                failures: Some(2),
+                forbid_write: false,
+            },
+        );
+        let ordered: [&dyn Section; 4] = [&t1, &l1, &t2, &l2];
+        let mut gh_out = Vec::new();
+        run(
+            &tool,
+            &section_settings(&allow, &signals, Format::GitHub),
+            Analysis {
+                entries: crate::report::test_support::sample(),
+                diagnostics: Some(empty_test_diag()),
+                scope: &AllFiles,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            None,
+            &ordered,
+            &RenderExtras::default(),
+            &mut gh_out,
+        )
+        .unwrap();
+        let gh = String::from_utf8(gh_out).unwrap();
+        let gh_lines: Vec<&str> = gh.lines().collect();
+        assert_eq!(gh_lines.first(), Some(&"::warning::lead-1"), "{gh}");
+        assert_eq!(gh_lines.get(1), Some(&"::warning::lead-2"), "{gh}");
+        assert_eq!(
+            gh_lines.get(gh_lines.len() - 2),
+            Some(&"::warning::trail-1")
+        );
+        assert_eq!(gh_lines.last(), Some(&"::warning::trail-2"));
+        assert!(gh_lines.iter().all(|l| l.starts_with("::warning")), "{gh}");
+
+        let silent = NonJsonSection {
+            label: "never",
+            placement: Placement::Lead,
+            failures: Some(1),
+            forbid_write: true,
+        };
+        for format in [Format::Sarif, Format::Shields] {
+            let mut out = Vec::new();
+            let outcome = run(
+                &tool,
+                &section_settings(&allow, &signals, format),
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                None,
+                &[&silent],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            assert_eq!(outcome.section_failures, 1);
+            assert!(outcome.tripped);
+        }
     }
 
     #[test]
@@ -444,6 +1524,387 @@ mod tests {
             };
             prop_assert_eq!(rows, indices(true));
             prop_assert_eq!(members, indices(false));
+        }
+    }
+
+    #[test]
+    fn section_failures_are_sampled_once_for_both_json_and_gate() {
+        use std::cell::Cell;
+
+        struct ChangingSection {
+            key: &'static str,
+            calls: Cell<usize>,
+        }
+        impl Section for ChangingSection {
+            fn json_key(&self) -> &str {
+                self.key
+            }
+            fn json(&self) -> Box<serde_json::value::RawValue> {
+                serde_json::value::RawValue::from_string(r#"{"counts":{"fail":2}}"#.to_owned())
+                    .unwrap()
+            }
+            fn write(
+                &self,
+                _: Format,
+                _: &mut dyn Write,
+            ) -> Result<()> {
+                Ok(())
+            }
+            fn placement(&self) -> Placement {
+                Placement::Lead
+            }
+            fn failures(&self) -> Option<usize> {
+                let n = self.calls.get();
+                self.calls.set(n + 1);
+                if n == 0 { Some(2) } else { Some(0) }
+            }
+        }
+
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let section = ChangingSection {
+            key: "changed",
+            calls: Cell::new(0),
+        };
+        let mut out = Vec::new();
+        let outcome = run(
+            &tool,
+            &section_settings(&allow, &signals, Format::Json),
+            Analysis {
+                entries: Vec::new(),
+                diagnostics: Some(empty_test_diag()),
+                scope: &AllFiles,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            None,
+            &[&section],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(section.calls.get(), 1);
+        assert_eq!(doc["summary"]["changed_failures"], 2);
+        assert_eq!(outcome.section_failures, 2);
+        assert!(outcome.tripped);
+    }
+
+    #[test]
+    fn section_failure_count_overflow_errors_before_writing() {
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let max = NonJsonSection {
+            label: "a",
+            placement: Placement::Lead,
+            failures: Some(usize::MAX),
+            forbid_write: true,
+        };
+        let one = NonJsonSection {
+            label: "b",
+            placement: Placement::Trail,
+            failures: Some(1),
+            forbid_write: true,
+        };
+        let mut out = Vec::new();
+        let err = run(
+            &tool,
+            &section_settings(&allow, &signals, Format::Human),
+            Analysis {
+                entries: crate::report::test_support::sample(),
+                diagnostics: None,
+                scope: &AllFiles,
+                coverage_kind: None,
+                notices: &[],
+            },
+            None,
+            &[&max, &one],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("overflow"), "{err}");
+        assert_eq!(out, [] as [u8; 0]);
+    }
+
+    #[test]
+    fn cargo_crap_json_section_rejection_runs_before_summary_dispatch() {
+        use crate::policy::Policy;
+        use crate::report::test_support::{FixedSection, SECOND_TOOL};
+        let tool = Tool {
+            policy: Policy {
+                envelope: EnvelopeKind::CargoCrapV1,
+                summary_formats: &[Format::Json],
+                ..SECOND_TOOL.policy
+            },
+            ..SECOND_TOOL
+        };
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let settings = Settings {
+            summary: true,
+            ..section_settings(&allow, &signals, Format::Json)
+        };
+        let prepared = BaselineFilter::new(&AllFiles, &allow).prepare(Baseline {
+            entries: crate::report::test_support::sample(),
+            try_weight: DEFAULT_TRY_WEIGHT,
+            duplicate_groups: None,
+        });
+        let section = FixedSection::failing(Some(1));
+        for base in [None, Some(&prepared)] {
+            let mut out = Vec::new();
+            let err = run(
+                &tool,
+                &settings,
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: None,
+                    scope: &AllFiles,
+                    coverage_kind: None,
+                    notices: &[],
+                },
+                base,
+                &[&section],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("changed") && err.contains("CargoCrapV1"),
+                "{err}"
+            );
+            assert_eq!(out, [] as [u8; 0]);
+        }
+    }
+
+    #[test]
+    fn github_sections_terminate_unterminated_commands_and_keep_empty_silent() {
+        struct RawWriteSection {
+            bytes: &'static str,
+            placement: Placement,
+        }
+        impl Section for RawWriteSection {
+            fn json_key(&self) -> &str {
+                panic!("GitHub must not call json_key");
+            }
+            fn json(&self) -> Box<serde_json::value::RawValue> {
+                panic!("GitHub must not call json");
+            }
+            fn write(
+                &self,
+                _: Format,
+                out: &mut dyn Write,
+            ) -> Result<()> {
+                out.write_all(self.bytes.as_bytes())?;
+                Ok(())
+            }
+            fn placement(&self) -> Placement {
+                self.placement
+            }
+            fn failures(&self) -> Option<usize> {
+                None
+            }
+        }
+
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let (lead_term, lead_unterm, lead_empty, trail_unterm, trail_empty, trail_term) = (
+            RawWriteSection {
+                bytes: "::warning::lead-term\n",
+                placement: Placement::Lead,
+            },
+            RawWriteSection {
+                bytes: "::warning::lead-unterm",
+                placement: Placement::Lead,
+            },
+            RawWriteSection {
+                bytes: "",
+                placement: Placement::Lead,
+            },
+            RawWriteSection {
+                bytes: "::warning::trail-unterm",
+                placement: Placement::Trail,
+            },
+            RawWriteSection {
+                bytes: "",
+                placement: Placement::Trail,
+            },
+            RawWriteSection {
+                bytes: "::warning::trail-term\n",
+                placement: Placement::Trail,
+            },
+        );
+        let mut out = Vec::new();
+        run(
+            &tool,
+            &section_settings(&allow, &signals, Format::GitHub),
+            Analysis {
+                entries: crate::report::test_support::sample(),
+                diagnostics: Some(empty_test_diag()),
+                scope: &AllFiles,
+                coverage_kind: Some(CoverageKind::Lines),
+                notices: &[],
+            },
+            None,
+            &[
+                &lead_term,
+                &lead_unterm,
+                &lead_empty,
+                &trail_unterm,
+                &trail_empty,
+                &trail_term,
+            ],
+            &RenderExtras::default(),
+            &mut out,
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 5, "{text:?}");
+        assert_eq!(lines[0], "::warning::lead-term");
+        assert_eq!(lines[1], "::warning::lead-unterm");
+        assert!(lines[2].starts_with("::warning file="), "{text:?}");
+        assert!(lines[2].contains("crappy"), "{text:?}");
+        assert_eq!(lines[3], "::warning::trail-unterm");
+        assert_eq!(lines[4], "::warning::trail-term");
+    }
+
+    #[test]
+    fn section_placement_is_sampled_once_per_section() {
+        use std::cell::Cell;
+
+        struct FlippingSection {
+            label: &'static str,
+            first: Placement,
+            second: Placement,
+            calls: Cell<usize>,
+        }
+        impl Section for FlippingSection {
+            fn json_key(&self) -> &str {
+                panic!("text format must not call json_key");
+            }
+            fn json(&self) -> Box<serde_json::value::RawValue> {
+                panic!("text format must not call json");
+            }
+            fn write(
+                &self,
+                _: Format,
+                out: &mut dyn Write,
+            ) -> Result<()> {
+                writeln!(out, "{}", self.label)?;
+                Ok(())
+            }
+            fn placement(&self) -> Placement {
+                let n = self.calls.get();
+                self.calls.set(n + 1);
+                if n == 0 { self.first } else { self.second }
+            }
+            fn failures(&self) -> Option<usize> {
+                None
+            }
+        }
+
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+
+        for (first, second, label) in [
+            (Placement::Lead, Placement::Trail, "lead-once"),
+            (Placement::Trail, Placement::Lead, "trail-once"),
+        ] {
+            let section = FlippingSection {
+                label,
+                first,
+                second,
+                calls: Cell::new(0),
+            };
+            let mut out = Vec::new();
+            run(
+                &tool,
+                &section_settings(&allow, &signals, Format::Markdown),
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                None,
+                &[&section],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert_eq!(section.calls.get(), 1);
+            assert_eq!(text.matches(label).count(), 1, "{text}");
+            let body_pos = text.find("crappy").unwrap();
+            let sec_pos = text.find(label).unwrap();
+            assert_eq!(first == Placement::Lead, sec_pos < body_pos, "{text}");
+        }
+    }
+
+    #[test]
+    fn failing_lead_or_trail_sections_write_zero_bytes() {
+        struct FailWriteSection(Placement);
+        impl Section for FailWriteSection {
+            fn json_key(&self) -> &str {
+                panic!("text format must not call json_key");
+            }
+            fn json(&self) -> Box<serde_json::value::RawValue> {
+                panic!("text format must not call json");
+            }
+            fn write(
+                &self,
+                _: Format,
+                _: &mut dyn Write,
+            ) -> Result<()> {
+                anyhow::bail!("section write failed")
+            }
+            fn placement(&self) -> Placement {
+                self.0
+            }
+            fn failures(&self) -> Option<usize> {
+                Some(1)
+            }
+        }
+
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        for format in [
+            Format::Human,
+            Format::Markdown,
+            Format::PrComment,
+            Format::GitHub,
+        ] {
+            for placement in [Placement::Lead, Placement::Trail] {
+                let mut out = Vec::new();
+                let err = run(
+                    &tool,
+                    &section_settings(&allow, &signals, format),
+                    Analysis {
+                        entries: crate::report::test_support::sample(),
+                        diagnostics: Some(empty_test_diag()),
+                        scope: &AllFiles,
+                        coverage_kind: Some(CoverageKind::Lines),
+                        notices: &["note".to_owned()],
+                    },
+                    None,
+                    &[&FailWriteSection(placement)],
+                    &RenderExtras::default(),
+                    &mut out,
+                )
+                .unwrap_err()
+                .to_string();
+                assert!(err.contains("section write failed"), "{err}");
+                assert_eq!(out, [] as [u8; 0], "{format:?} {placement:?}");
+            }
         }
     }
 }

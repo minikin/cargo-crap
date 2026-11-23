@@ -1,6 +1,7 @@
 //! Select score rows before display or baseline comparison.
 
-use crate::entry::{CrapEntry, SortOrder, sort_entries};
+use crate::entry::{CrapEntry, SortOrder, sort_entries_with_ties};
+use crate::policy::TieOrder;
 use anyhow::{Context, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use std::path::{Path, PathBuf};
@@ -104,29 +105,52 @@ pub fn slice(
     top: Option<usize>,
     order: SortOrder,
 ) -> Option<Vec<CrapEntry>> {
+    slice_with_ties(entries, min, top, order, TieOrder::Stable)
+}
+
+#[must_use]
+pub(crate) fn slice_with_ties(
+    entries: &mut [CrapEntry],
+    min: Option<f64>,
+    top: Option<usize>,
+    order: SortOrder,
+    tie_order: TieOrder,
+) -> Option<Vec<CrapEntry>> {
     if min.is_none() && top.is_none() {
-        sort_entries(entries, order);
+        sort_entries_with_ties(entries, order, tie_order);
         return None;
     }
-    let mut shown = slice_of(entries, min, top);
-    sort_entries(&mut shown, order);
+    let mut shown = slice_of_with_ties(entries, min, top, tie_order);
+    sort_entries_with_ties(&mut shown, order, tie_order);
     Some(shown)
 }
 
-/// The rows `min` and `top` select: scores at or above the cutoff, then the
-/// N highest. `entries` must be in descending CRAP order, as `merge` leaves
-/// them.
-fn slice_of(
+/// Callers must pass `entries` in descending CRAP order for [`TieOrder::Stable`],
+/// which takes the first `top` qualifying rows without re-sorting.
+/// [`TieOrder::FileFunctionLine`] re-sorts qualifying rows before taking `top`.
+fn slice_of_with_ties(
     entries: &[CrapEntry],
     min: Option<f64>,
     top: Option<usize>,
+    tie_order: TieOrder,
 ) -> Vec<CrapEntry> {
-    entries
+    let qualifying = entries
         .iter()
-        .filter(|e| min.is_none_or(|cutoff| e.crap >= cutoff))
-        .take(top.unwrap_or(usize::MAX))
-        .cloned()
-        .collect()
+        .filter(|e| min.is_none_or(|cutoff| e.crap >= cutoff));
+    match tie_order {
+        TieOrder::Stable => qualifying
+            .take(top.unwrap_or(usize::MAX))
+            .cloned()
+            .collect(),
+        TieOrder::FileFunctionLine => {
+            let mut refs: Vec<&CrapEntry> = qualifying.collect();
+            refs.sort_by(|a, b| crate::entry::compare_crap_desc(a, b, tie_order));
+            if let Some(limit) = top {
+                refs.truncate(limit);
+            }
+            refs.into_iter().cloned().collect()
+        },
+    }
 }
 
 #[cfg(test)]
@@ -193,15 +217,117 @@ mod tests {
         let names =
             |v: Vec<CrapEntry>| -> Vec<String> { v.into_iter().map(|e| e.function).collect() };
         assert_eq!(
-            names(slice_of(&entries, None, None)),
+            names(slice_of_with_ties(&entries, None, None, TieOrder::Stable)),
             ["f0", "f1", "f2", "f3"]
         );
         assert_eq!(
-            names(slice_of(&entries, Some(5.0), None)),
+            names(slice_of_with_ties(
+                &entries,
+                Some(5.0),
+                None,
+                TieOrder::Stable
+            )),
             ["f0", "f1", "f2"]
         );
-        assert_eq!(names(slice_of(&entries, None, Some(2))), ["f0", "f1"]);
-        assert_eq!(names(slice_of(&entries, Some(8.0), Some(2))), ["f0"]);
+        assert_eq!(
+            names(slice_of_with_ties(
+                &entries,
+                None,
+                Some(2),
+                TieOrder::Stable
+            )),
+            ["f0", "f1"]
+        );
+        assert_eq!(
+            names(slice_of_with_ties(
+                &entries,
+                Some(8.0),
+                Some(2),
+                TieOrder::Stable
+            )),
+            ["f0"]
+        );
+    }
+
+    #[test]
+    fn stable_tie_order_preserves_input_while_file_function_line_settles_ties() {
+        let make = |file: &str, function: &str, line: usize, crap: f64| CrapEntry {
+            file: file.into(),
+            function: function.into(),
+            line,
+            cyclomatic: 1.0,
+            coverage: Some(100.0),
+            crap,
+            ..CrapEntry::default()
+        };
+        let input = vec![
+            make("b.ts", "f", 10, 40.0),
+            make("a.ts", "z", 2, 40.0),
+            make("a.ts", "a", 9, 40.0),
+            make("a.ts", "a", 3, 40.0),
+        ];
+        let key = |e: &CrapEntry| {
+            (
+                e.file.to_string_lossy().into_owned(),
+                e.function.clone(),
+                e.line,
+            )
+        };
+
+        let mut stable = input.clone();
+        let stable_top = slice_with_ties(
+            &mut stable,
+            None,
+            Some(2),
+            SortOrder::Crap,
+            TieOrder::Stable,
+        )
+        .unwrap();
+        assert_eq!(
+            stable_top.iter().map(key).collect::<Vec<_>>(),
+            vec![
+                ("b.ts".into(), "f".into(), 10),
+                ("a.ts".into(), "z".into(), 2)
+            ]
+        );
+
+        let mut settled = input.clone();
+        let settled_top = slice_with_ties(
+            &mut settled,
+            None,
+            Some(2),
+            SortOrder::Crap,
+            TieOrder::FileFunctionLine,
+        )
+        .unwrap();
+        assert_eq!(
+            settled_top.iter().map(key).collect::<Vec<_>>(),
+            vec![
+                ("a.ts".into(), "a".into(), 3),
+                ("a.ts".into(), "a".into(), 9)
+            ]
+        );
+
+        let mut unsliced = input;
+        assert!(
+            slice_with_ties(
+                &mut unsliced,
+                None,
+                None,
+                SortOrder::Crap,
+                TieOrder::FileFunctionLine
+            )
+            .is_none()
+        );
+        assert_eq!(
+            unsliced.iter().map(key).collect::<Vec<_>>(),
+            vec![
+                ("a.ts".into(), "a".into(), 3),
+                ("a.ts".into(), "a".into(), 9),
+                ("a.ts".into(), "z".into(), 2),
+                ("b.ts".into(), "f".into(), 10),
+            ]
+        );
     }
 
     #[test]
@@ -347,6 +473,74 @@ mod tests {
                 .map(|row| row.line)
                 .collect();
             prop_assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn equal_score_selection_is_independent_of_the_order_of_tied_input_rows(
+            rows in prop::collection::vec(
+                (
+                    prop::sample::select(vec!["a/x.ts", "a\\x.ts", "b/x.ts", "c.ts"]),
+                    prop::sample::select(vec!["a", "b"]),
+                    1usize..8,
+                    1u8..5,
+                    any::<u64>(),
+                ),
+                1..24,
+            ),
+            min in prop::option::of(1u8..6),
+            top in prop::option::of(1usize..12),
+            by_file in any::<bool>(),
+        ) {
+            use crate::paths::path_key;
+            let order = if by_file { SortOrder::File } else { SortOrder::Crap };
+            let make = |(file, function, line, score, _): (&str, &str, usize, u8, u64)| CrapEntry {
+                file: file.into(),
+                function: function.into(),
+                line,
+                cyclomatic: 1.0,
+                coverage: Some(100.0),
+                crap: f64::from(score),
+                ..CrapEntry::default()
+            };
+            let mut primary: Vec<_> = rows.iter().copied().map(make).collect();
+            primary.sort_by(|a, b| b.crap.total_cmp(&a.crap));
+
+            let mut permuted_raw = rows;
+            permuted_raw.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.4.cmp(&b.4)));
+            let mut permuted: Vec<_> = permuted_raw.into_iter().map(make).collect();
+
+            let mut expected: Vec<_> = primary
+                .iter()
+                .filter(|e| min.is_none_or(|m| e.crap >= f64::from(m)))
+                .cloned()
+                .collect();
+            expected.sort_by(|a, b| {
+                b.crap
+                    .total_cmp(&a.crap)
+                    .then_with(|| (path_key(&a.file), &a.function, a.line).cmp(&(path_key(&b.file), &b.function, b.line)))
+            });
+            if let Some(limit) = top {
+                expected.truncate(limit);
+            }
+            if by_file {
+                expected.sort_by(|a, b| {
+                    (path_key(&a.file), &a.function, a.line)
+                        .cmp(&(path_key(&b.file), &b.function, b.line))
+                });
+            }
+
+            let key = |list: &[CrapEntry]| -> Vec<(String, String, usize, u64)> {
+                list.iter()
+                    .map(|e| (path_key(&e.file), e.function.clone(), e.line, e.crap.to_bits()))
+                    .collect()
+            };
+            let min_f = min.map(f64::from);
+            let sel_a = slice_with_ties(&mut primary, min_f, top, order, TieOrder::FileFunctionLine);
+            let sel_b = slice_with_ties(&mut permuted, min_f, top, order, TieOrder::FileFunctionLine);
+            let out_a = sel_a.as_deref().unwrap_or(&primary);
+            let out_b = sel_b.as_deref().unwrap_or(&permuted);
+            prop_assert_eq!(key(out_a), key(&expected));
+            prop_assert_eq!(key(out_b), key(&expected));
         }
     }
 }

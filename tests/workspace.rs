@@ -542,6 +542,7 @@ const SEEDS: &[(&str, &[&str])] = &[
     (
         "crates/cargo-crap-core",
         &[
+            "delta.txt",
             "duplicates/compare.txt",
             "duplicates/group.txt",
             "duplicates/novelty.txt",

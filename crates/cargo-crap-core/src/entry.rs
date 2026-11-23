@@ -1,5 +1,6 @@
 use crate::coverage::LineRange;
 use crate::paths::path_key;
+use crate::policy::TieOrder;
 use crate::signals::{Signals, Spans};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -63,6 +64,31 @@ pub(crate) fn file_order_key(e: &CrapEntry) -> (String, &str, usize) {
     (path_key(&e.file), e.function.as_str(), e.line)
 }
 
+pub(crate) fn compare_crap_desc(
+    a: &CrapEntry,
+    b: &CrapEntry,
+    tie_order: TieOrder,
+) -> std::cmp::Ordering {
+    let by_score = b.crap.total_cmp(&a.crap);
+    match tie_order {
+        TieOrder::Stable => by_score,
+        TieOrder::FileFunctionLine => {
+            by_score.then_with(|| file_order_key(a).cmp(&file_order_key(b)))
+        },
+    }
+}
+
+pub(crate) fn sort_entries_with_ties(
+    entries: &mut [CrapEntry],
+    order: SortOrder,
+    tie_order: TieOrder,
+) {
+    match order {
+        SortOrder::Crap => entries.sort_by(|a, b| compare_crap_desc(a, b, tie_order)),
+        SortOrder::File => entries.sort_by(|a, b| file_order_key(a).cmp(&file_order_key(b))),
+    }
+}
+
 /// Apply the user-requested [`SortOrder`] to an entry slice in place.
 ///
 /// Call this *after* `--allow` / `--min` / `--top` have run: `--top` selects
@@ -72,14 +98,7 @@ pub fn sort_entries(
     entries: &mut [CrapEntry],
     order: SortOrder,
 ) {
-    match order {
-        SortOrder::Crap => entries.sort_by(|a, b| {
-            b.crap
-                .partial_cmp(&a.crap)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }),
-        SortOrder::File => entries.sort_by(|a, b| file_order_key(a).cmp(&file_order_key(b))),
-    }
+    sort_entries_with_ties(entries, order, TieOrder::Stable);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

@@ -172,6 +172,7 @@ fn existing_cargo_crap_clients_compile_at_their_original_paths() {
         links: None,
         cwd: std::path::Path::new("."),
         workspace_root: None,
+        fail_sections: false,
     };
     assert_eq!(
         tool::CARGO_CRAP.policy.fail_above_counts,
@@ -184,14 +185,21 @@ fn existing_cargo_crap_clients_compile_at_their_original_paths() {
             entries,
             diagnostics: None,
             scope: &Everything,
+            coverage_kind: None::<cargo_crap::coverage::CoverageKind>,
+            notices: &[],
         },
         None,
+        &[] as &[&dyn cargo_crap::report::Section],
         &run::RenderExtras::default(),
         &mut Vec::new(),
     )
     .expect("the pipeline runs");
     assert_eq!(outcome.crappy, 1);
     assert_eq!(outcome.exit_code(), std::process::ExitCode::from(1));
+    assert_ne!(
+        cargo_crap::report::Placement::Lead,
+        cargo_crap::report::Placement::Trail
+    );
     // And the old signal, config, duplicate and triage imports at the top
     // of this file resolve from an external crate
 }

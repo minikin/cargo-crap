@@ -5,6 +5,8 @@ use crate::report::Format;
 pub enum EnvelopeKind {
     /// The report-v1 and delta-v2 schema family.
     CargoCrapV1,
+    /// The crapts report-v1 and delta-v1 schema family.
+    CraptsV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,12 +14,17 @@ pub enum EnvelopeKind {
 pub enum PairPolicy {
     /// Match file, function and line before suffix and unique-name fallback.
     FileFunctionLine,
+    /// Withhold a (file, stem) group whose size changed, then match file and
+    /// full name before suffix and unique-name fallback, classifying the
+    /// delta rounded to six decimals.
+    FileFunction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TieOrder {
     Stable,
+    FileFunctionLine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
