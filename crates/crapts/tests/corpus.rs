@@ -291,6 +291,9 @@ fn path_variants(path: &Path) -> Vec<String> {
             if !slashed.is_empty() {
                 needles.insert(slashed);
             }
+            if trimmed.contains('\\') {
+                needles.insert(trimmed.replace('\\', "\\\\"));
+            }
         }
     }
     needles.into_iter().collect()
