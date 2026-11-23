@@ -24,6 +24,7 @@ files=(
     crates/crapts/Cargo.toml
     crates/crapts/CHANGELOG.md
     npm/crapts/package.json
+    actions/crapts/action.yml
     CHANGELOG.md
     action.yml
     .github/ISSUE_TEMPLATE/bug_report.yml
@@ -72,7 +73,7 @@ check "the old version's link is kept" "1" \
     "$(grep -c "^\[$current\]: " "$dir/CHANGELOG.md")"
 check "release prep bumps cargo-crap and leaves the core alone" "$core_before" \
     "$(awk -F'"' '/^version = /{print $2; exit}' "$dir/crates/cargo-crap-core/Cargo.toml")"
-for isolated in crates/cargo-crap-core/{Cargo.toml,CHANGELOG.md} crates/crapts/{Cargo.toml,CHANGELOG.md} npm/crapts/package.json; do
+for isolated in crates/cargo-crap-core/{Cargo.toml,CHANGELOG.md} crates/crapts/{Cargo.toml,CHANGELOG.md} npm/crapts/package.json actions/crapts/action.yml; do
     cmp -s "$repo/$isolated" "$dir/$isolated"
     check "existing cargo-crap release prep stays isolated from $isolated" "0" "$?"
 done
