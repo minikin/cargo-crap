@@ -20,6 +20,7 @@ pub(crate) fn render_github(
     entries: &[CrapEntry],
     threshold: f64,
     cwd: &Path,
+    repo_prefix: Option<&Path>,
     out: &mut dyn Write,
 ) -> Result<()> {
     for entry in entries {
@@ -45,7 +46,9 @@ pub(crate) fn render_github(
         writeln!(
             out,
             "::warning file={file},line={line},title=CRAP ({crap:.1} > {threshold})::{msg}",
-            file = gha_escape_property(&file.display().to_string()),
+            file = gha_escape_property(
+                &super::links::project_path(repo_prefix, file).to_string_lossy()
+            ),
             line = entry.line,
             crap = entry.crap,
             threshold = threshold,
@@ -59,6 +62,7 @@ pub(crate) fn render_delta_github(
     report: &DeltaReport,
     threshold: f64,
     cwd: &Path,
+    repo_prefix: Option<&Path>,
     out: &mut dyn Write,
 ) -> Result<()> {
     for de in &report.entries {
@@ -101,13 +105,15 @@ pub(crate) fn render_delta_github(
         writeln!(
             out,
             "::warning file={file},line={line},title=CRAP ({crap:.1})::{msg}",
-            file = gha_escape_property(&file.display().to_string()),
+            file = gha_escape_property(
+                &super::links::project_path(repo_prefix, file).to_string_lossy()
+            ),
             line = e.line,
             crap = e.crap,
             msg = gha_escape(&message),
         )?;
     }
-    write_reason_annotations(report, cwd, out)
+    write_reason_annotations(report, cwd, repo_prefix, out)
 }
 
 /// One `::warning` per gated signal reason (spec 43), spanning the lines
@@ -115,6 +121,7 @@ pub(crate) fn render_delta_github(
 fn write_reason_annotations(
     report: &DeltaReport,
     cwd: &Path,
+    repo_prefix: Option<&Path>,
     out: &mut dyn Write,
 ) -> Result<()> {
     for de in &report.entries {
@@ -143,7 +150,9 @@ fn write_reason_annotations(
             writeln!(
                 out,
                 "::warning file={file},line={line},endLine={end},title={title}::{msg}",
-                file = gha_escape_property(&file.display().to_string()),
+                file = gha_escape_property(
+                    &super::links::project_path(repo_prefix, file).to_string_lossy()
+                ),
                 title = gha_escape_property(&title),
                 msg = gha_escape(&message),
             )?;
@@ -332,7 +341,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_github(&report, 30.0, Path::new(""), &mut buf).unwrap();
+        render_delta_github(&report, 30.0, Path::new(""), None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.contains("(moved from src/old.rs)"),
@@ -371,7 +380,7 @@ mod tests {
             removed: vec![],
         };
         let mut buf = Vec::new();
-        render_delta_github(&report, 30.0, Path::new(""), &mut buf).unwrap();
+        render_delta_github(&report, 30.0, Path::new(""), None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(
             s.is_empty(),
@@ -416,8 +425,19 @@ mod tests {
             uncovered: Vec::new(),
         };
         let mut buf = Vec::new();
-        render_github(&[entry], 30.0, Path::new("/work"), &mut buf).unwrap();
+        render_github(&[entry], 30.0, Path::new("/work"), None, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.starts_with("::warning file=src/a.rs,line=3,"), "{s}");
+    }
+}
+
+#[cfg(test)]
+mod command_encoding {
+    use super::*;
+
+    #[test]
+    fn workflow_commands_escape_properties_and_already_encoded_names() {
+        assert_eq!(gha_escape("%\r\n:a,b%2F"), "%25%0D%0A:a,b%252F");
+        assert_eq!(gha_escape_property("%\r\na:b,c"), "%25%0D%0Aa%3Ab%2Cc");
     }
 }

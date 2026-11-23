@@ -133,7 +133,7 @@ impl PreparedBaseline {
     }
 }
 
-/// Current rows discovered in the caller's scope, in descending score order.
+/// Current rows in the caller's scope. Stable tie ordering requires descending score order.
 pub struct Analysis<'a> {
     /// Scored functions before allow patterns or display limits are applied.
     pub entries: Vec<CrapEntry>,
@@ -172,6 +172,8 @@ pub struct Settings<'a> {
     /// Available table width in terminal columns.
     pub width: Option<usize>,
     pub links: Option<&'a SourceLinks>,
+    pub pr_comment_marker: Option<&'a str>,
+    pub repo_prefix: Option<&'a Path>,
     /// Working directory for relative duplicate paths.
     pub cwd: &'a Path,
     pub workspace_root: Option<&'a Path>,
@@ -247,6 +249,8 @@ pub fn run(
         threshold: settings.threshold,
         format: settings.format,
         links: settings.links,
+        pr_comment_marker: settings.pr_comment_marker,
+        repo_prefix: settings.repo_prefix,
         diagnostics: analysis.diagnostics.as_ref(),
         show_unchanged: settings.show_unchanged,
         uncovered_hints: settings.uncovered_hints,
@@ -278,7 +282,7 @@ pub fn run(
     };
     let staged = stage_sections(settings.format, sections)?;
     let notices = collect_notices(analysis.notices, baseline);
-    let include_marker = write_prefix(tool, settings.format, &notices, &staged, out)?;
+    let include_marker = write_prefix(&options, &notices, &staged, out)?;
     let body = RunBody {
         tool,
         settings,
@@ -358,6 +362,9 @@ fn write_report_body(
     out: &mut dyn Write,
 ) -> Result<(usize, usize)> {
     if summary {
+        if include_marker && summary_marker(body.options) {
+            report::write_pr_comment_marker(body.options, out)?;
+        }
         return write_summary(
             body.settings,
             body.eligible,
@@ -427,15 +434,14 @@ fn stage_sections(
 }
 
 fn write_prefix(
-    tool: &Tool,
-    format: Format,
+    opts: &RenderOptions,
     notices: &[&str],
     staged: &StagedSections,
     out: &mut dyn Write,
 ) -> Result<bool> {
-    match format {
+    match opts.format {
         Format::Human | Format::Markdown | Format::PrComment => {
-            write_text_prefix(tool, format, notices, staged, out)
+            write_text_prefix(opts, notices, staged, out)
         },
         Format::GitHub => {
             write_staged(&staged.lead, "", "", out)?;
@@ -446,8 +452,7 @@ fn write_prefix(
 }
 
 fn write_text_prefix(
-    tool: &Tool,
-    format: Format,
+    opts: &RenderOptions,
     notices: &[&str],
     staged: &StagedSections,
     out: &mut dyn Write,
@@ -455,9 +460,9 @@ fn write_text_prefix(
     if notices.is_empty() && staged.is_empty() {
         return Ok(true);
     }
-    let markdown = matches!(format, Format::Markdown | Format::PrComment);
+    let markdown = matches!(opts.format, Format::Markdown | Format::PrComment);
     if markdown {
-        report::write_pr_comment_marker(tool, out)?;
+        report::write_pr_comment_marker(opts, out)?;
     }
     if !notices.is_empty() {
         for notice in notices {
@@ -586,6 +591,14 @@ fn write_crapts_json(
     Ok((counts.regressed, gating_signals))
 }
 
+fn summary_marker(opts: &RenderOptions) -> bool {
+    match opts.format {
+        Format::PrComment if opts.pr_comment_marker.is_some() => true,
+        Format::PrComment | Format::Markdown => opts.tool.policy.envelope == EnvelopeKind::CraptsV1,
+        _ => false,
+    }
+}
+
 fn write_summary(
     settings: &Settings<'_>,
     eligible: &[CrapEntry],
@@ -600,7 +613,12 @@ fn write_summary(
     };
     let (_, counts, gating_signals) =
         compute_prepared_delta(settings, eligible, shown, baseline, tool);
-    render_delta_summary_lines(&counts, gating_signals, out)?;
+    report::render_delta_summary_lines(
+        &counts,
+        gating_signals,
+        tool.policy.signal_detail_hint,
+        out,
+    )?;
     Ok((counts.regressed, gating_signals))
 }
 
@@ -627,31 +645,36 @@ fn write_delta(
     Ok((counts.regressed, gating_signals))
 }
 
-fn render_delta_summary_lines(
-    counts: &DeltaCounts,
-    signal_gates: usize,
-    out: &mut dyn Write,
-) -> Result<()> {
-    report::render_delta_counts(counts, out)?;
-    if signal_gates > 0 {
-        writeln!(
-            out,
-            "✗ {signal_gates} signal regression(s); run without --summary for the reasons"
-        )?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pr_comment_summary_honors_an_override_for_the_cargo_policy() {
+        use crate::report::test_support::CARGO_CRAP_FIXTURE;
+        let opts = RenderOptions {
+            format: Format::PrComment,
+            pr_comment_marker: Some("custom"),
+            ..RenderOptions::new(&CARGO_CRAP_FIXTURE)
+        };
+        assert!(summary_marker(&opts));
+        assert!(!summary_marker(&RenderOptions {
+            pr_comment_marker: None,
+            ..opts
+        }));
+        assert!(!summary_marker(&RenderOptions {
+            format: Format::Markdown,
+            ..opts
+        }));
+    }
 
     #[test]
     fn the_summary_notes_signal_regressions_only_when_there_are_some() {
         let counts = DeltaCounts::default();
         let text = |gates| {
             let mut out = Vec::new();
-            render_delta_summary_lines(&counts, gates, &mut out).expect("writes");
+            report::render_delta_summary_lines(&counts, gates, Some("hint"), &mut out)
+                .expect("writes");
             String::from_utf8(out).expect("utf-8")
         };
         assert!(!text(0).contains("signal regression"), "{}", text(0));
@@ -723,6 +746,8 @@ mod tests {
             links: None,
             cwd: Path::new(""),
             workspace_root: None,
+            pr_comment_marker: None,
+            repo_prefix: None,
             fail_sections: false,
         };
         let mut row = sample().remove(0);
@@ -811,6 +836,8 @@ mod tests {
                     links: None,
                     cwd: Path::new(""),
                     workspace_root: None,
+                    pr_comment_marker: None,
+                    repo_prefix: None,
                     fail_sections: false,
                 };
                 let baseline = BaselineFilter::new(&AllFiles, &allow).prepare(Baseline {
@@ -867,6 +894,8 @@ mod tests {
             links: None,
             cwd: Path::new(""),
             workspace_root: None,
+            pr_comment_marker: None,
+            repo_prefix: None,
             fail_sections: false,
         };
         let outcome = |sections: &[&dyn Section], fail_sections: bool| {
@@ -984,6 +1013,7 @@ mod tests {
                 pairing: PairPolicy::FileFunction,
                 fail_above_counts: Population::All,
                 summary_formats: &[Format::Human],
+                signal_detail_hint: None,
                 tie_order: TieOrder::FileFunctionLine,
             },
             version: "0.2.3",
@@ -1030,6 +1060,8 @@ mod tests {
             links: None,
             cwd: Path::new(""),
             workspace_root: None,
+            pr_comment_marker: None,
+            repo_prefix: None,
             fail_sections: false,
         };
         let run_case = |kind: Option<CoverageKind>,
@@ -1125,6 +1157,8 @@ mod tests {
             links: None,
             cwd: Path::new(""),
             workspace_root: None,
+            pr_comment_marker: None,
+            repo_prefix: None,
             fail_sections: false,
         };
         for (min, top) in [(None, Some(0)), (Some(f64::NAN), None)] {
@@ -1176,6 +1210,8 @@ mod tests {
                 links: None,
                 cwd: Path::new(""),
                 workspace_root: None,
+                pr_comment_marker: None,
+                repo_prefix: None,
                 fail_sections: false,
             };
             let mut out = Vec::new();
@@ -1288,6 +1324,8 @@ mod tests {
             links: None,
             cwd: Path::new(""),
             workspace_root: None,
+            pr_comment_marker: None,
+            repo_prefix: None,
             fail_sections: true,
         }
     }

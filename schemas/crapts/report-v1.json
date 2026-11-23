@@ -38,7 +38,6 @@
     },
     "threshold": {
       "type": "number",
-      "minimum": 0,
       "description": "CRAP threshold above which a function counts as crappy."
     },
     "selection": {

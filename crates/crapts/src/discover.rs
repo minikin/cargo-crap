@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::ErrorKind;
@@ -33,6 +33,7 @@ pub struct DiscoveryOptions {
 pub struct ExcludePattern {
     pub pattern: String,
     pub origin: GlobOrigin,
+    pub base_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,17 +43,47 @@ pub enum GlobOrigin {
     Flag,
 }
 
+impl ExcludePattern {
+    #[must_use]
+    pub fn unused_warning(&self) -> String {
+        let pattern = &self.pattern;
+        match &self.origin {
+            GlobOrigin::Config(file) => format!(
+                "{}: exclude '{pattern}' excluded no file; globs are relative to the config directory",
+                file.display()
+            ),
+            GlobOrigin::Default => format!(
+                "default exclude '{pattern}' excluded no file; globs are relative to the current directory"
+            ),
+            GlobOrigin::Flag => format!(
+                "--exclude '{pattern}' excluded no file; globs are relative to the current directory"
+            ),
+        }
+    }
+}
+
 impl DiscoveryOptions {
+    pub(crate) fn validate(
+        cwd: &Path,
+        patterns: &[ExcludePattern],
+    ) -> Result<(), InputError> {
+        compile(cwd, patterns).map(|_| ())
+    }
+
+    #[must_use]
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
+        let cwd = cwd.into();
+        let base_dir = std::path::absolute(&cwd).unwrap_or_else(|_| PathBuf::from("."));
         let defaults = DEFAULT_EXCLUDES
             .iter()
             .map(|&pattern| ExcludePattern {
                 pattern: pattern.to_owned(),
                 origin: GlobOrigin::Default,
+                base_dir: base_dir.clone(),
             })
             .collect();
         Self {
-            cwd: cwd.into(),
+            cwd,
             defaults,
             excludes: Vec::new(),
         }
@@ -70,7 +101,7 @@ pub struct Discovery {
 pub struct DiscoveryScope {
     cwd: PathBuf,
     invoked: PathBuf,
-    repository: Option<PathBuf>,
+    worktree: Worktree,
     directories: Vec<PathBuf>,
     leaves: BTreeSet<PathBuf>,
     selected: BTreeSet<OsString>,
@@ -79,13 +110,29 @@ pub struct DiscoveryScope {
 }
 
 impl DiscoveryScope {
+    #[must_use]
+    pub fn repo_prefix(&self) -> &Path {
+        &self.worktree.prefix
+    }
+
+    /// Rules retain their configured base even when the directory no longer exists.
+    #[must_use = "consume the iterator to inspect the exclusions for this scope"]
+    pub fn exclusions(&self) -> impl Iterator<Item = &ExcludePattern> {
+        self.defaults.patterns.iter().chain(&self.extras.patterns)
+    }
+
     /// # Errors
     /// Filesystem lookup or Git ignore checks can fail for paths absent from the discovery result.
     pub fn keeps(
         &self,
         path: &Path,
     ) -> Result<bool, InputError> {
-        let absolute = absolute_input(&self.invoked, &self.cwd, self.repository.as_deref(), path);
+        let absolute = absolute_input(
+            &self.invoked,
+            &self.cwd,
+            self.worktree.root.as_deref(),
+            path,
+        );
         let name = relative(&self.cwd, &absolute);
         if self.selected.contains(&name) {
             return Ok(true);
@@ -98,7 +145,7 @@ impl DiscoveryScope {
         if file_type(&absolute)?.is_some() {
             return Ok(false);
         }
-        if self.repository.is_none() {
+        if !self.worktree.indexed {
             return Ok(!local.iter().any(pruned));
         }
         if absolute
@@ -132,9 +179,8 @@ impl DiscoveryScope {
     fn finish(
         mut self,
         names: BTreeSet<OsString>,
-        patterns: &[ExcludePattern],
     ) -> Discovery {
-        let mut used = vec![false; patterns.len()];
+        let mut used = vec![false; self.extras.patterns.len()];
         let mut matches = Vec::new();
         for name in names {
             let path = Path::new(&name);
@@ -150,7 +196,9 @@ impl DiscoveryScope {
         }
         let mut files: Vec<_> = self.selected.iter().map(PathBuf::from).collect();
         files.sort_by_cached_key(|file| file.to_string_lossy().encode_utf16().collect::<Vec<_>>());
-        let unused_excludes = patterns
+        let unused_excludes = self
+            .extras
+            .patterns
             .iter()
             .zip(used)
             .filter_map(|(rule, used)| if used { None } else { Some(rule.clone()) })
@@ -180,44 +228,61 @@ pub fn discover(
         .cwd
         .canonicalize()
         .map_err(|error| InputError::at(&options.cwd, error))?;
+    let worktree = Worktree::probe(&physical)?;
+    discover_probed(roots, options, physical, worktree)
+}
+
+pub(crate) fn discover_probed(
+    roots: &[PathBuf],
+    options: &DiscoveryOptions,
+    physical: PathBuf,
+    worktree: Worktree,
+) -> Result<Discovery, InputError> {
     let invoked = std::path::absolute(&options.cwd).map_err(|e| InputError::at(&options.cwd, e))?;
-    let repository = worktree(&physical)?;
-    let cwd = if repository.is_some() {
+    let cwd = if worktree.root.is_some() {
         physical
     } else {
         invoked.clone()
     };
-    let resolved = resolve_roots(roots, &invoked, &cwd, repository.as_deref())?;
-    let defaults = compile(&options.defaults)?;
-    let extras = compile(&options.excludes)?;
+    let resolved = resolve_roots(roots, &invoked, &cwd, worktree.root.as_deref())?;
+    let defaults = compile(&invoked, &options.defaults)?;
+    let extras = compile(&invoked, &options.excludes)?;
     let directories = resolved
         .iter()
         .filter(|root| root.is_dir)
         .map(|root| root.absolute.clone())
         .collect();
     let inputs: Vec<_> = resolved.into_iter().map(|root| root.absolute).collect();
-    let listing = match &repository {
-        Some(_) => git_files(&cwd, &inputs)?,
-        None => Listing {
+    let listing = if worktree.indexed {
+        git_files(&cwd, &inputs)?
+    } else {
+        Listing {
             files: walk_files(&cwd, inputs)?,
             ..Listing::default()
-        },
+        }
     };
     let scope = DiscoveryScope {
         cwd,
         invoked,
         directories,
-        repository,
+        worktree,
         leaves: listing.leaves,
         selected: BTreeSet::new(),
         defaults,
         extras,
     };
-    Ok(scope.finish(listing.files, &options.excludes))
+    Ok(scope.finish(listing.files))
 }
 
 #[derive(Debug)]
 struct Exclusions {
+    cwd: PathBuf,
+    patterns: Vec<ExcludePattern>,
+    groups: BTreeMap<PathBuf, ParentGroups>,
+}
+
+#[derive(Debug)]
+struct ParentGroups {
     by_parent_depth: Vec<GlobGroup>,
 }
 
@@ -227,7 +292,7 @@ struct GlobGroup {
     indices: Vec<usize>,
 }
 
-impl Exclusions {
+impl ParentGroups {
     fn group<'p>(
         &self,
         mut path: &'p Path,
@@ -239,13 +304,27 @@ impl Exclusions {
         }
         self.by_parent_depth.get(depth).map(|group| (group, path))
     }
+}
+
+impl Exclusions {
+    fn matching_groups(
+        &self,
+        path: &Path,
+    ) -> impl Iterator<Item = (&GlobGroup, PathBuf)> {
+        let file = resolve(&self.cwd, path);
+        self.groups.iter().filter_map(move |(base, groups)| {
+            let name = relative(base, &file);
+            let (group, rest) = groups.group(Path::new(&name))?;
+            Some((group, rest.to_owned()))
+        })
+    }
 
     fn is_match(
         &self,
         path: &Path,
     ) -> bool {
-        self.group(path)
-            .is_some_and(|(group, rest)| group.set.is_match(rest))
+        self.matching_groups(path)
+            .any(|(group, rest)| group.set.is_match(rest))
     }
 
     fn matches_into(
@@ -254,11 +333,14 @@ impl Exclusions {
         indices: &mut Vec<usize>,
     ) {
         indices.clear();
-        if let Some((group, rest)) = self.group(path) {
-            group.set.matches_into(rest, indices);
-            for index in indices {
-                *index = group.indices[*index];
-            }
+        for (group, rest) in self.matching_groups(path) {
+            indices.extend(
+                group
+                    .set
+                    .matches(rest)
+                    .into_iter()
+                    .map(|index| group.indices[index]),
+            );
         }
     }
 }
@@ -359,9 +441,15 @@ fn glob_error(
     }
 }
 
-fn compile(patterns: &[ExcludePattern]) -> Result<Exclusions, InputError> {
-    let mut groups: Vec<(GlobSetBuilder, Vec<usize>)> = Vec::new();
+type GlobBuilders = Vec<(GlobSetBuilder, Vec<usize>)>;
+
+fn compile(
+    cwd: &Path,
+    patterns: &[ExcludePattern],
+) -> Result<Exclusions, InputError> {
+    let mut by_base = BTreeMap::<PathBuf, GlobBuilders>::new();
     for (index, rule) in patterns.iter().enumerate() {
+        let groups = by_base.entry(resolve(cwd, &rule.base_dir)).or_default();
         for (depth, variant) in parent_variants(&rule.pattern).into_iter().enumerate() {
             let matcher = glob(variant).map_err(|error| glob_error(rule, &error))?;
             if depth == groups.len() {
@@ -371,18 +459,28 @@ fn compile(patterns: &[ExcludePattern]) -> Result<Exclusions, InputError> {
             groups[depth].1.push(index);
         }
     }
-    let by_parent_depth = groups
+    let groups = by_base
+        .into_iter()
+        .map(|(base, builders)| Ok((base, build_groups(builders)?)))
+        .collect::<Result<_, InputError>>()?;
+    Ok(Exclusions {
+        cwd: cwd.to_owned(),
+        groups,
+        patterns: patterns.to_owned(),
+    })
+}
+
+fn build_groups(builders: GlobBuilders) -> Result<ParentGroups, InputError> {
+    let by_parent_depth = builders
         .into_iter()
         .map(|(builder, indices)| {
-            Ok(GlobGroup {
-                set: builder
-                    .build()
-                    .map_err(|error| InputError::message(format!("invalid glob set: {error}")))?,
-                indices,
-            })
+            let set = builder
+                .build()
+                .map_err(|error| InputError::message(format!("invalid glob set: {error}")))?;
+            Ok(GlobGroup { set, indices })
         })
         .collect::<Result<_, InputError>>()?;
-    Ok(Exclusions { by_parent_depth })
+    Ok(ParentGroups { by_parent_depth })
 }
 
 pub(super) fn source_extension(path: &Path) -> Option<&str> {
@@ -414,27 +512,93 @@ fn git(cwd: &Path) -> Command {
     command
 }
 
-fn worktree(cwd: &Path) -> Result<Option<PathBuf>, InputError> {
-    let output = match git(cwd)
-        .args(["rev-parse", "--is-inside-work-tree", "--show-cdup"])
+#[derive(Debug, Default)]
+pub(crate) struct Worktree {
+    pub(crate) root: Option<PathBuf>,
+    prefix: PathBuf,
+    indexed: bool,
+}
+
+impl Worktree {
+    pub(crate) fn probe(cwd: &Path) -> Result<Self, InputError> {
+        let top = match git(cwd).args(["rev-parse", "--show-toplevel"]).output() {
+            Ok(output) => output,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Self::filesystem(cwd),
+            Err(error) => {
+                return Err(InputError::at(
+                    cwd,
+                    format!("git rev-parse --show-toplevel: {error}"),
+                ));
+            },
+        };
+        if !top.status.success() {
+            return Ok(Self::default());
+        }
+        let root = PathBuf::from(git_name(git_line(&top.stdout)));
+        let root = root.canonicalize().map_err(|error| {
+            InputError::at(&root, format!("git rev-parse --show-toplevel: {error}"))
+        })?;
+        Ok(Self {
+            root: Some(root),
+            prefix: git_prefix(cwd)?,
+            indexed: true,
+        })
+    }
+
+    fn filesystem(cwd: &Path) -> Result<Self, InputError> {
+        for dir in cwd.ancestors() {
+            let marker = dir.join(".git");
+            let kind = fs::metadata(&marker)
+                .map(|stat| Some(stat.file_type()))
+                .or_else(|error| missing_file(&marker, error))?;
+            if kind.is_some_and(|kind| kind.is_dir() || kind.is_file()) {
+                return Ok(Self {
+                    root: Some(dir.to_owned()),
+                    prefix: cwd
+                        .strip_prefix(dir)
+                        .expect("an ancestor is a prefix")
+                        .to_owned(),
+                    indexed: false,
+                });
+            }
+        }
+        Ok(Self::default())
+    }
+}
+
+fn git_line(bytes: &[u8]) -> &[u8] {
+    bytes
+        .strip_suffix(b"\r\n")
+        .or_else(|| bytes.strip_suffix(b"\n"))
+        .unwrap_or(bytes)
+}
+
+fn git_prefix(cwd: &Path) -> Result<PathBuf, InputError> {
+    let command = "git rev-parse --is-inside-work-tree --show-prefix";
+    let output = git(cwd)
+        .args(["rev-parse", "--is-inside-work-tree", "--show-prefix"])
         .output()
-    {
-        Ok(output) => output,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(InputError::at(cwd, format!("git rev-parse: {error}"))),
-    };
+        .map_err(|error| InputError::at(cwd, format!("{command}: {error}")))?;
     if !output.status.success() {
-        return Ok(None);
+        return Err(InputError::at(
+            cwd,
+            format!(
+                "{command}: {}",
+                String::from_utf8_lossy(&output.stderr).trim_end()
+            ),
+        ));
     }
-    let response = String::from_utf8_lossy(&output.stdout);
-    let mut lines = response.lines();
-    if lines.next() != Some("true") {
-        return Ok(None);
-    }
-    Ok(Some(resolve(
-        cwd,
-        Path::new(lines.next().unwrap_or_default()),
-    )))
+    let prefix = prefix_record(&output.stdout)
+        .ok_or_else(|| InputError::at(cwd, format!("{command}: expected a worktree prefix")))?;
+    Ok(PathBuf::from(git_name(prefix)))
+}
+
+fn prefix_record(stdout: &[u8]) -> Option<&[u8]> {
+    let record = stdout
+        .strip_prefix(b"true\n")
+        .or_else(|| stdout.strip_prefix(b"true\r\n"))?;
+    let prefix = git_line(record);
+    Some(prefix.strip_suffix(b"/").unwrap_or(prefix))
 }
 
 pub(crate) fn resolve(
@@ -647,8 +811,9 @@ mod tests {
         .map(|p| ExcludePattern {
             pattern: p.to_owned(),
             origin: GlobOrigin::Flag,
+            base_dir: PathBuf::from("."),
         });
-        let set = compile(&rules).unwrap();
+        let set = compile(Path::new("/old/checkout/pkg"), &rules).unwrap();
         let mut indices = Vec::new();
         for (path, expected) in [
             ("shared/x.ts", &[0][..]),
@@ -742,8 +907,9 @@ mod tests {
         let flag_rule = ExcludePattern {
             pattern: "src/[".to_owned(),
             origin: GlobOrigin::Flag,
+            base_dir: PathBuf::from("."),
         };
-        let flag_err = compile(&[flag_rule]).unwrap_err();
+        let flag_err = compile(Path::new("/old/checkout/pkg"), &[flag_rule]).unwrap_err();
         assert_eq!(flag_err.path(), Path::new(""));
         assert!(
             flag_err.to_string().starts_with("invalid glob src/["),
@@ -753,8 +919,9 @@ mod tests {
         let default_rule = ExcludePattern {
             pattern: "src/{".to_owned(),
             origin: GlobOrigin::Default,
+            base_dir: PathBuf::from("."),
         };
-        let default_err = compile(&[default_rule]).unwrap_err();
+        let default_err = compile(Path::new("/old/checkout/pkg"), &[default_rule]).unwrap_err();
         assert_eq!(default_err.path(), Path::new(""));
         assert!(
             default_err.to_string().starts_with("invalid glob src/{"),
@@ -764,8 +931,9 @@ mod tests {
         let config_rule = ExcludePattern {
             pattern: "../[".to_owned(),
             origin: GlobOrigin::Config(PathBuf::from("sub/crapts.toml")),
+            base_dir: PathBuf::from("."),
         };
-        let config_err = compile(&[config_rule]).unwrap_err();
+        let config_err = compile(Path::new("/old/checkout/pkg"), &[config_rule]).unwrap_err();
         assert_eq!(config_err.path(), Path::new("sub/crapts.toml"));
         assert!(
             config_err
@@ -773,5 +941,108 @@ mod tests {
                 .starts_with("sub/crapts.toml: invalid glob ../["),
             "{config_err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn filesystem_boundaries_recognize_the_nearest_git_directory_or_gitfile() {
+        let repo = tempfile::tempdir().unwrap();
+        let nested = repo.path().join("outer/packages/app");
+        fs::create_dir_all(&nested).unwrap();
+        let outer = repo.path().join("outer");
+        fs::create_dir(repo.path().join(".git")).unwrap();
+        fs::write(outer.join(".git"), "gitdir: ../metadata").unwrap();
+        let tree = Worktree::filesystem(&nested).unwrap();
+        assert_eq!(tree.root.as_deref(), Some(outer.as_path()));
+        assert_eq!(tree.prefix, Path::new("packages/app"));
+        fs::remove_file(outer.join(".git")).unwrap();
+        let tree = Worktree::filesystem(&nested).unwrap();
+        assert_eq!(tree.root.as_deref(), Some(repo.path()));
+        assert_eq!(tree.prefix, Path::new("outer/packages/app"));
+        fs::remove_dir(repo.path().join(".git")).unwrap();
+        let tree = Worktree::filesystem(&nested).unwrap();
+        assert_eq!(tree.root, None);
+        assert_eq!(tree.prefix, Path::new(""));
+    }
+
+    #[test]
+    fn unused_builtin_rules_identify_the_default_origin() {
+        let rule = DiscoveryOptions::new(".").defaults.remove(0);
+        assert_eq!(
+            rule.unused_warning(),
+            "default exclude '**/node_modules/**' excluded no file; globs are relative to the current directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_git_directory_or_gitfile_is_a_filesystem_boundary() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("repo");
+        let nested = repo.join("pkg");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(d.path().join(".git")).unwrap();
+        for (name, dir) in [("metadata", true), ("gitfile", false)] {
+            let target = d.path().join(name);
+            if dir {
+                fs::create_dir(&target).unwrap();
+            } else {
+                fs::write(&target, "gitdir: metadata").unwrap();
+            }
+            symlink(&target, repo.join(".git")).unwrap();
+            let tree = Worktree::filesystem(&nested).unwrap();
+            assert_eq!(tree.root.as_deref(), Some(repo.as_path()));
+            assert_eq!(tree.prefix, Path::new("pkg"));
+            fs::remove_file(repo.join(".git")).unwrap();
+        }
+    }
+
+    #[test]
+    fn git_prefix_records_match_the_filesystem_spelling() {
+        for record in [
+            b"true\npkg/app/\n".as_slice(),
+            b"true\r\npkg/app/\r\n",
+            b"true\npkg/app",
+        ] {
+            assert_eq!(prefix_record(record), Some(b"pkg/app".as_slice()));
+        }
+        assert_eq!(prefix_record(b"true\n\n"), Some(b"".as_slice()));
+        assert_eq!(prefix_record(b"false\n"), None);
+    }
+
+    #[test]
+    fn git_record_endings_preserve_the_path_bytes() {
+        assert_eq!(git_line(b"root/path\r\n"), b"root/path");
+        assert_eq!(git_line(b"root/path\n"), b"root/path");
+        assert_eq!(git_line(b"root/path"), b"root/path");
+    }
+
+    proptest! {
+        #[test]
+        fn parent_config_globs_rebase_across_nested_invocations(
+            dir in "[a-z]{1,6}", depth in 1usize..5, leaf in "[a-z]{1,8}",
+            extension in prop::sample::select(vec!["ts","tsx"]), wildcard in any::<bool>(),
+        ) {
+            let root=std::env::temp_dir().join("historical");
+            let tail=vec!["child";depth].join("/");
+            let nested=root.join(&dir).join(&tail);
+            let pattern=if wildcard {format!("{dir}/**/g?n/*.{extension}")} else {format!("{dir}/{tail}/gen/{leaf}.{extension}")};
+            let config=ExcludePattern{pattern,origin:GlobOrigin::Config(root.join(".crapts.toml")),base_dir:root};
+            let flag=ExcludePattern{pattern:format!("../inbox/{leaf}.{extension}"),origin:GlobOrigin::Flag,base_dir:nested.clone()};
+            let set=compile(&nested,&[config,flag]).unwrap();
+            let file=format!("{leaf}.{extension}");
+            let outside=format!("{}gen/{file}","../".repeat(depth+2));
+            for (path,hits) in [(format!("gen/{file}"),vec![0]),(format!("../inbox/{file}"),vec![1]),(format!("src/{file}"),vec![]),(outside,vec![])] {
+                let mut actual=Vec::new();
+                set.matches_into(Path::new(&path),&mut actual);
+                prop_assert_eq!(actual,hits);
+            }
+        }
     }
 }

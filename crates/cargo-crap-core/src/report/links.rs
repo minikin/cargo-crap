@@ -140,11 +140,11 @@ fn root_or_cwd(root: Option<&Path>) -> Option<PathBuf> {
 /// otherwise return `inner` unchanged.
 pub(crate) fn linkify(
     inner: String,
-    links: Option<&SourceLinks>,
+    opts: &super::RenderOptions,
     file: &Path,
     line: usize,
 ) -> String {
-    let Some(links) = links else {
+    let Some(links) = opts.links else {
         return inner;
     };
     // `join` keeps an absolute `file` as it is.
@@ -153,14 +153,46 @@ pub(crate) fn linkify(
         |workspace_root| workspace_root.join(file),
     );
     match link_path(&file, links.root.as_deref()) {
-        Some(path) => format!("[{inner}]({})", links.url_for(&path, line)),
+        Some(path) => format!(
+            "[{inner}]({})",
+            links.url_for(&project_path(opts.repo_prefix, &path), line)
+        ),
         None => inner,
     }
+}
+
+pub(super) fn project_path<'p>(
+    prefix: Option<&Path>,
+    path: &'p Path,
+) -> std::borrow::Cow<'p, Path> {
+    use std::borrow::Cow;
+    use std::path::Component;
+    let Some(prefix) = prefix else {
+        return Cow::Borrowed(path);
+    };
+    let joined = PathBuf::from(crate::paths::path_key(prefix)).join(crate::paths::path_key(path));
+    let mut result = PathBuf::new();
+    for part in joined.components() {
+        match part {
+            Component::CurDir => {},
+            Component::ParentDir if result.file_name().is_some() => {
+                result.pop();
+            },
+            _ => result.push(part),
+        }
+    }
+    Cow::Owned(crate::paths::path_key(&result).into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn with_links(links: &SourceLinks) -> crate::report::RenderOptions<'_> {
+        crate::report::RenderOptions {
+            links: Some(links),
+            ..crate::report::RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
+        }
+    }
 
     #[test]
     fn a_workspace_relative_path_links_as_its_absolute_path_would() {
@@ -169,7 +201,7 @@ mod tests {
         let links = SourceLinks::new("https://github.com/o/r".into(), "abc".into())
             .with_root(ws.join("crates/beta"))
             .with_workspace_root(ws.clone());
-        let at = |file: &Path| linkify("x".into(), Some(&links), file, 3);
+        let at = |file: &Path| linkify("x".into(), &with_links(&links), file, 3);
         let relative = Path::new("crates/beta/src/a.rs");
         assert_eq!(
             at(relative),
@@ -250,14 +282,54 @@ mod tests {
             SourceLinks::new("https://github.com/o/r".into(), "abc".into()).with_root(root.clone());
         let inside = root.join("src").join("a.rs");
         assert_eq!(
-            linkify("`f`".into(), Some(&links), &inside, 3),
+            linkify("`f`".into(), &with_links(&links), &inside, 3),
             "[`f`](https://github.com/o/r/blob/abc/src/a.rs#L3)"
         );
         let outside = std::env::temp_dir().join("elsewhere").join("a.rs");
         assert_eq!(
-            linkify("`f`".into(), Some(&links), &outside, 3),
+            linkify("`f`".into(), &with_links(&links), &outside, 3),
             "`f`",
             "outside the root stays plain"
         );
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn repository_prefix_projects_only_destination_paths() {
+        let path = Path::new(r"..\shared/a.ts");
+        assert_eq!(
+            project_path(Some(Path::new(r"packages\app")), path).as_ref(),
+            Path::new("packages/shared/a.ts")
+        );
+        assert_eq!(project_path(None, path).as_ref(), path);
+        for (prefix, file, expected) in [
+            (".", "file.ts", "file.ts"),
+            ("pkg", "../../../shared.ts", "../../shared.ts"),
+            ("pkg", "..", ""),
+        ] {
+            assert_eq!(
+                project_path(Some(Path::new(prefix)), Path::new(file)).as_os_str(),
+                std::ffi::OsStr::new(expected)
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn path_projection_normalizes_dots_and_both_separator_spellings(
+            base in "[a-z]{1,10}", name in "[a-z]{1,10}", backslash in any::<bool>(),
+        ) {
+            let prefix = format!("{base}/app");
+            let mut file = format!(".././old/../src/{name}.ts");
+            if backslash { file = file.replace('/', r"\"); }
+            let result = project_path(Some(Path::new(&prefix)), Path::new(&file));
+            let expected = Path::new(&base).join("src").join(format!("{name}.ts"));
+            prop_assert_eq!(result.as_ref(), expected.as_path());
+        }
     }
 }

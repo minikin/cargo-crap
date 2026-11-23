@@ -10,6 +10,7 @@ Tool {
             Format::Sarif,
             Format::Shields,
         ],
+        signal_detail_hint: Some("run without --summary for the reasons"),
         tie_order: TieOrder::Stable,
     },
     name: "cargo-crap",

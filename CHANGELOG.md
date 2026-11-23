@@ -58,6 +58,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking library API.** Core `Policy` literals gain `signal_detail_hint`.
+  Set it to `Some("run without --summary for the reasons")` to keep the
+  cargo-crap hint, or `None` to omit it. In full `Settings` and `RenderOptions`
+  literals set `pr_comment_marker: None` and `repo_prefix: None` for the
+  previous behavior. `RenderOptions::new` already supplies these defaults.
+  Core adds `config::find_upwards` and `AllowSet::compile_with_bases`.
+  Existing `AllowSet::compile` calls continue to work. In the crapts library,
+  supply each discovery exclusion's pattern, origin and base directory.
+  Cargo-crap CLI behavior is unchanged.
+
 - **BREAKING (library API):** `run::run` takes a sections slice between the
   prepared baseline and extras. Cargo-crap callers pass `&[]`. Add
   `coverage_kind: None` and `notices: &[]` to existing `Analysis` literals

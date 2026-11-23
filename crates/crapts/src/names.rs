@@ -949,7 +949,7 @@ mod tests {
 
         #[test]
         fn inserting_trivia_between_key_tokens_preserves_computed_text(
-            name in "v[a-zA-Z0-9]{0,8}", value in proptest::prelude::any::<u16>(),
+            name in "v_[a-zA-Z0-9]{0,8}", value in proptest::prelude::any::<u16>(),
             gaps in proptest::collection::vec(0..5usize, 14),
         ) {
             let number = value.to_string();

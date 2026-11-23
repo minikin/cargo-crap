@@ -58,9 +58,10 @@ pub(crate) use json::{
 };
 pub use links::SourceLinks;
 pub use section::{Placement, Section};
+pub(crate) use summary::render_delta_summary_lines;
 pub use summary::{render_delta_counts, render_delta_summary, render_summary};
 pub use tool::{Schemas, Tool};
-pub use types::{output_width, set_color_enabled};
+pub use types::{output_width, set_color_enabled, with_color};
 
 /// Output format for the report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +110,7 @@ pub enum Format {
 ///         pairing: PairPolicy::FileFunctionLine,
 ///         fail_above_counts: Population::Shown,
 ///         summary_formats: &[Format::Human],
+///         signal_detail_hint: None,
 ///         tie_order: TieOrder::Stable,
 ///     },
 ///     name: "my-tool",
@@ -136,6 +138,8 @@ pub struct RenderOptions<'a> {
     pub format: Format,
     /// GitHub source links for `markdown` / `pr-comment` cells (spec 12).
     pub links: Option<&'a SourceLinks>,
+    pub pr_comment_marker: Option<&'a str>,
+    pub repo_prefix: Option<&'a Path>,
     /// Source/LCOV scope diagnostics (spec 24); embedded in the JSON
     /// envelope only — other formats report mismatches via the CLI's
     /// stderr warning.
@@ -223,6 +227,8 @@ impl<'a> RenderOptions<'a> {
             threshold: crate::score::DEFAULT_THRESHOLD,
             format: Format::Human,
             links: None,
+            pr_comment_marker: None,
+            repo_prefix: None,
             diagnostics: None,
             show_unchanged: false,
             uncovered_hints: false,
@@ -305,12 +311,14 @@ pub(crate) fn render_inner(
             opts.width,
             out,
         ),
-        Format::GitHub => github::render_github(entries, threshold, opts.cwd, out),
+        Format::GitHub => {
+            github::render_github(entries, threshold, opts.cwd, opts.repo_prefix, out)
+        },
         Format::Markdown if include_marker => markdown::render_markdown(&shown, opts, out),
         Format::Markdown => markdown::render_markdown_body(&shown, opts, out),
         Format::PrComment if include_marker => pr_comment::render_pr_comment(&shown, opts, out),
         Format::PrComment => pr_comment::render_pr_comment_body(&shown, opts, out),
-        Format::Sarif => sarif::render_sarif(&shown, threshold, opts.tool, out),
+        Format::Sarif => sarif::render_sarif(&shown, threshold, opts.tool, opts.repo_prefix, out),
         Format::Shields => shields::render_shields(entries, threshold, out),
     }
 }
@@ -349,7 +357,9 @@ pub(crate) fn render_delta_inner(
             json::render_delta_json(shown, &below.options(opts), out)
         },
         Format::Human => human::render_delta_human(shown, opts, &counts, out),
-        Format::GitHub => github::render_delta_github(report, threshold, opts.cwd, out),
+        Format::GitHub => {
+            github::render_delta_github(report, threshold, opts.cwd, opts.repo_prefix, out)
+        },
         Format::Markdown if include_marker => {
             markdown::render_delta_markdown(shown, opts, &counts, out)
         },
@@ -548,11 +558,18 @@ fn duplicate_table(
 
 /// Prepend the hidden HTML marker that lets CI identify and update the PR
 /// comment. Used by both [`markdown`] and [`pr_comment`] renderers.
+fn selected_comment_marker<'a>(opts: &'a RenderOptions<'a>) -> &'a str {
+    match opts.format {
+        Format::PrComment => opts.pr_comment_marker.unwrap_or(opts.tool.comment_marker),
+        _ => opts.tool.comment_marker,
+    }
+}
+
 pub(crate) fn write_pr_comment_marker(
-    tool: &Tool,
+    opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    writeln!(out, "{}", tool.comment_marker)?;
+    writeln!(out, "{}", selected_comment_marker(opts))?;
     writeln!(out)?;
     Ok(())
 }

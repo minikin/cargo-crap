@@ -111,12 +111,13 @@ pub(crate) fn render_sarif(
     entries: &[CrapEntry],
     threshold: f64,
     tool: &Tool,
+    repo_prefix: Option<&Path>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let results: Vec<SarifResult> = entries
         .iter()
         .filter(|e| Severity::classify(e.crap, threshold) == Severity::Crappy)
-        .map(build_result)
+        .map(|entry| build_result(entry, repo_prefix))
         .collect();
 
     let log = SarifLog {
@@ -156,7 +157,10 @@ fn build_driver(tool: &Tool) -> SarifDriver {
     }
 }
 
-fn build_result(entry: &CrapEntry) -> SarifResult {
+fn build_result(
+    entry: &CrapEntry,
+    repo_prefix: Option<&Path>,
+) -> SarifResult {
     SarifResult {
         rule_id: RULE_ID,
         level: "warning",
@@ -166,7 +170,7 @@ fn build_result(entry: &CrapEntry) -> SarifResult {
         locations: vec![SarifLocation {
             physical_location: SarifPhysicalLocation {
                 artifact_location: SarifArtifactLocation {
-                    uri: normalize_path(&entry.file),
+                    uri: normalize_path(&super::links::project_path(repo_prefix, &entry.file)),
                 },
                 region: SarifRegion {
                     start_line: entry.line,

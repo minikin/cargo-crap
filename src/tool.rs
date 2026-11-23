@@ -18,6 +18,7 @@ pub const CARGO_CRAP_POLICY: Policy = Policy {
         Format::Sarif,
         Format::Shields,
     ],
+    signal_detail_hint: Some("run without --summary for the reasons"),
     tie_order: TieOrder::Stable,
 };
 

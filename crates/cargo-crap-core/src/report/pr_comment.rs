@@ -8,7 +8,7 @@
 //! Use [`super::markdown`] for the exhaustive variant suitable for archived
 //! artifacts.
 
-use super::links::{SourceLinks, linkify};
+use super::links::linkify;
 use super::types::{
     Grade, cc_display, delta_display, uncovered_cell_suffix, write_abs_gfm_header,
     write_delta_gfm_header,
@@ -98,21 +98,21 @@ fn write_pr_comment_row(
     de: &DeltaEntry,
     threshold: f64,
     prefix: &Path,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
 ) -> Result<()> {
     let e = &de.current;
     let grade = Grade::of(e.crap, threshold);
     let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
     let loc_text = strip_to_display(&e.file, prefix);
-    let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
+    let func = linkify(format!("`{}`", e.function), opts, &e.file, e.line);
     let prev_suffix = de
         .previous_file
         .as_ref()
         .map(|p| format!(" ← `{}`", strip_to_display(p, prefix)))
         .unwrap_or_default();
     let loc_inner = format!("`{loc_text}:{}`{prev_suffix}", e.line);
-    let loc = linkify(loc_inner, links, &e.file, e.line);
+    let loc = linkify(loc_inner, opts, &e.file, e.line);
     writeln!(
         out,
         "| {} | {:.1} | {} | {} | {} | {} | {} |{}",
@@ -134,14 +134,14 @@ fn write_pr_comment_abs_row(
     e: &CrapEntry,
     threshold: f64,
     prefix: &Path,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
 ) -> Result<()> {
     let grade = Grade::of(e.crap, threshold);
     let cov = e.coverage.map_or("—".to_string(), |p| format!("{p:.1}"));
     let loc_text = strip_to_display(&e.file, prefix);
-    let func = linkify(format!("`{}`", e.function), links, &e.file, e.line);
-    let loc = linkify(format!("`{loc_text}:{}`", e.line), links, &e.file, e.line);
+    let func = linkify(format!("`{}`", e.function), opts, &e.file, e.line);
+    let loc = linkify(format!("`{loc_text}:{}`", e.line), opts, &e.file, e.line);
     writeln!(
         out,
         "| {} | {:.1} | {} | {} | {} | {} |{}",
@@ -314,7 +314,7 @@ fn write_pr_comment_primary(
     b: &DeltaBuckets,
     threshold: f64,
     prefix: &Path,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
 ) -> Result<()> {
     let total = b.regressed.len() + b.new_entries.len();
@@ -329,7 +329,7 @@ fn write_pr_comment_primary(
         .chain(b.new_entries.iter())
         .take(MAX_ROWS_PER_SECTION)
     {
-        write_pr_comment_row(out, de, threshold, prefix, links, uncovered_hints)?;
+        write_pr_comment_row(out, de, threshold, prefix, opts, uncovered_hints)?;
     }
     write_truncation_if_capped(out, total)
 }
@@ -339,7 +339,7 @@ fn write_pr_comment_improved_section(
     b: &DeltaBuckets,
     threshold: f64,
     prefix: &Path,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
 ) -> Result<()> {
     if b.improved.is_empty() {
@@ -354,7 +354,7 @@ fn write_pr_comment_improved_section(
     writeln!(out)?;
     write_delta_gfm_header(out, uncovered_hints)?;
     for de in b.improved.iter().take(MAX_ROWS_PER_SECTION) {
-        write_pr_comment_row(out, de, threshold, prefix, links, uncovered_hints)?;
+        write_pr_comment_row(out, de, threshold, prefix, opts, uncovered_hints)?;
     }
     write_truncation_if_capped(out, b.improved.len())?;
     writeln!(out)?;
@@ -370,7 +370,7 @@ fn write_pr_comment_moved_section(
     b: &DeltaBuckets,
     threshold: f64,
     prefix: &Path,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
 ) -> Result<()> {
     if b.moved.is_empty() {
@@ -381,7 +381,7 @@ fn write_pr_comment_moved_section(
     writeln!(out)?;
     write_delta_gfm_header(out, uncovered_hints)?;
     for de in b.moved.iter().take(MAX_ROWS_PER_SECTION) {
-        write_pr_comment_row(out, de, threshold, prefix, links, uncovered_hints)?;
+        write_pr_comment_row(out, de, threshold, prefix, opts, uncovered_hints)?;
     }
     write_truncation_if_capped(out, b.moved.len())?;
     writeln!(out)?;
@@ -394,7 +394,7 @@ fn write_pr_comment_hot_spots_section(
     b: &DeltaBuckets,
     threshold: f64,
     prefix: &Path,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
 ) -> Result<()> {
     if b.hot_spots.is_empty() {
@@ -408,7 +408,7 @@ fn write_pr_comment_hot_spots_section(
     writeln!(out)?;
     write_abs_gfm_header(out, uncovered_hints)?;
     for de in b.hot_spots.iter().take(MAX_ROWS_PER_SECTION) {
-        write_pr_comment_abs_row(out, &de.current, threshold, prefix, links, uncovered_hints)?;
+        write_pr_comment_abs_row(out, &de.current, threshold, prefix, opts, uncovered_hints)?;
     }
     write_truncation_if_capped(out, b.hot_spots.len())?;
     writeln!(out)?;
@@ -451,7 +451,7 @@ pub(crate) fn render_delta_pr_comment(
     counts: &DeltaCounts,
     out: &mut dyn Write,
 ) -> Result<()> {
-    write_pr_comment_marker(opts.tool, out)?;
+    write_pr_comment_marker(opts, out)?;
     render_delta_pr_comment_body(report, opts, counts, out)
 }
 
@@ -463,7 +463,6 @@ pub(crate) fn render_delta_pr_comment_body(
 ) -> Result<()> {
     let RenderOptions {
         threshold,
-        links,
         uncovered_hints,
         cwd,
         ..
@@ -480,14 +479,14 @@ pub(crate) fn render_delta_pr_comment_body(
         super::reasons::gating_signal_count(report),
     )?;
     write_pr_comment_breakdown(out, counts)?;
-    write_pr_comment_primary(out, &buckets, threshold, &prefix, links, uncovered_hints)?;
-    write_pr_comment_reasons(out, report, links, cwd).and_then(|()| {
+    write_pr_comment_primary(out, &buckets, threshold, &prefix, opts, uncovered_hints)?;
+    write_pr_comment_reasons(out, report, opts, cwd).and_then(|()| {
         write_pr_comment_secondary_sections(
             out,
             &buckets,
             threshold,
             &prefix,
-            links,
+            opts,
             uncovered_hints,
         )
     })
@@ -499,7 +498,7 @@ pub(crate) fn render_delta_pr_comment_body(
 fn write_pr_comment_reasons(
     out: &mut dyn Write,
     report: &DeltaReport,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     cwd: &Path,
 ) -> Result<()> {
     let files: Vec<PathBuf> = super::reasons::rows(report)
@@ -507,7 +506,7 @@ fn write_pr_comment_reasons(
         .map(|(e, _)| e.current.file.clone())
         .collect();
     let prefix = compute_render_prefix(&files, cwd);
-    super::reasons::write_markdown(report, links, Some(MAX_ROWS_PER_SECTION), &prefix, out)
+    super::reasons::write_markdown(report, opts, Some(MAX_ROWS_PER_SECTION), &prefix, out)
 }
 
 /// Emit the four secondary sections (Improved / Moved / Hot spots /
@@ -519,12 +518,12 @@ fn write_pr_comment_secondary_sections(
     buckets: &DeltaBuckets,
     threshold: f64,
     prefix: &Path,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
 ) -> Result<()> {
-    write_pr_comment_improved_section(out, buckets, threshold, prefix, links, uncovered_hints)?;
-    write_pr_comment_moved_section(out, buckets, threshold, prefix, links, uncovered_hints)?;
-    write_pr_comment_hot_spots_section(out, buckets, threshold, prefix, links, uncovered_hints)?;
+    write_pr_comment_improved_section(out, buckets, threshold, prefix, opts, uncovered_hints)?;
+    write_pr_comment_moved_section(out, buckets, threshold, prefix, opts, uncovered_hints)?;
+    write_pr_comment_hot_spots_section(out, buckets, threshold, prefix, opts, uncovered_hints)?;
     write_pr_comment_removed_section(out, buckets, prefix)
 }
 
@@ -558,7 +557,7 @@ fn write_pr_comment_abs_table(
     out: &mut dyn Write,
     above: &[&CrapEntry],
     threshold: f64,
-    links: Option<&SourceLinks>,
+    opts: &RenderOptions,
     uncovered_hints: bool,
     cwd: &Path,
 ) -> Result<()> {
@@ -570,7 +569,7 @@ fn write_pr_comment_abs_table(
     writeln!(out)?;
     write_abs_gfm_header(out, uncovered_hints)?;
     for e in above.iter().take(MAX_ROWS_PER_SECTION) {
-        write_pr_comment_abs_row(out, e, threshold, &prefix, links, uncovered_hints)?;
+        write_pr_comment_abs_row(out, e, threshold, &prefix, opts, uncovered_hints)?;
     }
     write_truncation_if_capped(out, above.len())
 }
@@ -580,7 +579,7 @@ pub(crate) fn render_pr_comment(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    write_pr_comment_marker(opts.tool, out)?;
+    write_pr_comment_marker(opts, out)?;
     render_pr_comment_body(entries, opts, out)
 }
 
@@ -591,7 +590,6 @@ pub(crate) fn render_pr_comment_body(
 ) -> Result<()> {
     let RenderOptions {
         threshold,
-        links,
         uncovered_hints,
         cwd,
         ..
@@ -607,7 +605,7 @@ pub(crate) fn render_pr_comment_body(
         entries.len()
     )?;
     let above = above_threshold_sorted(entries, threshold);
-    write_pr_comment_abs_table(out, &above, threshold, links, uncovered_hints, cwd)
+    write_pr_comment_abs_table(out, &above, threshold, opts, uncovered_hints, cwd)
 }
 
 #[cfg(test)]
@@ -615,6 +613,7 @@ mod tests {
     use super::super::test_support::opts;
     use super::super::{Format, RenderOptions, render};
     use super::*;
+    use crate::report::SourceLinks;
 
     fn pr_opts<'a>(
         links: Option<&'a SourceLinks>,

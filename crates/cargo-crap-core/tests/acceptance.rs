@@ -98,6 +98,8 @@ fn a_core_only_caller_can_report_a_scored_function() {
         links: None,
         cwd: Path::new("."),
         workspace_root: None,
+        pr_comment_marker: None,
+        repo_prefix: None,
         fail_sections: false,
     };
     let analysis = Analysis {
@@ -366,4 +368,92 @@ fn read_strict_lcov_at_its_numeric_boundaries() {
     let overflow = format!("SF:a\nDA:2,{huge}\nDA:2,{huge}");
     let error = read_strict_lcov(&overflow, Path::new("cov.info")).unwrap_err();
     assert_eq!(error.to_string(), "cov.info: line 3: invalid DA number");
+}
+
+#[test]
+fn a_caller_can_find_a_parent_config_and_apply_its_allows_to_missing_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("packages/app");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(root.path().join(".example"), "pack*/app/old/**").unwrap();
+    let config = cargo_crap_core::config::find_upwards(&cwd, ".example", Some(root.path()))
+        .unwrap()
+        .unwrap();
+    let pattern = std::fs::read_to_string(&config).unwrap();
+    let set = AllowSet::compile_with_bases(&cwd, &[(&pattern, config.parent().unwrap())]).unwrap();
+    let mut rows = vec![CrapEntry {
+        file: "old/missing.ts".into(),
+        ..CrapEntry::default()
+    }];
+    cargo_crap_core::filter::allow(&mut rows, &set);
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn repository_paths_are_projected_only_for_link_and_annotation_destinations() {
+    use cargo_crap_core::report::{RenderOptions, SourceLinks, render};
+    let links = SourceLinks::new("https://example.test/o/r".into(), "abc".into());
+    let row = CrapEntry {
+        file: "../shared/a,b #1.ts".into(),
+        function: "f%2Fg".into(),
+        line: 2,
+        crap: 42.0,
+        ..CrapEntry::default()
+    };
+    for format in [
+        Format::Markdown,
+        Format::PrComment,
+        Format::GitHub,
+        Format::Sarif,
+        Format::Json,
+    ] {
+        let options = RenderOptions {
+            format,
+            links: Some(&links),
+            repo_prefix: Some(Path::new("packages/app")),
+            pr_comment_marker: Some("<!-- local -->"),
+            ..RenderOptions::new(&CARGO_CRAP_FIXTURE)
+        };
+        let mut out = Vec::new();
+        render(std::slice::from_ref(&row), &options, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        match format {
+            Format::Markdown | Format::PrComment => {
+                let marker = if format == Format::Markdown {
+                    CARGO_CRAP_FIXTURE.comment_marker
+                } else {
+                    "<!-- local -->"
+                };
+                assert_eq!(text.lines().next(), Some(marker));
+                assert_eq!(
+                    text.matches(
+                        "https://example.test/o/r/blob/abc/packages/shared/a%2Cb%20%231.ts#L2"
+                    )
+                    .count(),
+                    2,
+                    "{text}"
+                );
+            },
+            Format::GitHub => {
+                assert!(
+                    text.contains("file=packages/shared/a%2Cb #1.ts,line=2"),
+                    "{text}"
+                );
+                assert!(text.contains("f%252Fg"), "{text}");
+            },
+            Format::Sarif => {
+                let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(
+                    doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
+                        ["uri"],
+                    "packages/shared/a,b #1.ts"
+                );
+            },
+            Format::Json => {
+                let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(doc["entries"][0]["file"], "../shared/a,b #1.ts");
+            },
+            _ => unreachable!(),
+        }
+    }
 }
