@@ -639,7 +639,11 @@ mod baseline_tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains(&long) && !error.contains(&later), "{error}");
+        let normalized_error = error.replace('\\', "/");
+        assert!(
+            normalized_error.contains(&long) && !normalized_error.contains(&later),
+            "{error}"
+        );
         fs::write(
             d.path().join("base.json"),
             baseline_doc("lines", &[(&long, "lost")]).to_string(),
@@ -649,7 +653,7 @@ mod baseline_tests {
             d.path(),
             &["--coverage", "hits.info", "--baseline", "base.json"],
         );
-        assert!(err.contains(&long), "{err}");
+        assert!(err.replace('\\', "/").contains(&long), "{err}");
     }
 }
 
