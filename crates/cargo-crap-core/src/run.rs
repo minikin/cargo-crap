@@ -11,7 +11,7 @@ use crate::duplicates::{
 use crate::entry::{CrapEntry, ScopeDiagnostics, SortOrder};
 use crate::filter::{self, AllowSet};
 use crate::gate::{GateInput, GateOutcome, threshold_count};
-use crate::policy::EnvelopeKind;
+use crate::policy::{EnvelopeKind, NoticeSpacing};
 use crate::report::{
     self, Format, Placement, RenderOptions, Section, SourceLinks, Tool, TriagedBy,
 };
@@ -451,6 +451,18 @@ fn write_prefix(
     }
 }
 
+fn write_markdown_marker(
+    opts: &RenderOptions,
+    has_notices: bool,
+    out: &mut dyn Write,
+) -> Result<()> {
+    if has_notices && opts.tool.policy.notice_spacing == NoticeSpacing::Adjacent {
+        report::write_marker_line(opts, out)
+    } else {
+        report::write_pr_comment_marker(opts, out)
+    }
+}
+
 fn write_text_prefix(
     opts: &RenderOptions,
     notices: &[&str],
@@ -462,7 +474,7 @@ fn write_text_prefix(
     }
     let markdown = matches!(opts.format, Format::Markdown | Format::PrComment);
     if markdown {
-        report::write_pr_comment_marker(opts, out)?;
+        write_markdown_marker(opts, !notices.is_empty(), out)?;
     }
     if !notices.is_empty() {
         for notice in notices {
@@ -1006,7 +1018,9 @@ mod tests {
     }
 
     fn crapts_test_tool() -> Tool {
-        use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+        use crate::policy::{
+            EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder,
+        };
         Tool {
             policy: Policy {
                 envelope: EnvelopeKind::CraptsV1,
@@ -1015,6 +1029,7 @@ mod tests {
                 summary_formats: &[Format::Human],
                 signal_detail_hint: None,
                 tie_order: TieOrder::FileFunctionLine,
+                notice_spacing: NoticeSpacing::Separated,
             },
             version: "0.2.3",
             ..crate::report::test_support::SECOND_TOOL
@@ -1182,6 +1197,78 @@ mod tests {
             .to_string();
             assert!(err.contains("selection") && out.is_empty(), "{err}");
         }
+    }
+
+    #[test]
+    fn an_adjacent_notice_is_the_line_after_the_markdown_marker() {
+        let mut tool = crapts_test_tool();
+        tool.policy.summary_formats = &[Format::Markdown, Format::PrComment];
+        tool.policy.notice_spacing = crate::policy::NoticeSpacing::Adjacent;
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let render_with = |format: Format, summary: bool, notices: &[String]| {
+            let settings = Settings {
+                allow: &allow,
+                min: None,
+                top: None,
+                sort: SortOrder::Crap,
+                threshold: 30.0,
+                epsilon: crate::delta::DEFAULT_EPSILON,
+                signals: &signals,
+                fail_above: false,
+                fail_regression: false,
+                format,
+                summary,
+                show_unchanged: false,
+                uncovered_hints: false,
+                width: None,
+                links: None,
+                cwd: Path::new(""),
+                workspace_root: None,
+                pr_comment_marker: None,
+                repo_prefix: None,
+                fail_sections: false,
+            };
+            let mut out = Vec::new();
+            run(
+                &tool,
+                &settings,
+                Analysis {
+                    entries: crate::report::test_support::sample(),
+                    diagnostics: Some(empty_test_diag()),
+                    scope: &AllFiles,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices,
+                },
+                None,
+                &[],
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        let notes = ["first note".to_owned(), "second note".to_owned()];
+        for format in [Format::Markdown, Format::PrComment] {
+            for summary in [false, true] {
+                let md = render_with(format, summary, &notes);
+                assert!(
+                    md.starts_with(&format!(
+                        "{}\n> **Note:** first note\n> **Note:** second note\n\n",
+                        tool.comment_marker
+                    )),
+                    "{format:?} summary={summary}: {md}"
+                );
+                assert_eq!(md.matches(tool.comment_marker).count(), 1);
+                let plain = render_with(format, summary, &[]);
+                assert!(
+                    plain.starts_with(&format!("{}\n\n", tool.comment_marker)),
+                    "{format:?} summary={summary}: {plain}"
+                );
+            }
+        }
+        let human = render_with(Format::Human, false, &notes);
+        assert!(human.starts_with("first note\nsecond note\n\n"), "{human}");
     }
 
     #[test]

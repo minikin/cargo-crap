@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `crapts::coverage::Coverage::unit(&self) -> CoverageUnit` (additive,
+  non-breaking) so callers can inspect the measured coverage unit before
+  source parsing and attribution. `--baseline` is now active in the `crapts`
+  CLI.
 - Added original-string path matching, UTF-16-ordered stray-file examples and
   strict LCOV reading to cargo-crap-core and its cargo-crap re-exports. The
   crapts library now reads Istanbul and LCOV reports and returns scored rows,
@@ -58,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking library API.** Core `Policy` literals gain `notice_spacing`.
+  Set it to `NoticeSpacing::Separated` to keep the blank line between a
+  Markdown or pr-comment marker and the notices after it. crapts uses
+  `NoticeSpacing::Adjacent`, which puts the first notice on line 2.
 - **Breaking library API.** Core `Policy` literals gain `signal_detail_hint`.
   Set it to `Some("run without --summary for the reasons")` to keep the
   cargo-crap hint, or `None` to omit it. In full `Settings` and `RenderOptions`
@@ -99,6 +107,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A crapts delta whose magnitude is too large to round to six decimals keeps
+  its value instead of serializing as `null`, so the report still matches
+  `delta-v1.json` and reloads as a baseline.
 - A delta run with `--duplicates` pairs a function with its baseline
   record when the two runs see the file under different roots: an
   absolute baseline from another checkout, `./src/a.rs` against

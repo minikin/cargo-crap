@@ -394,13 +394,14 @@ fn validate_comparisons(
     if let Some((selector, _)) = [("baseline", baseline), ("base", base)]
         .into_iter()
         .find(|(_, selected)| *selected)
+        && settings.format.value == Format::Sarif
     {
-        let message = if settings.format.value == Format::Sarif {
-            format!("SARIF does not support --{selector}")
-        } else {
-            format!("--{selector} is not implemented yet")
-        };
-        return Err(InputError::message(message));
+        return Err(InputError::message(format!(
+            "SARIF does not support --{selector}"
+        )));
+    }
+    if base {
+        return Err(InputError::message("--base is not implemented yet"));
     }
     Ok(())
 }
@@ -698,6 +699,45 @@ mod writer_tests {
         );
         assert_eq!(out.as_slice(), b"");
         assert_eq!(err, b"error: --show-unchanged needs --baseline\n");
+    }
+
+    #[test]
+    fn sarif_and_companion_checks_precede_every_baseline_and_coverage_read() {
+        let dir = tempfile::tempdir().unwrap();
+        for (extra, expected) in [
+            (
+                &["--format", "sarif", "--baseline", "absent.json"][..],
+                "SARIF does not support --baseline",
+            ),
+            (
+                &[
+                    "--format",
+                    "sarif",
+                    "--baseline",
+                    "absent.json",
+                    "--fail-regression",
+                ][..],
+                "SARIF does not support --baseline",
+            ),
+            (
+                &["--fail-regression"][..],
+                "--fail-regression needs --baseline",
+            ),
+        ] {
+            let mut args = vec![OsString::from("--coverage"), "absent.info".into()];
+            args.extend(extra.iter().map(OsString::from));
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            assert_eq!(
+                run(dir.path(), &args, &mut out, &mut err),
+                ExitCode::from(2)
+            );
+            assert_eq!(out.as_slice(), b"");
+            assert_eq!(
+                String::from_utf8(err).unwrap(),
+                format!("error: {expected}\n")
+            );
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! is shared with other front ends, and `env!("CARGO_PKG_VERSION")` must
 //! expand in cargo-crap's package to stamp cargo-crap's version.
 
-use crate::policy::{EnvelopeKind, PairPolicy, Policy, Population, TieOrder};
+use crate::policy::{EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder};
 use crate::report::{Format, Schemas, Tool};
 
 pub const CARGO_CRAP_POLICY: Policy = Policy {
@@ -20,6 +20,7 @@ pub const CARGO_CRAP_POLICY: Policy = Policy {
     ],
     signal_detail_hint: Some("run without --summary for the reasons"),
     tie_order: TieOrder::Stable,
+    notice_spacing: NoticeSpacing::Separated,
 };
 
 /// The published HTTPS URL of a schema file in this repository. `concat!`

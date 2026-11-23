@@ -1,45 +1,12 @@
+mod common;
 mod support;
+
+use common::{binary, check, invoke, validated_report};
 
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
-
-fn binary(cwd: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_crapts"));
-    cmd.current_dir(cwd);
-    for key in [
-        "GITHUB_REPOSITORY",
-        "GITHUB_SERVER_URL",
-        "GITHUB_SHA",
-        "NO_COLOR",
-        "FORCE_COLOR",
-        "COLUMNS",
-    ] {
-        cmd.env_remove(key);
-    }
-    cmd
-}
-
-fn invoke(
-    cwd: &Path,
-    args: &[&str],
-) -> Output {
-    binary(cwd).args(args).output().unwrap()
-}
-
-fn check(
-    out: &Output,
-    code: i32,
-) {
-    assert_eq!(
-        out.status.code(),
-        Some(code),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
 
 fn settings(
     cwd: &Path,
@@ -580,17 +547,6 @@ fn json_score(
     code: i32,
 ) -> Value {
     validated_report(&json_output(cwd, args, code).stdout)
-}
-
-fn validated_report(bytes: &[u8]) -> Value {
-    static SCHEMA: std::sync::LazyLock<jsonschema::Validator> = std::sync::LazyLock::new(|| {
-        let schema =
-            serde_json::from_str(include_str!("../../../schemas/crapts/report-v1.json")).unwrap();
-        jsonschema::validator_for(&schema).unwrap()
-    });
-    let doc = serde_json::from_slice(bytes).unwrap();
-    SCHEMA.validate(&doc).unwrap();
-    doc
 }
 
 fn json_output(
@@ -2250,12 +2206,67 @@ fn companion_checks_and_sarif_restrictions_precede_comparison_io() {
 }
 
 #[test]
-fn baseline_comparison_is_reserved() {
+fn an_admitted_baseline_runs_the_comparison() {
     let d = fixture();
-    let mut args = vec!["--coverage", "hits.data", "--baseline", "b.json"];
-    before_render(d.path(), &args, &["--baseline is not implemented yet"]);
-    args.push("--fail-regression");
-    before_render(d.path(), &args, &["--baseline is not implemented yet"]);
+    let saved = invoke(
+        d.path(),
+        &[
+            "--coverage",
+            "hits.data",
+            "--format",
+            "json",
+            "--output",
+            "b.json",
+        ],
+    );
+    check(&saved, 0);
+    for gate in [&[][..], &["--fail-regression"]] {
+        let args = [
+            &["--coverage", "hits.data", "--baseline", "b.json"][..],
+            gate,
+        ]
+        .concat();
+        let out = invoke(d.path(), &args);
+        check(&out, 0);
+        assert_eq!(out.stderr.as_slice(), b"");
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.starts_with("No changes since baseline.\n"), "{text}");
+    }
+    let out = invoke(
+        d.path(),
+        &[
+            "--coverage",
+            "hits.data",
+            "--baseline",
+            "b.json",
+            "--format",
+            "json",
+        ],
+    );
+    check(&out, 0);
+    let doc = common::validated_delta(&out.stdout);
+    assert_eq!(doc["summary"]["unchanged"], 3);
+}
+
+#[test]
+fn a_git_base_stays_reserved_beside_a_baseline() {
+    let d = fixture();
+    for gate in [&[][..], &["--fail-regression"]] {
+        let args = [
+            &[
+                "--coverage",
+                "absent.info",
+                "--baseline",
+                "b.json",
+                "--base",
+                "HEAD",
+            ][..],
+            gate,
+        ]
+        .concat();
+        let err = before_render(d.path(), &args, &[]);
+        assert_eq!(err, "error: --base is not implemented yet\n");
+    }
 }
 
 #[test]
@@ -2418,18 +2429,15 @@ fn a_destination_failure_takes_precedence_at_the_process_boundary() {
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config { cases: 24, ..support::proptest_config() })]
     #[test]
-    fn a_reserved_comparison_precedes_coverage_and_preserves_the_destination(
-        revision in "[A-Za-z0-9]{1,16}", baseline in proptest::bool::ANY, gate in proptest::bool::ANY,
+    fn a_reserved_git_base_precedes_coverage_and_preserves_the_destination(
+        revision in "[A-Za-z0-9]{1,16}", gate in proptest::bool::ANY,
     ) {
         let d = tempfile::tempdir().unwrap();
-        let selector = if baseline { "--baseline" } else { "--base" };
-        let companion = if baseline { "--fail-regression" } else { "--fail-changed" };
-        let mut args = vec!["--coverage", "absent.info", selector, &revision];
+        let mut args = vec!["--coverage", "absent.info", "--base", &revision];
         if gate {
-            args.push(companion);
+            args.push("--fail-changed");
         }
-        let expected = format!("{selector} is not implemented yet");
-        before_render(d.path(), &args, &[&expected]);
+        before_render(d.path(), &args, &["--base is not implemented yet"]);
     }
 }
 

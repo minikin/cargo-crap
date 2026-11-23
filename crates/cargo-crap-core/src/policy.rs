@@ -35,6 +35,17 @@ pub enum Population {
     All,
 }
 
+/// The layout of a Markdown or pr-comment report whose marker line is
+/// followed by notices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NoticeSpacing {
+    /// A blank line separates the marker from the first notice.
+    Separated,
+    /// The first notice is the line after the marker.
+    Adjacent,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Policy {
     pub envelope: EnvelopeKind,
@@ -43,6 +54,7 @@ pub struct Policy {
     pub summary_formats: &'static [Format],
     pub signal_detail_hint: Option<&'static str>,
     pub tie_order: TieOrder,
+    pub notice_spacing: NoticeSpacing,
 }
 
 impl Policy {
@@ -69,6 +81,7 @@ mod tests {
             summary_formats: &[Format::Shields],
             signal_detail_hint: None,
             tie_order: TieOrder::Stable,
+            notice_spacing: NoticeSpacing::Separated,
         };
         assert!(shields_only.use_summary(true, Format::Shields));
         assert!(!shields_only.use_summary(false, Format::Shields));
