@@ -7,6 +7,7 @@ pub mod cli;
 pub mod config;
 pub mod coverage;
 mod discover;
+pub mod duplicates;
 pub mod fingerprint;
 mod lines;
 mod names;
