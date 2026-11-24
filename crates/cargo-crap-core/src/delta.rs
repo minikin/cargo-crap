@@ -2084,7 +2084,7 @@ pub(crate) fn compare(
     }
 }
 
-fn stem(name: &str) -> &str {
+pub(crate) fn stem(name: &str) -> &str {
     match name.rsplit_once('#') {
         Some((head, digits))
             if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) =>

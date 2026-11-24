@@ -95,6 +95,7 @@
       }
     },
     "duplicate_groups": {
+      "description": "Every current group. Status compares its members to one recorded baseline group. A grown group includes its largest prior overlap in grown_from.",
       "type": "array",
       "items": {
         "allOf": [

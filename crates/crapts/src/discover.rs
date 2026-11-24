@@ -168,6 +168,17 @@ impl DiscoveryScope {
         git_allows(&self.cwd, &name)
     }
 
+    pub(crate) fn historical_path(
+        &self,
+        prefix: Option<&str>,
+        file: &Path,
+    ) -> PathBuf {
+        match (self.worktree.root.as_deref(), prefix) {
+            (Some(root), Some(prefix)) => self.display(&resolve(&root.join(prefix), file)),
+            _ => file.to_owned(),
+        }
+    }
+
     pub(crate) fn display(
         &self,
         absolute: &Path,

@@ -5,6 +5,7 @@ use crate::delta::{
     Baseline, CraptsBaseline, DeltaCounts, DeltaReport, attach_reasons, compare,
     gating_signal_count,
 };
+use crate::duplicates::model::{Family, Location};
 use crate::duplicates::{
     compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, verdict::Assessment,
 };
@@ -19,9 +20,19 @@ use crate::score::DEFAULT_TRY_WEIGHT;
 use crate::signals::SignalSettings;
 use anyhow::{Context, Result};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub trait Scope {
+    /// Map a producer's duplicate path into the invocation this scope checks.
+    /// Scopes without repository coordinates use the recorded relative spelling.
+    fn historical_path(
+        &self,
+        _repo_prefix: Option<&str>,
+        file: &Path,
+    ) -> PathBuf {
+        file.to_owned()
+    }
+
     fn keeps(
         &self,
         file: &Path,
@@ -73,18 +84,54 @@ impl<'a> BaselineFilter<'a> {
         mut baseline: CraptsBaseline,
     ) -> PreparedBaseline {
         self.filter_entries(&mut baseline.entries);
+        let (groups, families) = baseline
+            .duplicate_history
+            .map(|h| self.scope_history(h))
+            .unzip();
         PreparedBaseline {
             baseline: Baseline {
                 entries: baseline.entries,
                 try_weight: DEFAULT_TRY_WEIGHT,
-                duplicate_groups: None,
+                duplicate_groups: groups,
             },
             crapts: Some(CraptsPreparedMeta {
+                duplicate_families: families,
                 baseline_version: baseline.baseline_version,
                 regression_gate_skipped: baseline.regression_gate_skipped,
                 notice: baseline.notice,
             }),
         }
+    }
+
+    fn scope_history(
+        &self,
+        history: crate::delta::DuplicateHistory,
+    ) -> (Vec<Vec<Location>>, Vec<Family>) {
+        let mut context = history.context;
+        let prefix = context.repo_prefix.as_deref();
+        let mut groups = history.groups;
+        for group in &mut groups {
+            for member in &mut *group {
+                member.file = self.scope.historical_path(prefix, &member.file);
+            }
+            group.retain(|m| self.scope.keeps(&m.file));
+        }
+        groups.retain(|g| g.len() >= 2);
+        let used: std::collections::BTreeSet<_> = groups
+            .iter()
+            .flatten()
+            .map(|m| (m.file.as_path(), crate::delta::stem(&m.name)))
+            .collect();
+        context.families.retain_mut(|f| {
+            let file = self.scope.historical_path(prefix, Path::new(&f.file));
+            if used.contains(&(file.as_path(), f.stem.as_str())) {
+                f.file = report::normalize_crapts_path(&file);
+                true
+            } else {
+                false
+            }
+        });
+        (groups, context.families)
     }
 
     fn filter_entries(
@@ -98,6 +145,7 @@ impl<'a> BaselineFilter<'a> {
 
 #[derive(Debug)]
 struct CraptsPreparedMeta {
+    duplicate_families: Option<Vec<Family>>,
     baseline_version: String,
     regression_gate_skipped: bool,
     notice: Option<String>,
@@ -110,6 +158,14 @@ pub struct PreparedBaseline {
 }
 
 impl PreparedBaseline {
+    #[must_use]
+    pub fn duplicate_record(&self) -> Option<(&[Vec<Location>], &[Family])> {
+        self.baseline
+            .duplicate_groups
+            .as_deref()
+            .zip(self.crapts.as_ref()?.duplicate_families.as_deref())
+    }
+
     #[must_use]
     pub fn as_baseline(&self) -> &Baseline {
         &self.baseline
@@ -779,6 +835,12 @@ mod tests {
         ) -> bool {
             true
         }
+    }
+
+    #[test]
+    fn a_scope_without_repository_coordinates_keeps_the_recorded_spelling() {
+        let file = Path::new("../ui/read.ts");
+        assert_eq!(AllFiles.historical_path(Some("pkg"), file), file);
     }
 
     #[test]

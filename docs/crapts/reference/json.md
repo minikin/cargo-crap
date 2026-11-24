@@ -28,7 +28,7 @@ The `version` field holds the crapts version that wrote the file, shown as `<ver
 | `removed` | absent | required | no | Baseline functions with no current row |
 | `changed` | optional | optional | no | The changed-function section under `--base` |
 | `duplicates` | optional | optional | no | Qualifying pairs in descending similarity order |
-| `duplicate_groups` | optional | optional | no | Groups of matching functions, ordered by their weakest pair |
+| `duplicate_groups` | optional | optional | no | Groups in weakest-pair score order. A delta labels each group when the baseline recorded a scan |
 | `duplicate_context` | optional | optional | no | Repository prefix and ordered row fingerprints for each group member's naming family |
 | `untriaged_groups` | optional | optional | no | Positive count of groups skipped by the request budget |
 | `diagnostics` | required | required | no | File counts, and the source and coverage files that found no partner |
@@ -56,6 +56,16 @@ no such reasons writes 0. An absolute report or a comparison with no
 eligible measured history writes `null`. Disabling signals omits the count
 and the vectors. The existing score counts and the Git `changed` object
 keep their meanings. The [combined comparison](../guides/changed-gate.md#one-debugger-two-verdicts) shows both verdicts.
+
+## Duplicate history
+
+A full absolute or delta report can supply the next baseline. The reader uses the current groups in that file and ignores their earlier verdicts and status labels. With coverage kind `none`, the next comparison must also run without coverage. An older report that omits the duplicate fields has no history. A recorded empty array means the scan found zero groups.
+
+A delta labels a group `unchanged` if one baseline group held all its members. It labels a group `grown` if one old group held at least two of its members and writes that largest overlap in `grown_from`. All other groups are `new`. For example, a group containing functions A, B and C gets `"status": "grown", "grown_from": 2` when A and B belonged to one previous group.
+
+The reader uses `duplicate_context.repo_prefix` to compare reports produced from different directories in different checkouts. When either checkout lacks a Git root, invoke both scans from equivalent directories. Scope and exclusions apply to old members, even in deleted files. A group needs two members in scope to count toward the comparison.
+
+If adding a callback shifts its numbered siblings, the reader matches a row fingerprint only when it occurs once in each naming family. A repeated fingerprint can leave an older group resolved and a current group new. Score rows hidden by `--missing skip` still contribute their fingerprints.
 
 ## Example
 

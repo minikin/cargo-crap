@@ -1,6 +1,9 @@
 //! Which duplicate groups a change made: each current group compared with
 //! the groups a baseline recorded, by the pairs of functions they share.
 
+mod crapts;
+pub use crapts::compare_crapts;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -100,9 +103,16 @@ pub fn compare(
                 .collect()
         })
         .collect();
-    let together: BTreeSet<(&Id, &Id)> = groups.iter().flat_map(|g| pairs(g)).collect();
+    classify(&groups, &then)
+}
+
+fn classify<T: Ord>(
+    groups: &[Vec<T>],
+    then: &[Vec<T>],
+) -> Comparison {
+    let together: BTreeSet<(&T, &T)> = groups.iter().flat_map(|g| pairs(g)).collect();
     Comparison {
-        novelty: groups.iter().map(|g| novelty(g, &then)).collect(),
+        novelty: groups.iter().map(|g| novelty(g, then)).collect(),
         resolved: then
             .iter()
             .filter(|g| pairs(g).iter().all(|p| !together.contains(p)))
@@ -124,9 +134,9 @@ fn distinct<'a>(functions: impl IntoIterator<Item = &'a Location>) -> Vec<&'a Lo
 
 /// What `group` is, judged by the baseline group that held the most of its
 /// members.
-fn novelty(
-    group: &[Id],
-    then: &[Vec<Id>],
+fn novelty<T: Ord>(
+    group: &[T],
+    then: &[Vec<T>],
 ) -> Novelty {
     let held = then
         .iter()
@@ -144,11 +154,11 @@ fn novelty(
 
 /// How many of `group`'s members `baseline` held: per identity, the fewer
 /// of the two counts.
-fn together_in(
-    group: &[Id],
-    baseline: &[Id],
+fn together_in<T: Ord>(
+    group: &[T],
+    baseline: &[T],
 ) -> usize {
-    let mut left: BTreeMap<&Id, usize> = BTreeMap::new();
+    let mut left: BTreeMap<&T, usize> = BTreeMap::new();
     for i in baseline {
         *left.entry(i).or_default() += 1;
     }

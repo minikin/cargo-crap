@@ -1437,6 +1437,19 @@ fn null_is_found_through_references_and_branches() {
         &refs
     ));
     let real = formats::schemas_by_id();
+    let shared = real
+        .values()
+        .find(|doc| {
+            doc["$id"]
+                .as_str()
+                .unwrap_or("")
+                .ends_with("/duplicates-v1.json")
+        })
+        .unwrap();
+    assert_eq!(
+        shared["definitions"]["DeltaDuplicateGroup"]["then"]["required"],
+        json!(["grown_from"])
+    );
     let report = formats::schema("report-v1.json");
     assert!(!formats::admits_null(
         &report,

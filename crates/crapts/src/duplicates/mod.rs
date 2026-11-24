@@ -33,6 +33,7 @@ pub(crate) struct Scan {
     pub pairs: Vec<DuplicatePair>,
     pub groups: Vec<DuplicateGroup>,
     pub context: DuplicateContext,
+    pub comparison: Option<cargo_crap_core::duplicates::novelty::Comparison>,
 }
 
 fn detect(
@@ -96,6 +97,7 @@ impl Scan {
             pairs,
             groups,
             context,
+            comparison: None,
         }
     }
 }

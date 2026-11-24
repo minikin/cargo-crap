@@ -73,6 +73,13 @@ impl<'a> ScoringScope<'a> {
 }
 
 impl Scope for ScoringScope<'_> {
+    fn historical_path(
+        &self,
+        prefix: Option<&str>,
+        file: &Path,
+    ) -> PathBuf {
+        self.scope.historical_path(prefix, file)
+    }
     fn keeps(
         &self,
         file: &Path,
@@ -314,6 +321,46 @@ fn coverage_path(options: &Effective) -> Result<Option<&Path>> {
     Ok(path)
 }
 
+fn coverage_notices(
+    unit: CoverageUnit,
+    policy: &str,
+    err: &mut dyn Write,
+) -> Result<Vec<String>> {
+    if unit != CoverageUnit::Unmeasured {
+        return Ok(Vec::new());
+    }
+    let notice = format!("No coverage supplied. Scores use the {policy} missing policy.");
+    warn(err, &notice)?;
+    Ok(vec![notice])
+}
+
+fn prepare_history(
+    baseline: Option<CraptsBaseline>,
+    scope: &ScoringScope<'_>,
+    options: &Effective,
+    scan: Option<&mut Scan>,
+    err: &mut dyn Write,
+) -> Result<Option<PreparedBaseline>> {
+    let prepared = prepare(baseline, scope, &options.allow_set)?;
+    if let (Some(scan), Some(baseline)) = (scan, &prepared) {
+        if let Some((groups, families)) = baseline.duplicate_record() {
+            scan.comparison = Some(cargo_crap_core::duplicates::novelty::compare_crapts(
+                &scan.groups,
+                &scan.context.families,
+                groups,
+                families,
+            ));
+        } else if !scan.groups.is_empty() {
+            warn(
+                err,
+                "the baseline has no duplicate record, so the new duplicates cannot be told from the old. Record the baseline with --duplicates to tell them apart.",
+            )?;
+        }
+    }
+    warn_if_unmeasured(prepared.as_ref(), options.signals.settings.enabled, err)?;
+    Ok(prepared)
+}
+
 pub(super) fn score(
     cwd: &Path,
     worktree: Worktree,
@@ -336,23 +383,11 @@ pub(super) fn score(
         .as_deref()
         .map(|rev| select(&discovery.scope, cwd, rev, options.duplicates.enabled.value))
         .transpose()?;
-    let (files, result, scan) =
+    let (files, result, mut scan) =
         measure(cwd, options, &coverage, &discovery, selection.as_mut(), err)?;
-    let notices: Vec<_> = (result.unit == CoverageUnit::Unmeasured)
-        .then(|| {
-            format!(
-                "No coverage supplied. Scores use the {} missing policy.",
-                options.missing.value.label()
-            )
-        })
-        .into_iter()
-        .collect();
-    for notice in &notices {
-        warn(err, notice)?;
-    }
+    let notices = coverage_notices(result.unit, options.missing.value.label(), err)?;
     let scope = ScoringScope::new(&discovery.scope);
-    let prepared = prepare(baseline, &scope, &options.allow_set)?;
-    warn_if_unmeasured(prepared.as_ref(), options.signals.settings.enabled, err)?;
+    let prepared = prepare_history(baseline, &scope, options, scan.as_mut(), err)?;
     let links = source_links(
         options.repo_url.value.as_deref(),
         options.commit_ref.value.as_deref(),
@@ -493,6 +528,7 @@ impl Render<'_> {
                         .map_or_else(RenderExtras::default, |s| RenderExtras {
                             duplicates: Some(&s.pairs),
                             groups: Some(&s.groups),
+                            novelty: s.comparison.as_ref(),
                             duplicate_context: Some(&s.context),
                             ..RenderExtras::default()
                         }),
