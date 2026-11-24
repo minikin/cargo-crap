@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Fill index.html with real cargo-crap output and write hero.html beside it.
+"""Fill index.html with real cargo-crap and crapts output and write hero.html
+beside it.
 
     build.py <runs dir>
 
-<runs dir> is what render.sh collects: human.ansi, pr-comment.md (with its
-duplicate section), github.txt, shields.json, and the shop's sources before
-and after the pull request in base/ and pr/. The PR comment is split at its
-duplicate section into two panels. The PR comment goes
-through GitHub's own Markdown renderer (`gh api /markdown`), and the badge is
-rendered by scripts/badges/render.py, so the build needs `gh` and the network.
+<runs dir> is what render.sh collects. From the Rust shop: human.ansi,
+shields.json and pr-comment.md, of which only the duplicate section is shown.
+From the TypeScript shop: ts-comment.md, ts-github.txt, and the sources before
+and after the pull request in ts-base/ and ts-pr/. Both comments go through
+GitHub's own Markdown renderer (`gh api /markdown`), and the badge is rendered
+by scripts/badges/render.py, so the build needs `gh` and the network.
 """
 
 import base64
@@ -89,21 +90,28 @@ def diff_panel(base, pr, start):
         )
 
     head = start - 1
-    end = next(i for i in range(head, len(new)) if new[i] == "}")
+    end = next(i for i in range(head, len(new)) if new[i].strip() == "}")
     first = min(i for i in added if head < i <= end)
-    hunk = [row(i) for i in range(max(head + 1, first - 1), end + 1)]
-    skipped = first - 1 > head + 1
+    # A divider takes a row, so it only replaces a gap of two lines or more.
+    skipped = first - 1 > head + 2
+    hunk = [row(i) for i in range(first - 1 if skipped else head + 1, end + 1)]
     divider = '<div class="dl hunk"><span class="ln"></span><span class="sg"></span><code>\u22ef</code></div>'
     return row(head), ([divider] if skipped else []) + hunk
 
 
-def annotation(github_lines, name):
+def annotation(github_lines, path, name):
+    """The workflow command about `name` in `path` whose message leads with
+    the name, as crapts' changed-function warning does."""
     for line in github_lines:
-        if f"::{name} " in line:
-            props, message = line[len("::warning "):].split("::", 1)
-            fields = dict(part.split("=", 1) for part in props.split(","))
-            return fields, urllib.parse.unquote(message)
-    raise SystemExit(f"no annotation for {name}")
+        kind, _, rest = line.partition(" ")
+        if kind not in ("::warning", "::error") or "::" not in rest:
+            continue
+        props, message = rest.split("::", 1)
+        fields = dict(part.split("=", 1) for part in props.split(","))
+        message = urllib.parse.unquote(message)
+        if fields.get("file", "").removeprefix("./") == path and message.startswith(f"{name}:"):
+            return fields, message
+    raise SystemExit(f"no annotation for {name} in {path}")
 
 
 def badge(shields):
@@ -127,23 +135,23 @@ def badge(shields):
 
 def main(runs):
     runs = Path(runs)
-    focus = "shipping_fee"
-    human = mark_row(ansi_to_html(runs.joinpath("human.ansi").read_text()), focus)
-    comment_md = runs.joinpath("pr-comment.md").read_text()
-    split = re.search(r"^## \d+ duplicate candidates?$", comment_md, re.M)
+    human = mark_row(ansi_to_html(runs.joinpath("human.ansi").read_text()), "shipping_fee")
+    rust_md = runs.joinpath("pr-comment.md").read_text()
+    split = re.search(r"^## \d+ duplicate candidates?$", rust_md, re.M)
     if split is None:
         raise SystemExit("the PR comment has no duplicate section")
-    comment = gfm(comment_md[: split.start()]).replace("<details>", "<details open>")
+    duplicates = gfm(rust_md[split.start():])
+
+    focus, path = "checkout", "src/checkout.ts"
+    comment = gfm(runs.joinpath("ts-comment.md").read_text()).replace("<details>", "<details open>")
     comment = re.sub(
         r"<tr>(?=(?:(?!</tr>).)*<code[^>]*>" + focus + "</code>)", '<tr class="travel">', comment, flags=re.S
     )
-    duplicates = gfm(comment_md[split.start():])
-    github_lines = runs.joinpath("github.txt").read_text().splitlines()
-    fields, message = annotation(github_lines, focus)
+    github_lines = runs.joinpath("ts-github.txt").read_text().splitlines()
+    fields, message = annotation(github_lines, path, focus)
     start = int(fields["line"])
-    path = fields["file"].removeprefix("./")
     first_row, rows = diff_panel(
-        runs.joinpath("base", path).read_text(), runs.joinpath("pr", path).read_text(), start
+        runs.joinpath("ts-base", path).read_text(), runs.joinpath("ts-pr", path).read_text(), start
     )
     note = (
         '<div class="annot"><div class="annot-head"><span class="warn-icon">!</span>'
@@ -158,7 +166,7 @@ def main(runs):
         "DUPLICATES": duplicates,
         "COMMENT": comment,
         "DIFF": diff,
-        "FILE": html.escape(fields["file"].removeprefix("./")),
+        "FILE": html.escape(path),
         "BADGE": badge(json.loads(runs.joinpath("shields.json").read_text())),
     }.items():
         page = page.replace("{{" + key + "}}", value)
