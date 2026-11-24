@@ -63,7 +63,16 @@ pub fn check_page(
     pages::literal_versions(page, VERSION)?;
     let samples = pages::samples(page)?;
     for sample in &samples {
-        check_sample(sample, &repo.crapts(&sample.marker.args()))?;
+        let args = sample.marker.args();
+        let fixture = if args
+            .windows(2)
+            .any(|pair| pair == ["--baseline", "signals-baseline.json"])
+        {
+            fixture::signal_change()
+        } else {
+            repo
+        };
+        check_sample(sample, &fixture.crapts(&args))?;
     }
     Ok(samples)
 }

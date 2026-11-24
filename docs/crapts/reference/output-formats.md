@@ -4,6 +4,21 @@
 
 `--output <file>` writes any format to a file instead of stdout. When the format supports the requested comparison, the exit code does not depend on the format. `pr-comment` is the exception: a body that cannot fit GitHub's comment limit exits 2.
 
+With structural signals enabled, absolute JSON includes the six counts.
+Against a saved baseline, text, Markdown and PR comments list increases
+under **Harder to maintain**, including functions whose CRAP score stayed
+flat. If a display limit hides a gated reason, Markdown and PR comments
+point to `--format json --all-rows`. The headline counts gated structural
+reasons when no CRAP score regressed. Text, Markdown and PR summaries
+count gated reasons across all eligible functions.
+
+GitHub emits one annotation per gated structural reason at its first source
+range. JSON retains every range. PR comments show the first 25 reasons
+in the table and fold the rest. To fit GitHub's 65,536 UTF-16 code units,
+crapts first summarizes the core report, then removes changed rows from
+the end until the comment fits. Each candidate keeps the full counts and
+verdict. Shields keeps its CRAP badge even when a structural gate trips.
+
 ## text
 
 The default, also accepted as `human`. A Unicode table for a terminal, colored by default when the report goes to a terminal and `NO_COLOR` is unset or empty. A `FORCE_COLOR` other than empty or `0` colors a piped stdout, `NO_COLOR` still wins, and `--output` is never colored. Without `--top` or `--min` it lists every function above the threshold and the ten worst of the rest.

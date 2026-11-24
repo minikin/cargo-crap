@@ -58,6 +58,8 @@ pub struct Row {
     pub cyclomatic: u32,
     pub is_arrow: bool,
     pub fingerprint: Fingerprint,
+    /// Structural counts and evidence for this row. A written constructor can
+    /// own an initializer outside the declaration span used for its line count.
     pub measured: Measured,
 }
 

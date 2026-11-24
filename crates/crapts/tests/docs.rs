@@ -1011,7 +1011,13 @@ fn the_key_table_names_real_aliases_and_the_flag_of_each_key() {
     assert_eq!(
         config::aliases(&page).unwrap(),
         BTreeSet::from(
-            ["default_excludes", "show_unchanged", "uncovered_hints"].map(str::to_owned)
+            [
+                "default_excludes",
+                "show_unchanged",
+                "uncovered_hints",
+                "signals.limits.bool_ops"
+            ]
+            .map(str::to_owned)
         )
     );
     config::check_keys(&page, &repo).unwrap_or_else(|e| panic!("{e}"));
@@ -2010,4 +2016,181 @@ fn a_multibyte_angle_link_is_read_whole() {
 fn a_crlf_page_reads_as_lf() {
     let page = Page::new("docs/crapts/x.md", "# X\r\n\r\n| a |\r\n");
     assert_eq!(page.text, "# X\n\n| a |\n");
+}
+
+#[test]
+fn s38_documented_signal_keys_and_the_example_match_live_origins_and_defaults() {
+    let page = Page::load(config::CONFIG);
+    let repo = fixture::Repo::new();
+    let defaults = config::print_config(&repo, &[]).unwrap();
+    let table = config::key_rows(&page).unwrap();
+    let expected = [
+        ("signals.enabled", "false"),
+        ("signals.gate", "nesting, bumps, bool_ops, stubs"),
+        ("signals.limits.nesting", "unset"),
+        ("signals.limits.lines", "unset"),
+        ("signals.limits.bumps", "unset"),
+        ("signals.limits.bool-ops", "unset"),
+    ];
+    let keys = table
+        .iter()
+        .filter(|r| r.key.starts_with("signals."))
+        .map(|r| (r.key.as_str(), r.default.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(keys, expected);
+    for (key, _) in expected {
+        let r = table.iter().find(|r| r.key == key).unwrap();
+        assert!(r.flag.is_none());
+        assert_eq!(config::origin(&defaults, key), "default");
+    }
+    let section = pages::section(&page, "Inspect signal origins").unwrap();
+    let (_, example, _) = config::example(&section).unwrap();
+    std::fs::write(repo.root().join(".crapts.toml"), example).unwrap();
+    let printed = config::print_config(&repo, &[]).unwrap();
+    let settings = &printed["settings"]["signals"];
+    assert_eq!(
+        settings["enabled"],
+        json!({"value":false,"origin":"config"})
+    );
+    assert_eq!(
+        settings["gate"],
+        json!({"value":["bool_ops","stubs"],"origin":"config"})
+    );
+    assert_eq!(
+        settings["limits"]["lines"],
+        json!({"value":0,"origin":"config"})
+    );
+    assert_eq!(
+        settings["limits"]["bool_ops"],
+        json!({"value":u32::MAX,"origin":"config"})
+    );
+    for key in ["nesting", "bumps"] {
+        assert_eq!(
+            settings["limits"][key],
+            json!({"value":null,"origin":"default"})
+        );
+    }
+}
+
+#[test]
+fn s38_a_published_combined_report_separates_the_touched_and_signal_verdicts() {
+    let page = Page::load("docs/crapts/guides/changed-gate.md");
+    let repo = fixture::signal_change();
+    let sample = pages::samples(&page)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.marker.args().iter().any(|a| a == "signals-baseline.json"))
+        .expect("marked combined structural comparison");
+    let run = repo.crapts(&sample.marker.args());
+    check::check_sample(&sample, &run).unwrap();
+    assert_eq!(run.code, Some(1));
+    let doc = common::validated_delta(run.stdout.as_bytes());
+    assert_eq!(doc["summary"]["signal_regressions"], 1);
+    assert_eq!(doc["summary"]["changed_failures"], 0);
+    assert_eq!(doc["changed"]["counts"]["touched"], 1);
+    assert_eq!(doc["changed"]["entries"][0]["function"], "f");
+    assert_eq!(
+        doc["entries"][0]["reasons"],
+        json!([{"signal":"stubs","value":1,"baseline":0,"gating":true,"action":"remove-stub","spans":[{"start":4,"end":4}]}])
+    );
+}
+
+#[test]
+fn s39_the_wrapper_config_catches_one_new_debugger_in_a_temporary_copy() {
+    let repo = fixture::covered_wrapper();
+    let run = |args: &[&str], code| {
+        let result = repo.crapts(args);
+        assert_eq!(
+            result.code,
+            Some(code),
+            "{} {}",
+            result.stderr,
+            result.stdout
+        );
+        result.stdout
+    };
+    let config: Value = serde_json::from_str(&run(&["--print-config"], 0)).unwrap();
+    let settings = &config["settings"]["signals"];
+    assert_eq!(settings["enabled"], json!({"value":true,"origin":"config"}));
+    assert_eq!(
+        settings["gate"],
+        json!({"value":["nesting", "bumps", "bool_ops", "stubs"],"origin":"config"})
+    );
+    for k in ["nesting", "lines", "bumps", "bool_ops"] {
+        assert_eq!(
+            settings["limits"][k],
+            json!({"value":null,"origin":"default"})
+        );
+    }
+    let path = repo.root().join("lib/resolve.js");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let args = [
+        "lib/resolve.js",
+        "--coverage",
+        "wrapper.info",
+        "--format",
+        "json",
+        "--all-rows",
+    ];
+    let absolute = run(&args, 0);
+    let baseline = common::validated_report(absolute.as_bytes());
+    assert!(
+        baseline["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["signals"].as_object().unwrap().len() == 6)
+    );
+    std::fs::write(repo.root().join("baseline.json"), absolute).unwrap();
+    let delta = [
+        &args[..],
+        &["--baseline", "baseline.json", "--fail-regression"],
+    ]
+    .concat();
+    let same = common::validated_delta(run(&delta, 0).as_bytes());
+    assert!(
+        same["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row.get("reasons").is_none())
+    );
+    let token = "function lddVersion() {\n  ";
+    assert_eq!(source.matches(token).count(), 1);
+    let head = source.replacen(token, &format!("{token}debugger; "), 1);
+    let line = head
+        .lines()
+        .position(|l| l.starts_with("  debugger; "))
+        .unwrap()
+        + 1;
+    std::fs::write(&path, head).unwrap();
+    let changed = common::validated_delta(run(&delta, 1).as_bytes());
+    assert_eq!(changed["summary"]["signal_regressions"], 1);
+    let reasons = changed["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row.get("reasons").is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(reasons.len(), 1);
+    let row = reasons[0];
+    assert_eq!(row["function"], "lddVersion");
+    let old = baseline["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["function"] == "lddVersion")
+        .unwrap();
+    for field in ["cyclomatic", "coverage", "crap"] {
+        assert_eq!(row[field], old[field]);
+    }
+    assert_eq!(
+        row["reasons"],
+        json!([{"signal":"stubs","value":1,"baseline":0,"gating":true,"action":"remove-stub","spans":[{"start":line,"end":line}]}])
+    );
+    let neutral = config::print_config(&fixture::Repo::new(), &[]).unwrap();
+    assert_eq!(
+        neutral["settings"]["signals"]["enabled"],
+        json!({"value":false,"origin":"default"})
+    );
 }

@@ -834,7 +834,7 @@ Then the strict-side diagnostic names its path, the exit is 2 and the file still
 - [x] **T5 - Compare and gate saved baselines.** Needs: T4. S18, S20, S21, S22, S23, S24, S25, S26, S42, S43, S48, S49, S50, S55. Count gated reasons before display limits, apply scope to baseline completeness and issue the warning once. Tests: pairing, core run and CLI acceptance.
 - [x] **T6 - Preserve independent Git verdicts.** Needs: T5. S29, S30, S58. Reuse strict head results and exercise each gate alone and in combination. Tests: temporary Git repository acceptance.
 - [x] **T7 - Render reasons and fit comments.** Needs: T5. S28, S31, S32, S33, S34, S35, S36, S37, S51, S52, S53, S56. Pass full counts to both shared headlines and use tool-specific hints. Cover Rust in `tests/acceptance.rs` and record the sliced-headline fix in the root `CHANGELOG.md`. Tests: renderer units, in-process boundary cases and CLI acceptance.
-- [ ] **T8 - Verify references, wrapper and toolchains.** Needs: T6, T7. S38, S39, S40, S54. Update executable docs, test the wrapper config and run the parser guard and the locked MSRV jobs. Tests: documentation, wrapper acceptance, dependency graph and CI toolchain gates.
+- [x] **T8 - Verify references, wrapper and toolchains.** Needs: T6, T7. S38, S39, S40, S54. Update executable docs, test the wrapper config and run the parser guard and the locked MSRV jobs. Tests: documentation, wrapper acceptance, dependency graph and CI toolchain gates.
 
 ## Implementation Notes
 

@@ -31,6 +31,28 @@ The `version` field holds the crapts version that wrote the file, shown as `<ver
 
 A report written with `--top` or `--min` has a non-null `selection` and cannot serve as a baseline. `summary.regressed` and the other comparison counts are `null` in a report. `regression_gate.skipped` is true when the baseline's major or minor version differs from the running crapts. It does not record whether `--fail-regression` was passed.
 
+## Structural measurements
+
+With signals enabled, every current entry has a `signals` object. Its six
+integer counts are `nesting`, `lines`, `bumps`, `bool_ops`, `stubs` and
+`panics`. Each fits in an unsigned 32-bit integer, and `lines` starts at 1.
+A paired delta row with measured history also carries `baseline_signals`.
+Saving a complete delta as the next baseline carries forward the current vector.
+The [signal definitions](complexity.md#structural-signals) describe each count.
+
+A delta row with findings has a `reasons` array. Each reason names its
+signal, value, action and gate membership. A paired increase records its
+baseline value. A new row above a configured ceiling records the limit.
+The `spans` array holds one-based, inclusive line ranges in the current
+source. A CRAP regression can have an empty array.
+
+`summary.signal_regressions` counts gated structural reasons across all
+eligible rows, once per function and signal. A measured comparison with
+no such reasons writes 0. An absolute report or a comparison with no
+eligible measured history writes `null`. Disabling signals omits the count
+and the vectors. The existing score counts and the Git `changed` object
+keep their meanings. The [combined comparison](../guides/changed-gate.md#one-debugger-two-verdicts) shows both verdicts.
+
 ## Example
 
 A delta report of the cart project against its `main` baseline. Each entry adds `baseline_crap`, `delta` and `status`:

@@ -200,3 +200,111 @@ In JSON the same gate adds a `changed` object, described by `changed-v1.json`:
 ```
 
 `checkout` regressed from 12 to 42 against the baseline, and the changed gate fails it as a modified function whose CC rose from 3 to 6. Saving the baseline is described in [Gate regressions against a baseline](baseline.md).
+
+## One debugger, two verdicts
+
+This project enables signals and covers every line in `src/f.ts`. The
+commit named by `main` has `return x` on line 4. The working tree adds
+a debugger on that line.
+
+```ts
+export function f() {
+  let x = 0
+  x += 1
+  debugger; return x
+}
+```
+
+Git records the touched function with the same CC and zero changed failures. The saved baseline records zero stubs. The new
+stub produces one gated reason at line 4 and `--fail-regression` sets exit 1.
+Passing only `--fail-changed` on this edit returns 0.
+
+<!-- crapts-output exit=1: --coverage signals.info --base main --baseline signals-baseline.json --fail-changed --fail-regression --format json -->
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/delta-v1.json",
+  "version": "<version>",
+  "name_scheme": 1,
+  "coverage_kind": "lines",
+  "threshold": 30.0,
+  "selection": null,
+  "regression_gate": {
+    "skipped": false,
+    "baseline_version": "<version>",
+    "version": "<version>"
+  },
+  "notices": [],
+  "summary": {
+    "total": 1,
+    "crappy": 0,
+    "regressed": 0,
+    "improved": 0,
+    "new": 0,
+    "moved": 0,
+    "unchanged": 1,
+    "removed": 0,
+    "changed_failures": 0,
+    "signal_regressions": 1
+  },
+  "entries": [
+    {
+      "file": "src/f.ts",
+      "function": "f",
+      "line": 1,
+      "cyclomatic": 1,
+      "coverage": 100.0,
+      "crap": 1.0,
+      "fingerprint": "5e61274eac5fc7cbecccec85a3d22d9ba37605567e90ddcc6b0a0d1fd37636a6",
+      "baseline_crap": 1.0,
+      "delta": 0.0,
+      "status": "unchanged",
+      "reasons": [
+        {
+          "signal": "stubs",
+          "value": 1,
+          "baseline": 0,
+          "gating": true,
+          "action": "remove-stub",
+          "spans": [
+            {
+              "start": 4,
+              "end": 4
+            }
+          ]
+        }
+      ],
+      "signals": {
+        "nesting": 0,
+        "lines": 5,
+        "bumps": 0,
+        "bool_ops": 0,
+        "stubs": 1,
+        "panics": 0
+      },
+      "baseline_signals": {
+        "nesting": 0,
+        "lines": 5,
+        "bumps": 0,
+        "bool_ops": 0,
+        "stubs": 0,
+        "panics": 0
+      }
+    }
+  ],
+  "removed": [],
+  "changed": {"$schema":"https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/changed-v1.json","version":"<version>","name_scheme":1,"threshold":30.0,"base":{"rev":"main","commit":"7e16d863502833f858bcb7d44efd6ce3b9e9a17e","merge_base":"7e16d863502833f858bcb7d44efd6ce3b9e9a17e","merge_base_count":1,"shallow":false},"head":{"commit":"7e16d863502833f858bcb7d44efd6ce3b9e9a17e","dirty":true},"entries":[{"file":"src/f.ts","function":"f","line":1,"end_line":5,"cyclomatic":1,"coverage":100.0,"crap":1.0,"change":"modified","base_line":1,"base_cyclomatic":1,"cyclomatic_delta":0,"verdict":"pass","reason":"CRAP 1.0 at or below 30"}],"removed":[],"skipped":[],"counts":{"touched":1,"new":0,"ambiguous":0,"modified":1,"worse":0,"fail":0,"over":0,"allowed":0,"missing_skipped":0,"coverage_null":0}},
+  "diagnostics": {
+    "analyzed_files": 1,
+    "coverage_files": 1,
+    "matched_files": 1,
+    "source_only": {
+      "count": 0,
+      "examples": []
+    },
+    "coverage_only": {
+      "count": 0,
+      "examples": []
+    }
+  }
+}
+```
