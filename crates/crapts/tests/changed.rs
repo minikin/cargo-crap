@@ -3202,6 +3202,9 @@ mod cli {
     }
 }
 
+#[path = "changed/signals.rs"]
+mod signals;
+
 mod gates {
     #[test]
     fn s50_an_absolute_git_comparison_keeps_the_signal_count_unavailable() {
