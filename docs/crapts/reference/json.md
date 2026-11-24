@@ -21,7 +21,7 @@ The `version` field holds the crapts version that wrote the file, shown as `<ver
 | `coverage_kind` | required | required | no | `lines` for LCOV, `statements` for Istanbul |
 | `threshold` | required | required | no | The CRAP threshold of the run |
 | `selection` | required | required | yes | `top` and `min` when the rows were sliced, else `null` |
-| `regression_gate` | absent | required | no | Whether the regression gate ran, with both versions |
+| `regression_gate` | absent | required | no | Whether the baseline's version allows a regression verdict, with both versions |
 | `notices` | required | required | no | Messages about the run, such as a skipped regression gate |
 | `summary` | required | required | no | Counts over every eligible row |
 | `entries` | required | required | no | One object per displayed function |
@@ -29,7 +29,7 @@ The `version` field holds the crapts version that wrote the file, shown as `<ver
 | `changed` | optional | optional | no | The changed-function section under `--base` |
 | `diagnostics` | required | required | no | File counts, and the source and coverage files that found no partner |
 
-A report written with `--top` or `--min` has a non-null `selection` and cannot serve as a baseline. `summary.regressed` and the other comparison counts are `null` in a report.
+A report written with `--top` or `--min` has a non-null `selection` and cannot serve as a baseline. `summary.regressed` and the other comparison counts are `null` in a report. `regression_gate.skipped` is true when the baseline's major or minor version differs from the running crapts. It does not record whether `--fail-regression` was passed.
 
 ## Example
 

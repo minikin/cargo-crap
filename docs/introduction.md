@@ -21,6 +21,13 @@ the threshold or goes up.
   [triage the duplicates](guides/triage.md): it tells the same logic written
   twice from two functions that only share a Rust idiom. Since 0.8.0,
   functions that all resemble each other are one group, triaged once.
+- Since 0.10.0, [structural signals](explanation/signals.md) say why a
+  function got harder to change: nesting, length, complex conditions, stubs
+  and panic sites. Turned on with `[signals] enabled = true`, a rise in
+  nesting, bumps, conditions or stubs against a baseline fails the
+  regression gate.
+- [crapts](crapts/README.md) brings the same score to JavaScript and
+  TypeScript.
 - The reference lists every [flag](reference/cli.md), every
   [configuration key](reference/config.md), the
   [output formats](reference/output-formats.md) and the

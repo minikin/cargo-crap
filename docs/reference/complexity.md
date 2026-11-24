@@ -12,9 +12,10 @@ would only add 0%-coverage noise. Pass `--no-default-excludes` to analyze them
 like any other source. Missing test helpers are that filter working, not a
 path-matching failure.
 
-**Every function with a body is scored:** free functions, methods in `impl`
-blocks (named `Type::method`) and a trait's default methods (named
-`Trait::method`). A required trait method has no body and gets no row.
+**Every function item with a body is scored**, unless it is nested in
+another function's body: free functions, methods in `impl` blocks (named
+`Type::method`) and a trait's default methods (named `Trait::method`). A
+required trait method has no body and gets no row.
 
 **Cyclomatic complexity starts at 1 and adds one for each of:** `if`
 (including every `else if`), `for`, `while`, `loop`, **every** `match`
@@ -30,4 +31,5 @@ arm, each `&&` and `||`, and each `?`.
 
 Closures and items nested inside a function body (a local `fn`, `impl` or
 `mod`) are *not* folded into the enclosing function. Each is its own
-scope, and a closure's branches belong to the closure.
+scope, and none gets a row of its own: a local `fn` and a closure's
+branches are not scored at all.

@@ -38,6 +38,6 @@ The `Δ` column is the change from the baseline score. The run exits 1 because `
 
 crapts pairs each function with its baseline row by file and name, and follows a function that moved to another file when the pairing is unambiguous. A score change no larger than `--epsilon`, 0.01 by default, counts as unchanged.
 
-The baseline and the run must measure the same unit. A baseline written from LCOV, with `coverage_kind` `lines`, cannot be compared with a run that reads Istanbul `coverage-final.json`, and the run exits 2. A baseline from a different minor version of crapts is still compared, but the regression gate is skipped and the report says so.
+The baseline and the run must measure the same unit. A baseline written from LCOV, with `coverage_kind` `lines`, cannot be compared with a run that reads Istanbul `coverage-final.json`, and the run exits 2. A baseline from a different major or minor version of crapts is still compared, but the regression gate is skipped and the report says so.
 
 To gate only the functions a branch edits, without saving a baseline, see the [changed-function gate](changed-gate.md).

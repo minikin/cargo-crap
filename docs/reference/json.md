@@ -34,7 +34,7 @@ the `uri` format from `ajv-formats` (or pass `strict: false`), then
       "line": 12,
       "cyclomatic": 4.0,
       "coverage": 75.0,        // null when no coverage data was found
-      "crap": 5.5625,
+      "crap": 4.25,
       "crate": "my-crate",     // present only with --workspace or -p
       "uncovered": [           // uncovered line ranges; omitted when empty
         { "start": 15, "end": 16 }
@@ -63,8 +63,7 @@ the `uri` format from `ajv-formats` (or pass `strict: false`), then
     {
       "signal": "nesting",       // a signal name, or "crap"
       "value": 3,                // the current value
-      "baseline": 1,             // omitted for a new function
-      "limit": 4,                // present when a new function exceeded [signals.limits]
+      "baseline": 1,             // 0 for a new function's stub or panic site
       "gating": true,            // trips --fail-regression
       "action": "flatten-nesting",
       "spans": [ { "start": 151, "end": 188 } ]
@@ -72,6 +71,9 @@ the `uri` format from `ajv-formats` (or pass `strict: false`), then
   ]
 }
 ```
+
+A new function over a `[signals.limits]` ceiling has a reason with no
+`baseline` and with `limit`, the ceiling it passed.
 
 A reason's `action` is one of `flatten-nesting`, `split-function`,
 `extract-condition`, `remove-stub`, `handle-error` or `add-tests`. See
@@ -92,12 +94,13 @@ relative path against the workspace root, so a baseline recorded in one
 checkout compares cleanly in another, and an absolute baseline from an
 older version still compares cleanly in the checkout that recorded it.
 
-Both envelopes also carry an optional `diagnostics` object whenever `--lcov`
-was supplied: analyzed/LCOV/matched file counts plus bounded example lists
-of files present only on one side. When the analyzed tree and the coverage
-run describe different scopes (the classic cause of a delta full of
-unrelated 0%-coverage entries), a warning with the same numbers is printed
-to stderr before the report, and CI wrappers can gate on the JSON counts.
+Both envelopes also carry an optional `diagnostics` object whenever the
+`--lcov` file names at least one source file: analyzed/LCOV/matched file
+counts plus bounded example lists of files present only on one side. When
+the analyzed tree and the coverage run describe different scopes (the
+classic cause of a delta full of unrelated 0%-coverage entries), a warning
+with the same numbers is printed to stderr before the report, and CI
+wrappers can gate on the JSON counts.
 
 On `--duplicates` runs both envelopes grow a `duplicates` array, one object
 per candidate pair, strongest first:
