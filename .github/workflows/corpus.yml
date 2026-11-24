@@ -1,0 +1,55 @@
+name: Corpus
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect corpus changes
+    runs-on: ubuntu-latest
+    outputs:
+      corpus: ${{ steps.filter.outputs.corpus }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            corpus:
+              - 'crates/crapts/**'
+              - 'crates/cargo-crap-core/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'schemas/crapts/**'
+              - 'scripts/corpus/**'
+              - '.gitattributes'
+              - '.github/workflows/corpus.yml'
+
+  corpus:
+    name: Excalidraw corpus
+    needs: [changes]
+    if: needs.changes.outputs.corpus == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Shellcheck
+        run: shellcheck -x scripts/corpus/*.sh
+      - name: Checkout pinned Excalidraw corpus
+        run: bash scripts/corpus/checkout.sh "$RUNNER_TEMP/excalidraw"
+      - name: Run Excalidraw corpus check
+        env:
+          CRAPTS_CORPUS_DIR: ${{ runner.temp }}/excalidraw
+          CRAPTS_CORPUS_UPDATE: "0"
+        run: cargo test --locked -p crapts --test corpus -- --ignored
+      - name: Verify corpus fixtures untouched
+        run: git diff --exit-code -- crates/crapts/tests/fixtures/corpus

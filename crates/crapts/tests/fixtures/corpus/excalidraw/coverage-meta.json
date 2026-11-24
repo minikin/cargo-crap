@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/excalidraw/excalidraw",
+  "commit": "2c3dcc06ec807e81ab9437eceb1a8f7a3c590743",
+  "command": "yarn vitest run --coverage --coverage.reporter=json --coverage.provider=v8 --coverage.reportOnFailure=true",
+  "provider": "v8",
+  "reportOnFailure": true,
+  "vitestExitCode": 0,
+  "versions": {
+    "node": "v26.13.1",
+    "yarn": "1.22.22",
+    "vitest": "3.0.6"
+  },
+  "artifacts": {
+    "coverage_final_json_gz_bytes": 2247874,
+    "golden_json_bytes": 2533812,
+    "golden_stderr_bytes": 139
+  }
+}
