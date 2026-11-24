@@ -9,74 +9,37 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-jobs:
-  # ── Build binaries for every target platform ──────────────────────────────
-  build:
-    name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            use_cross: true
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+permissions:
+  contents: read
 
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - uses: actions/checkout@v6
+      - id: tag
+        run: scripts/release/check-tag.sh cargo-crap "$GITHUB_REF_NAME"
+      - name: Verify the remote core tag
+        run: scripts/release/check-core.sh
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+  build:
+    needs: preflight
+    uses: ./.github/workflows/_build.yml
+    with:
+      package: cargo-crap
+      binary: cargo-crap
+      features: 'triage'
+      targets: >-
+        [{"target":"x86_64-unknown-linux-gnu","os":"ubuntu-latest","use_cross":false},
+         {"target":"aarch64-unknown-linux-gnu","os":"ubuntu-latest","use_cross":true},
+         {"target":"x86_64-apple-darwin","os":"macos-latest","use_cross":false},
+         {"target":"aarch64-apple-darwin","os":"macos-latest","use_cross":false},
+         {"target":"x86_64-pc-windows-msvc","os":"windows-latest","use_cross":false}]
 
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install cross (aarch64-linux only)
-        if: ${{ matrix.use_cross == true }}
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
-
-      - name: Build (native)
-        if: ${{ !matrix.use_cross }}
-        run: cargo build --release --features triage --target ${{ matrix.target }}
-
-      - name: Build (cross)
-        if: ${{ matrix.use_cross == true }}
-        run: cross build --release --features triage --target ${{ matrix.target }}
-
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          BIN="target/${{ matrix.target }}/release/cargo-crap"
-          ARCHIVE="cargo-crap-${{ matrix.target }}.tar.gz"
-          tar czf "$ARCHIVE" -C "$(dirname "$BIN")" "$(basename "$BIN")"
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $bin     = "target\${{ matrix.target }}\release\cargo-crap.exe"
-          $archive = "cargo-crap-${{ matrix.target }}.zip"
-          Compress-Archive -Path $bin -DestinationPath $archive
-          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: binary-${{ matrix.target }}
-          path: ${{ env.ARCHIVE }}
-
-  # ── Create a GitHub release and attach all binaries ───────────────────────
   release:
     name: GitHub Release
     needs: build
@@ -101,15 +64,11 @@ jobs:
           files: artifacts/*
           generate_release_notes: true
 
-  # ── Point the Action's v1 tag at this release ─────────────────────────────
-  # `uses: minikin/cargo-crap@v1` then installs this release by default:
-  # action.yml's default version is held equal to Cargo.toml by a test.
-  # GITHUB_TOKEN's push starts no workflow, so this cannot loop.
-  # The Action's default version is this release, which exists only now:
-  # download it on every platform before `v1` points at it.
   action-smoke:
     name: Action with this release (${{ matrix.os }})
     needs: release
+    permissions:
+      contents: read
     if: (startsWith(github.ref_name, 'v0.') || startsWith(github.ref_name, 'v1.')) && !contains(github.ref_name, '-')
     strategy:
       fail-fast: false
@@ -145,20 +104,30 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Point v1 at the release commit
+        # A push with GITHUB_TOKEN starts no workflow, so moving v1 cannot loop.
         run: |
           git tag -f v1 "$GITHUB_SHA"
           git push -f origin v1
 
-  # ── Publish to crates.io after the release is live ───────────────────────
   publish:
-    name: Publish to crates.io
-    needs: release
+    needs: [preflight, release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-cargo-crap-core
+      cancel-in-progress: false
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Publish
-        run: cargo publish --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Verify and publish the shared core
+        run: scripts/release/publish-core.sh
+      - name: Publish cargo-crap
+        run: scripts/release/publish-frontend.sh cargo-crap "$VERSION"

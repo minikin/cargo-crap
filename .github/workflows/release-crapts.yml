@@ -1,0 +1,205 @@
+name: Release crapts
+
+on:
+  push:
+    tags: ["crapts-v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      major: ${{ steps.tag.outputs.major }}
+      is_prerelease: ${{ steps.tag.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: tag
+        run: scripts/release/check-tag.sh crapts "$GITHUB_REF_NAME"
+      - name: Verify the remote core tag
+        run: scripts/release/check-core.sh
+
+  build:
+    needs: preflight
+    uses: ./.github/workflows/_build.yml
+    with:
+      package: crapts
+      binary: crapts
+      features: ''
+      targets: >-
+        [{"target":"x86_64-unknown-linux-gnu","os":"ubuntu-latest","use_cross":false},
+         {"target":"aarch64-unknown-linux-gnu","os":"ubuntu-latest","use_cross":true},
+         {"target":"x86_64-apple-darwin","os":"macos-latest","use_cross":false},
+         {"target":"aarch64-apple-darwin","os":"macos-latest","use_cross":false},
+         {"target":"x86_64-pc-windows-msvc","os":"windows-latest","use_cross":false},
+         {"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest","use_cross":true}]
+
+  release:
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: artifacts
+      - name: Checksums
+        working-directory: artifacts
+        run: sha256sum crapts-* > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: true
+          make_latest: 'false'
+          prerelease: ${{ needs.preflight.outputs.is_prerelease }}
+          generate_release_notes: true
+
+  archive-smoke:
+    needs: [preflight, release]
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+      - if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          if [[ "$(uname -m)" == arm64 ]] && ! arch -x86_64 /usr/bin/true; then
+            softwareupdate --install-rosetta --agree-to-license
+          fi
+      - name: Download and exercise the released binary
+        shell: bash
+        run: |
+          gh release download "$GITHUB_REF_NAME" --dir artifacts -p SHA256SUMS -p "crapts-$TARGET.*"
+          node scripts/release/verify-archives.mjs artifacts "$TARGET"
+          bin=artifacts/crapts
+          if [[ "$RUNNER_OS" == Windows ]]; then bin+=.exe; fi
+          node scripts/release/smoke.mjs --binary "$bin" --version "$VERSION"
+
+  publish-crates:
+    needs: [preflight, archive-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-cargo-crap-core
+      cancel-in-progress: false
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify and publish the shared core
+        run: scripts/release/publish-core.sh
+      - name: Publish crapts
+        run: scripts/release/publish-frontend.sh crapts "$VERSION"
+
+  publish-npm:
+    needs: [preflight, publish-crates]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: npm install --global npm@11.21.0
+      - run: npm ci --prefix scripts/release --ignore-scripts
+      - name: Verify and stage release assets
+        run: |
+          gh release download "$GITHUB_REF_NAME" --dir artifacts -p SHA256SUMS -p 'crapts-*'
+          node scripts/release/verify-archives.mjs artifacts
+          node scripts/release/stage-npm.mjs --archives artifacts --out staged --version "$VERSION"
+      - name: Publish with provenance
+        run: |
+          node scripts/release/publish-npm.mjs --staged-dir staged --version "$VERSION" \
+            --commit "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --tag next
+
+  npm-smoke:
+    needs: [preflight, publish-npm]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: ubuntu
+            os: ubuntu-latest
+          - host: alpine
+            os: ubuntu-latest
+          - host: macos
+            os: macos-latest
+          - host: windows
+            os: windows-latest
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - if: matrix.host != 'alpine'
+        shell: bash
+        run: node scripts/release/smoke.mjs --npm --version "$VERSION"
+      - if: matrix.host == 'alpine'
+        run: |
+          docker run --rm -v "$PWD:/source:ro" node:24-alpine node /source/scripts/release/smoke.mjs \
+            --npm --version "$VERSION" --expect-package @minikin/crapts-linux-x64-musl
+
+  promote-npm:
+    needs: [preflight, npm-smoke]
+    if: needs.preflight.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: npm install --global npm@11.21.0
+      - name: Promote all verified packages
+        run: |
+          packages=$(node -p 'Object.keys(require("./npm/crapts/package.json").optionalDependencies).join(" ")')
+          for package in $packages @minikin/crapts; do
+            npm dist-tag add "$package@$VERSION" latest
+          done

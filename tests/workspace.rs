@@ -25,8 +25,9 @@ fn cargo(
         .unwrap_or_else(|e| panic!("running {cargo} {args:?}: {e}"));
     assert!(
         output.status.success(),
-        "{cargo} {args:?} in {} failed: {}",
+        "{cargo} {args:?} in {} failed: {}\n{}",
         dir.display(),
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).expect("utf-8 cargo output")
@@ -83,6 +84,106 @@ fn same_dir(
     a.canonicalize().expect("canonical path") == b.canonicalize().expect("canonical path")
 }
 
+fn core_version() -> String {
+    manifest(&root().join("crates/cargo-crap-core"))["package"]["version"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn check_binstall(
+    pkg: &Value,
+    prefix: &str,
+) {
+    let name = pkg["name"].as_str().unwrap();
+    let base = format!("{{ repo }}/releases/download/{prefix}{{ version }}/{name}-{{ target }}");
+    let config = &pkg["metadata"]["binstall"];
+    assert_eq!(config["pkg-url"], format!("{base}.tar.gz"));
+    assert_eq!(config["bin-dir"], format!("{name}{{ binary-ext }}"));
+    assert_eq!(config["pkg-fmt"], "tgz");
+    let windows = &config["overrides"]["x86_64-pc-windows-msvc"];
+    assert_eq!(windows["pkg-url"], format!("{base}.zip"));
+    assert_eq!(windows["pkg-fmt"], "zip");
+}
+
+#[test]
+fn workspace_crates_carry_publishable_metadata_and_crapts_binstall_urls() {
+    let meta = metadata(&root(), &["--locked"]);
+    for name in ["cargo-crap-core", "crapts"] {
+        let pkg = package(&meta, name);
+        assert_eq!(pkg["publish"], Value::Null, "{name}");
+        for field in ["description", "repository", "homepage", "license"] {
+            assert!(
+                pkg[field].as_str().is_some_and(|v| !v.is_empty()),
+                "{name}.{field}"
+            );
+        }
+        assert_eq!(pkg["documentation"], format!("https://docs.rs/{name}"));
+        for field in ["keywords", "categories"] {
+            assert!(!pkg[field].as_array().unwrap().is_empty(), "{name}.{field}");
+        }
+        assert!(
+            root()
+                .join("crates")
+                .join(name)
+                .join("CHANGELOG.md")
+                .is_file()
+        );
+    }
+    let core = package(&meta, "cargo-crap-core");
+    assert!(
+        core["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["name"] != "cargo-crap-core")
+    );
+    check_binstall(package(&meta, "crapts"), "crapts-v");
+}
+
+#[test]
+fn cargo_crap_keeps_its_recorded_reports_and_binstall_urls_unchanged() {
+    check_binstall(
+        package(&metadata(&root(), &["--locked"]), "cargo-crap"),
+        "v",
+    );
+}
+
+#[test]
+fn unpacked_core_passes_its_library_tests_offline() {
+    let scratch = tempfile::tempdir().unwrap();
+    let target = scratch.path().join("target");
+    let build = target.to_str().unwrap();
+    cargo(
+        &root(),
+        &[
+            "package",
+            "--locked",
+            "--offline",
+            "-p",
+            "cargo-crap-core",
+            "--allow-dirty",
+            "--target-dir",
+            build,
+        ],
+    );
+    let stem = format!("cargo-crap-core-{}", core_version());
+    let archive = target.join("package").join(format!("{stem}.crate"));
+    assert!(
+        Command::new("tar")
+            .arg("-xzf")
+            .arg(archive)
+            .current_dir(scratch.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    cargo(
+        &scratch.path().join(stem),
+        &["test", "--lib", "--offline", "--target-dir", build],
+    );
+}
+
 #[test]
 fn the_workspace_has_cargo_crap_and_cargo_crap_core() {
     let metadata = metadata(&root(), &["--locked"]);
@@ -93,10 +194,9 @@ fn the_workspace_has_cargo_crap_and_cargo_crap_core() {
     );
 
     let core = package(&metadata, "cargo-crap-core");
-    assert_eq!(core["version"], "0.1.0");
+    assert_eq!(core["version"], core_version());
     assert_eq!(core["edition"], "2024");
     assert_eq!(core["rust_version"], "1.88");
-    assert_eq!(core["publish"], serde_json::json!([]), "publish = false");
 
     // And cargo-crap's version differs from the core's. The goldens record
     // the report version as a placeholder only when it equals cargo-crap's,
@@ -104,12 +204,6 @@ fn the_workspace_has_cargo_crap_and_cargo_crap_core() {
     let tool = package(&metadata, "cargo-crap");
     assert_ne!(tool["version"], core["version"]);
 
-    let core_manifest = manifest(&root().join("crates/cargo-crap-core"));
-    assert_eq!(
-        core_manifest["package"]["version"].as_str(),
-        Some("0.1.0"),
-        "the core's [package].version is not the literal 0.1.0"
-    );
     let root_manifest = manifest(&root());
     let shared = root_manifest["workspace"]["package"]
         .as_table()
@@ -136,7 +230,6 @@ fn the_workspace_has_cargo_crap_and_cargo_crap_core() {
 fn add_the_analysis_library_and_its_pinned_dependencies() {
     let metadata = metadata(&root(), &["--locked"]);
     let analysis = package(&metadata, "crapts");
-    assert_eq!(analysis["publish"], serde_json::json!([]));
     assert_eq!(analysis["rust_version"], "1.98");
     let targets = analysis["targets"].as_array().expect("library targets");
     assert!(
@@ -276,9 +369,14 @@ fn the_lock_retains_the_spec_45_ids_and_adds_only_the_crapts_closure() {
         package: Vec<LockedPackage>,
     }
 
+    // Releases can change the first-party package versions recorded in this fixture.
     let base: BTreeSet<_> = include_str!("fixtures/spec45-package-ids.txt")
         .lines()
-        .filter(|line| !line.starts_with('#'))
+        .filter(|line| {
+            !line.starts_with('#')
+                && !line.starts_with("cargo-crap-core ")
+                && !line.starts_with("cargo-crap ")
+        })
         .collect();
     let lock: Lockfile = toml::from_str(
         &std::fs::read_to_string(root().join("Cargo.lock")).expect("read Cargo.lock"),
@@ -300,7 +398,9 @@ fn the_lock_retains_the_spec_45_ids_and_adds_only_the_crapts_closure() {
     }
     for id in &current {
         assert!(
-            base.contains(id.as_str()) || closure.contains(id),
+            id == &format!("cargo-crap {}", env!("CARGO_PKG_VERSION"))
+                || base.contains(id.as_str())
+                || closure.contains(id),
             "added package outside the crapts closure: {id}"
         );
     }
@@ -320,7 +420,7 @@ fn the_crapts_library_uses_the_version_of_core_pinned_by_the_workspace() {
     ))
     .expect("cargo metadata prints JSON");
     let core = package(&resolved, "cargo-crap-core");
-    assert_eq!(core["version"], "0.1.0");
+    assert_eq!(core["version"], core_version());
     assert_eq!(core["source"], Value::Null, "the core comes from a path");
     assert!(same_dir(
         Path::new(core["manifest_path"].as_str().expect("manifest path"))
@@ -346,7 +446,11 @@ fn the_crapts_library_uses_the_version_of_core_pinned_by_the_workspace() {
             .filter(|dep| dep["name"] == "cargo-crap-core")
             .collect();
         assert_eq!(edges.len(), 1, "{consumer} edges: {edges:?}");
-        assert_eq!(edges[0]["req"], "=0.1.0", "{consumer}");
+        assert_eq!(
+            edges[0]["req"],
+            format!("={}", core_version()),
+            "{consumer}"
+        );
         assert_eq!(edges[0]["kind"], Value::Null);
         assert_eq!(edges[0]["optional"], false);
         let resolved_edges: Vec<_> = node_for(&pkg["id"])["deps"]
@@ -388,7 +492,10 @@ fn both_front_ends_lock_the_same_local_core() {
         1,
         "cargo-crap-core entries in Cargo.lock"
     );
-    assert_eq!(locked_core[0]["version"].as_str(), Some("0.1.0"));
+    assert_eq!(
+        locked_core[0]["version"].as_str(),
+        Some(core_version().as_str())
+    );
     assert!(
         locked_core[0].get("source").is_none(),
         "{:?}",
@@ -514,7 +621,12 @@ fn cargo_crap_s_published_package_holds_no_core_and_no_gate_script() {
 
     let leaked: Vec<&String> = paths
         .iter()
-        .filter(|p| p.starts_with("crates/") || p.starts_with("scripts/gates/"))
+        .filter(|p| {
+            p.starts_with("crates/")
+                || p.starts_with("scripts/gates/")
+                || p.starts_with("scripts/release/")
+                || p.starts_with("npm/")
+        })
         .collect();
     assert!(leaked.is_empty(), "packaged: {leaked:?}");
 }
@@ -644,5 +756,30 @@ fn recorded_property_test_seeds_follow_the_tests_that_replay_them() {
                 package.display()
             );
         }
+    }
+}
+
+#[test]
+fn wrapper_version_stays_synchronized_with_crates_crapts() {
+    let wrapper: Value =
+        serde_json::from_slice(&std::fs::read(root().join("npm/crapts/package.json")).unwrap())
+            .unwrap();
+    let member = manifest(&root().join("crates/crapts"));
+    let version = member["package"]["version"].as_str().unwrap();
+    assert_eq!(wrapper["version"], version);
+    let deps = wrapper["optionalDependencies"].as_object().unwrap();
+    assert_eq!(deps.len(), 6);
+    for suffix in [
+        "darwin-arm64",
+        "darwin-x64",
+        "linux-x64-gnu",
+        "linux-arm64-gnu",
+        "linux-x64-musl",
+        "win32-x64-msvc",
+    ] {
+        assert_eq!(deps[&format!("@minikin/crapts-{suffix}")], version);
+    }
+    for script in ["preinstall", "install", "postinstall", "prepare"] {
+        assert!(wrapper["scripts"].get(script).is_none());
     }
 }

@@ -1,0 +1,68 @@
+name: Build release archives
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        type: string
+        required: true
+      binary:
+        type: string
+        required: true
+      features:
+        type: string
+        default: ''
+      targets:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.targets) }}
+    env:
+      TARGET: ${{ matrix.target }}
+      BINARY: ${{ inputs.binary }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - if: matrix.use_cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Build
+        shell: bash
+        env:
+          BUILDER: ${{ matrix.use_cross && 'cross' || 'cargo' }}
+          PACKAGE: ${{ inputs.package }}
+          FEATURES: ${{ inputs.features }}
+        run: |
+          args=(--locked --release -p "$PACKAGE" --target "$TARGET")
+          if [[ -n "$FEATURES" ]]; then args+=(--features "$FEATURES"); fi
+          "$BUILDER" build "${args[@]}"
+      - if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          archive="$BINARY-$TARGET.tar.gz"
+          tar czf "$archive" -C "target/$TARGET/release" "$BINARY"
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = "$env:BINARY-$env:TARGET.zip"
+          Compress-Archive -Path "target/$env:TARGET/release/$env:BINARY.exe" -DestinationPath $archive
+          "ARCHIVE=$archive" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error

@@ -8,15 +8,17 @@ license.workspace = true
 description = "JavaScript and TypeScript source analysis for the CRAP metric"
 repository.workspace = true
 homepage.workspace = true
-publish = false
-exclude = ["tests/fixtures/corpus/"]
+documentation = "https://docs.rs/crapts"
+keywords = ["javascript", "typescript", "coverage", "complexity", "metrics"]
+categories = ["development-tools::testing"]
+exclude = ["tests/*.rs", "tests/support/", "tests/fixtures/corpus/", "proptest-regressions/"]
 
 [[bin]]
 name = "crapts"
 path = "src/main.rs"
 
 [dependencies]
-cargo-crap-core = { path = "../cargo-crap-core", version = "=0.1.0" }
+cargo-crap-core.workspace = true
 clap.workspace = true
 globset.workspace = true
 oxc_allocator.workspace = true
@@ -44,3 +46,12 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/crapts-v{ version }/crapts-{ target }.tar.gz"
+bin-dir = "crapts{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/crapts-v{ version }/crapts-{ target }.zip"
+pkg-fmt = "zip"

@@ -296,10 +296,14 @@ fn a_change_to_a_core_proptest_seed_runs_the_rust_jobs() {
 
 #[test]
 fn a_change_to_a_core_test_fixture_runs_the_rust_jobs() {
-    assert!(any_glob_matches(
-        &globs(CI, "            rust:"),
-        "crates/cargo-crap-core/tests/fixtures/lcov/p_bad_known.info"
-    ));
+    let rust = globs(CI, "            rust:");
+    for fixture in [
+        "crates/cargo-crap-core/src/coverage/p_bad_known.info",
+        "crates/cargo-crap-core/src/report/cargo_crap_tool.inc",
+        "crates/cargo-crap-core/src/report/second_tool.inc",
+    ] {
+        assert!(any_glob_matches(&rust, fixture), "{fixture}");
+    }
 }
 
 #[test]
@@ -488,6 +492,43 @@ fn a_change_only_to_the_cores_manifest_runs_the_release_script_tests() {
         &globs(CI, "            release:"),
         "crates/cargo-crap-core/Cargo.toml"
     ));
+}
+
+#[test]
+fn release_inputs_and_npm_manifest_changes_run_their_ci_checks() {
+    let rust = globs(CI, "            rust:");
+    assert!(any_glob_matches(&rust, "npm/crapts/package.json"));
+    let release = globs(CI, "            release:");
+    for path in [
+        ".github/workflows/_build.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/release-crapts.yml",
+        ".github/workflows/action.yml",
+        "crates/crapts/Cargo.toml",
+        "crates/crapts/CHANGELOG.md",
+        "crates/cargo-crap-core/CHANGELOG.md",
+        "Cargo.lock",
+        "npm/crapts/package.json",
+    ] {
+        assert!(
+            any_glob_matches(&release, path),
+            "release filter misses {path}"
+        );
+    }
+    let npm = globs(CI, "            npm:");
+    for path in [
+        "npm/crapts/lib/resolve.js",
+        "scripts/release/stage-npm.mjs",
+        "scripts/release/publish-npm.mjs",
+        "scripts/release/package-lock.json",
+        "crates/crapts/src/main.rs",
+        "crates/cargo-crap-core/src/lib.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        ".github/workflows/ci.yml",
+    ] {
+        assert!(any_glob_matches(&npm, path), "npm filter misses {path}");
+    }
 }
 
 #[test]

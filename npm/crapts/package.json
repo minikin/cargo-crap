@@ -1,0 +1,31 @@
+{
+  "name": "@minikin/crapts",
+  "version": "0.1.0",
+  "description": "Change Risk Anti-Patterns metric for JavaScript and TypeScript",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/minikin/cargo-crap.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "crapts": "bin/crapts.js"
+  },
+  "files": [
+    "bin/",
+    "lib/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "@minikin/crapts-darwin-arm64": "0.1.0",
+    "@minikin/crapts-darwin-x64": "0.1.0",
+    "@minikin/crapts-linux-x64-gnu": "0.1.0",
+    "@minikin/crapts-linux-arm64-gnu": "0.1.0",
+    "@minikin/crapts-linux-x64-musl": "0.1.0",
+    "@minikin/crapts-win32-x64-msvc": "0.1.0"
+  }
+}

@@ -14,11 +14,11 @@ use std::path::PathBuf;
 
 /// cargo-crap's branding with a fixed version, so the report tests' expected
 /// output does not change with each release.
-pub(crate) const CARGO_CRAP_FIXTURE: Tool = include!("../../tests/fixtures/cargo_crap_tool.inc.rs");
+pub(crate) const CARGO_CRAP_FIXTURE: Tool = include!("cargo_crap_tool.inc");
 
 /// A tool whose seven branding strings differ from cargo-crap's and from one another,
 /// so a field read from the wrong place shows.
-pub(crate) const SECOND_TOOL: Tool = include!("../../tests/fixtures/second_tool.inc.rs");
+pub(crate) const SECOND_TOOL: Tool = include!("second_tool.inc");
 
 /// Shorthand for the common test shape: a threshold and a format, every
 /// other knob at its default. Sites needing links / diagnostics /

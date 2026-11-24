@@ -104,3 +104,5 @@ mutants.out*/
 
 # Python bytecode from the scripts under scripts/ and docs/assets/hero/
 __pycache__/
+
+/scripts/release/node_modules/
