@@ -1562,6 +1562,7 @@ const CRAPTS: Tool = Tool {
         fail_above_counts: Population::All,
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
         signal_detail_hint: None,
+        signal_slice_hint: None,
         tie_order: TieOrder::FileFunctionLine,
         notice_spacing: NoticeSpacing::Adjacent,
     },
@@ -3214,6 +3215,14 @@ mod cli {
 mod signals;
 
 mod gates {
+    use std::fmt::Write as _;
+
+    use proptest::prelude::*;
+    use serde_json::{Value, json};
+
+    use super::cli::{Repo, app, binary_transition, names, report_of};
+    use super::{callback, common, func, outer_with_member, support};
+
     #[test]
     fn s50_an_absolute_git_comparison_keeps_the_signal_count_unavailable() {
         let repo = Repo::standard();
@@ -3230,13 +3239,6 @@ mod gates {
             assert_eq!(doc["summary"].get("signal_regressions"), Some(&Value::Null));
         }
     }
-    use std::fmt::Write as _;
-
-    use proptest::prelude::*;
-    use serde_json::{Value, json};
-
-    use super::cli::{Repo, app, binary_transition, names, report_of};
-    use super::{callback, common, func, outer_with_member, support};
 
     fn code(out: &std::process::Output) -> i32 {
         out.status.code().unwrap()

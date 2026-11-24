@@ -68,6 +68,11 @@ impl Body {
         &mut self,
         span: Span,
     ) {
+        debug_assert!(
+            self.chunks
+                .last()
+                .is_none_or(|chunk| chunk.span.start <= span.start)
+        );
         self.chunks.push(Chunk {
             span,
             ..Chunk::default()
@@ -79,8 +84,8 @@ impl Body {
         node: AstKind<'_>,
     ) {
         match node {
-            AstKind::FunctionBody(body) => self.statements(&body.statements),
-            AstKind::StaticBlock(block) => self.statements(&block.body),
+            AstKind::FunctionBody(body) => self.add_chunks(&body.statements),
+            AstKind::StaticBlock(block) => self.add_chunks(&block.body),
             _ => {},
         }
         if let Some(chunk) = self.containing(node.span()) {
@@ -115,7 +120,7 @@ impl Body {
         }
     }
 
-    fn statements(
+    fn add_chunks(
         &mut self,
         statements: &[Statement<'_>],
     ) {
@@ -261,6 +266,7 @@ fn placeholder_argument(arg: &Argument<'_>) -> bool {
     else {
         return false;
     };
+    // JSStr can hold a lone surrogate, including after an ASCII placeholder and colon.
     let message = String::from_utf8_lossy(literal.value.as_bytes())
         .trim_ascii()
         .to_ascii_lowercase();
@@ -290,7 +296,7 @@ fn assert_fail(call: &CallExpression<'_>) -> Option<Span> {
 
 fn deepest(bodies: &mut [Span]) -> u32 {
     // A control body's descendants are contained or disjoint. Ancestors at
-    // the same source start must enter first (an unbraced nested statement).
+    // the same start enter before the empty-switch witness in `if (a) switch (x) {}`.
     bodies.sort_unstable_by_key(|span| (span.start, Reverse(span.end)));
     let mut ends = Vec::new();
     let mut maximum = 0;

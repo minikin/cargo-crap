@@ -133,7 +133,7 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`src/main.rs`** builds the CLI with `clap`. It handles the `cargo crap` subcommand invocation by stripping the leading `crap` argument when detected. It resolves settings, runs analysis and coverage, prepares the baseline with the Cargo file scope, opens the destination and gathers duplicate data. It passes those inputs to `run::run` and returns the resulting gate exit code.
 
-**`core/run.rs`** owns the report pipeline (`run::run`) and `BaselineFilter` (`prepare` for cargo-crap baselines, `prepare_crapts` for admitted crapts baselines with private version metadata and skip notice). `run::run` selects rows according to `Tool.policy`, renders notices, `Placement::Lead` sections, the report body (`CargoCrapV1` or `CraptsV1` JSON, summary, or text and machine formats), duplicates, and `Placement::Trail` sections, then flushes before returning `GateOutcome`. In JSON mode, `CraptsV1` embeds a single validated `changed` section object and records `summary.changed_failures`, while `CargoCrapV1` refuses supplied sections before writing. **`core/report/section.rs`** defines `Section` and `Placement`. **`core/filter.rs`** compiles allow patterns and selects shown rows under `TieOrder::Stable` or `TieOrder::FileFunctionLine`. **`core/gate.rs`** maps threshold counts, full-delta counts (skipping the regression verdict across crapts minor versions), and section failures (`fail_sections`) to an exit code. **`core/policy.rs`** defines `EnvelopeKind`, `PairPolicy`, `TieOrder`, `Population`, `NoticeSpacing`, and `Policy`. cargo-crap supplies its values in `src/tool.rs`.
+**`core/run.rs`** owns `PreparedReport`, the `run::run` wrapper used by cargo-crap, and `BaselineFilter` (`prepare` for cargo-crap baselines, `prepare_crapts` for admitted crapts baselines with private version metadata and skip notice). `PreparedReport::new` selects rows according to `Tool.policy` and evaluates the gates. `PreparedReport::write` renders notices, `Placement::Lead` sections, the report body (`CargoCrapV1` or `CraptsV1` JSON, summary, or text and machine formats), duplicates, and `Placement::Trail` sections, then flushes before returning `GateOutcome`. In JSON mode, `CraptsV1` embeds a single validated `changed` section object and records `summary.changed_failures`, while `CargoCrapV1` refuses supplied sections before writing. **`core/report/section.rs`** defines `Section` and `Placement`. **`core/filter.rs`** compiles allow patterns and selects shown rows under `TieOrder::Stable` or `TieOrder::FileFunctionLine`. **`core/gate.rs`** maps threshold counts, full-delta counts (skipping the regression verdict across crapts minor versions), and section failures (`fail_sections`) to an exit code. **`core/policy.rs`** defines `EnvelopeKind`, `PairPolicy`, `TieOrder`, `Population`, `NoticeSpacing`, and `Policy`. cargo-crap supplies its values in `src/tool.rs`.
 
 ### The crapts CLI
 
@@ -157,15 +157,18 @@ Discovery emits unused exclusions before `coverage::read_coverage` reads the
 LCOV or Istanbul input. The command then analyzes each source in ordinary mode
 and emits one parse warning per affected file. `attribute::attribute` assigns coverage
 to the functions and supplies the scored rows, measured unit, scope diagnostics
-and remaining warnings. `cli/scoring.rs` passes those results to the shared
-`run::run` with the crapts tool policy. The absolute JSON counts and
+and remaining warnings. `crates/crapts/src/signals.rs` measures structural signals
+and records their source ranges during analysis. `cli/scoring.rs` calls
+`run::PreparedReport::new` with those results and the crapts policy. Each
+PR-comment fitting step calls `PreparedReport::write` on the same report. The absolute JSON counts and
 `--fail-above` use every row that survives the allow patterns. The minimum,
 top limit and sort control the displayed rows. Input errors precede opening the
 destination. A successful flush returns the gate's status, 0 or 1. A command,
 input or output error returns 2.
 
 `Policy::signal_detail_hint` controls the optional signal guidance in a
-summary. `Settings` carries the invocation's `pr_comment_marker` and
+summary. `Policy::signal_slice_hint` supplies the guidance when display limits
+hide gated reasons. `Settings` carries the invocation's `pr_comment_marker` and
 `repo_prefix` to `RenderOptions`. The prefix projects cwd-relative paths
 into repository paths for source links, GitHub annotations and SARIF locations.
 JSON rows and visible path labels stay relative to the invocation.
@@ -175,7 +178,7 @@ parsed. Core `delta::load_crapts_baseline` admits it against the measured
 coverage unit, and `BaselineFilter::prepare_crapts` drops rows outside
 `Discovery.scope` or matching an allow pattern. A failed scope lookup is an
 input error, so a row that cannot be checked never vanishes unreported.
-`run::run` then renders the delta and evaluates `--fail-regression`. A
+`PreparedReport` evaluates `--fail-regression` before slicing the delta for display. A
 cross-minor baseline's notice appears in the text, markdown and pr-comment
 body. For json, github and shields it is written to stderr after the report
 flushes.

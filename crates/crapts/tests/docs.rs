@@ -53,7 +53,9 @@ fn s17_omitted_and_explicitly_disabled_signals_match_the_published_cart_reports(
                 .into_iter()
                 .find(|s| s.marker.effective_format().as_deref() == Some("json"))
                 .unwrap();
-            let run = repo.crapts(&sample.marker.args());
+            let args = sample.marker.args();
+            assert_eq!(args.iter().any(|arg| arg == "--baseline"), name == "json");
+            let run = repo.crapts(&args);
             check::check_sample(&sample, &run).unwrap();
             let doc: Value = serde_json::from_str(&run.stdout).unwrap();
             assert!(doc["summary"].get("signal_regressions").is_none());
@@ -1976,12 +1978,12 @@ fn the_index_counts_only_links_a_reader_can_follow() {
         .lines()
         .find(|l| l.contains("(reference/complexity.md)"))
         .expect("the complexity link");
+    let unlinked = line
+        .replace("(reference/complexity.md)", "")
+        .replace("(reference/complexity.md#structural-signals)", "");
     let unused = index.with(
         line,
-        &format!(
-            "{}\n\n[unused]: reference/complexity.md",
-            line.replace("(reference/complexity.md)", "")
-        ),
+        &format!("{unlinked}\n\n[unused]: reference/complexity.md"),
     );
     assert_names(
         &err(index::check_index(&unused, &pages)),
@@ -1989,10 +1991,7 @@ fn the_index_counts_only_links_a_reader_can_follow() {
     );
     let used = index.with(
         line,
-        &format!(
-            "{}\n\n[what gets a score]: reference/complexity.md",
-            line.replace("(reference/complexity.md)", "")
-        ),
+        &format!("{unlinked}\n\n[what gets a score]: reference/complexity.md"),
     );
     index::check_index(&used, &pages).unwrap();
     let shadowed = index.with(

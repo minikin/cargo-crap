@@ -128,6 +128,19 @@ fn signal_config(cwd: &std::path::Path) -> serde_json::Value {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let raw: String = std::str::from_utf8(&out.stdout)
+        .unwrap()
+        .split_whitespace()
+        .collect();
+    let limits = raw.split_once("\"limits\":{").unwrap().1;
+    let mut keys = limits.match_indices("\":{\"value\":");
+    for name in ["nesting", "lines", "bumps", "bool_ops"] {
+        let (index, _) = keys.next().unwrap();
+        assert!(limits[..index].ends_with(name), "{limits}");
+    }
+    for name in ["enabled", "gate"] {
+        assert!(raw.contains(&format!("\"{name}\":{{\"value\":")), "{raw}");
+    }
     serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["settings"]["signals"].clone()
 }
 

@@ -327,7 +327,7 @@ impl<'s> Collector<'s> {
         body: Span,
         is_arrow: bool,
         omit: Option<Span>,
-        visit: impl FnOnce(&mut Self),
+        visit: impl FnOnce(&mut Self, usize),
     ) {
         let row = match self.constructor {
             Some(ctor) if ctor.written == Some(span) => ctor.row,
@@ -336,7 +336,7 @@ impl<'s> Collector<'s> {
         self.rows[row].body_regions.push(self.lines.span(body));
         self.regions[row].selected.push(span);
         self.regions[row].omitted.extend(omit);
-        self.with_owner(row, |v| v.with_name(name, visit));
+        self.with_owner(row, |v| v.with_name(name, |v| visit(v, row)));
     }
 
     fn constructor_for_fields(
@@ -569,10 +569,15 @@ fn executable_statement(statement: &Statement<'_>) -> bool {
     }
 }
 
+pub(crate) struct Spine {
+    decisions: u32,
+    bool_ops: u32,
+}
+
 pub(crate) fn visit_logical_operands<'a>(
     root: &LogicalExpression<'a>,
     mut visit: impl FnMut(&Expression<'a>),
-) -> (u32, u32) {
+) -> Spine {
     let mut pending = vec![&root.right, &root.left];
     let mut decisions = 1;
     let mut bool_ops = u32::from(root.operator != LogicalOperator::Coalesce);
@@ -586,7 +591,10 @@ pub(crate) fn visit_logical_operands<'a>(
             visit(expr);
         }
     }
-    (decisions, bool_ops)
+    Spine {
+        decisions,
+        bool_ops,
+    }
 }
 
 impl<'a> Visit<'a> for Collector<'_> {
@@ -631,7 +639,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         let name = self
             .names
             .resolve(span, Some("<static-block>"), Unit::FunctionDeclaration);
-        self.in_callable(name, span, span, false, None, |v| {
+        self.in_callable(name, span, span, false, None, |v, _| {
             walk::walk_static_block(v, block);
         });
     }
@@ -782,8 +790,10 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         root: &LogicalExpression<'a>,
     ) {
-        let (decisions, bool_ops) =
-            visit_logical_operands(root, |expr| self.visit_expression(expr));
+        let Spine {
+            decisions,
+            bool_ops,
+        } = visit_logical_operands(root, |expr| self.visit_expression(expr));
         if let Some(owner) = self.owner {
             self.rows[owner].cyclomatic += decisions;
             if let Some(predicate) = self.predicates.last_mut() {
@@ -814,6 +824,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         kind: AstKind<'a>,
     ) {
+        // Owner changes are scoped, so enter_node and leave_node see the same owner.
         if self.owner.is_some() && crate::signals::test_span(kind).is_some() {
             let test = self
                 .predicates
@@ -849,7 +860,7 @@ impl<'a> Visit<'a> for Collector<'_> {
                 span.start = method.start;
                 omit = method.key;
             }
-            self.in_callable(name, span, body.span, false, omit, |visitor| {
+            self.in_callable(name, span, body.span, false, omit, |visitor, _| {
                 walk::walk_function(visitor, function, flags);
             });
         }
@@ -863,15 +874,20 @@ impl<'a> Visit<'a> for Collector<'_> {
         let name = self
             .names
             .resolve(arrow.span, None, Unit::FunctionExpression);
-        self.in_callable(name, arrow.span, arrow.body.span(), true, None, |visitor| {
-            if let Some(expr) = arrow.body.as_expression() {
-                visitor.record_statement(expr.span());
-                if let Some(row) = visitor.owner {
+        self.in_callable(
+            name,
+            arrow.span,
+            arrow.body.span(),
+            true,
+            None,
+            |visitor, row| {
+                if let Some(expr) = arrow.body.as_expression() {
+                    visitor.record_statement(expr.span());
                     visitor.bodies[row].add_chunk(expr.span());
                 }
-            }
-            walk::walk_arrow_function_expression(visitor, arrow);
-        });
+                walk::walk_arrow_function_expression(visitor, arrow);
+            },
+        );
     }
 
     fn visit_class(

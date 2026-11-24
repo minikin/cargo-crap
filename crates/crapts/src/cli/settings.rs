@@ -117,22 +117,37 @@ fn signal_leaf<T>(
     }
 }
 
+#[derive(Serialize)]
+struct PrintedSignals<'a> {
+    enabled: Setting<bool>,
+    gate: Setting<&'a [cargo_crap_core::signals::Signal]>,
+    limits: PrintedLimits,
+}
+
+#[derive(Serialize)]
+struct PrintedLimits {
+    nesting: Setting<Option<u32>>,
+    lines: Setting<Option<u32>>,
+    bumps: Setting<Option<u32>>,
+    bool_ops: Setting<Option<u32>>,
+}
+
 fn signals<S: Serializer>(
     group: &ConfiguredSignals,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     let resolved = &group.settings;
     let limits = &resolved.limits;
-    serde_json::json!({
-        "enabled": signal_leaf(resolved.enabled, group.enabled_configured),
-        "gate": signal_leaf(&resolved.gate, group.gate_configured),
-        "limits": {
-            "nesting": signal_leaf(limits.nesting, limits.nesting.is_some()),
-            "lines": signal_leaf(limits.lines, limits.lines.is_some()),
-            "bumps": signal_leaf(limits.bumps, limits.bumps.is_some()),
-            "bool_ops": signal_leaf(limits.bool_ops, limits.bool_ops.is_some())
-        }
-    })
+    PrintedSignals {
+        enabled: signal_leaf(resolved.enabled, group.enabled_configured),
+        gate: signal_leaf(&resolved.gate, group.gate_configured),
+        limits: PrintedLimits {
+            nesting: signal_leaf(limits.nesting, limits.nesting.is_some()),
+            lines: signal_leaf(limits.lines, limits.lines.is_some()),
+            bumps: signal_leaf(limits.bumps, limits.bumps.is_some()),
+            bool_ops: signal_leaf(limits.bool_ops, limits.bool_ops.is_some()),
+        },
+    }
     .serialize(serializer)
 }
 

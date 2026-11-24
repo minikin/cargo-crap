@@ -190,17 +190,6 @@ fn write_markdown_delta_stats(
     Ok(())
 }
 
-#[cfg(test)]
-fn render_delta_markdown(
-    report: &DeltaReport,
-    opts: &RenderOptions,
-    counts: &DeltaCounts,
-    out: &mut dyn Write,
-) -> Result<()> {
-    write_pr_comment_marker(opts, out)?;
-    render_delta_markdown_body(report, opts, counts, None, out)
-}
-
 pub(crate) fn render_delta_markdown_body(
     report: &DeltaReport,
     opts: &RenderOptions,
@@ -290,6 +279,16 @@ mod tests {
             uncovered_hints,
             ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         }
+    }
+
+    fn render_delta_markdown(
+        report: &DeltaReport,
+        opts: &RenderOptions,
+        counts: &DeltaCounts,
+        out: &mut dyn Write,
+    ) -> Result<()> {
+        write_pr_comment_marker(opts, out)?;
+        render_delta_markdown_body(report, opts, counts, None, out)
     }
 
     #[test]

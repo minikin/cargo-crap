@@ -114,6 +114,7 @@ pub enum Format {
 ///         fail_above_counts: Population::Shown,
 ///         summary_formats: &[Format::Human],
 ///         signal_detail_hint: None,
+///         signal_slice_hint: None,
 ///         tie_order: TieOrder::Stable,
 ///         notice_spacing: NoticeSpacing::Separated,
 ///     },

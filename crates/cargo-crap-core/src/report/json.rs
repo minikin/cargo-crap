@@ -678,12 +678,14 @@ fn crapts_diagnostics(d: &ScopeDiagnostics) -> CraptsDiagnostics {
     }
 }
 
-fn vector_with_length(
+fn positive_length(
     signals: Option<Signals>,
     slot: &str,
+    file: &str,
+    function: &str,
 ) -> Result<Option<Signals>> {
     if matches!(signals, Some(Signals { lines: 0, .. })) {
-        bail!("crapts JSON requires {slot}.lines to be positive");
+        bail!("crapts JSON requires {slot}.lines to be positive for {function} in {file}");
     }
     Ok(signals)
 }
@@ -691,6 +693,7 @@ fn vector_with_length(
 fn build_crapts_abs_row(entry: &CrapEntry) -> Result<CraptsAbsoluteRow<'_>> {
     let file = normalize_crapts_path(&entry.file);
     let cyclomatic = integer_cyclomatic(&file, &entry.function, entry.cyclomatic)?;
+    let signals = positive_length(entry.signals, "signals", &file, &entry.function)?;
     Ok(CraptsAbsoluteRow {
         file,
         function: &entry.function,
@@ -700,27 +703,31 @@ fn build_crapts_abs_row(entry: &CrapEntry) -> Result<CraptsAbsoluteRow<'_>> {
         crap: entry.crap,
         uncovered: &entry.uncovered,
         fingerprint: entry.fingerprint.as_deref(),
-        signals: vector_with_length(entry.signals, "signals")?,
+        signals,
     })
 }
 
 fn build_crapts_delta_row(de: &DeltaEntry) -> Result<CraptsDeltaRow<'_>> {
     let file = normalize_crapts_path(&de.current.file);
     let cyclomatic = integer_cyclomatic(&file, &de.current.function, de.current.cyclomatic)?;
+    let function = &de.current.function;
+    let signals = positive_length(de.current.signals, "signals", &file, function)?;
+    let baseline_signals = if signals.is_some() && de.status != DeltaStatus::New {
+        positive_length(de.baseline_signals, "baseline_signals", &file, function)?
+    } else {
+        None
+    };
     Ok(CraptsDeltaRow {
         file,
-        function: &de.current.function,
+        function,
         line: de.current.line,
         cyclomatic,
         coverage: de.current.coverage,
         crap: de.current.crap,
         uncovered: &de.current.uncovered,
         fingerprint: de.current.fingerprint.as_deref(),
-        signals: vector_with_length(de.current.signals, "signals")?,
-        baseline_signals: vector_with_length(
-            de.current.signals.and(de.baseline_signals),
-            "baseline_signals",
-        )?,
+        signals,
+        baseline_signals,
         baseline_crap: de.baseline_crap,
         delta: de.delta,
         status: de.status,
@@ -1667,6 +1674,48 @@ mod tests {
         assert!(
             closed_err.contains("changed") && closed_err.contains("CargoCrapV1"),
             "{closed_err}"
+        );
+    }
+
+    #[test]
+    fn crapts_writer_checks_measured_lengths_and_emits_history_only_on_paired_rows() {
+        let mut entry = crate::report::test_support::sample().remove(0);
+        entry.signals = Some(Signals::default());
+        let err = build_crapts_abs_row(&entry).err().unwrap().to_string();
+        for label in ["a.rs", "clean", "signals.lines"] {
+            assert!(err.contains(label), "{err}");
+        }
+        let valid = Some(Signals {
+            lines: 1,
+            ..Signals::default()
+        });
+        entry.signals = valid;
+        let mut row = DeltaEntry {
+            current: entry,
+            status: DeltaStatus::New,
+            baseline_signals: valid,
+            baseline_crap: None,
+            delta: None,
+            previous_file: None,
+            reasons: Vec::new(),
+        };
+        assert!(
+            build_crapts_delta_row(&row)
+                .unwrap()
+                .baseline_signals
+                .is_none()
+        );
+        row.status = DeltaStatus::Unchanged;
+        assert_eq!(
+            build_crapts_delta_row(&row).unwrap().baseline_signals,
+            valid
+        );
+        row.current.signals = None;
+        assert!(
+            build_crapts_delta_row(&row)
+                .unwrap()
+                .baseline_signals
+                .is_none()
         );
     }
 

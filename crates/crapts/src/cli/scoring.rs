@@ -34,6 +34,7 @@ const TOOL: Tool = Tool {
         fail_above_counts: Population::All,
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
         signal_detail_hint: Some("use --format json --all-rows for the reasons"),
+        signal_slice_hint: Some("use --format json --all-rows for the reasons"),
         tie_order: TieOrder::FileFunctionLine,
         notice_spacing: NoticeSpacing::Adjacent,
     },

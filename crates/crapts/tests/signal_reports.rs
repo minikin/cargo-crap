@@ -202,11 +202,17 @@ fn s19_every_vector_slot_uses_the_same_closed_draft07_integer_contract() {
     let project = Project::new();
     for (index, mut doc) in project.envelopes().into_iter().enumerate() {
         let schema = common::compile(SCHEMAS[index]);
+        project.config(false, "");
         check_vectors(&project, &schema, &doc, "signals");
         if index == 1 {
             doc["entries"][0]["signals"] = vector();
             check_vectors(&project, &schema, &doc, "baseline_signals");
         }
+        project.config(true, "");
+        doc["entries"][0]["signals"] = vector();
+        admission(&project, &schema, &doc, None);
+        doc["entries"][0]["signals"]["lines"] = json!(0);
+        admission(&project, &schema, &doc, Some("signals.lines"));
     }
 }
 

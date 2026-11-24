@@ -60,6 +60,9 @@ fn s02_control_bodies_flatten_only_direct_alternates() {
         ("for (const x of xs) { do {} while (x) }", 2, 1),
         ("for await (const x of xs) if (x) {}", 2, 1),
         ("switch (x) {}", 1, 0),
+        ("switch(x){case 1:a();b()}", 1, 0),
+        ("if (a) switch (x) {}", 2, 1),
+        ("try {} finally { if (y) {} }", 2, 1),
         (
             "switch (x) { case 1: case 2: if (a) {} default: break }",
             2,
@@ -144,9 +147,22 @@ fn s05_initializer_evidence_can_fall_outside_the_constructor() {
     assert_eq!(m.spans.panics, [r(2, 2)]);
     assert_eq!(m.spans.nesting, [r(4, 4)]);
     assert_eq!(m.spans.bumps, [r(4, 4)]);
+    assert_eq!(rs[1].name, "C::static cache");
+    assert_eq!(rs[2].name, "C::<static-block>");
     assert_eq!(rs[1].measured.spans.panics, [r(5, 5)]);
     assert_eq!(rs[2].measured.spans.stubs, [r(6, 6)]);
     assert_eq!(rs[2].measured.spans.nesting, [r(6, 6)]);
+}
+
+#[test]
+fn constructor_parameter_defaults_do_not_belong_to_an_earlier_field_chunk() {
+    let rs = rows(
+        "fields.ts",
+        "class C { a = x; constructor(p = q ? r! : s) {} }",
+    );
+    assert_eq!(rs.len(), 1);
+    let signals = rs[0].measured.signals;
+    assert_eq!((signals.nesting, signals.panics), (0, 0));
 }
 
 #[test]
@@ -238,6 +254,7 @@ fn s41_callback_pyramid_depth_starts_at_zero_in_every_row() {
                 &*row.name,
                 row.measured.signals.nesting,
                 row.measured.signals.bumps,
+                row.measured.signals.stubs,
                 row.measured.spans.stubs.clone(),
             )
         })
@@ -245,9 +262,9 @@ fn s41_callback_pyramid_depth_starts_at_zero_in_every_row() {
     assert_eq!(
         actual,
         [
-            ("view", 0, 0, vec![]),
-            ("view::useEffect()", 0, 0, vec![]),
-            ("view::useEffect()::xs.forEach()", 1, 0, vec![r(1, 1)])
+            ("view", 0, 0, 0, vec![]),
+            ("view::useEffect()", 0, 0, 0, vec![]),
+            ("view::useEffect()::xs.forEach()", 1, 0, 1, vec![r(1, 1)])
         ]
     );
 }
@@ -283,6 +300,7 @@ fn s07_the_earliest_worst_test_owns_its_full_span() {
         ("if (((k && l) ? yes : no) || ready) {}", 1, vec![r(2, 2)]),
         ("if ((x ?? fallback) && enabled) {}", 1, vec![r(2, 2)]),
         ("return a && b || c", 0, vec![]),
+        ("if (a && b\n ? c : d,\n e && f) {}", 1, vec![r(2, 4)]),
         ("if (a &&\n b ||\n c) {}", 2, vec![r(2, 4)]),
         (
             "if (\n ((a && b && c) ? yes : no) || ready\n) {}",

@@ -53,20 +53,13 @@ pub struct Policy {
     pub fail_above_counts: Population,
     pub summary_formats: &'static [Format],
     pub signal_detail_hint: Option<&'static str>,
+    /// Guidance to print when display limits hide gated signal regressions.
+    pub signal_slice_hint: Option<&'static str>,
     pub tie_order: TieOrder,
     pub notice_spacing: NoticeSpacing,
 }
 
 impl Policy {
-    pub(crate) fn signal_slice_hint(self) -> Option<&'static str> {
-        match self.envelope {
-            EnvelopeKind::CargoCrapV1 => {
-                Some("use --format json with the top and min limits removed for the reasons")
-            },
-            EnvelopeKind::CraptsV1 => self.signal_detail_hint,
-        }
-    }
-
     #[must_use]
     pub(crate) fn use_summary(
         self,
@@ -89,6 +82,7 @@ mod tests {
             fail_above_counts: Population::Shown,
             summary_formats: &[Format::Shields],
             signal_detail_hint: None,
+            signal_slice_hint: None,
             tie_order: TieOrder::Stable,
             notice_spacing: NoticeSpacing::Separated,
         };

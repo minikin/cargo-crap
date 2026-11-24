@@ -148,6 +148,18 @@ mod tests {
     }
 
     #[test]
+    fn explicitly_disabled_signals_and_an_empty_gate_keep_their_config_origins() {
+        let omitted = read("").unwrap().signals;
+        let explicit = read("[signals]\nenabled = false\ngate = []")
+            .unwrap()
+            .signals;
+        assert!(!omitted.enabled_configured && !omitted.gate_configured);
+        assert!(explicit.enabled_configured && explicit.gate_configured);
+        assert!(!explicit.settings.enabled);
+        assert_eq!(explicit.settings.gate, []);
+    }
+
+    #[test]
     fn canonical_keys_and_the_three_aliases_resolve_to_the_same_settings() {
         let source = r#"
 threshold = -15

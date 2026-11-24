@@ -19,6 +19,9 @@ pub const CARGO_CRAP_POLICY: Policy = Policy {
         Format::Shields,
     ],
     signal_detail_hint: Some("run without --summary for the reasons"),
+    signal_slice_hint: Some(
+        "use --format json with the top and min limits removed for the reasons",
+    ),
     tie_order: TieOrder::Stable,
     notice_spacing: NoticeSpacing::Separated,
 };

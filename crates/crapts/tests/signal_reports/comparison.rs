@@ -79,9 +79,12 @@ fn limit(
 
 #[test]
 fn s18_both_envelopes_round_trip_only_their_current_measurements() {
+    // Given
     let project = Project::measured("f.ts", FLAT);
     project.source("f.ts", DEEP);
+    // When
     let first = project.delta(&["--all-rows", "--fail-regression"], 1);
+    // Then
     assert_eq!(first["name_scheme"], 1);
     let entry = row(&first, "f");
     assert_eq!(entry["signals"]["nesting"], 3);
@@ -100,6 +103,7 @@ fn s18_both_envelopes_round_trip_only_their_current_measurements() {
 
 #[test]
 fn s20_epsilon_and_gate_flags_do_not_change_counts_or_reason_evidence() {
+    // Given
     let project = Project::measured("m.ts", BEFORE);
     project.source("m.ts", AFTER);
     for fail in [false, true] {
@@ -107,7 +111,9 @@ fn s20_epsilon_and_gate_flags_do_not_change_counts_or_reason_evidence() {
         if fail {
             flags.push("--fail-regression");
         }
+        // When
         let doc = project.delta(&flags, u8::from(fail));
+        // Then
         assert_eq!(doc["summary"]["signal_regressions"], 1);
         assert_eq!(doc["summary"]["regressed"], 0);
         let entry = row(&doc, "f");
@@ -124,6 +130,7 @@ fn s20_epsilon_and_gate_flags_do_not_change_counts_or_reason_evidence() {
 
 #[test]
 fn s21_score_and_all_six_structural_reasons_carry_their_own_current_spans() {
+    // Given
     let project = Project::measured("f.ts", "function f() { return 1 }\n");
     project.source(
         "f.ts",
@@ -133,7 +140,9 @@ fn s21_score_and_all_six_structural_reasons_carry_their_own_current_spans() {
         if missed {
             project.write("hits.info", "SF:f.ts\nDA:2,0\nDA:3,0\nend_of_record\n");
         }
+        // When
         let doc = project.delta(&["--fail-regression"], 1);
+        // Then
         let entry = row(&doc, "f");
         let spans = entry.get("uncovered").cloned().unwrap_or(json!([]));
         assert_eq!(
@@ -161,6 +170,7 @@ fn s21_score_and_all_six_structural_reasons_carry_their_own_current_spans() {
 
 #[test]
 fn s22_advisory_counts_survive_an_empty_gate_and_improvements_have_no_reason() {
+    // Given
     let project = Project::measured("f.ts", "function f() { debugger }\n");
     project.source("f.ts", "function f() {\n  assert.fail()\n}\n");
     for (policy, panic) in [
@@ -169,7 +179,9 @@ fn s22_advisory_counts_survive_an_empty_gate_and_improvements_have_no_reason() {
         ("gate = []", false),
     ] {
         project.config(true, policy);
+        // When
         let doc = project.delta(&["--fail-regression"], u8::from(panic));
+        // Then
         assert_eq!(doc["summary"]["signal_regressions"], u32::from(panic));
         assert_eq!(
             row(&doc, "f")["reasons"],
@@ -183,16 +195,22 @@ fn s22_advisory_counts_survive_an_empty_gate_and_improvements_have_no_reason() {
 
 #[test]
 fn s23_new_rows_compare_sites_with_zero_and_shape_with_a_strict_limit() {
+    // Given
     let base = "function f() {}\n";
     let project = Project::measured("f.ts", base);
-    project.source("f.ts",&format!("{base}function g() {{\n if (a && b) {{\n  if (c) {{\n   while (d) {{ debugger; debugger; assert.fail() }}\n  }}\n }}\n\n return 1\n}}\n"));
+    let head = format!(
+        "{base}function g() {{\n if (a && b) {{\n  if (c) {{\n   while (d) {{ debugger; debugger; assert.fail() }}\n  }}\n }}\n\n return 1\n}}\n"
+    );
+    project.source("f.ts", &head);
     for (policy, stub, nesting, gated) in [
         ("", true, false, 1),
         ("gate = []\n[signals.limits]\nnesting = 2", false, true, 1),
         ("gate = []\n[signals.limits]\nnesting = 3", false, false, 0),
     ] {
         project.config(true, policy);
+        // When
         let doc = project.delta(&["--fail-regression"], gated);
+        // Then
         let entry = row(&doc, "g");
         assert_eq!(entry["status"], "new");
         assert!(entry.get("baseline_signals").is_none());
@@ -223,6 +241,7 @@ fn s23_new_rows_compare_sites_with_zero_and_shape_with_a_strict_limit() {
 
 #[test]
 fn s24_resized_ordinal_groups_apply_the_new_row_gate_to_every_sibling() {
+    // Given
     let original =
         "const handlers = [\n () => { if (a) { if (b) {} } debugger },\n () => { if (x) {} }\n]\n";
     let expanded = original.replace("if (x) {} }", "if (x) { if (y) {} } },\n () => 0");
@@ -235,7 +254,9 @@ fn s24_resized_ordinal_groups_apply_the_new_row_gate_to_every_sibling() {
         ("gate = []\n[signals.limits]\nnesting = 1", false, true, 2),
     ] {
         project.config(true, policy);
+        // When
         let doc = project.delta(&["--fail-regression"], u8::from(count > 0));
+        // Then
         assert_eq!(doc["summary"]["regressed"], 0);
         assert_eq!(doc["summary"]["signal_regressions"], count);
         let names = [
@@ -277,12 +298,15 @@ fn s24_resized_ordinal_groups_apply_the_new_row_gate_to_every_sibling() {
 
 #[test]
 fn s42_an_intervening_method_can_lengthen_its_implied_constructor() {
+    // Given
     let old = "class C {\n a = first!\n between() {\n  return 0\n }\n b = last!\n}\n";
     let new = old.replace("  return 0", "\n  return 0");
     let project = Project::measured("c.ts", old);
     project.config(true, "gate = ['lines']");
     project.source("c.ts", &new);
+    // When
     let doc = project.delta(&["--fail-regression"], 1);
+    // Then
     assert_eq!(doc["summary"]["signal_regressions"], 2);
     let entry = row(&doc, "C::constructor");
     assert_eq!(entry["signals"]["panics"], 2);
@@ -312,12 +336,15 @@ fn s42_an_intervening_method_can_lengthen_its_implied_constructor() {
 
 #[test]
 fn s43_each_enclosing_row_reports_the_same_inserted_line() {
+    // Given
     let old = "function outer() {\n const middle = () => {\n  const leaf = () => {\n   return 0\n  }\n }\n}\n";
     let project = Project::measured("f.ts", old);
     project.source("f.ts", &old.replace("   return 0", "   return 0\n"));
     for gated in [false, true] {
         project.config(true, if gated { "gate = ['lines']" } else { "" });
+        // When
         let doc = project.delta(&["--fail-regression"], u8::from(gated));
+        // Then
         assert_eq!(
             doc["summary"]["signal_regressions"],
             if gated { 3 } else { 0 }
@@ -346,6 +373,7 @@ fn s43_each_enclosing_row_reports_the_same_inserted_line() {
 
 #[test]
 fn s48_a_unique_name_moves_but_a_renamed_function_gets_new_row_rules() {
+    // Given
     let project = Project::measured("a.ts", FLAT);
     fs::rename(project.root().join("a.ts"), project.root().join("b.ts")).unwrap();
     for (name, status, exit) in [("f", "moved", 1), ("g", "new", 0)] {
@@ -353,7 +381,9 @@ fn s48_a_unique_name_moves_but_a_renamed_function_gets_new_row_rules() {
             "b.ts",
             &DEEP.replace("function f", &format!("function {name}")),
         );
+        // When
         let doc = project.delta(&["--fail-regression"], exit);
+        // Then
         let entry = row(&doc, name);
         assert_eq!(entry["file"], "b.ts");
         assert_eq!(entry["status"], status);
@@ -418,65 +448,74 @@ fn warnings(err: &str) -> usize {
 
 #[test]
 fn s25_only_measured_eligible_history_enables_structural_comparisons() {
+    // Given
     let old = format!("{FLAT}{}", FLAT.replace("function f", "function g"));
     let project = Project::measured("f.ts", &old);
-    let mut base = project.baseline();
+    let baseline = project.baseline();
     let head = format!(
         "{DEEP}{}function fresh() {{ debugger }}\n",
         DEEP.replace("function f", "function g")
     );
     project.source("f.ts", &head);
-    project.config(true, "[signals.limits]\nlines = 0");
-    let mut empty = base.clone();
+    let mut mixed = baseline.clone();
+    legacy(&mut mixed, "g");
+    let mut unmeasured = mixed.clone();
+    unmeasured["entries"] = json!([row(&mixed, "g")]);
+    let mut rising = unmeasured.clone();
+    rising["entries"][0]["crap"] = json!(1);
+    let mut empty = baseline;
     empty["entries"] = json!([]);
-    project.save("base.json", &empty);
-    let (doc, err) = judged(&project, &[], 0);
-    assert_eq!(err, "");
-    assert_eq!(doc["summary"].get("signal_regressions"), Some(&Value::Null));
-    assert!(
-        doc["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|entry| entry.get("reasons").is_none())
-    );
-    legacy(&mut base, "g");
-    project.config(true, "");
-    project.save("base.json", &base);
-    let (doc, err) = judged(&project, &[], 1);
-    assert_eq!(err, "");
-    assert_eq!(doc["summary"]["signal_regressions"], 2);
-    assert_eq!(row(&doc, "f")["reasons"][0]["signal"], "nesting");
-    assert!(row(&doc, "g").get("reasons").is_none());
-    assert_eq!(row(&doc, "fresh")["reasons"][0]["signal"], "stubs");
-    base["entries"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|entry| entry["function"] == "g");
-    project.config(true, "[signals.limits]\nlines = 0");
-    for rises in [false, true] {
-        if rises {
-            base["entries"][0]["crap"] = json!(1);
+    let limit = "[signals.limits]\nlines = 0";
+
+    for (history, policy, exit, warning, count, reasons) in [
+        (empty, limit, 0, 0, Value::Null, [None, None, None]),
+        (
+            rising,
+            limit,
+            1,
+            1,
+            Value::Null,
+            [None, Some("add-tests"), None],
+        ),
+        (unmeasured, limit, 0, 1, Value::Null, [None, None, None]),
+        (
+            mixed,
+            "",
+            1,
+            0,
+            json!(2),
+            [Some("flatten-nesting"), None, Some("remove-stub")],
+        ),
+    ] {
+        project.config(true, policy);
+        project.save("base.json", &history);
+        // When
+        let (doc, err) = judged(&project, &[], exit);
+        // Then
+        assert_eq!(warnings(&err), warning, "{err}");
+        if warning == 0 {
+            assert!(err.is_empty(), "{err}");
         }
-        project.save("base.json", &base);
-        let (doc, err) = judged(&project, &[], u8::from(rises));
-        assert_eq!(warnings(&err), 1, "{err}");
-        assert_eq!(doc["summary"].get("signal_regressions"), Some(&Value::Null));
-        for name in ["f", "fresh"] {
-            assert!(row(&doc, name).get("reasons").is_none());
-        }
-        let entry = row(&doc, "g");
-        if rises {
-            assert_eq!(entry["reasons"].as_array().unwrap().len(), 1);
-            assert_eq!(entry["reasons"][0]["action"], "add-tests");
-        } else {
-            assert!(entry.get("reasons").is_none());
+        assert_eq!(doc["summary"].get("signal_regressions"), Some(&count));
+        for (name, action) in ["f", "g", "fresh"].into_iter().zip(reasons) {
+            let reasons = row(&doc, name).get("reasons");
+            match action {
+                Some(action) => {
+                    let reasons = reasons.unwrap().as_array().unwrap();
+                    assert_eq!(reasons[0]["action"], action);
+                    if action == "add-tests" {
+                        assert_eq!(reasons.len(), 1);
+                    }
+                },
+                None => assert!(reasons.is_none(), "{name}: {doc}"),
+            }
         }
     }
 }
 
 #[test]
 fn s26_version_suppression_preserves_reasons_and_input_errors_still_win() {
+    // Given
     let project = Project::measured("f.ts", FLAT);
     let base = project.baseline();
     project.source("f.ts", DEEP);
@@ -492,7 +531,9 @@ fn s26_version_suppression_preserves_reasons_and_input_errors_still_win() {
         let mut b = base.clone();
         b["version"] = json!(version);
         project.save("base.json", &b);
+        // When
         let (doc, err) = judged(&project, &[], u8::from(!skip));
+        // Then
         assert_eq!(doc["regression_gate"]["skipped"], skip);
         assert_eq!(doc["summary"]["signal_regressions"], 1);
         assert_eq!(row(&doc, "f")["reasons"][0]["gating"], true);
@@ -526,6 +567,7 @@ fn s26_version_suppression_preserves_reasons_and_input_errors_still_win() {
 
 #[test]
 fn s49_ineligible_measured_rows_do_not_mask_one_warning_even_after_comment_fitting() {
+    // Given
     let project = Project::measured("keep.ts", "function f() { return 1 }\n");
     let mut base = project.baseline();
     let mut excluded = base["entries"][0].clone();
@@ -569,7 +611,9 @@ fn s49_ineligible_measured_rows_do_not_mask_one_warning_even_after_comment_fitti
         if fitted {
             args.extend(["--comment-marker", marker.as_str()]);
         }
+        // When
         let (code, out, err) = project.run(&args);
+        // Then
         assert_eq!(code, ExitCode::SUCCESS, "{err}");
         assert_eq!(warnings(&err), 1, "{format} {scope} {pattern}: {err}");
         assert!(!out.contains("baseline has no signals"));
@@ -597,12 +641,20 @@ fn s49_ineligible_measured_rows_do_not_mask_one_warning_even_after_comment_fitti
 
 #[test]
 fn s50_summary_counts_are_computed_before_limits_and_verdict_suppression() {
+    // Given
     let project = Project::measured("f.ts", "function f() { return 1 }\n");
     let sample = project.baseline();
     project.source(
         "f.ts",
         "function f() { debugger; assert.fail(); return 1 }\n",
     );
+    let displays = [
+        &[][..],
+        &["--top", "1"],
+        &["--min", "99"],
+        &["--summary"],
+        &["--fail-regression"],
+    ];
     for (policy, expected) in [("gate = ['stubs','panics']", 2), ("gate = []", 0)] {
         project.config(true, policy);
         for cross in [true, false] {
@@ -614,15 +666,11 @@ fn s50_summary_counts_are_computed_before_limits_and_verdict_suppression() {
                 ));
             }
             project.save("base.json", &base);
-            for flags in [
-                &[][..],
-                &["--top", "1"],
-                &["--min", "99"],
-                &["--summary"],
-                &["--fail-regression"],
-            ] {
+            for flags in displays {
                 let fail = flags.contains(&"--fail-regression") && expected > 0 && !cross;
+                // When
                 let doc = project.delta(flags, u8::from(fail));
+                // Then
                 assert_eq!(doc["summary"]["signal_regressions"], expected);
                 if flags.contains(&"--min") {
                     assert_eq!(doc["entries"], json!([]));
@@ -631,6 +679,19 @@ fn s50_summary_counts_are_computed_before_limits_and_verdict_suppression() {
         }
     }
     project.config(true, "");
+    let mut empty = sample.clone();
+    empty["entries"] = json!([]);
+    let mut unmeasured = sample;
+    legacy(&mut unmeasured, "f");
+    for base in [empty, unmeasured] {
+        project.save("base.json", &base);
+        for flags in displays {
+            assert_eq!(
+                project.delta(flags, 0)["summary"].get("signal_regressions"),
+                Some(&Value::Null)
+            );
+        }
+    }
     let absent = project.report("hits.info", &[], 0);
     assert_eq!(
         absent["summary"].get("signal_regressions"),
@@ -651,6 +712,7 @@ fn s50_summary_counts_are_computed_before_limits_and_verdict_suppression() {
 
 #[test]
 fn s55_readers_validate_the_optional_count_and_recompute_it_from_current_vectors() {
+    // Given
     let project = Project::measured("f.ts", FLAT);
     for (index, sample) in project.envelopes().into_iter().enumerate() {
         let schema = common::compile(super::SCHEMAS[index]);
@@ -674,12 +736,14 @@ fn s55_readers_validate_the_optional_count_and_recompute_it_from_current_vectors
                     .unwrap()
                     .remove("signal_regressions");
             }
+            // When
             admission(
                 &project,
                 &schema,
                 &doc,
                 (!admitted).then_some("summary.signal_regressions"),
             );
+            // Then
             if admitted && index == 1 {
                 project.save("base.json", &doc);
                 assert_eq!(

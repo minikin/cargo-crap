@@ -270,12 +270,14 @@ fn scores(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 12, ..support::proptest_config() })]
+    #![proptest_config(ProptestConfig { cases: 48, ..support::proptest_config() })]
     #[test]
     fn s11_each_coverage_unit_preserves_scores_and_owned_evidence(
-        (ts,body) in any::<bool>().prop_flat_map(|ts|(Just(ts),prop::collection::vec(statement(ts),0..=4))),
+        (ts, body) in any::<bool>().prop_flat_map(|ts| (Just(ts), prop::collection::vec(statement(ts), 0..=4))),
         crlf in any::<bool>()
-    ) { scores(&body,ts,crlf); }
+    ) {
+        scores(&body, ts, crlf);
+    }
 }
 
 #[test]
@@ -297,28 +299,46 @@ fn s11_empty_and_depth_four_bodies_cover_both_line_endings_and_languages() {
     }
 }
 
+fn check_wrapped(
+    ts: bool,
+    body: &[Statement],
+    crlf: bool,
+) -> proptest::test_runner::TestCaseResult {
+    let path = if ts { "f.ts" } else { "f.js" };
+    let original = fixture(body);
+    let before = rows(path, &original.text(crlf));
+    let mut wrapped = original.lines.clone();
+    wrapped.insert(1, "if (guard) {".into());
+    wrapped.push("}".into());
+    let after = rows(path, &wrapped.join(if crlf { "\r\n" } else { "\n" }));
+    let old = before[0].measured.signals;
+    let new = after[0].measured.signals;
+    prop_assert_eq!(new.nesting, old.nesting + 1);
+    prop_assert_eq!(new.bumps, u32::from(old.nesting > 0));
+    prop_assert_eq!(
+        (old.bool_ops, old.stubs, old.panics),
+        (new.bool_ops, new.stubs, new.panics)
+    );
+    for (row, owner) in before.iter().zip(&original.owners) {
+        prop_assert!((row.measured.signals.bool_ops as usize) <= owner.operators);
+    }
+    let children = |rs: &[Row]| {
+        rs.iter()
+            .skip(1)
+            .map(|r| r.measured.signals)
+            .collect::<Vec<_>>()
+    };
+    prop_assert_eq!(children(&before), children(&after));
+    Ok(())
+}
+
 proptest! {
+    #![proptest_config(support::proptest_config())]
     #[test]
     fn s27_wrapping_adds_one_level_and_preserves_owned_evidence(
-        (ts,body) in any::<bool>().prop_flat_map(|ts|(Just(ts),prop::collection::vec(statement(ts),0..=4))),
+        (ts, body) in any::<bool>().prop_flat_map(|ts| (Just(ts), prop::collection::vec(statement(ts), 0..=4))),
         crlf in any::<bool>()
     ) {
-        let path=if ts {"f.ts"} else {"f.js"};
-        let original=fixture(&body);
-        let before=rows(path,&original.text(crlf));
-        let mut wrapped=original.lines.clone();
-        wrapped.insert(1,"if (guard) {".into());
-        wrapped.push("}".into());
-        let after=rows(path,&wrapped.join(if crlf {"\r\n"} else {"\n"}));
-        let old=before[0].measured.signals;
-        let new=after[0].measured.signals;
-        prop_assert_eq!(new.nesting,old.nesting+1);
-        prop_assert_eq!(new.bumps,u32::from(old.nesting>0));
-        prop_assert_eq!((old.bool_ops,old.stubs,old.panics),(new.bool_ops,new.stubs,new.panics));
-        for (row,owner) in before.iter().zip(&original.owners) {
-            prop_assert!((row.measured.signals.bool_ops as usize)<=owner.operators);
-        }
-        let children=|rs:&[Row]|rs.iter().skip(1).map(|r|r.measured.signals).collect::<Vec<_>>();
-        prop_assert_eq!(children(&before),children(&after));
+        check_wrapped(ts, &body, crlf)?;
     }
 }

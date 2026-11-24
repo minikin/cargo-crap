@@ -40,11 +40,13 @@ fn saved(repo: &Repo) -> Value {
 
 #[test]
 fn s29_git_touch_and_saved_regression_have_independent_verdicts() {
+    // Given
     let repo = Repo::with(&[("src/f.ts", OLD)]);
     let baseline = saved(&repo);
     assert_eq!(baseline["entries"][0]["signals"]["stubs"], 0);
     repo.write("src/f.ts", NEW);
     let mut with_git = None;
+    let mut saved_entries = None;
     for (flags, reason, changed, code) in [
         (&["--base", "main", "--fail-changed"][..], false, true, 0),
         (
@@ -79,12 +81,22 @@ fn s29_git_touch_and_saved_regression_have_independent_verdicts() {
             1,
         ),
     ] {
+        // When
         let doc = compare(&repo, flags, code);
+        // Then
         let entry = &doc["entries"][0];
         assert_eq!(entry["signals"]["stubs"], 1);
         assert_eq!(entry["cyclomatic"], baseline["entries"][0]["cyclomatic"]);
         assert_eq!(entry["crap"], baseline["entries"][0]["crap"]);
+        assert_eq!(
+            doc["summary"].get("signal_regressions"),
+            Some(&if reason { json!(1) } else { Value::Null })
+        );
         if reason {
+            assert_eq!(
+                saved_entries.get_or_insert_with(|| doc["entries"].clone()),
+                &doc["entries"]
+            );
             assert_eq!(entry["reasons"].as_array().unwrap().len(), 1);
             assert_eq!(entry["reasons"][0]["signal"], "stubs");
             assert_eq!(entry["reasons"][0]["gating"], true);
@@ -99,10 +111,6 @@ fn s29_git_touch_and_saved_regression_have_independent_verdicts() {
             common::compile("schemas/crapts/changed-v1.json")
                 .validate(&doc["changed"])
                 .unwrap();
-            assert_eq!(
-                doc["summary"].get("signal_regressions").cloned(),
-                Some(if reason { json!(1) } else { Value::Null })
-            );
             if let Some(previous) = &with_git {
                 assert_eq!(previous, &doc["changed"]);
             } else {
@@ -117,6 +125,7 @@ fn s29_git_touch_and_saved_regression_have_independent_verdicts() {
 
 #[test]
 fn s30_cross_minor_suppression_leaves_changed_and_absolute_failures_active() {
+    // Given
     let repo = Repo::with(&[("src/f.ts", OLD)]);
     let mut baseline = saved(&repo);
     let minor: u32 = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap();
@@ -141,7 +150,9 @@ fn s30_cross_minor_suppression_leaves_changed_and_absolute_failures_active() {
             "2",
         ];
         flags.extend(extra);
+        // When
         let doc = compare(&repo, &flags, i32::from(extra.is_some()));
+        // Then
         assert_eq!(doc["regression_gate"]["skipped"], true);
         assert_eq!(doc["summary"]["signal_regressions"], 1);
         assert_eq!(doc["summary"]["changed_failures"], 1);
@@ -158,6 +169,7 @@ fn s30_cross_minor_suppression_leaves_changed_and_absolute_failures_active() {
 
 #[test]
 fn s58_both_strict_parse_errors_preserve_the_previous_output_file() {
+    // Given
     let valid = Repo::with(&[("src/f.ts", OLD)]);
     let base = saved(&valid);
     let broken = "function f() { if (a) {\n";
@@ -167,11 +179,13 @@ fn s58_both_strict_parse_errors_preserve_the_previous_output_file() {
         repo.write("baseline.json", base.to_string());
         repo.write("src/f.ts", after);
         repo.write("out.json", "keep");
+        // When
         let run = repo.run(&["--baseline", "baseline.json", "--output", "out.json"]);
+        // Then
         common::check(&run, 2);
         assert_eq!(run.stdout, b"");
         let err = String::from_utf8(run.stderr).unwrap();
-        assert!(err.contains(side) && err.contains("src/f.ts"), "{err}");
+        assert!(err.contains(&format!("{side} src/f.ts")), "{err}");
         assert_eq!(repo.read("out.json"), "keep");
     }
 }
@@ -239,7 +253,9 @@ fn comment_fixture(n: usize) -> Repo {
 
 #[test]
 fn s32_the_searchable_comment_folds_reasons_after_25_and_keeps_repository_links() {
+    // Given
     let repo = comment_fixture(27);
+    // When
     let body = in_process(
         &repo,
         &[
@@ -254,6 +270,7 @@ fn s32_the_searchable_comment_folds_reasons_after_25_and_keeps_repository_links(
         ],
         1,
     );
+    // Then
     assert_eq!(body.lines().next(), Some("<!-- review -->"));
     assert_eq!(body.matches("<!-- review -->").count(), 1);
     let (lead, reasons) = body.split_once("### Harder to maintain").unwrap();
@@ -345,8 +362,11 @@ fn reduced(
 
 #[test]
 fn s33_the_complete_utf16_boundary_and_one_more_unit_choose_different_candidates() {
+    // Given
     let repo = comment_fixture(5);
+    // When
     let (full, changed, core) = body_parts(&repo, "rev");
+    // Then
     assert!(full.contains('\u{10400}') && full.ends_with('\n'));
     let padded = MARK.to_owned() + &"m".repeat(BUDGET - units(&full));
     let exact = full.replacen(MARK, &padded, 1);
@@ -360,6 +380,7 @@ fn s33_the_complete_utf16_boundary_and_one_more_unit_choose_different_candidates
 
 #[test]
 fn s34_an_oversized_minimum_preserves_the_report_with_every_summary_and_base_combination() {
+    // Given
     let repo = comment_fixture(1);
     let marker = "m".repeat(BUDGET);
     for base in [false, true] {
@@ -372,7 +393,9 @@ fn s34_an_oversized_minimum_preserves_the_report_with_every_summary_and_base_com
                 flags.push("--summary");
             }
             repo.write("out.md", "keep");
+            // When
             assert_eq!(in_process(&repo, &flags, 2), "");
+            // Then
             assert_eq!(repo.read("out.md"), "keep");
         }
     }
@@ -380,6 +403,7 @@ fn s34_an_oversized_minimum_preserves_the_report_with_every_summary_and_base_com
 
 #[test]
 fn s53_fitting_retains_the_full_counts_at_every_changed_row_cutoff() {
+    // Given
     let repo = comment_fixture(5);
     let (full, changed, core) = body_parts(&repo, "rev");
     assert!(full.contains("5 signal regression(s)"));
@@ -391,7 +415,9 @@ fn s53_fitting_retains_the_full_counts_at_every_changed_row_cutoff() {
             reduced(&changed, kept + 1, 5, &core)
         };
         let marker = MARK.to_owned() + &"m".repeat(BUDGET - units(&candidate));
+        // When
         let expected = candidate.replacen(MARK, &marker, 1);
+        // Then
         assert_eq!(units(&expected), BUDGET);
         assert!(units(&next.replacen(MARK, &marker, 1)) > BUDGET);
         assert_eq!(comment(&repo, true, false, &marker, "rev"), expected);
@@ -409,6 +435,7 @@ fn s53_fitting_retains_the_full_counts_at_every_changed_row_cutoff() {
 
 #[test]
 fn s35_annotations_use_repo_relative_paths_and_only_the_first_gated_site() {
+    // Given
     for (filename, declaration, name) in [
         ("a.ts", "function f()", "f"),
         ("a,b.ts", "class C { ['%']()", r#"C::"%25""#),
@@ -446,7 +473,9 @@ fn s35_annotations_use_repo_relative_paths_and_only_the_first_gated_site() {
             "baseline.json",
             "--format",
         ];
+        // When
         let out = repo.run_in(&cwd, &[&args[..], &["github"]].concat());
+        // Then
         common::check(&out, 0);
         let output = String::from_utf8(out.stdout).unwrap();
         let annotations = output.lines().collect::<Vec<_>>();

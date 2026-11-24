@@ -120,6 +120,7 @@ impl PreparedBaseline {
         self.crapts.as_ref().and_then(|meta| meta.notice.as_deref())
     }
 
+    /// Whether any baseline row remaining after scope and allow filtering has signal measurements.
     #[must_use]
     pub fn has_signals(&self) -> bool {
         self.baseline
@@ -267,7 +268,7 @@ struct BaselineComparison<'a> {
     baseline: &'a PreparedBaseline,
     delta: DeltaReport,
     counts: DeltaCounts,
-    signal_gates: usize,
+    signal_gates: Option<usize>,
 }
 
 impl<'a> PreparedReport<'a> {
@@ -310,7 +311,8 @@ impl<'a> PreparedReport<'a> {
                 .map_or(0, |comparison| comparison.counts.regressed),
             gating_signals: comparison
                 .as_ref()
-                .map_or(0, |comparison| comparison.signal_gates),
+                .and_then(|comparison| comparison.signal_gates)
+                .unwrap_or_default(),
             section_failures,
             fail_above: settings.fail_above,
             fail_regression: settings.fail_regression
@@ -365,7 +367,8 @@ impl<'a> PreparedReport<'a> {
         }
     }
 
-    /// Write one layout. The row limit applies to PR-comment sections.
+    /// Write one layout. The summary argument overrides `Settings::summary` for this write.
+    /// The row limit applies to PR-comment sections.
     /// The verdict is returned only after the complete report has been flushed.
     pub fn write(
         &self,
@@ -405,7 +408,7 @@ impl<'a> PreparedReport<'a> {
                 &comparison.delta,
                 options,
                 include_marker,
-                Some(comparison.signal_gates),
+                comparison.signal_gates,
                 out,
             )
         } else {
@@ -420,7 +423,7 @@ impl<'a> PreparedReport<'a> {
         if let Some(comparison) = &self.comparison {
             report::render_delta_summary_lines(
                 &comparison.counts,
-                comparison.signal_gates,
+                comparison.signal_gates.unwrap_or_default(),
                 self.tool.policy.signal_detail_hint,
                 out,
             )
@@ -448,12 +451,7 @@ impl<'a> PreparedReport<'a> {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
         let selection = report::CraptsSelection::from_limits(self.settings.top, self.settings.min)?;
-        let mut ctx = report::CraptsJsonContext {
-            signal_regressions: self
-                .settings
-                .signals
-                .enabled
-                .then_some(report::SignalRegressions::Unavailable),
+        let ctx = report::CraptsJsonContext {
             tool: self.tool,
             coverage_kind,
             threshold: self.settings.threshold,
@@ -461,6 +459,15 @@ impl<'a> PreparedReport<'a> {
             notices: &self.notices,
             total: self.analysis.entries.len(),
             crappy: self.verdict.crappy,
+            signal_regressions: self.settings.signals.enabled.then(|| {
+                self.comparison
+                    .as_ref()
+                    .and_then(|c| c.signal_gates)
+                    .map_or(
+                        report::SignalRegressions::Unavailable,
+                        report::SignalRegressions::Count,
+                    )
+            }),
             changed: self.changed.as_ref(),
             diagnostics,
         };
@@ -470,10 +477,6 @@ impl<'a> PreparedReport<'a> {
         let baseline_version = comparison.baseline.baseline_version().ok_or_else(|| {
             anyhow::anyhow!("crapts delta JSON requires a baseline prepared with prepare_crapts")
         })?;
-        if self.settings.signals.enabled && comparison.baseline.has_signals() {
-            ctx.signal_regressions =
-                Some(report::SignalRegressions::Count(comparison.signal_gates));
-        }
         report::render_crapts_delta_json(
             &comparison.delta,
             &comparison.counts,
@@ -664,22 +667,24 @@ fn compute_prepared_delta<'a>(
 ) -> BaselineComparison<'a> {
     let before = &baseline.as_baseline().entries;
     let mut delta = compare(eligible, before, settings.epsilon, tool.policy.pairing);
-    if settings.signals.enabled {
-        attach_reasons(&mut delta, settings.signals, baseline.has_signals());
+    let signal_gates = if settings.signals.enabled {
+        let measured = baseline.has_signals();
+        attach_reasons(&mut delta, settings.signals, measured);
+        measured.then(|| gating_signal_count(&delta))
     } else {
         for row in &mut delta.entries {
             row.baseline_signals = None;
         }
-    }
+        None
+    };
     let counts = delta.counts();
-    let gating_signals = gating_signal_count(&delta);
     delta.restrict_to(shown);
     delta.sort_with_ties(settings.sort, tool.policy.tie_order);
     BaselineComparison {
         baseline,
         delta,
         counts,
-        signal_gates: gating_signals,
+        signal_gates,
     }
 }
 
@@ -999,11 +1004,13 @@ mod tests {
             CrapEntry {
                 file: "src/skip.ts".into(),
                 function: "skip".into(),
+                signals: Some(crate::signals::Signals::default()),
                 ..sample.clone()
             },
             CrapEntry {
                 file: "other/out.ts".into(),
                 function: "out".into(),
+                signals: Some(crate::signals::Signals::default()),
                 ..sample
             },
         ];
@@ -1020,6 +1027,10 @@ mod tests {
             regression_gate_skipped: true,
             notice: Some("skip note".into()),
         });
+        assert!(!prepared_plain.has_signals());
+        assert!(!prepared_crapts.has_signals());
+        let mut rows = rows;
+        rows[0].signals = Some(crate::signals::Signals::default());
         let prepared_same_minor = filter.prepare_crapts(CraptsBaseline {
             entries: rows,
             baseline_version: "0.2.3-rc.1+build.7".into(),
@@ -1043,6 +1054,7 @@ mod tests {
         assert_eq!(prepared_crapts.notice(), Some("skip note"));
         assert_eq!(prepared_crapts.baseline_version(), Some("0.1.9"));
         assert!(prepared_crapts.regression_gate_skipped());
+        assert!(prepared_same_minor.has_signals());
         assert_eq!(prepared_same_minor.notice(), None);
         assert_eq!(
             prepared_same_minor.baseline_version(),
@@ -1062,6 +1074,7 @@ mod tests {
                 fail_above_counts: Population::All,
                 summary_formats: &[Format::Human],
                 signal_detail_hint: None,
+                signal_slice_hint: None,
                 tie_order: TieOrder::FileFunctionLine,
                 notice_spacing: NoticeSpacing::Separated,
             },
@@ -1083,6 +1096,83 @@ mod tests {
                 count: 0,
                 examples: Vec::new(),
             },
+        }
+    }
+
+    #[test]
+    fn crapts_counts_only_measured_history_before_slicing() {
+        use crate::report::test_support::sample;
+        use crate::signals::Signals;
+        use serde_json::{Value, json};
+        let allow = AllowSet::compile(&[]).unwrap();
+        let measured = Signals {
+            lines: 1,
+            ..Signals::default()
+        };
+        let old = CrapEntry {
+            signals: Some(measured),
+            ..sample().remove(0)
+        };
+        let baseline = |entries| {
+            BaselineFilter::new(&AllFiles, &allow).prepare_crapts(CraptsBaseline {
+                entries,
+                baseline_version: "0.2.3".into(),
+                regression_gate_skipped: false,
+                notice: None,
+            })
+        };
+        let empty = baseline(vec![]);
+        let legacy = baseline(vec![sample().remove(0)]);
+        let paired = baseline(vec![old.clone()]);
+        for (enabled, base, count) in [
+            (false, Some(&paired), None),
+            (true, None, Some(Value::Null)),
+            (true, Some(&empty), Some(Value::Null)),
+            (true, Some(&legacy), Some(Value::Null)),
+            (true, Some(&paired), Some(json!(1))),
+        ] {
+            let signals = SignalSettings {
+                enabled,
+                ..SignalSettings::default()
+            };
+            for (top, min) in [(Some(1), None), (None, Some(2.0))] {
+                let settings = Settings {
+                    top,
+                    min,
+                    fail_regression: true,
+                    ..section_settings(&allow, &signals, Format::Json)
+                };
+                let mut entries = sample();
+                entries[0] = CrapEntry {
+                    signals: Some(Signals {
+                        stubs: 1,
+                        ..measured
+                    }),
+                    ..old.clone()
+                };
+                let mut out = Vec::new();
+                let outcome = run(
+                    &crapts_test_tool(),
+                    &settings,
+                    Analysis {
+                        entries,
+                        diagnostics: Some(empty_test_diag()),
+                        scope: &AllFiles,
+                        coverage_kind: Some(CoverageKind::Lines),
+                        notices: &[],
+                    },
+                    base,
+                    &[],
+                    &RenderExtras::default(),
+                    &mut out,
+                )
+                .unwrap();
+                let doc: Value = serde_json::from_slice(&out).unwrap();
+                assert_eq!(doc["summary"].get("signal_regressions"), count.as_ref());
+                assert_eq!(outcome.tripped, count == Some(json!(1)));
+                assert_eq!(doc["entries"].as_array().unwrap().len(), 1);
+                assert_eq!(doc["entries"][0]["function"], "crappy");
+            }
         }
     }
 

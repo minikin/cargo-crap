@@ -8,7 +8,7 @@
 use super::RenderOptions;
 use super::links::linkify;
 use super::types::uncovered_display;
-use crate::delta::{DeltaEntry, DeltaReport, Reason};
+use crate::delta::{DeltaEntry, DeltaReport, Reason, gating_signal_count};
 use anyhow::Result;
 use std::io::Write;
 use std::path::Path;
@@ -38,8 +38,7 @@ pub(crate) fn change(reason: &Reason) -> String {
     }
 }
 
-use crate::delta::gating_signal_count;
-
+/// `full` counts gated signal regressions before display limits slice the delta.
 pub(super) fn write_delta_headline(
     report: &DeltaReport,
     regressed: usize,
@@ -60,7 +59,7 @@ pub(super) fn write_delta_headline(
         writeln!(out, "## ✅ No CRAP regressions\n")?;
     }
     if shown < total
-        && let Some(hint) = opts.tool.policy.signal_slice_hint()
+        && let Some(hint) = opts.tool.policy.signal_slice_hint
     {
         writeln!(out, "{hint}\n")?;
     }
@@ -255,6 +254,27 @@ mod tests {
         )
         .expect("writes");
         String::from_utf8(out).expect("utf-8")
+    }
+
+    #[test]
+    fn a_tool_chooses_its_slice_hint_independently_of_its_envelope_and_summary_hint() {
+        let shown = report(vec![entry(
+            "a",
+            vec![reason(Signal::Stubs, Some(0), 1, true)],
+        )]);
+        for hint in [None, Some("show every row")] {
+            let mut tool = crate::report::test_support::SECOND_TOOL;
+            tool.policy.signal_slice_hint = hint;
+            let opts = RenderOptions::new(&tool);
+            for (total, hidden) in [(None, false), (Some(1), false), (Some(2), true)] {
+                let mut out = Vec::new();
+                write_delta_headline(&shown, 0, total, &opts, &mut out).unwrap();
+                let out = String::from_utf8(out).unwrap();
+                assert_eq!(out.contains("show every row"), hidden && hint.is_some());
+                assert!(!out.contains(tool.policy.signal_detail_hint.unwrap()));
+                assert!(!out.contains("use --format json"));
+            }
+        }
     }
 
     #[test]
