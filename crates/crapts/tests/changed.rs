@@ -1762,6 +1762,14 @@ fn a_row_limit_never_lifts_the_pr_comment_cap() {
     let cut = section.with_row_limit(7);
     assert_eq!(rows(&cut, Format::PrComment), 7);
     assert_eq!(rows(&cut, Format::Markdown), 30);
+    for (limit, expected) in [(2, 2), (10, 7)] {
+        let mut out = Vec::new();
+        cut.write_pr_comment(limit, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap().matches("| fail |").count(),
+            expected
+        );
+    }
     assert_eq!(cut.json().get(), section.json().get());
     assert_eq!(cut.json_key(), "changed");
     assert_eq!(section.failures(), Some(30));

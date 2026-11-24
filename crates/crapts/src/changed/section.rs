@@ -190,6 +190,14 @@ impl Section for ChangedSection {
         self.write_limited(format, PR_COMMENT_ROWS, out)
     }
 
+    fn write_pr_comment(
+        &self,
+        max_rows: usize,
+        out: &mut dyn Write,
+    ) -> WriteResult {
+        self.with_row_limit(max_rows).write(Format::PrComment, out)
+    }
+
     fn placement(&self) -> Placement {
         Placement::Lead
     }
@@ -221,6 +229,15 @@ impl Section for RowLimited<'_> {
         out: &mut dyn Write,
     ) -> WriteResult {
         self.section.write_limited(format, self.limit, out)
+    }
+
+    fn write_pr_comment(
+        &self,
+        max_rows: usize,
+        out: &mut dyn Write,
+    ) -> WriteResult {
+        self.section
+            .write_limited(Format::PrComment, self.limit.min(max_rows), out)
     }
 
     fn placement(&self) -> Placement {

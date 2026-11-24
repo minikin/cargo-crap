@@ -1,6 +1,7 @@
 use super::cli::{Repo, report_of};
 use super::common;
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 
 const OLD: &str = "export function f() {\n  let x = 0\n  x += 1\n  return x\n}\n";
 const NEW: &str = "export function f() {\n  let x = 0\n  x += 1\n  debugger; return x\n}\n";
@@ -172,5 +173,300 @@ fn s58_both_strict_parse_errors_preserve_the_previous_output_file() {
         let err = String::from_utf8(run.stderr).unwrap();
         assert!(err.contains(side) && err.contains("src/f.ts"), "{err}");
         assert_eq!(repo.read("out.json"), "keep");
+    }
+}
+
+fn in_process(
+    repo: &Repo,
+    flags: &[&str],
+    expected: u8,
+) -> String {
+    let mut args = vec![
+        "--coverage",
+        "cov.info",
+        "--baseline",
+        "baseline.json",
+        "--fail-regression",
+        "--format",
+        "pr-comment",
+    ];
+    args.extend_from_slice(flags);
+    let args = args
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect::<Vec<_>>();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = crapts::cli::run(&repo.root(), &args, &mut out, &mut err);
+    assert_eq!(
+        code,
+        std::process::ExitCode::from(expected),
+        "{}",
+        String::from_utf8_lossy(&err)
+    );
+    if expected == 2 {
+        assert!(String::from_utf8_lossy(&err).contains("65536 UTF-16 code units"));
+    }
+    String::from_utf8(out).unwrap()
+}
+
+fn comment_fixture(n: usize) -> Repo {
+    let mut old = String::new();
+    let mut baseline = String::new();
+    let mut new = String::new();
+    for i in 0..n {
+        writeln!(old, "function f{i:02}\u{10400}() {{ return 0 }}").unwrap();
+        writeln!(
+            baseline,
+            "function f{i:02}\u{10400}() {{ if (x) return 1; return 0 }}"
+        )
+        .unwrap();
+        writeln!(
+            new,
+            "function f{i:02}\u{10400}() {{ debugger; if (x) return 1; return 0 }}"
+        )
+        .unwrap();
+    }
+    let name = "packages/cart/src/app.ts";
+    let repo = Repo::with(&[(name, &old)]);
+    repo.write(name, baseline);
+    repo.write(".crapts.toml", "threshold = 1\n[signals]\nenabled = true\n");
+    let snapshot = compare(&repo, &[], 0);
+    repo.write("baseline.json", snapshot.to_string());
+    repo.write(name, new);
+    covered(&repo);
+    repo
+}
+
+#[test]
+fn s32_the_searchable_comment_folds_reasons_after_25_and_keeps_repository_links() {
+    let repo = comment_fixture(27);
+    let body = in_process(
+        &repo,
+        &[
+            "--base",
+            "main",
+            "--comment-marker",
+            "<!-- review -->",
+            "--repo-url",
+            "https://example.invalid/r",
+            "--commit-ref",
+            "review",
+        ],
+        1,
+    );
+    assert_eq!(body.lines().next(), Some("<!-- review -->"));
+    assert_eq!(body.matches("<!-- review -->").count(), 1);
+    let (lead, reasons) = body.split_once("### Harder to maintain").unwrap();
+    assert!(lead.find("## Changed functions").unwrap() < lead.find("No CRAP regressions").unwrap());
+    let (shown, folded) = reasons
+        .split_once("<details><summary>2 more</summary>")
+        .unwrap();
+    assert_eq!(shown.matches("remove-stub").count(), 25);
+    assert_eq!(folded.matches("remove-stub").count(), 2);
+    for line in reasons.lines().filter(|s| s.contains("remove-stub")) {
+        assert!(line.contains("https://example.invalid/r/blob/review/packages/cart/src/app.ts#L"));
+        assert!(line.contains("\x60app.ts:") && !line.contains("\x60packages/cart/"));
+    }
+    assert!(!body.contains("use --format json --all-rows"));
+}
+
+const MARK: &str = "<!-- custom -->";
+const BUDGET: usize = 65_536;
+
+fn units(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
+fn comment(
+    repo: &Repo,
+    base: bool,
+    summary: bool,
+    marker: &str,
+    reference: &str,
+) -> String {
+    let mut flags = vec![
+        "--comment-marker",
+        marker,
+        "--repo-url",
+        "https://example.invalid/project",
+        "--commit-ref",
+        reference,
+    ];
+    if base {
+        flags.extend(["--base", "main"]);
+    }
+    if summary {
+        flags.push("--summary");
+    }
+    in_process(repo, &flags, 1)
+}
+
+fn body_parts(
+    repo: &Repo,
+    reference: &str,
+) -> (String, String, String) {
+    let full = comment(repo, true, false, MARK, reference);
+    let start = full.find("## \u{26a0}").unwrap();
+    let changed = full[..start].to_owned();
+    let summary = comment(repo, false, true, MARK, reference);
+    let core = summary
+        .strip_prefix(&format!("{MARK}\n\n"))
+        .unwrap()
+        .to_owned();
+    (full, changed, core)
+}
+
+fn reduced(
+    changed: &str,
+    keep: usize,
+    total: usize,
+    core: &str,
+) -> String {
+    if keep == total {
+        return format!("{changed}{core}");
+    }
+    let (table, skipped) = changed.trim_end().split_once("\n\nSkipped: ").unwrap();
+    let (lead, table) = table.split_once("\n\n| Verdict |").unwrap();
+    let mut out = lead.to_owned();
+    if keep > 0 {
+        let mut lines = table.lines();
+        let headers = lines.by_ref().take(2).collect::<Vec<_>>().join("\n");
+        writeln!(out, "\n\n| Verdict |{headers}").unwrap();
+        out.push_str(&lines.take(keep).collect::<Vec<_>>().join("\n"));
+    }
+    let omitted = total - keep;
+    let noun = if omitted == 1 {
+        "function"
+    } else {
+        "functions"
+    };
+    format!("{out}\n\nand {omitted} more changed {noun}\n\nSkipped: {skipped}\n\n{core}")
+}
+
+#[test]
+fn s33_the_complete_utf16_boundary_and_one_more_unit_choose_different_candidates() {
+    let repo = comment_fixture(5);
+    let (full, changed, core) = body_parts(&repo, "rev");
+    assert!(full.contains('\u{10400}') && full.ends_with('\n'));
+    let padded = MARK.to_owned() + &"m".repeat(BUDGET - units(&full));
+    let exact = full.replacen(MARK, &padded, 1);
+    assert_eq!(units(&exact), BUDGET);
+    assert_eq!(comment(&repo, true, false, &padded, "rev"), exact);
+    let over = padded + "x";
+    let expected = format!("{changed}{core}").replacen(MARK, &over, 1);
+    assert!(units(&expected) <= BUDGET);
+    assert_eq!(comment(&repo, true, false, &over, "rev"), expected);
+}
+
+#[test]
+fn s34_an_oversized_minimum_preserves_the_report_with_every_summary_and_base_combination() {
+    let repo = comment_fixture(1);
+    let marker = "m".repeat(BUDGET);
+    for base in [false, true] {
+        for summary in [false, true] {
+            let mut flags = vec!["--comment-marker", marker.as_str(), "--output", "out.md"];
+            if base {
+                flags.extend(["--base", "main"]);
+            }
+            if summary {
+                flags.push("--summary");
+            }
+            repo.write("out.md", "keep");
+            assert_eq!(in_process(&repo, &flags, 2), "");
+            assert_eq!(repo.read("out.md"), "keep");
+        }
+    }
+}
+
+#[test]
+fn s53_fitting_retains_the_full_counts_at_every_changed_row_cutoff() {
+    let repo = comment_fixture(5);
+    let (full, changed, core) = body_parts(&repo, "rev");
+    assert!(full.contains("5 signal regression(s)"));
+    for kept in [5, 2, 0] {
+        let candidate = reduced(&changed, kept, 5, &core);
+        let next = if kept == 5 {
+            full.clone()
+        } else {
+            reduced(&changed, kept + 1, 5, &core)
+        };
+        let marker = MARK.to_owned() + &"m".repeat(BUDGET - units(&candidate));
+        let expected = candidate.replacen(MARK, &marker, 1);
+        assert_eq!(units(&expected), BUDGET);
+        assert!(units(&next.replacen(MARK, &marker, 1)) > BUDGET);
+        assert_eq!(comment(&repo, true, false, &marker, "rev"), expected);
+        assert_eq!(expected.matches(&marker).count(), 1);
+        assert!(
+            expected.contains("5 signal regression(s)")
+                && expected.contains("5 fail, 0 over, 0 pass among 5 touched functions")
+        );
+    }
+    let reference = "r".repeat(15_000);
+    let expected = comment(&repo, false, true, MARK, &reference);
+    assert_eq!(comment(&repo, false, false, MARK, &reference), expected);
+    assert!(expected.contains("5 signal regression(s)") && !expected.contains("remove-stub"));
+}
+
+#[test]
+fn s35_annotations_use_repo_relative_paths_and_only_the_first_gated_site() {
+    for (filename, declaration, name) in [
+        ("a.ts", "function f()", "f"),
+        ("a,b.ts", "class C { ['%']()", r#"C::"%25""#),
+    ] {
+        let method = filename.contains(',');
+        let close = if method { "} }" } else { "}" };
+        let before = format!("{declaration} {{ return 1 {close}\n");
+        let file = format!("packages/cart/src/{filename}");
+        let repo = Repo::with(&[(&file, &before)]);
+        let cwd = repo.root().join("packages/cart");
+        repo.write("packages/cart/.crapts.toml", "[signals]\nenabled=true\n");
+        let write_hits = |miss: bool| {
+            let mut cov = format!("SF:src/{filename}\n");
+            for n in 1..=10 {
+                writeln!(cov, "DA:{n},{}", u8::from(!miss)).unwrap();
+            }
+            cov.push_str("end_of_record\n");
+            repo.write("packages/cart/cov.info", cov);
+        };
+        write_hits(false);
+        let absolute = repo.run_in(&cwd, &["--coverage", "cov.info", "--format", "json"]);
+        common::check(&absolute, 0);
+        let actual = common::validated_report(&absolute.stdout);
+        let func = actual["entries"][0]["function"].as_str().unwrap();
+        assert_eq!(func, name);
+        repo.write("packages/cart/baseline.json", absolute.stdout);
+        let head =
+            format!("{declaration} {{\n\n\n throw Error(\n 'todo'\n )\n\n\n debugger\n{close}\n");
+        repo.write(&file, head);
+        write_hits(true);
+        let args = [
+            "--coverage",
+            "cov.info",
+            "--baseline",
+            "baseline.json",
+            "--format",
+        ];
+        let out = repo.run_in(&cwd, &[&args[..], &["github"]].concat());
+        common::check(&out, 0);
+        let output = String::from_utf8(out.stdout).unwrap();
+        let annotations = output.lines().collect::<Vec<_>>();
+        assert_eq!(annotations.len(), 2, "{output}");
+        assert!(annotations[0].contains("title=CRAP"));
+        assert_eq!(
+            annotations[1],
+            format!(
+                "::warning file=packages/cart/src/{},line=4,endLine=6,title=stubs 0 \u{2192} 2::{} got harder to maintain: remove-stub",
+                filename.replace(',', "%2C"),
+                func.replace('%', "%25")
+            )
+        );
+        let out = repo.run_in(&cwd, &[&args[..], &["json"]].concat());
+        let doc = common::validated_delta(&out.stdout);
+        let rs = doc["entries"][0]["reasons"].as_array().unwrap();
+        assert_eq!(rs.len(), 3);
+        assert_eq!(
+            rs.last().unwrap()["spans"],
+            json!([{"start":4,"end":6},{"start":9,"end":9}])
+        );
     }
 }

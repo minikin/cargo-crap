@@ -17,7 +17,7 @@ use cargo_crap_core::policy::{
 };
 use cargo_crap_core::report::{self, Schemas, Section, SourceLinks, Tool};
 use cargo_crap_core::run::{
-    self, Analysis, BaselineFilter, PreparedBaseline, RenderExtras, Scope, Settings,
+    Analysis, BaselineFilter, PreparedBaseline, PreparedReport, RenderExtras, Scope, Settings,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -33,7 +33,7 @@ const TOOL: Tool = Tool {
         pairing: PairPolicy::FileFunction,
         fail_above_counts: Population::All,
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
-        signal_detail_hint: None,
+        signal_detail_hint: Some("use --format json --all-rows for the reasons"),
         tie_order: TieOrder::FileFunctionLine,
         notice_spacing: NoticeSpacing::Adjacent,
     },
@@ -388,14 +388,9 @@ impl Render<'_> {
         }
     }
 
-    fn once(
-        &self,
-        summary: bool,
-        sections: &[&dyn Section],
-        analysis: Analysis<'_>,
-    ) -> Result<(Vec<u8>, GateOutcome)> {
+    fn settings(&self) -> Settings<'_> {
         let options = self.options;
-        let settings = Settings {
+        Settings {
             allow: &options.allow_set,
             min: options.min.value,
             top: top(options),
@@ -406,7 +401,7 @@ impl Render<'_> {
             fail_above: options.fail_above.value,
             fail_regression: options.fail_regression.value,
             format: options.format.value,
-            summary,
+            summary: options.summary.value,
             show_unchanged: options.show_unchanged.value,
             uncovered_hints: options.uncovered_hints.value,
             width: self.width,
@@ -416,21 +411,7 @@ impl Render<'_> {
             cwd: self.cwd,
             workspace_root: None,
             fail_sections: options.fail_changed.value,
-        };
-        let mut rendered = Vec::new();
-        let verdict = report::with_color(self.color, || {
-            run::run(
-                &TOOL,
-                &settings,
-                analysis,
-                self.prepared,
-                sections,
-                &RenderExtras::default(),
-                &mut rendered,
-            )
-        })
-        .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
-        Ok((rendered, verdict))
+        }
     }
 
     fn fitted(
@@ -442,9 +423,20 @@ impl Render<'_> {
         let summary = self.options.summary.value;
         let comment = self.options.format.value == Format::PrComment;
         let full: Vec<&dyn Section> = section.iter().map(|s| *s as &dyn Section).collect();
+        let settings = self.settings();
+        let analysis = self.analysis(entries, diagnostics);
+        let report = PreparedReport::new(&TOOL, &settings, analysis, self.prepared, &full)
+            .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
+        let once = |summary, limit| {
+            let mut body = Vec::new();
+            let verdict = report::with_color(self.color, || {
+                report.write(summary, limit, &RenderExtras::default(), &mut body)
+            })
+            .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
+            Ok::<_, InputError>((body, verdict))
+        };
         if !comment || summary {
-            let (mut body, verdict) =
-                self.once(summary, &full, self.analysis(entries, diagnostics))?;
+            let (mut body, verdict) = once(summary, None)?;
             if comment && section.is_some() {
                 body = summary_after_marker(body, &self.options.comment_marker.value);
             }
@@ -458,16 +450,10 @@ impl Render<'_> {
         let body = fit(
             rows,
             |(body, _): &(Vec<u8>, GateOutcome)| fits(body),
-            |step| {
-                let analysis = self.analysis(entries.clone(), diagnostics.clone());
-                match (step, section) {
-                    (Step::ChangedRows(limit), Some(section)) => {
-                        let cut = section.with_row_limit(limit);
-                        self.once(true, &[&cut], analysis)
-                    },
-                    (Step::Complete, _) => self.once(false, &full, analysis),
-                    _ => self.once(true, &full, analysis),
-                }
+            |step| match step {
+                Step::Complete => once(false, None),
+                Step::CoreSummarized => once(true, None),
+                Step::ChangedRows(limit) => once(true, Some(limit)),
             },
         )?;
         body.ok_or_else(too_long)
@@ -644,7 +630,10 @@ mod tests {
         assert_eq!(TOOL.policy.pairing, PairPolicy::FileFunction);
         assert_eq!(TOOL.policy.fail_above_counts, Population::All);
         assert_eq!(TOOL.policy.tie_order, TieOrder::FileFunctionLine);
-        assert_eq!(TOOL.policy.signal_detail_hint, None);
+        assert_eq!(
+            TOOL.policy.signal_detail_hint,
+            Some("use --format json --all-rows for the reasons")
+        );
         assert_eq!(
             TOOL.policy.summary_formats,
             &[Format::Human, Format::Markdown, Format::PrComment]

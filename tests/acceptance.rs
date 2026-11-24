@@ -10416,3 +10416,97 @@ fn cargo_crap_keeps_its_recorded_reports() {
         "{error:#}"
     );
 }
+
+#[test]
+fn s51_and_s52_sliced_rust_headlines_count_each_eligible_gated_reason() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("src")).unwrap();
+    write(
+        root,
+        "Cargo.toml",
+        "[package]\nname='slice'\nversion='0.1.0'\nedition='2021'\n",
+    );
+    write(root, ".cargo-crap.toml", SIGNALS_ON);
+    write(root, "src/lib.rs", "mod quiet;\npub fn f() -> i32 { 0 }\n");
+    let before = "pub fn quiet(a: bool) -> i32 { if a { return 2 } 1 }\n";
+    write(root, "src/quiet.rs", before);
+    write(
+        root,
+        "coverage.info",
+        "SF:src/lib.rs\nDA:2,1\nend_of_record\nSF:src/quiet.rs\nDA:1,1\nend_of_record\n",
+    );
+    let args = ["--path", "src", "--lcov", "coverage.info"];
+    let base = json_run(root, &args);
+    for name in ["quiet", "f"] {
+        assert_eq!(entry(&base, name)["coverage"], 100.0);
+    }
+    write(root, "old.json", &base.to_string());
+    write(
+        root,
+        "src/lib.rs",
+        "mod quiet;\npub fn f() -> i32 { todo!() }\n",
+    );
+    let render = |format: &str, flags: &[&str], code: i32| {
+        let o = crap()
+            .current_dir(root)
+            .args(args)
+            .args([
+                "--baseline",
+                "old.json",
+                "--fail-regression",
+                "--format",
+                format,
+            ])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(code), "{o:?}");
+        String::from_utf8(o.stdout).unwrap()
+    };
+    let hint = "use --format json with the top and min limits removed for the reasons";
+    for format in ["markdown", "pr-comment"] {
+        let hidden = render(format, &["--top", "1"], 1);
+        assert!(
+            hidden.contains("No CRAP regressions, but 1 signal regression(s) detected"),
+            "{hidden}"
+        );
+        assert!(!hidden.contains("remove-stub"));
+        assert_eq!(hidden.matches(hint).count(), 1);
+        let full = render(format, &[], 1);
+        assert_eq!(full.matches("remove-stub").count(), 1);
+        assert!(!full.contains(hint));
+    }
+    write(root, "src/quiet.rs", &before.replace("} 1", "} todo!()"));
+    for format in ["markdown", "pr-comment"] {
+        for (flags, total, shown) in [
+            (&[][..], 2, 2),
+            (&["--top", "1"], 2, 1),
+            (&["--exclude", "lib.rs"], 1, 1),
+            (&["--allow", "quiet", "--allow", "f"], 0, 0),
+        ] {
+            let out = render(format, flags, i32::from(total > 0));
+            if total > 0 {
+                assert!(
+                    out.contains(&format!("but {total} signal regression(s) detected")),
+                    "{out}"
+                );
+            }
+            assert_eq!(out.matches("remove-stub").count(), shown);
+            assert_eq!(out.matches(hint).count(), usize::from(total > shown));
+        }
+    }
+    write(
+        root,
+        "coverage.info",
+        "SF:src/lib.rs\nDA:2,1\nend_of_record\nSF:src/quiet.rs\nDA:1,0\nend_of_record\n",
+    );
+    for format in ["markdown", "pr-comment"] {
+        let out = render(format, &["--top", "1"], 1);
+        assert!(
+            out.contains("1 CRAP regression(s) detected") && !out.contains("No CRAP regressions"),
+            "{out}"
+        );
+        assert_eq!(out.matches(hint).count(), 1);
+    }
+}

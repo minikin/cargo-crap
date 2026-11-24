@@ -3,6 +3,8 @@ mod common;
 mod comparison;
 #[path = "signal_reports/generated.rs"]
 mod generated;
+#[path = "signal_reports/rendering.rs"]
+mod rendering;
 mod support;
 
 use serde_json::{Value, json};

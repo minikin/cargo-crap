@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Enable structural signals in `.crapts.toml` to compare JS and TS functions
+  against a saved baseline. The library exposes the counts and their source
+  ranges in `crapts::Row::measured`. Set this field in row literals.
+- `cargo_crap_core::run::PreparedReport` lets a front end render several
+  layouts with the same selection, comparison and gate verdict.
 - Added `crapts::coverage::Coverage::unit(&self) -> CoverageUnit` (additive,
   non-breaking) so callers can inspect the measured coverage unit before
   source parsing and attribution. `--baseline` is now active in the `crapts`
@@ -116,6 +121,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The cargo-crap and crapts Markdown and PR-comment headlines count gated
+  structural regressions across all eligible functions. When `--top` or
+  `--min` hides a reason, the report gives the command to see it.
 - A crapts delta whose magnitude is too large to round to six decimals keeps
   its value instead of serializing as `null`, so the report still matches
   `delta-v1.json` and reloads as a baseline.
@@ -554,7 +562,7 @@ Changed.
   normalized into a structural tree, each subtree is fingerprinted, and
   pairs are compared by Jaccard similarity over their fingerprint sets.
   Pairs at or above `--dup-threshold` (default `0.82`) are reported as
-  candidates — the tool names them and stops there, because two functions
+  candidates. The tool names them and stops there, because two functions
   with the same shape may be a copy-paste bug or two unrelated trait
   impls, and only a human can tell. Normalization erases identifiers,
   literal values, field and path names, so renaming and retyping do not
@@ -564,7 +572,7 @@ Changed.
   excluded through the complexity pass's own filter, so the two analyses
   cannot drift apart about what counts as source, and functions below
   `duplicates.min-nodes` (default 20 normalized nodes) are dropped before
-  comparison — every pair of trivial accessors is a genuine structural
+  comparison. Every pair of trivial accessors is a genuine structural
   match, and reporting them buries the pairs worth reading. Configurable
   as `duplicates.{enabled,threshold,min-nodes}` in `.cargo-crap.toml`.
   Human output grows a `Duplicate candidates` section after the table and
@@ -579,7 +587,7 @@ Changed.
   always carries the full ranges in an additive `uncovered` array (omitted
   when empty, or when the file had no coverage data at all). The human,
   markdown and pr-comment tables show them in an optional `Uncovered`
-  column — `142–158, 171, 180–184 +2 more` — enabled by the
+  column (`142–158, 171, 180–184 +2 more`) enabled by the
   `uncovered-hints` key in `.cargo-crap.toml`. That key is config-only:
   there is deliberately no CLI flag.
 
@@ -597,7 +605,7 @@ Changed.
 - The published JSON schemas gained `duplicates` and `uncovered`
   (`report-v1.json`, `delta-v2.json`). Both are optional additive fields,
   so existing documents stay valid and neither envelope version was
-  bumped — but validators pinned to a *cached pre-0.5.0 copy* will reject
+  bumped. Validators pinned to a *cached pre-0.5.0 copy* will reject
   new documents, since the schemas declare `additionalProperties: false`.
   Refresh them from the repo; the published URLs are unchanged.
 
@@ -605,7 +613,7 @@ Changed.
 
 - **The published schemas rejected `--duplicates` JSON.** Both envelopes
   emitted a top-level `duplicates` array that neither schema declared,
-  and both schemas set `additionalProperties: false` — so the documented
+  and both schemas set `additionalProperties: false`, so the documented
   validation step failed on the tool's own output. The schemas now
   declare the array, and the CLI test suite validates a `--duplicates`
   run of both envelopes against them.
@@ -631,7 +639,7 @@ Changed.
   @alectimison-maker). The `github` format escaped annotation messages
   but interpolated file paths verbatim into the workflow-command
   property list, so a path containing `%`, CR, LF, `:`, or `,` could
-  corrupt the `::warning` annotation — or, with an embedded newline,
+  corrupt the `::warning` annotation or, with an embedded newline,
   inject an additional command-shaped line into the CI log. File
   properties now follow GitHub's command-property encoding (the
   `escapeProperty` rules from actions/toolkit); ordinary paths are
@@ -655,7 +663,7 @@ Changed.
 ### Added
 
 - `FileCoverage::merge_from` (library): fold another file's line data
-  into this one — union of lines, per-line saturating sum of hit
+  into this one by taking the union of lines and the per-line saturating sum of hit
   counts. This is the same aggregation `lcov -a` performs.
 
 ### Fixed
@@ -666,21 +674,21 @@ Changed.
   suffix-matched one file (`src/lib.rs` vs `vendor/dep/src/lib.rs`),
   the winner was hash-order random per process, and two absolute keys
   spelling the same real file (symlinked roots, `lcov -a`-merged legs)
-  collided last-write-wins — so byte-identical inputs could produce
+  collided last-write-wins, so byte-identical inputs could produce
   different scores across runs. Now the longest (most specific) suffix
   wins, and different spellings of one file merge their line data
   instead of racing. Degenerate `SF` records (`SF:.`, empty `SF:`) no
   longer risk wildcard-binding unmapped files; they surface as
   `lcov_only` strays in the scope diagnostics.
 
-  Note: scores can change for genuinely ambiguous or aliased inputs —
-  those scores were coin-flips before, so any change there is the fix
+  Note: scores can change for genuinely ambiguous or aliased inputs.
+  Those scores were coin-flips before, so any change there is the fix
   landing. Standard single-run `cargo llvm-cov` output cannot trigger
   either case and is unaffected.
 
 ## [0.4.0] - 2026-07-31
 
-This release implements specs 23–25 — the three feature requests filed
+This release implements specs 23–25, the three feature requests filed
 against 0.3.1 (issues #53, #54, #55). It contains **breaking changes**
 for library consumers and a behavioural change for CI wrappers that
 matched on specific non-zero exit codes; see Changed.
@@ -688,30 +696,29 @@ matched on specific non-zero exit codes; see Changed.
 ### Added
 
 - **Exit-code contract** (spec 23, #54). The exit code now distinguishes
-  a finished CRAP verdict from a broken run: `0` — analysis completed
-  and no requested gate tripped; `1` — analysis completed, the report
+  a finished CRAP verdict from a broken run: `0` means analysis completed
+  and no requested gate tripped; `1` means analysis completed, the report
   fully written, and `--fail-above` / `--fail-regression` tripped;
-  `2` — the run did not complete (usage, input, analysis, or output
+  `2` means the run did not complete (usage, input, analysis, or output
   error; clap's usage exit was already 2 and is now part of the
   documented contract). The report flush still precedes the verdict, so
-  an unwritable `--output` or `ENOSPC` is exit 2 — never a gate verdict
-  over a truncated report.
+  an unwritable `--output` or `ENOSPC` returns exit 2 before the tool reports a gate verdict.
 - **Source/LCOV scope-mismatch diagnostics** (spec 24, #53). When the
-  analyzed tree and the LCOV file describe different scopes — the
-  classic cause of a delta full of unrelated 0%-coverage entries — a
+  analyzed tree and the LCOV file describe different scopes (the
+  classic cause of a delta full of unrelated 0%-coverage entries), a
   tiered stderr warning now precedes the report: analyzed/LCOV/matched
   file counts plus stray files in *both* directions (analyzed-only and
   LCOV-only), with examples capped at 10 and an explicit
   different-scopes verdict below 50% overlap. Both JSON envelopes carry
   the same numbers in an optional additive `diagnostics` object, so CI
   wrappers can apply their own policy; the published schemas were
-  extended in place (optional field — existing documents stay valid, no
+  extended in place (optional field, so existing documents stay valid without a
   version bump). Absolute `SF` paths that alias the same real file
   (symlinked checkout roots, `/tmp` vs `/private/tmp`, `lcov -a`-merged
   runs) are recognized and not reported as strays.
 - **Repeatable `-p` / `--package`** (spec 25, #55). Changed-file CI that
   already knows which packages a PR touches can analyze exactly those
-  workspace members in one invocation — one LCOV parse, one combined
+  workspace members in one invocation with one LCOV parse and one combined
   report, one gate decision: `cargo crap -p core -p api --lcov
   lcov.info`. Unknown names fail before analysis (exit 2) listing the
   available members; duplicates are deduplicated; `--path` is ignored;
@@ -732,9 +739,8 @@ matched on specific non-zero exit codes; see Changed.
   `report::render` / `report::render_delta` now take a single
   `&RenderOptions` (new public struct bundling `threshold`, `format`,
   `links`, `diagnostics`, `show_unchanged`, with a `Default` matching
-  the CLI defaults) instead of positional parameters — future knobs
-  stop being signature breaks. The JSON `Envelope` struct gained an
-  optional `diagnostics` field (additive — baselines from older
+  the CLI defaults) instead of positional parameters. Future options can be added without breaking the signature. The JSON `Envelope` struct gained an
+  optional `diagnostics` field (additive, so baselines from older
   releases still load).
 - The unmatched-files stderr warning is bounded: 10 example paths per
   side plus a `... and N more` tail, replacing the previous unbounded
@@ -750,7 +756,7 @@ matched on specific non-zero exit codes; see Changed.
   attributed to the deepest member that owns it.
 - **Items nested inside function bodies no longer inflate the enclosing
   function's CC** (#63). A local `fn` / `impl` / `mod` defined inside a
-  function body is its own scope, exactly like a closure — but the CC
+  function body is its own scope, exactly like a closure, but the CC
   counter recursed into it, so a helper's branches silently counted
   toward the enclosing function (which could push a simple function
   over `--threshold`). Scores can *decrease* for functions using the
@@ -758,14 +764,14 @@ matched on specific non-zero exit codes; see Changed.
 - **Config-sourced values are validated like their CLI twins** (#64).
   `.cargo-crap.toml` could smuggle in values the equivalent flag
   rejects: a negative `epsilon` made the regression detector classify
-  every unchanged (and even improved) function as `Regressed` —
-  tripping `--fail-regression` on a no-op run — and `jobs = 0`
+  every unchanged (and even improved) function as `Regressed`,
+  tripping `--fail-regression` on a no-op run, and `jobs = 0`
   silently fell back to auto-sizing where `--jobs 0` errors. The
   merged CLI-over-config values are now validated; invalid ones exit 2.
 - **`--summary` no longer replaces `json` and `github` output**
   (#65, thanks @ShiroKSH). The `--summary` flag was documented as not
   affecting the machine-readable formats, but it swapped both for the
-  plain-text summary — breaking JSON consumers and dropping GitHub
+  plain-text summary, breaking JSON consumers and dropping GitHub
   annotations. Both formats now emit their full output with
   `--summary`, matching the long-documented contract.
 
@@ -774,7 +780,7 @@ matched on specific non-zero exit codes; see Changed.
 **CI scripts checking exit codes.** `if cargo crap ...` /
 `cargo crap ... || exit 1` need no change (zero vs non-zero is
 preserved). Wrappers that switch on the exact code should treat `1` as
-"gate verdict: the code got crappier" and `2` as "broken run — fix the
+"gate verdict: the code got crappier" and `2` as "broken run. Fix the
 invocation or environment"; before 0.4.0 both cases exited 1, so any
 `== 1` branch that assumed "could be either" can drop its file-size or
 log-parsing heuristics.
@@ -825,18 +831,18 @@ trip it).
 **CC scores can drop for functions with local helpers.** The
 nested-item fix (#63) means a function containing a local `fn` /
 `impl` / `mod` no longer absorbs the helper's decision points. Against
-a 0.3.x baseline such functions show as one-time `Improved` entries —
-never regressions, so gates are unaffected. Regenerate committed
+a 0.3.x baseline such functions show as one-time `Improved` entries,
+so regression gates are unaffected. Regenerate committed
 baselines once to absorb the shift.
 
 **`--summary` + `json`/`github` scripts.** Anything that relied on the
 old (buggy) behavior of getting the *text summary* under
-`--format json --summary` now receives full JSON — drop `--format
+`--format json --summary` now receives full JSON. Drop `--format
 json` if the text summary is what you wanted.
 
 **stderr parsers.** The unmatched-files warning changed shape (counts,
 two directions, capped examples). Parse the JSON `diagnostics` object
-instead — stderr wording is not a stable interface.
+instead. The stderr wording is not a stable interface.
 
 ## [0.3.1] - 2026-07-19
 
@@ -848,7 +854,7 @@ matching, all reported against 0.3.0 (issues #46, #47). No breaking changes.
 - **`--format json --output` no longer writes a 0-byte report when a fail
   gate trips** (#47). `std::process::exit(1)` skips destructors, so the
   buffered `--output` writer was never flushed when `--fail-above` /
-  `--fail-regression` fired — CI gates saw exit code 1 plus an empty (or,
+  `--fail-regression` fired. CI gates saw exit code 1 plus an empty (or,
   for reports over 8 KB, truncated) file. The writer is now flushed before
   the exit-code decision, and flush errors (e.g. `ENOSPC`) surface as real
   errors instead of being silently swallowed, so a truncated report can no
@@ -878,7 +884,7 @@ matching, all reported against 0.3.0 (issues #46, #47). No breaking changes.
 
 ## [0.3.0] - 2026-06-15
 
-This release bundles specs 14–18. It contains **breaking changes** — see
+This release bundles specs 14–18. It contains **breaking changes**. See
 the Changed section before upgrading.
 
 ### Added
@@ -887,7 +893,7 @@ the Changed section before upgrading.
   `{schemaVersion, label, message, color}` JSON object counting functions
   above `--threshold`, with the threshold embedded in the label. Serve it at a
   stable URL and embed via `https://img.shields.io/endpoint?url=…`. `--baseline`
-  is ignored — the badge always reflects absolute current scores. CI now
+  is ignored. The badge always reflects absolute current scores. CI now
   publishes cargo-crap's own badge.
 - **`--sort {crap,file}`** (spec 17) and the `sort` config key. `crap` (default)
   keeps the score-descending order; `file` sorts by `(file, function, line)`
@@ -914,7 +920,7 @@ the Changed section before upgrading.
   functions (`Regressed` / `Improved` / `New` / `Moved`); when nothing changed
   they print `No changes since baseline.`. The summary line still counts every
   entry. Pass `--show-unchanged` for the old exhaustive table. `json` stays
-  exhaustive and `pr-comment` keeps its own row policy — both are unaffected.
+  exhaustive and `pr-comment` keeps its own row policy.
 - **BREAKING (library API):** `report::render_delta` gained a `show_unchanged`
   parameter, and the public `report::Format` enum gained a `Shields` variant.
   Downstream code using the library must update call sites / `match` arms.
@@ -1013,17 +1019,17 @@ move-aware delta detection. Anchor for early-adopter use.
 - **Per-crate rollup** for `--workspace` runs (spec 05). Human and
   markdown formats lead with a per-crate summary table; JSON entries
   carry a `crate` field.
-- **`--jobs <N>`** flag (spec 04) — caps parallel source-file analysis,
+- **`--jobs <N>`** flag (spec 04) caps parallel source-file analysis,
   useful in memory-constrained CI / Docker environments.
-- **`--epsilon <VALUE>`** flag (spec 08) — tunable tolerance for the
+- **`--epsilon <VALUE>`** flag (spec 08) sets the tolerance for the
   regression detector. Defaults to `0.01`; set to `0.0` to flag every
   increase, or higher to ignore noisy coverage drift.
 - **Versioned JSON envelope** (spec 02). Output is `{ $schema, version,
   entries }` with the schema URL pointing at the published JSON Schema.
   Bare-array baselines from older runs must be regenerated.
-- **Published JSON Schemas** (spec 03) — `report-v1.json` for absolute
+- **Published JSON Schemas** (spec 03) include `report-v1.json` for absolute
   output, `delta-v2.json` for delta output. Both stable HTTPS URLs.
-- **Unmatched-LCOV warning** — emit a stderr warning listing source
+- **Unmatched-LCOV warning** emits a stderr warning listing source
   files with no matching LCOV entry, so `--lcov` typos fail loudly
   instead of producing silently-wrong scores.
 
@@ -1031,7 +1037,7 @@ move-aware delta detection. Anchor for early-adopter use.
 
 - **`src/report.rs` split** into `src/report/<submodule>.rs` (one file
   per renderer + shared helpers). Public API unchanged.
-- **JSON delta schema bumped** to `delta-v2.json` (additive — `moved`
+- **JSON delta schema bumped** to `delta-v2.json` (additive, with a `moved`
   status value + optional `previous_file` field). v1 consumers see a
   new optional field they can ignore.
 - **MSRV** bumped to Rust **1.88**.

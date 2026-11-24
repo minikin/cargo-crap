@@ -32,6 +32,15 @@ pub trait Section {
         out: &mut dyn Write,
     ) -> WriteResult;
 
+    /// Render a fitted PR comment. Sections with a row table may cap its detail.
+    fn write_pr_comment(
+        &self,
+        _max_rows: usize,
+        out: &mut dyn Write,
+    ) -> WriteResult {
+        self.write(Format::PrComment, out)
+    }
+
     fn placement(&self) -> Placement;
 
     fn failures(&self) -> Option<usize>;

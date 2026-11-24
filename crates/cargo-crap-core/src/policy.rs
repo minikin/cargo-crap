@@ -58,6 +58,15 @@ pub struct Policy {
 }
 
 impl Policy {
+    pub(crate) fn signal_slice_hint(self) -> Option<&'static str> {
+        match self.envelope {
+            EnvelopeKind::CargoCrapV1 => {
+                Some("use --format json with the top and min limits removed for the reasons")
+            },
+            EnvelopeKind::CraptsV1 => self.signal_detail_hint,
+        }
+    }
+
     #[must_use]
     pub(crate) fn use_summary(
         self,

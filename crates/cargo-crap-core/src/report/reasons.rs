@@ -38,12 +38,33 @@ pub(crate) fn change(reason: &Reason) -> String {
     }
 }
 
-pub(crate) use crate::delta::gating_signal_count;
+use crate::delta::gating_signal_count;
 
-/// The headline a markdown report or PR comment leads with when no CRAP
-/// score regressed but `count` gating signal reasons fail the gate.
-pub(crate) fn signal_headline(count: usize) -> String {
-    format!("## ⚠️ No CRAP regressions, but {count} signal regression(s) detected")
+pub(super) fn write_delta_headline(
+    report: &DeltaReport,
+    regressed: usize,
+    full: Option<usize>,
+    opts: &RenderOptions<'_>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let shown = gating_signal_count(report);
+    let total = full.unwrap_or(shown);
+    if regressed > 0 {
+        writeln!(out, "## ⚠️ {regressed} CRAP regression(s) detected\n")?;
+    } else if total > 0 {
+        writeln!(
+            out,
+            "## ⚠️ No CRAP regressions, but {total} signal regression(s) detected\n"
+        )?;
+    } else {
+        writeln!(out, "## ✅ No CRAP regressions\n")?;
+    }
+    if shown < total
+        && let Some(hint) = opts.tool.policy.signal_slice_hint()
+    {
+        writeln!(out, "{hint}\n")?;
+    }
+    Ok(())
 }
 
 /// The function's location below `prefix` (the PR comment strips the

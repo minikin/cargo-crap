@@ -241,83 +241,248 @@ pub fn run(
     extras: &RenderExtras<'_>,
     out: &mut dyn Write,
 ) -> Result<GateOutcome> {
-    let mut eligible = analysis.entries;
-    filter::allow(&mut eligible, settings.allow);
-    keep_signals(&mut eligible, settings.signals.enabled);
-    let slice = filter::slice_with_ties(
-        &mut eligible,
-        settings.min,
-        settings.top,
-        settings.sort,
-        tool.policy.tie_order,
-    );
-    let shown = slice.as_deref().unwrap_or(&eligible);
-    let options = RenderOptions {
-        tool,
-        threshold: settings.threshold,
-        format: settings.format,
-        links: settings.links,
-        pr_comment_marker: settings.pr_comment_marker,
-        repo_prefix: settings.repo_prefix,
-        diagnostics: analysis.diagnostics.as_ref(),
-        show_unchanged: settings.show_unchanged,
-        uncovered_hints: settings.uncovered_hints,
-        sliced: slice.is_some(),
-        delta_counts: None,
-        width: settings.width,
-        cwd: settings.cwd,
-        workspace_root: settings.workspace_root,
-        duplicates: extras.duplicates,
-        groups: extras.groups,
-        novelty: extras.novelty,
-        triage: extras.triage,
-        triaged_by: extras.triaged_by,
-        untriaged: extras.untriaged,
-        try_weight: extras.try_weight,
-    };
-    let summary = tool.policy.use_summary(settings.summary, settings.format);
-    let crappy = threshold_count(
-        tool.policy.fail_above_counts,
-        &eligible,
-        shown,
-        settings.threshold,
-    );
-    let (section_counts, section_failures) = collect_section_failures(sections)?;
-    let changed = if settings.format == Format::Json {
-        validate_json_sections(tool.policy.envelope, sections, &section_counts)?
-    } else {
-        None
-    };
-    let staged = stage_sections(settings.format, sections)?;
-    let notices = collect_notices(analysis.notices, baseline);
-    let include_marker = write_prefix(&options, &notices, &staged, out)?;
-    let body = RunBody {
-        tool,
-        settings,
-        eligible: &eligible,
-        shown,
-        crappy,
-        coverage_kind: analysis.coverage_kind,
-        diagnostics: analysis.diagnostics.as_ref(),
-        notices: &notices,
-        baseline,
-        changed: changed.as_ref(),
-        options: &options,
-    };
-    let (regressed, gating_signals) = write_report_body(&body, summary, include_marker, out)?;
-    report::render_duplicates(&options, out).context("writing duplicate report")?;
-    write_suffix(settings.format, &staged, out)?;
-    out.flush().context("flushing output")?;
-    let regression_skipped = baseline.is_some_and(PreparedBaseline::regression_gate_skipped);
-    Ok(GateOutcome::evaluate(GateInput {
-        crappy,
-        regressed,
-        gating_signals,
-        section_failures,
-        fail_above: settings.fail_above,
-        fail_regression: settings.fail_regression && !regression_skipped,
-        fail_sections: settings.fail_sections,
-    }))
+    PreparedReport::new(tool, settings, analysis, baseline, sections)?.write(
+        settings.summary,
+        None,
+        extras,
+        out,
+    )
+}
+
+/// A selected population and its gate verdict. A front end can fit several
+/// presentations of the same comparison without pairing the rows again.
+pub struct PreparedReport<'a> {
+    tool: &'a Tool,
+    settings: &'a Settings<'a>,
+    analysis: Analysis<'a>,
+    slice: Option<Vec<CrapEntry>>,
+    comparison: Option<BaselineComparison<'a>>,
+    sections: &'a [&'a dyn Section],
+    changed: Option<report::CraptsChangedSection>,
+    notices: Vec<&'a str>,
+    verdict: GateOutcome,
+}
+
+struct BaselineComparison<'a> {
+    baseline: &'a PreparedBaseline,
+    delta: DeltaReport,
+    counts: DeltaCounts,
+    signal_gates: usize,
+}
+
+impl<'a> PreparedReport<'a> {
+    /// Count failures over the gate population before restricting the detail rows.
+    pub fn new(
+        tool: &'a Tool,
+        settings: &'a Settings<'a>,
+        mut analysis: Analysis<'a>,
+        baseline: Option<&'a PreparedBaseline>,
+        sections: &'a [&'a dyn Section],
+    ) -> Result<Self> {
+        let eligible = &mut analysis.entries;
+        filter::allow(eligible, settings.allow);
+        keep_signals(eligible, settings.signals.enabled);
+        let slice = filter::slice_with_ties(
+            eligible,
+            settings.min,
+            settings.top,
+            settings.sort,
+            tool.policy.tie_order,
+        );
+        let shown = slice.as_deref().unwrap_or(eligible);
+        let (section_counts, section_failures) = collect_section_failures(sections)?;
+        let changed = if settings.format == Format::Json {
+            validate_json_sections(tool.policy.envelope, sections, &section_counts)?
+        } else {
+            None
+        };
+        let comparison =
+            baseline.map(|base| compute_prepared_delta(settings, eligible, shown, base, tool));
+        let verdict = GateOutcome::evaluate(GateInput {
+            crappy: threshold_count(
+                tool.policy.fail_above_counts,
+                eligible,
+                shown,
+                settings.threshold,
+            ),
+            regressed: comparison
+                .as_ref()
+                .map_or(0, |comparison| comparison.counts.regressed),
+            gating_signals: comparison
+                .as_ref()
+                .map_or(0, |comparison| comparison.signal_gates),
+            section_failures,
+            fail_above: settings.fail_above,
+            fail_regression: settings.fail_regression
+                && !baseline.is_some_and(PreparedBaseline::regression_gate_skipped),
+            fail_sections: settings.fail_sections,
+        });
+        let notices = collect_notices(analysis.notices, baseline);
+        Ok(Self {
+            tool,
+            settings,
+            analysis,
+            slice,
+            comparison,
+            sections,
+            changed,
+            notices,
+            verdict,
+        })
+    }
+
+    fn shown(&self) -> &[CrapEntry] {
+        self.slice.as_deref().unwrap_or(&self.analysis.entries)
+    }
+
+    fn options<'r>(
+        &'r self,
+        extras: &'r RenderExtras<'r>,
+    ) -> RenderOptions<'r> {
+        let settings = self.settings;
+        RenderOptions {
+            tool: self.tool,
+            threshold: settings.threshold,
+            format: settings.format,
+            links: settings.links,
+            pr_comment_marker: settings.pr_comment_marker,
+            repo_prefix: settings.repo_prefix,
+            diagnostics: self.analysis.diagnostics.as_ref(),
+            show_unchanged: settings.show_unchanged,
+            uncovered_hints: settings.uncovered_hints,
+            sliced: self.slice.is_some(),
+            delta_counts: self.comparison.as_ref().map(|comparison| comparison.counts),
+            width: settings.width,
+            cwd: settings.cwd,
+            workspace_root: settings.workspace_root,
+            duplicates: extras.duplicates,
+            groups: extras.groups,
+            novelty: extras.novelty,
+            triage: extras.triage,
+            triaged_by: extras.triaged_by,
+            untriaged: extras.untriaged,
+            try_weight: extras.try_weight,
+        }
+    }
+
+    /// Write one layout. The row limit applies to PR-comment sections.
+    /// The verdict is returned only after the complete report has been flushed.
+    pub fn write(
+        &self,
+        summary: bool,
+        pr_section_limit: Option<usize>,
+        extras: &RenderExtras<'_>,
+        out: &mut dyn Write,
+    ) -> Result<GateOutcome> {
+        let options = self.options(extras);
+        let staged = stage_sections(options.format, self.sections, pr_section_limit)?;
+        let include_marker = write_prefix(&options, &self.notices, &staged, out)?;
+        self.write_body(summary, include_marker, &options, out)?;
+        report::render_duplicates(&options, out).context("writing duplicate report")?;
+        write_suffix(options.format, &staged, out)?;
+        out.flush().context("flushing output")?;
+        Ok(self.verdict)
+    }
+
+    fn write_body(
+        &self,
+        summary: bool,
+        include_marker: bool,
+        options: &RenderOptions<'_>,
+        out: &mut dyn Write,
+    ) -> Result<()> {
+        if self.tool.policy.use_summary(summary, options.format) {
+            if include_marker && summary_marker(options) {
+                report::write_pr_comment_marker(options, out)?;
+            }
+            self.write_summary(out)
+        } else if options.format == Format::Json
+            && self.tool.policy.envelope == EnvelopeKind::CraptsV1
+        {
+            self.write_crapts_json(out)
+        } else if let Some(comparison) = &self.comparison {
+            report::render_delta_inner(
+                &comparison.delta,
+                options,
+                include_marker,
+                Some(comparison.signal_gates),
+                out,
+            )
+        } else {
+            report::render_inner(self.shown(), options, include_marker, out)
+        }
+    }
+
+    fn write_summary(
+        &self,
+        out: &mut dyn Write,
+    ) -> Result<()> {
+        if let Some(comparison) = &self.comparison {
+            report::render_delta_summary_lines(
+                &comparison.counts,
+                comparison.signal_gates,
+                self.tool.policy.signal_detail_hint,
+                out,
+            )
+        } else {
+            report::render_summary(
+                self.shown(),
+                self.settings.threshold,
+                self.settings.width,
+                out,
+            )
+        }
+    }
+
+    fn write_crapts_json(
+        &self,
+        out: &mut dyn Write,
+    ) -> Result<()> {
+        let coverage_kind = self
+            .analysis
+            .coverage_kind
+            .ok_or_else(|| anyhow::anyhow!("crapts JSON requires coverage_kind"))?;
+        let diagnostics = self
+            .analysis
+            .diagnostics
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
+        let selection = report::CraptsSelection::from_limits(self.settings.top, self.settings.min)?;
+        let mut ctx = report::CraptsJsonContext {
+            signal_regressions: self
+                .settings
+                .signals
+                .enabled
+                .then_some(report::SignalRegressions::Unavailable),
+            tool: self.tool,
+            coverage_kind,
+            threshold: self.settings.threshold,
+            selection,
+            notices: &self.notices,
+            total: self.analysis.entries.len(),
+            crappy: self.verdict.crappy,
+            changed: self.changed.as_ref(),
+            diagnostics,
+        };
+        let Some(comparison) = &self.comparison else {
+            return report::render_crapts_json(self.shown(), &ctx, out);
+        };
+        let baseline_version = comparison.baseline.baseline_version().ok_or_else(|| {
+            anyhow::anyhow!("crapts delta JSON requires a baseline prepared with prepare_crapts")
+        })?;
+        if self.settings.signals.enabled && comparison.baseline.has_signals() {
+            ctx.signal_regressions =
+                Some(report::SignalRegressions::Count(comparison.signal_gates));
+        }
+        report::render_crapts_delta_json(
+            &comparison.delta,
+            &comparison.counts,
+            baseline_version,
+            comparison.baseline.regression_gate_skipped(),
+            &ctx,
+            out,
+        )
+    }
 }
 
 fn collect_section_failures(sections: &[&dyn Section]) -> Result<(Vec<Option<usize>>, usize)> {
@@ -349,58 +514,6 @@ fn validate_json_sections(
     }
 }
 
-struct RunBody<'a> {
-    tool: &'a Tool,
-    settings: &'a Settings<'a>,
-    eligible: &'a [CrapEntry],
-    shown: &'a [CrapEntry],
-    crappy: usize,
-    coverage_kind: Option<CoverageKind>,
-    diagnostics: Option<&'a ScopeDiagnostics>,
-    notices: &'a [&'a str],
-    baseline: Option<&'a PreparedBaseline>,
-    changed: Option<&'a report::CraptsChangedSection>,
-    options: &'a RenderOptions<'a>,
-}
-
-fn write_report_body(
-    body: &RunBody<'_>,
-    summary: bool,
-    include_marker: bool,
-    out: &mut dyn Write,
-) -> Result<(usize, usize)> {
-    if summary {
-        if include_marker && summary_marker(body.options) {
-            report::write_pr_comment_marker(body.options, out)?;
-        }
-        return write_summary(
-            body.settings,
-            body.eligible,
-            body.shown,
-            body.baseline,
-            body.tool,
-            out,
-        );
-    }
-    if body.settings.format == Format::Json && body.tool.policy.envelope == EnvelopeKind::CraptsV1 {
-        return write_crapts_json(body, out);
-    }
-    if let Some(baseline) = body.baseline {
-        write_delta(
-            body.settings,
-            body.eligible,
-            body.shown,
-            baseline,
-            body.options,
-            include_marker,
-            out,
-        )
-    } else {
-        report::render_inner(body.shown, body.options, include_marker, out)?;
-        Ok((0, 0))
-    }
-}
-
 struct StagedSections {
     lead: Vec<Vec<u8>>,
     trail: Vec<Vec<u8>>,
@@ -415,6 +528,7 @@ impl StagedSections {
 fn stage_sections(
     format: Format,
     sections: &[&dyn Section],
+    pr_section_limit: Option<usize>,
 ) -> Result<StagedSections> {
     let mut staged = StagedSections {
         lead: Vec::new(),
@@ -429,7 +543,11 @@ fn stage_sections(
     for section in sections {
         let placement = section.placement();
         let mut buf = Vec::new();
-        section.write(format, &mut buf)?;
+        if let (Format::PrComment, Some(limit)) = (format, pr_section_limit) {
+            section.write_pr_comment(limit, &mut buf)?;
+        } else {
+            section.write(format, &mut buf)?;
+        }
         if buf.last().is_some_and(|&b| b != b'\n') {
             buf.push(b'\n');
         }
@@ -537,13 +655,13 @@ fn collect_notices<'a>(
     all
 }
 
-fn compute_prepared_delta(
+fn compute_prepared_delta<'a>(
     settings: &Settings<'_>,
     eligible: &[CrapEntry],
     shown: &[CrapEntry],
-    baseline: &PreparedBaseline,
+    baseline: &'a PreparedBaseline,
     tool: &Tool,
-) -> (DeltaReport, DeltaCounts, usize) {
+) -> BaselineComparison<'a> {
     let before = &baseline.as_baseline().entries;
     let mut delta = compare(eligible, before, settings.epsilon, tool.policy.pairing);
     if settings.signals.enabled {
@@ -557,62 +675,12 @@ fn compute_prepared_delta(
     let gating_signals = gating_signal_count(&delta);
     delta.restrict_to(shown);
     delta.sort_with_ties(settings.sort, tool.policy.tie_order);
-    (delta, counts, gating_signals)
-}
-
-fn write_crapts_json(
-    body: &RunBody<'_>,
-    out: &mut dyn Write,
-) -> Result<(usize, usize)> {
-    let coverage_kind = body
-        .coverage_kind
-        .ok_or_else(|| anyhow::anyhow!("crapts JSON requires coverage_kind"))?;
-    let diagnostics = body
-        .diagnostics
-        .ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
-    let selection = report::CraptsSelection::from_limits(body.settings.top, body.settings.min)?;
-    let mut ctx = report::CraptsJsonContext {
-        signal_regressions: body
-            .settings
-            .signals
-            .enabled
-            .then_some(report::SignalRegressions::Unavailable),
-        tool: body.tool,
-        coverage_kind,
-        threshold: body.settings.threshold,
-        selection,
-        notices: body.notices,
-        total: body.eligible.len(),
-        crappy: body.crappy,
-        changed: body.changed,
-        diagnostics,
-    };
-    let Some(baseline) = body.baseline else {
-        report::render_crapts_json(body.shown, &ctx, out)?;
-        return Ok((0, 0));
-    };
-    let baseline_version = baseline.baseline_version().ok_or_else(|| {
-        anyhow::anyhow!("crapts delta JSON requires a baseline prepared with prepare_crapts")
-    })?;
-    let (delta, counts, gating_signals) = compute_prepared_delta(
-        body.settings,
-        body.eligible,
-        body.shown,
+    BaselineComparison {
         baseline,
-        body.tool,
-    );
-    if body.settings.signals.enabled && baseline.has_signals() {
-        ctx.signal_regressions = Some(report::SignalRegressions::Count(gating_signals));
+        delta,
+        counts,
+        signal_gates: gating_signals,
     }
-    report::render_crapts_delta_json(
-        &delta,
-        &counts,
-        baseline_version,
-        baseline.regression_gate_skipped(),
-        &ctx,
-        out,
-    )?;
-    Ok((counts.regressed, gating_signals))
 }
 
 fn summary_marker(opts: &RenderOptions) -> bool {
@@ -621,52 +689,6 @@ fn summary_marker(opts: &RenderOptions) -> bool {
         Format::PrComment | Format::Markdown => opts.tool.policy.envelope == EnvelopeKind::CraptsV1,
         _ => false,
     }
-}
-
-fn write_summary(
-    settings: &Settings<'_>,
-    eligible: &[CrapEntry],
-    shown: &[CrapEntry],
-    baseline: Option<&PreparedBaseline>,
-    tool: &Tool,
-    out: &mut dyn Write,
-) -> Result<(usize, usize)> {
-    let Some(baseline) = baseline else {
-        report::render_summary(shown, settings.threshold, settings.width, out)?;
-        return Ok((0, 0));
-    };
-    let (_, counts, gating_signals) =
-        compute_prepared_delta(settings, eligible, shown, baseline, tool);
-    report::render_delta_summary_lines(
-        &counts,
-        gating_signals,
-        tool.policy.signal_detail_hint,
-        out,
-    )?;
-    Ok((counts.regressed, gating_signals))
-}
-
-fn write_delta(
-    settings: &Settings<'_>,
-    eligible: &[CrapEntry],
-    shown: &[CrapEntry],
-    baseline: &PreparedBaseline,
-    options: &RenderOptions<'_>,
-    include_marker: bool,
-    out: &mut dyn Write,
-) -> Result<(usize, usize)> {
-    let (delta, counts, gating_signals) =
-        compute_prepared_delta(settings, eligible, shown, baseline, options.tool);
-    report::render_delta_inner(
-        &delta,
-        &RenderOptions {
-            delta_counts: Some(counts),
-            ..*options
-        },
-        include_marker,
-        out,
-    )?;
-    Ok((counts.regressed, gating_signals))
 }
 
 #[cfg(test)]
@@ -1726,6 +1748,66 @@ mod tests {
         assert_eq!(doc["summary"]["changed_failures"], 2);
         assert_eq!(outcome.section_failures, 2);
         assert!(outcome.tripped);
+    }
+
+    #[test]
+    fn fitting_a_comment_samples_the_gate_once_across_detail_levels() {
+        use std::cell::Cell;
+        struct Counted(Cell<usize>);
+        impl Section for Counted {
+            fn json_key(&self) -> &'static str {
+                "changed"
+            }
+            fn json(&self) -> Box<serde_json::value::RawValue> {
+                panic!("a comment is text")
+            }
+            fn write(
+                &self,
+                format: Format,
+                out: &mut dyn Write,
+            ) -> Result<()> {
+                assert_eq!(format, Format::PrComment);
+                writeln!(out, "reviewed functions")?;
+                Ok(())
+            }
+            fn placement(&self) -> Placement {
+                Placement::Lead
+            }
+            fn failures(&self) -> Option<usize> {
+                self.0.set(self.0.get() + 1);
+                Some(self.0.get())
+            }
+        }
+        let tool = crapts_test_tool();
+        let allow = AllowSet::compile(&[]).unwrap();
+        let signals = SignalSettings::default();
+        let settings = section_settings(&allow, &signals, Format::PrComment);
+        let section = Counted(Cell::new(0));
+        let sections: [&dyn Section; 1] = [&section];
+        let analysis = Analysis {
+            entries: crate::report::test_support::sample(),
+            diagnostics: Some(empty_test_diag()),
+            scope: &AllFiles,
+            coverage_kind: Some(CoverageKind::Lines),
+            notices: &[],
+        };
+        let prepared = PreparedReport::new(&tool, &settings, analysis, None, &sections).unwrap();
+        for (summary, limit) in [(false, None), (true, None), (true, Some(0))] {
+            let mut out = Vec::new();
+            let verdict = prepared
+                .write(summary, limit, &RenderExtras::default(), &mut out)
+                .unwrap();
+            assert_eq!(verdict.section_failures, 1);
+            assert!(verdict.tripped);
+            assert_eq!(
+                String::from_utf8(out)
+                    .unwrap()
+                    .matches("reviewed functions")
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(section.0.get(), 1);
     }
 
     #[test]
