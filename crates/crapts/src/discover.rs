@@ -97,12 +97,21 @@ pub struct Discovery {
     pub unused_excludes: Vec<ExcludePattern>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Placement {
+    Scored,
+    Unsupported,
+    OutsidePath,
+    Excluded,
+}
+
 #[derive(Debug)]
 pub struct DiscoveryScope {
     cwd: PathBuf,
     invoked: PathBuf,
     worktree: Worktree,
     directories: Vec<PathBuf>,
+    file_roots: BTreeSet<PathBuf>,
     leaves: BTreeSet<PathBuf>,
     selected: BTreeSet<OsString>,
     defaults: Exclusions,
@@ -138,11 +147,7 @@ impl DiscoveryScope {
             return Ok(true);
         }
         let local = Path::new(&name);
-        if !self.eligible(local) || self.extras.is_match(local) || !self.below_directory(&absolute)
-        {
-            return Ok(false);
-        }
-        if file_type(&absolute)?.is_some() {
+        if self.rejection(local, &absolute, false).is_some() || file_type(&absolute)?.is_some() {
             return Ok(false);
         }
         if !self.worktree.indexed {
@@ -158,6 +163,58 @@ impl DiscoveryScope {
         git_allows(&self.cwd, &name)
     }
 
+    pub(crate) fn display(
+        &self,
+        absolute: &Path,
+    ) -> PathBuf {
+        PathBuf::from(relative(&self.cwd, absolute))
+    }
+
+    pub(crate) fn place_present(
+        &self,
+        absolute: &Path,
+    ) -> Placement {
+        let name = relative(&self.cwd, absolute);
+        if self.selected.contains(&name) {
+            return Placement::Scored;
+        }
+        self.rejection(Path::new(&name), absolute, false)
+            .unwrap_or(Placement::Excluded)
+    }
+
+    /// Judges the spelling alone: the working tree may hold a symbolic link
+    /// at the path or at a directory above it, or nothing. The path was
+    /// tracked at the merge base, and Git applies no ignore rule to a tracked
+    /// file, as discovery's `ls-files --cached` does not.
+    pub(crate) fn place_historical(
+        &self,
+        absolute: &Path,
+    ) -> Placement {
+        let name = relative(&self.cwd, absolute);
+        if self.selected.contains(&name) {
+            return Placement::Scored;
+        }
+        self.rejection(Path::new(&name), absolute, true)
+            .unwrap_or(Placement::Scored)
+    }
+
+    fn rejection(
+        &self,
+        local: &Path,
+        absolute: &Path,
+        lexical: bool,
+    ) -> Option<Placement> {
+        if source_extension(local).is_none() {
+            Some(Placement::Unsupported)
+        } else if !self.file_roots.contains(absolute) && !self.below_directory(absolute, lexical) {
+            Some(Placement::OutsidePath)
+        } else if self.defaults.is_match(local) || self.extras.is_match(local) {
+            Some(Placement::Excluded)
+        } else {
+            None
+        }
+    }
+
     fn eligible(
         &self,
         path: &Path,
@@ -168,11 +225,12 @@ impl DiscoveryScope {
     fn below_directory(
         &self,
         path: &Path,
+        lexical: bool,
     ) -> bool {
         path.parent().is_some_and(|parent| {
             self.directories
                 .iter()
-                .any(|root| parent.starts_with(root) && !through_symlink(path, root))
+                .any(|root| parent.starts_with(root) && (lexical || !through_symlink(parent, root)))
         })
     }
 
@@ -252,6 +310,11 @@ pub(crate) fn discover_probed(
         .filter(|root| root.is_dir)
         .map(|root| root.absolute.clone())
         .collect();
+    let file_roots = resolved
+        .iter()
+        .filter(|root| !root.is_dir)
+        .map(|root| root.absolute.clone())
+        .collect();
     let inputs: Vec<_> = resolved.into_iter().map(|root| root.absolute).collect();
     let listing = if worktree.indexed {
         git_files(&cwd, &inputs)?
@@ -265,6 +328,7 @@ pub(crate) fn discover_probed(
         cwd,
         invoked,
         directories,
+        file_roots,
         worktree,
         leaves: listing.leaves,
         selected: BTreeSet::new(),

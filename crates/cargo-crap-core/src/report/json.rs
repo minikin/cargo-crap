@@ -545,6 +545,8 @@ struct CraptsAbsoluteRow<'a> {
     crap: f64,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     uncovered: &'a [LineRange],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<&'a str>,
 }
 
 #[derive(serde::Serialize)]
@@ -557,6 +559,8 @@ struct CraptsDeltaRow<'a> {
     crap: f64,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     uncovered: &'a [LineRange],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<&'a str>,
     baseline_crap: Option<f64>,
     delta: Option<f64>,
     status: DeltaStatus,
@@ -668,6 +672,7 @@ fn build_crapts_abs_row(entry: &CrapEntry) -> Result<CraptsAbsoluteRow<'_>> {
         coverage: entry.coverage,
         crap: entry.crap,
         uncovered: &entry.uncovered,
+        fingerprint: entry.fingerprint.as_deref(),
     })
 }
 
@@ -682,6 +687,7 @@ fn build_crapts_delta_row(de: &DeltaEntry) -> Result<CraptsDeltaRow<'_>> {
         coverage: de.current.coverage,
         crap: de.current.crap,
         uncovered: &de.current.uncovered,
+        fingerprint: de.current.fingerprint.as_deref(),
         baseline_crap: de.baseline_crap,
         delta: de.delta,
         status: de.status,

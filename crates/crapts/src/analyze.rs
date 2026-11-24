@@ -16,6 +16,7 @@ use oxc_parser::{Kind, Parser, Token, config::TokensParserConfig};
 use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
+use crate::fingerprint::{self, Fingerprint, Regions};
 use crate::lines::{LineIndex, SourceSpan};
 use crate::names::{Names, Source, Unit, direct_value};
 
@@ -54,6 +55,7 @@ pub struct Row {
     pub statement_lines: Vec<u32>,
     pub cyclomatic: u32,
     pub is_arrow: bool,
+    pub fingerprint: Fingerprint,
 }
 
 #[derive(Debug)]
@@ -186,6 +188,10 @@ pub fn analyze(
     }
     let mut collector = Collector::new(path, source, &parsed.tokens);
     collector.visit_program(&parsed.program);
+    let prints = fingerprint::compute(source, &parsed.tokens, &parsed.program, &collector.regions);
+    for (row, print) in collector.rows.iter_mut().zip(prints) {
+        row.fingerprint = print;
+    }
     collector.rows.sort_by_key(|row| row.span.start);
     crate::names::assign_ordinals(collector.rows.iter_mut().map(|row| &mut row.name));
     for row in &mut collector.rows {
@@ -209,12 +215,20 @@ struct Collector<'s> {
     source: Source<'s>,
     lines: LineIndex,
     rows: Vec<Row>,
+    regions: Vec<Regions>,
     owner: Option<usize>,
     names: Names,
-    method: Option<(Span, u32)>,
+    method: Option<Method>,
     constructor: Option<Constructor>,
     // Parameter decorators run at definition time while their callbacks retain the method's name.
     parameter_decorator_owners: HashMap<u32, Option<usize>>,
+}
+
+#[derive(Clone, Copy)]
+struct Method {
+    function: Span,
+    start: u32,
+    key: Option<Span>,
 }
 
 #[derive(Clone, Copy)]
@@ -232,6 +246,13 @@ impl<'s> Collector<'s> {
         if let Some(row) = self.rows.get_mut(first) {
             row.span.start = self.lines.position(start);
         }
+        if let Some(region) = self
+            .regions
+            .get_mut(first)
+            .and_then(|r| r.selected.first_mut())
+        {
+            region.start = start;
+        }
     }
 
     fn new(
@@ -247,6 +268,7 @@ impl<'s> Collector<'s> {
             },
             lines: LineIndex::new(source),
             rows: Vec::new(),
+            regions: Vec::new(),
             owner: None,
             names: Names::default(),
             method: None,
@@ -270,7 +292,9 @@ impl<'s> Collector<'s> {
             statement_lines: Vec::new(),
             cyclomatic: 1,
             is_arrow,
+            fingerprint: Fingerprint::UNSET,
         });
+        self.regions.push(Regions::default());
         index
     }
 
@@ -290,6 +314,7 @@ impl<'s> Collector<'s> {
         span: Span,
         body: Span,
         is_arrow: bool,
+        omit: Option<Span>,
         visit: impl FnOnce(&mut Self),
     ) {
         let row = match self.constructor {
@@ -297,6 +322,8 @@ impl<'s> Collector<'s> {
             _ => self.new_row(name.clone(), span, is_arrow),
         };
         self.rows[row].body_regions.push(self.lines.span(body));
+        self.regions[row].selected.push(span);
+        self.regions[row].omitted.extend(omit);
         self.with_owner(row, |v| v.with_name(name, visit));
     }
 
@@ -360,6 +387,7 @@ impl<'s> Collector<'s> {
             return;
         };
         self.rows[row].body_regions.push(self.lines.span(span));
+        self.regions[row].selected.push(span);
         self.with_owner(row, |v| {
             v.record_statement(span);
             v.visit_expression(value);
@@ -448,13 +476,37 @@ impl<'s> Collector<'s> {
 
     fn with_method(
         &mut self,
-        function: Span,
-        start: u32,
+        method: Method,
         visit: impl FnOnce(&mut Self),
     ) {
-        let enclosing = self.method.replace((function, start));
+        let enclosing = self.method.replace(method);
         visit(self);
         self.method = enclosing;
+    }
+
+    /// A computed key's extent includes its brackets, which lie between the
+    /// member's start and its function's.
+    fn key_extent(
+        &self,
+        key: &PropertyKey<'_>,
+        computed: bool,
+        member: Span,
+    ) -> Span {
+        let span = key.span();
+        if !computed {
+            return span;
+        }
+        let tokens = self.source.tokens;
+        let at = |offset: u32| tokens.partition_point(|t| t.start() < offset);
+        let open = tokens[at(member.start)..at(span.start)]
+            .iter()
+            .rfind(|t| t.kind() == Kind::LBrack)
+            .map_or(span.start, Token::start);
+        let close = tokens[at(span.end)..at(member.end)]
+            .iter()
+            .find(|t| t.kind() == Kind::RBrack)
+            .map_or(span.end, Token::end);
+        Span::new(open, close)
     }
 }
 
@@ -504,7 +556,7 @@ fn executable_statement(statement: &Statement<'_>) -> bool {
     }
 }
 
-pub(super) fn visit_logical_operands<'a>(
+pub(crate) fn visit_logical_operands<'a>(
     root: &LogicalExpression<'a>,
     mut visit: impl FnMut(&Expression<'a>),
 ) -> u32 {
@@ -564,7 +616,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         let name = self
             .names
             .resolve(span, Some("<static-block>"), Unit::FunctionDeclaration);
-        self.in_callable(name, span, span, false, |v| {
+        self.in_callable(name, span, span, false, None, |v| {
             walk::walk_static_block(v, block);
         });
     }
@@ -576,7 +628,15 @@ impl<'a> Visit<'a> for Collector<'_> {
         if method.value.body.is_none() {
             return;
         }
-        self.with_method(method.value.span, method.span.start, |v| {
+        let member = Span::new(method.span.start, method.value.span.start);
+        let key = (method.kind != MethodDefinitionKind::Constructor)
+            .then(|| self.key_extent(&method.key, method.computed, member));
+        let method_site = Method {
+            function: method.value.span,
+            start: method.span.start,
+            key,
+        };
+        self.with_method(method_site, |v| {
             walk::walk_method_definition(v, method);
         });
     }
@@ -586,7 +646,14 @@ impl<'a> Visit<'a> for Collector<'_> {
         property: &ObjectProperty<'a>,
     ) {
         if property.method || property.kind != PropertyKind::Init {
-            self.with_method(property.value.span(), property.span.start, |v| {
+            let function = property.value.span();
+            let member = Span::new(property.span.start, function.start);
+            let method = Method {
+                function,
+                start: property.span.start,
+                key: Some(self.key_extent(&property.key, property.computed, member)),
+            };
+            self.with_method(method, |v| {
                 walk::walk_object_property(v, property);
             });
         } else {
@@ -746,12 +813,14 @@ impl<'a> Visit<'a> for Collector<'_> {
                 unit,
             );
             let mut span = function.span;
-            if let Some((method, start)) = self.method
-                && method == span
+            let mut omit = function.id.as_ref().map(|id| id.span);
+            if let Some(method) = self.method
+                && method.function == span
             {
-                span.start = start;
+                span.start = method.start;
+                omit = method.key;
             }
-            self.in_callable(name, span, body.span, false, |visitor| {
+            self.in_callable(name, span, body.span, false, omit, |visitor| {
                 walk::walk_function(visitor, function, flags);
             });
         }
@@ -765,7 +834,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         let name = self
             .names
             .resolve(arrow.span, None, Unit::FunctionExpression);
-        self.in_callable(name, arrow.span, arrow.body.span(), true, |visitor| {
+        self.in_callable(name, arrow.span, arrow.body.span(), true, None, |visitor| {
             if let Some(expr) = arrow.body.as_expression() {
                 visitor.record_statement(expr.span());
             }

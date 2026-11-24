@@ -215,6 +215,7 @@ impl Evidence {
             uncovered: self
                 .fully_hit_lines
                 .uncovered_ranges_in_span(0, u32::MAX as usize),
+            fingerprint: Some(row.fingerprint.to_string()),
             ..CrapEntry::default()
         };
         Some(AttributedRow {

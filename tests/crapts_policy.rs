@@ -1681,9 +1681,18 @@ fn both_crapts_report_shapes_admit_rows_without_a_wire_fingerprint() {
         vec![],
     );
     for (name, rep) in [("abs.json", &abs), ("delta.json", &delta)] {
-        for entry in rep.json["entries"].as_array().unwrap() {
-            assert!(entry.get("fingerprint").is_none(), "{name}: {}", rep.raw);
-        }
+        let entries = rep.json["entries"].as_array().unwrap();
+        assert_eq!(
+            entries[0]["fingerprint"],
+            "a".repeat(64),
+            "{name}: {}",
+            rep.raw
+        );
+        assert!(
+            entries[1].get("fingerprint").is_none(),
+            "{name}: {}",
+            rep.raw
+        );
         let path = dir.path().join(name);
         std::fs::write(&path, &rep.raw).unwrap();
         let loaded = load_crapts_baseline(&path, &CRAPTS, CoverageKind::Lines).unwrap();
@@ -2117,16 +2126,16 @@ fn a_foreign_baseline_diagnostic_names_the_callers_tool() {
     }
 }
 
-struct TestSection {
+struct TestSection<'a> {
     key: &'static str,
-    raw: &'static str,
+    raw: &'a str,
     text: &'static str,
     github: Option<&'static str>,
     placement: Placement,
     failures: Option<usize>,
 }
 
-impl Section for TestSection {
+impl Section for TestSection<'_> {
     fn json_key(&self) -> &str {
         self.key
     }
@@ -2155,6 +2164,43 @@ impl Section for TestSection {
     fn failures(&self) -> Option<usize> {
         self.failures
     }
+}
+
+/// The smallest object changed-v1 accepts, with `fail` failing rows. `spaced`
+/// writes the `{ "key" : value,  ... }` layout whose bytes the report must keep.
+fn changed_object(
+    spaced: bool,
+    fail: usize,
+) -> String {
+    let commit = "a".repeat(40);
+    let counts = format!(
+        r#"{{"touched":0,"new":0,"ambiguous":0,"modified":0,"worse":0,"fail":{fail},"over":0,"allowed":0,"missing_skipped":0,"coverage_null":0}}"#
+    );
+    let members = [
+        ("$schema", r#""https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/changed-v1.json""#.to_owned()),
+        ("version", r#""0.2.3""#.to_owned()),
+        ("name_scheme", "1".to_owned()),
+        ("threshold", "30".to_owned()),
+        (
+            "base",
+            format!(r#"{{"rev":"main","commit":"{commit}","merge_base":"{commit}","merge_base_count":1,"shallow":false}}"#),
+        ),
+        ("head", format!(r#"{{"commit":"{commit}","dirty":false}}"#)),
+        ("entries", "[]".to_owned()),
+        ("removed", "[]".to_owned()),
+        ("skipped", "[]".to_owned()),
+        ("counts", counts),
+    ];
+    let (open, colon, comma, close) = if spaced {
+        ("{ ", " : ", ",  ", " }")
+    } else {
+        ("{", ":", ",", "}")
+    };
+    let body: Vec<String> = members
+        .iter()
+        .map(|(key, value)| format!("\"{key}\"{colon}{value}"))
+        .collect();
+    format!("{open}{}{close}", body.join(comma))
 }
 
 fn extract_raw_changed_value(raw: &str) -> &str {
@@ -2237,10 +2283,10 @@ fn a_section_contributes_one_ordered_json_object_and_a_count() {
     let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
     let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
 
-    let supplied = r#"{ "version" : "0.2.3",  "counts" : {"fail":0} }"#;
+    let supplied = changed_object(true, 0);
     let section = TestSection {
         key: "changed",
-        raw: supplied,
+        raw: &supplied,
         text: "changed result",
         github: None,
         placement: Placement::Lead,
@@ -2269,7 +2315,7 @@ fn a_section_contributes_one_ordered_json_object_and_a_count() {
             let raw = String::from_utf8(out).unwrap();
             let doc: Value = serde_json::from_str(&raw).unwrap();
             assert!(schema.is_valid(&doc), "{raw}");
-            assert_eq!(extract_raw_changed_value(&raw), supplied);
+            assert_eq!(extract_raw_changed_value(&raw), supplied.as_str());
             assert_eq!(doc["summary"]["changed_failures"], 0);
 
             let mut without = Vec::new();
@@ -2299,7 +2345,6 @@ fn a_section_contributes_one_ordered_json_object_and_a_count() {
 
 #[test]
 fn a_present_section_can_omit_a_failure_count() {
-    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
     let allow = AllowSet::compile(&[]).unwrap();
     let signals = SignalSettings::default();
     let settings = json_settings(&allow, &signals, false, false, true);
@@ -2329,7 +2374,6 @@ fn a_present_section_can_omit_a_failure_count() {
     )
     .unwrap();
     let doc: Value = serde_json::from_slice(&out).unwrap();
-    assert!(abs_schema.is_valid(&doc));
     assert_eq!(doc["changed"], json!({}));
     assert!(doc["summary"]["changed_failures"].is_null());
     assert_eq!(outcome.section_failures, 0);
@@ -2523,9 +2567,10 @@ fn section_failures_are_observable_even_when_their_gate_is_off() {
     );
     let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
     let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+    let object = changed_object(false, 2);
     let section = TestSection {
         key: "changed",
-        raw: r#"{"counts":{"fail":2}}"#,
+        raw: &object,
         text: "changed result",
         github: None,
         placement: Placement::Lead,
@@ -2815,9 +2860,10 @@ fn notices_and_sections_preserve_the_grammar_of_each_machine_format() {
     let allow = AllowSet::compile(&[]).unwrap();
     let signals = SignalSettings::default();
     let notices = ["coverage note".to_owned()];
+    let object = changed_object(false, 1);
     let section = TestSection {
         key: "changed",
-        raw: r#"{"counts":{"fail":1}}"#,
+        raw: &object,
         text: "changed result",
         github: Some("::warning::changed result"),
         placement: Placement::Lead,
@@ -3127,5 +3173,79 @@ fn pr_comment_markers_and_links_belong_to_the_invocation() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn both_outer_schemas_bind_the_changed_slot_to_changed_v1_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let abs_schema = schemas::compile("schemas/crapts/report-v1.json");
+    let delta_schema = schemas::compile("schemas/crapts/delta-v1.json");
+    let allow = AllowSet::compile(&[]).unwrap();
+    let signals = SignalSettings::default();
+    let settings = json_settings(&allow, &signals, false, false, false);
+    let base_path = write_crapts_baseline_file(
+        &dir,
+        "base.json",
+        &CRAPTS,
+        CoverageKind::Lines,
+        vec![row("src/a.ts", "f", 1, 10.0)],
+    );
+    let loaded = load_crapts_baseline(&base_path, &CRAPTS, CoverageKind::Lines).unwrap();
+    let prepared = BaselineFilter::new(&Everything, &allow).prepare_crapts(loaded);
+    let object = changed_object(false, 0);
+    let section = TestSection {
+        key: "changed",
+        raw: &object,
+        text: "changed result",
+        github: None,
+        placement: Placement::Lead,
+        failures: Some(0),
+    };
+    for (base, schema) in [(None, &abs_schema), (Some(&prepared), &delta_schema)] {
+        let render = |sections: &[&dyn Section]| {
+            let mut out = Vec::new();
+            run::run(
+                &CRAPTS,
+                &settings,
+                Analysis {
+                    entries: vec![row("src/a.ts", "f", 1, 12.0)],
+                    diagnostics: Some(zero_diagnostics()),
+                    scope: &Everything,
+                    coverage_kind: Some(CoverageKind::Lines),
+                    notices: &[],
+                },
+                base,
+                sections,
+                &RenderExtras::default(),
+                &mut out,
+            )
+            .unwrap();
+            serde_json::from_slice::<Value>(&out).unwrap()
+        };
+        let mut with = render(&[&section]);
+        let without = render(&[]);
+        assert!(schema.is_valid(&with), "{with:#}");
+        assert!(schema.is_valid(&without));
+        with["changed"].as_object_mut().unwrap().remove("counts");
+        assert!(!schema.is_valid(&with));
+    }
+}
+
+#[test]
+fn cargo_crap_reports_keep_omitting_fingerprints() {
+    let knobs = Knobs {
+        tool: cargo_crap::tool::CARGO_CRAP,
+        ..Knobs::default()
+    };
+    let mut current = row("src/a.rs", "f", 3, 20.0);
+    current.fingerprint = Some("a".repeat(64));
+    let baseline = row("src/a.rs", "f", 3, 10.0);
+    for report in [
+        absolute(&knobs, vec![current.clone()]),
+        compare(&knobs, vec![current.clone()], vec![baseline]),
+    ] {
+        assert_eq!(report.json["entries"][0]["function"], "f");
+        assert!(!report.raw.contains("fingerprint"), "{}", report.raw);
     }
 }

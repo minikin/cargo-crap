@@ -376,12 +376,13 @@ fn finish_stdout(out: &mut dyn Write) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn validate_comparisons(
-    args: &ArgMatches,
-    settings: &Effective,
-) -> Result<()> {
-    let baseline = settings.baseline.value.is_some();
-    let base = settings.base.value.is_some();
+/// `--base`, `--baseline` and `--format` are flags only, so these refusals
+/// need no config and come before the worktree probe runs Git.
+fn validate_comparisons(args: &ArgMatches) -> Result<()> {
+    let format = settings::last::<Format>(args, "format").unwrap_or(Format::Human);
+    let rev = settings::last::<String>(args, "base");
+    let baseline = settings::last::<PathBuf>(args, "baseline").is_some();
+    let base = rev.is_some();
     for (flag, selector, selected) in [
         ("fail-regression", "baseline", baseline),
         ("show-unchanged", "baseline", baseline),
@@ -394,14 +395,16 @@ fn validate_comparisons(
     if let Some((selector, _)) = [("baseline", baseline), ("base", base)]
         .into_iter()
         .find(|(_, selected)| *selected)
-        && settings.format.value == Format::Sarif
+        && format == Format::Sarif
     {
         return Err(InputError::message(format!(
             "SARIF does not support --{selector}"
         )));
     }
-    if base {
-        return Err(InputError::message("--base is not implemented yet"));
+    if let Some(rev) = rev.filter(|rev| rev.starts_with('-')) {
+        return Err(InputError::message(format!(
+            "--base: revision {rev} must not start with -"
+        )));
     }
     Ok(())
 }
@@ -416,11 +419,15 @@ fn configured(
     let cwd = cwd
         .canonicalize()
         .map_err(|error| InputError::at(cwd, error))?;
+    let args = parse(args)?;
+    let print_config = args.get_flag("print-config");
+    if !print_config {
+        validate_comparisons(&args)?;
+    }
     let worktree = crate::discover::Worktree::probe(&cwd)?;
     let config = config::load_at(&cwd, worktree.root.as_deref())?;
-    let args = parse(args)?;
     let settings = Effective::resolve(&cwd, config, &args)?;
-    if args.get_flag("print-config") {
+    if print_config {
         let json = serde_json::to_string_pretty(&Printed {
             config_path: settings.config_path.as_deref(),
             settings: &settings,
@@ -429,7 +436,6 @@ fn configured(
         writeln!(out, "{json}").map_err(stdout_error)?;
         return finish_stdout(out);
     }
-    validate_comparisons(&args, &settings)?;
     scoring::score(&cwd, worktree, &settings, sink, out, err)
 }
 

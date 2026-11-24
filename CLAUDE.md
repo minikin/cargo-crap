@@ -108,6 +108,8 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`core/entry.rs`** defines report rows, sorting and scope diagnostics. **`core/paths.rs`** assigns coverage paths to source files and supplies shared path normalization.
 
+**`core/git.rs`** is the mechanical Git reader behind `crapts --base`: `Repo::open`, `head`, `resolve_commit`, `merge_base` (with count and shallow flag), `is_dirty`, `unmerged`, `changes` (raw diff plus untracked files, a deletion and an untracked file at one path reconciled into one `Modified`), zero-context `hunks` and `blob`. It runs the `git` executable from `PATH` with literal pathspecs and pinned diff flags, so diff settings in user Git configuration cannot change its changed paths or hunks. Untracked files come from `ls-files --others --exclude-standard`, which honors the user's exclude files. It depends on no parser or Git library (`scripts/gates/parser-guard.sh`). Later diff-coverage, suppression and test-integrity gates are meant to reuse it.
+
 **`core/coverage/lcov.rs`** parses LCOV files using the `lcov` crate. It consumes only `SF` (source file), `DA` (line data), and `end_of_record` records. Path normalization is deliberately absent here. The join delegates matching to `paths::assign`.
 
 **`src/merge.rs`** is the critical join layer. It calls `paths::assign` once per batch of distinct source files. Coverage matching follows these rules:
@@ -174,7 +176,27 @@ input error, so a row that cannot be checked never vanishes unreported.
 `run::run` then renders the delta and evaluates `--fail-regression`. A
 cross-minor baseline's notice appears in the text, markdown and pr-comment
 body. For json, github and shields it is written to stderr after the report
-flushes. `--base` stays reserved for Git comparison.
+flushes.
+
+`--base <rev>` compares the working tree with the merge base of `<rev>` and
+`HEAD`. `--base`, `--baseline` and `--format` are flags only, so the SARIF,
+companion and leading-dash refusals run before the worktree probe. After
+baseline admission, `changed::select` resolves `HEAD` then the revision,
+refuses unmerged index entries, lists changes, places each side against the
+scored file set (the head side by discovery, the base side by its spelling
+alone), reads hunks and base blobs, and analyzes every eligible side with
+`Mode::Strict`, base before head, in discovery's display order. The ordinary
+pass reuses those strict head analyses and never decodes a skipped head
+side. `changed::matching` pairs base and head rows in four stages,
+`changed::verdict` applies the touch rule and the verdict table, and
+`changed::section::ChangedSection` is the `changed` section: JSON in
+changed-v1 order, and text for human, markdown, pr-comment and github.
+`Settings.fail_sections` is the effective `fail-changed`, which stays dormant
+without `--base`. Rows carry `fingerprint`, which `CraptsV1` writes and
+`CargoCrapV1` drops. The report is rendered in memory before `--output`
+opens, and a pr-comment body is fitted to GitHub's 65,536 UTF-16 code units:
+complete, then with the core report summarized, then with fewer changed rows,
+or exit 2.
 
 ## Key design decisions
 

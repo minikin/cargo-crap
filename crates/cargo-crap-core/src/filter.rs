@@ -89,6 +89,15 @@ impl AllowSet {
             paths: FileAllows::Based { cwd, groups },
         })
     }
+
+    #[must_use]
+    pub fn is_match(
+        &self,
+        file: &Path,
+        function: &str,
+    ) -> bool {
+        self.names.is_match(function) || self.paths.matches(file)
+    }
 }
 
 fn based_glob(
@@ -141,9 +150,7 @@ pub fn allow(
     entries: &mut Vec<CrapEntry>,
     allow_set: &AllowSet,
 ) {
-    entries.retain(|entry| {
-        !allow_set.names.is_match(&entry.function) && !allow_set.paths.matches(&entry.file)
-    });
+    entries.retain(|entry| !allow_set.is_match(&entry.file, &entry.function));
 }
 
 fn is_path_allow_pattern(pattern: &str) -> bool {
@@ -260,6 +267,20 @@ fn slice_of_with_ties(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn an_allow_set_matches_a_name_glob_or_a_path_suffix_glob() {
+        let patterns = ["legacy*".to_owned(), "gen/**".to_owned()];
+        let set = AllowSet::compile(&patterns).unwrap();
+        assert!(set.is_match(Path::new("src/a.ts"), "legacy_parse"));
+        assert!(set.is_match(Path::new("/repo/gen/x.ts"), "fresh"));
+        assert!(!set.is_match(Path::new("src/a.ts"), "fresh"));
+        assert!(
+            !AllowSet::compile(&[])
+                .unwrap()
+                .is_match(Path::new("src/a.ts"), "f")
+        );
+    }
 
     #[test]
     fn without_a_slice_the_run_keeps_one_list_in_the_requested_order() {

@@ -1,0 +1,211 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/changed-v1.json",
+  "title": "crapts changed-function section (v1)",
+  "description": "The changed member of a crapts report written with --base.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "version",
+    "name_scheme",
+    "threshold",
+    "base",
+    "head",
+    "entries",
+    "removed",
+    "skipped",
+    "counts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "const": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/changed-v1.json"
+    },
+    "version": {
+      "$ref": "#/definitions/SemVer",
+      "description": "crapts version that produced this section."
+    },
+    "name_scheme": { "const": 1 },
+    "threshold": { "type": "number" },
+    "base": {
+      "type": "object",
+      "required": ["rev", "commit", "merge_base", "merge_base_count", "shallow"],
+      "additionalProperties": false,
+      "properties": {
+        "rev": { "type": "string", "description": "The --base revision as supplied." },
+        "commit": { "$ref": "#/definitions/Commit" },
+        "merge_base": { "$ref": "#/definitions/Commit" },
+        "merge_base_count": { "type": "integer", "minimum": 1 },
+        "shallow": { "type": "boolean" }
+      }
+    },
+    "head": {
+      "type": "object",
+      "required": ["commit", "dirty"],
+      "additionalProperties": false,
+      "properties": {
+        "commit": { "$ref": "#/definitions/Commit" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Entry" }
+    },
+    "removed": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Removed" }
+    },
+    "skipped": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Skipped" }
+    },
+    "counts": { "$ref": "#/definitions/Counts" }
+  },
+  "definitions": {
+    "SemVer": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?(?![\\s\\S])"
+    },
+    "Commit": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
+    },
+    "Line": { "type": "integer", "minimum": 1 },
+    "Cyclomatic": { "type": "integer", "minimum": 1 },
+    "Count": { "type": "integer", "minimum": 0 },
+    "Entry": {
+      "type": "object",
+      "required": [
+        "file",
+        "function",
+        "line",
+        "end_line",
+        "cyclomatic",
+        "coverage",
+        "crap",
+        "change",
+        "verdict",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string" },
+        "function": { "type": "string" },
+        "line": { "$ref": "#/definitions/Line" },
+        "end_line": { "$ref": "#/definitions/Line" },
+        "cyclomatic": { "$ref": "#/definitions/Cyclomatic" },
+        "coverage": {
+          "oneOf": [
+            { "type": "number", "minimum": 0, "maximum": 100 },
+            { "type": "null" }
+          ]
+        },
+        "crap": { "type": "number", "minimum": 1 },
+        "change": { "enum": ["new", "ambiguous", "modified"] },
+        "base_file": { "type": "string" },
+        "base_line": { "$ref": "#/definitions/Line" },
+        "base_cyclomatic": { "$ref": "#/definitions/Cyclomatic" },
+        "cyclomatic_delta": { "type": "integer" },
+        "candidates": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/Candidate" }
+        },
+        "verdict": { "enum": ["fail", "over", "pass"] },
+        "reason": { "type": "string" }
+      },
+      "oneOf": [
+        {
+          "properties": { "change": { "const": "new" } },
+          "not": {
+            "anyOf": [
+              { "required": ["base_file"] },
+              { "required": ["base_line"] },
+              { "required": ["base_cyclomatic"] },
+              { "required": ["cyclomatic_delta"] },
+              { "required": ["candidates"] }
+            ]
+          }
+        },
+        {
+          "properties": { "change": { "const": "ambiguous" } },
+          "required": ["candidates"],
+          "not": {
+            "anyOf": [
+              { "required": ["base_file"] },
+              { "required": ["base_line"] },
+              { "required": ["base_cyclomatic"] },
+              { "required": ["cyclomatic_delta"] }
+            ]
+          }
+        },
+        {
+          "properties": { "change": { "const": "modified" } },
+          "required": ["base_line", "base_cyclomatic", "cyclomatic_delta"],
+          "not": { "required": ["candidates"] }
+        }
+      ]
+    },
+    "Candidate": {
+      "type": "object",
+      "required": ["function", "line", "cyclomatic"],
+      "additionalProperties": false,
+      "properties": {
+        "function": { "type": "string" },
+        "line": { "$ref": "#/definitions/Line" },
+        "cyclomatic": { "$ref": "#/definitions/Cyclomatic" }
+      }
+    },
+    "Removed": {
+      "type": "object",
+      "required": ["file", "function", "base_line", "base_cyclomatic"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string" },
+        "function": { "type": "string" },
+        "base_line": { "$ref": "#/definitions/Line" },
+        "base_cyclomatic": { "$ref": "#/definitions/Cyclomatic" }
+      }
+    },
+    "Skipped": {
+      "type": "object",
+      "required": ["path", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "reason": {
+          "enum": ["binary", "excluded", "outside-path", "unsupported", "submodule", "symlink"]
+        }
+      }
+    },
+    "Counts": {
+      "type": "object",
+      "required": [
+        "touched",
+        "new",
+        "ambiguous",
+        "modified",
+        "worse",
+        "fail",
+        "over",
+        "allowed",
+        "missing_skipped",
+        "coverage_null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "touched": { "$ref": "#/definitions/Count" },
+        "new": { "$ref": "#/definitions/Count" },
+        "ambiguous": { "$ref": "#/definitions/Count" },
+        "modified": { "$ref": "#/definitions/Count" },
+        "worse": { "$ref": "#/definitions/Count" },
+        "fail": { "$ref": "#/definitions/Count" },
+        "over": { "$ref": "#/definitions/Count" },
+        "allowed": { "$ref": "#/definitions/Count" },
+        "missing_skipped": { "$ref": "#/definitions/Count" },
+        "coverage_null": { "$ref": "#/definitions/Count" }
+      }
+    }
+  }
+}

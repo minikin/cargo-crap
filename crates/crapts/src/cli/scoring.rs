@@ -1,20 +1,27 @@
 use super::{Effective, Format, InputError, Result, StdoutSink};
 use crate::attribute::{Attribution, attribute};
+use crate::changed::matching::{ChangedFile, classify};
+use crate::changed::section::{ChangedSection, PR_COMMENT_ROWS, Presentation, utf16_len};
+use crate::changed::select::{FileEdits, Selection, select};
+use crate::changed::verdict::{Edits, Inputs, Threshold, evaluate};
 use crate::coverage::{Coverage, CoverageUnit, read_coverage};
 use crate::discover::{Worktree, discover_probed};
-use crate::{Discovery, DiscoveryScope, Mode, analyze};
+use crate::{Discovery, DiscoveryScope, FileAnalysis, Mode, analyze};
 use cargo_crap_core::coverage::CoverageKind;
 use cargo_crap_core::delta::{CraptsBaseline, load_crapts_baseline};
+use cargo_crap_core::entry::{CrapEntry, ScopeDiagnostics};
 use cargo_crap_core::filter::AllowSet;
+use cargo_crap_core::gate::GateOutcome;
 use cargo_crap_core::policy::{
     EnvelopeKind, NoticeSpacing, PairPolicy, Policy, Population, TieOrder,
 };
-use cargo_crap_core::report::{self, Schemas, SourceLinks, Tool};
+use cargo_crap_core::report::{self, Schemas, Section, SourceLinks, Tool};
 use cargo_crap_core::run::{
     self, Analysis, BaselineFilter, PreparedBaseline, RenderExtras, Scope, Settings,
 };
 use cargo_crap_core::signals::SignalSettings;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufWriter, Write};
@@ -120,10 +127,25 @@ fn measure(
     settings: &Effective,
     coverage: &Coverage,
     discovery: &Discovery,
+    selection: Option<&mut Selection>,
     err: &mut dyn Write,
-) -> Result<Attribution> {
+) -> Result<(Vec<FileAnalysis>, Attribution)> {
+    let (mut strict, skipped) = match selection {
+        Some(selection) => (
+            std::mem::take(&mut selection.heads),
+            Some(&selection.skipped_heads),
+        ),
+        None => (HashMap::new(), None),
+    };
     let mut files = Vec::with_capacity(discovery.files.len());
     for file in &discovery.files {
+        if skipped.is_some_and(|skipped| skipped.contains(file)) {
+            continue;
+        }
+        if let Some(analysis) = strict.remove(file) {
+            files.push(analysis);
+            continue;
+        }
         let bytes = fs::read(cwd.join(file)).map_err(|e| InputError::at(file, e))?;
         let analysis = analyze(file, &bytes, Mode::Ordinary)?;
         for message in &analysis.warnings {
@@ -135,7 +157,57 @@ fn measure(
     for message in &result.warnings {
         warn(err, message)?;
     }
-    Ok(result)
+    Ok((files, result))
+}
+
+fn changed_section(
+    selection: &Selection,
+    files: &[FileAnalysis],
+    scores: &[CrapEntry],
+    options: &Effective,
+    presentation: Presentation<'_>,
+) -> Result<ChangedSection> {
+    let threshold = Threshold::new(options.threshold.value)
+        .ok_or_else(|| InputError::message("--threshold must be a finite number"))?;
+    let by_path: HashMap<&Path, &FileAnalysis> = files
+        .iter()
+        .filter_map(|file| file.rows.first().map(|row| (row.file.as_path(), file)))
+        .collect();
+    let changed: Vec<ChangedFile<'_>> = selection
+        .files
+        .iter()
+        .map(|file| ChangedFile {
+            base: file.base.as_ref().map_or(&[][..], |base| &base.rows),
+            head: file
+                .head
+                .as_deref()
+                .and_then(|path| by_path.get(path))
+                .map_or(&[][..], |head| &head.rows),
+        })
+        .collect();
+    let edits: Vec<Edits<'_>> = selection
+        .files
+        .iter()
+        .map(|file| match &file.edits {
+            FileEdits::Added => Edits::Added,
+            FileEdits::Hunks(hunks) => Edits::Hunks(hunks),
+        })
+        .collect();
+    let matching = classify(&changed);
+    let judged = evaluate(&Inputs {
+        files: &changed,
+        edits: &edits,
+        matching: &matching,
+        scores,
+        allow: &options.allow_set,
+        threshold,
+    });
+    Ok(ChangedSection::presented(
+        &selection.comparison,
+        &judged,
+        &selection.skipped,
+        presentation,
+    ))
 }
 
 fn prepare(
@@ -151,17 +223,11 @@ fn prepare(
     Ok(Some(prepared))
 }
 
-fn analysis(
-    result: Attribution,
-    scope: &dyn Scope,
-) -> Analysis<'_> {
-    Analysis {
-        entries: result.rows.into_iter().map(|row| row.entry).collect(),
-        diagnostics: Some(result.diagnostics),
-        scope,
-        coverage_kind: Some(coverage_kind(result.unit)),
-        notices: &[],
-    }
+fn top(options: &Effective) -> Option<usize> {
+    options
+        .top
+        .value
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
 }
 
 fn color_enabled(
@@ -204,73 +270,250 @@ pub(super) fn score(
         worktree,
     )?;
     let (coverage, baseline) = read_inputs(cwd, options, coverage, &discovery, err)?;
-    let result = measure(cwd, options, &coverage, &discovery, err)?;
+    let mut selection = options
+        .base
+        .value
+        .as_deref()
+        .map(|rev| select(&discovery.scope, cwd, rev))
+        .transpose()?;
+    let (files, result) = measure(cwd, options, &coverage, &discovery, selection.as_mut(), err)?;
     let scope = ScoringScope::new(&discovery.scope);
     let prepared = prepare(baseline, &scope, &options.allow_set)?;
-    let output = options.output.value.as_deref();
-    let to_stdout = output.is_none();
-    let color = color_enabled(
-        to_stdout,
-        sink.terminal,
-        std::env::var_os("NO_COLOR").as_deref(),
-        std::env::var_os("FORCE_COLOR").as_deref(),
-    );
     let links = source_links(
         options.repo_url.value.as_deref(),
         options.commit_ref.value.as_deref(),
     );
-    let settings = Settings {
-        allow: &options.allow_set,
+    let presentation = Presentation {
+        top: top(options),
         min: options.min.value,
-        top: options
-            .top
-            .value
-            .map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
-        sort: options.sort.value,
-        threshold: options.threshold.value,
-        epsilon: options.epsilon.value,
-        signals: &SignalSettings::default(),
-        fail_above: options.fail_above.value,
-        fail_regression: options.fail_regression.value,
-        format: options.format.value,
+        fail_changed: options.fail_changed.value,
         summary: options.summary.value,
-        show_unchanged: options.show_unchanged.value,
-        uncovered_hints: options.uncovered_hints.value,
+        links: links.as_ref(),
+        repo_prefix: Some(discovery.scope.repo_prefix()),
+    };
+    let entries: Vec<CrapEntry> = result.rows.into_iter().map(|row| row.entry).collect();
+    let section = selection
+        .as_ref()
+        .map(|selection| changed_section(selection, &files, &entries, options, presentation))
+        .transpose()?;
+    drop(files);
+    let output = options.output.value.as_deref();
+    let to_stdout = output.is_none();
+    let render = Render {
+        options,
+        cwd,
+        links: links.as_ref(),
+        repo_prefix: discovery.scope.repo_prefix(),
         width: if to_stdout {
             sink.width
         } else {
             report::output_width(false)
         },
-        links: links.as_ref(),
-        pr_comment_marker: Some(&options.comment_marker.value),
-        repo_prefix: Some(discovery.scope.repo_prefix()),
-        cwd,
-        workspace_root: None,
-        fail_sections: false,
+        color: color_enabled(
+            to_stdout,
+            sink.terminal,
+            std::env::var_os("NO_COLOR").as_deref(),
+            std::env::var_os("FORCE_COLOR").as_deref(),
+        ),
+        unit: coverage_kind(result.unit),
+        scope: &scope,
+        prepared: prepared.as_ref(),
+        destination: output.unwrap_or(Path::new("stdout")),
     };
-    let mut file;
-    let (out, destination): (&mut dyn Write, &Path) = if let Some(path) = output {
-        file =
-            BufWriter::new(fs::File::create(cwd.join(path)).map_err(|e| InputError::at(path, e))?);
-        (&mut file, path)
-    } else {
-        (stdout, Path::new("stdout"))
-    };
-    let report = analysis(result, &scope);
-    let verdict = report::with_color(color, || {
-        run::run(
-            &TOOL,
-            &settings,
-            report,
-            prepared.as_ref(),
-            &[],
-            &RenderExtras::default(),
-            out,
-        )
-    })
-    .map_err(|e| InputError::at(destination, format!("{e:#}")))?;
+    let (rendered, verdict) = render.fitted(entries, result.diagnostics, section.as_ref())?;
+    write_destination(cwd, output, stdout, &rendered)?;
     machine_notice(err, options.format.value, prepared.as_ref())?;
     Ok(verdict.exit_code())
+}
+
+/// GitHub posts a comment body of at most this many UTF-16 code units.
+const COMMENT_LIMIT: usize = 65_536;
+
+/// One run's report, which can be rendered more than once from the same
+/// inputs while a PR comment is fitted to [`COMMENT_LIMIT`].
+struct Render<'a> {
+    options: &'a Effective,
+    cwd: &'a Path,
+    links: Option<&'a SourceLinks>,
+    repo_prefix: &'a Path,
+    width: Option<usize>,
+    color: bool,
+    unit: CoverageKind,
+    scope: &'a dyn Scope,
+    prepared: Option<&'a PreparedBaseline>,
+    destination: &'a Path,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Complete,
+    CoreSummarized,
+    ChangedRows(usize),
+}
+
+impl Render<'_> {
+    fn analysis(
+        &self,
+        entries: Vec<CrapEntry>,
+        diagnostics: ScopeDiagnostics,
+    ) -> Analysis<'_> {
+        Analysis {
+            entries,
+            diagnostics: Some(diagnostics),
+            scope: self.scope,
+            coverage_kind: Some(self.unit),
+            notices: &[],
+        }
+    }
+
+    fn once(
+        &self,
+        summary: bool,
+        sections: &[&dyn Section],
+        analysis: Analysis<'_>,
+    ) -> Result<(Vec<u8>, GateOutcome)> {
+        let options = self.options;
+        let settings = Settings {
+            allow: &options.allow_set,
+            min: options.min.value,
+            top: top(options),
+            sort: options.sort.value,
+            threshold: options.threshold.value,
+            epsilon: options.epsilon.value,
+            signals: &SignalSettings::default(),
+            fail_above: options.fail_above.value,
+            fail_regression: options.fail_regression.value,
+            format: options.format.value,
+            summary,
+            show_unchanged: options.show_unchanged.value,
+            uncovered_hints: options.uncovered_hints.value,
+            width: self.width,
+            links: self.links,
+            pr_comment_marker: Some(&options.comment_marker.value),
+            repo_prefix: Some(self.repo_prefix),
+            cwd: self.cwd,
+            workspace_root: None,
+            fail_sections: options.fail_changed.value,
+        };
+        let mut rendered = Vec::new();
+        let verdict = report::with_color(self.color, || {
+            run::run(
+                &TOOL,
+                &settings,
+                analysis,
+                self.prepared,
+                sections,
+                &RenderExtras::default(),
+                &mut rendered,
+            )
+        })
+        .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
+        Ok((rendered, verdict))
+    }
+
+    fn fitted(
+        &self,
+        entries: Vec<CrapEntry>,
+        diagnostics: ScopeDiagnostics,
+        section: Option<&ChangedSection>,
+    ) -> Result<(Vec<u8>, GateOutcome)> {
+        let summary = self.options.summary.value;
+        let comment = self.options.format.value == Format::PrComment;
+        let full: Vec<&dyn Section> = section.iter().map(|s| *s as &dyn Section).collect();
+        if !comment || summary {
+            let (mut body, verdict) =
+                self.once(summary, &full, self.analysis(entries, diagnostics))?;
+            if comment && section.is_some() {
+                body = summary_after_marker(body, &self.options.comment_marker.value);
+            }
+            return if !comment || fits(&body) {
+                Ok((body, verdict))
+            } else {
+                Err(too_long())
+            };
+        }
+        let rows = section.map_or(0, |s| s.shown_rows().min(PR_COMMENT_ROWS));
+        let body = fit(
+            rows,
+            |(body, _): &(Vec<u8>, GateOutcome)| fits(body),
+            |step| {
+                let analysis = self.analysis(entries.clone(), diagnostics.clone());
+                match (step, section) {
+                    (Step::ChangedRows(limit), Some(section)) => {
+                        let cut = section.with_row_limit(limit);
+                        self.once(true, &[&cut], analysis)
+                    },
+                    (Step::Complete, _) => self.once(false, &full, analysis),
+                    _ => self.once(true, &full, analysis),
+                }
+            },
+        )?;
+        body.ok_or_else(too_long)
+    }
+}
+
+/// The core separates the marker from a lead section by a blank line, but
+/// the one-line changed summary belongs on the line after the marker.
+fn summary_after_marker(
+    mut body: Vec<u8>,
+    marker: &str,
+) -> Vec<u8> {
+    if body.starts_with(format!("{marker}\n\n").as_bytes()) {
+        body.remove(marker.len());
+    }
+    body
+}
+
+fn too_long() -> InputError {
+    InputError::message(format!(
+        "the PR comment needs more than {COMMENT_LIMIT} UTF-16 code units, GitHub's limit, \
+         even with the core report summarized and no changed rows"
+    ))
+}
+
+fn fit<T, E>(
+    rows: usize,
+    fits: impl Fn(&T) -> bool,
+    mut render: impl FnMut(Step) -> Result<T, E>,
+) -> Result<Option<T>, E> {
+    let steps = [Step::Complete, Step::CoreSummarized]
+        .into_iter()
+        .chain((0..rows).rev().map(Step::ChangedRows));
+    for step in steps {
+        let body = render(step)?;
+        if fits(&body) {
+            return Ok(Some(body));
+        }
+    }
+    Ok(None)
+}
+
+fn fits(body: &[u8]) -> bool {
+    utf16_len(&String::from_utf8_lossy(body)) <= COMMENT_LIMIT
+}
+
+/// The report is rendered in memory first, so a failure before this point
+/// leaves `--output` as it was.
+fn write_destination(
+    cwd: &Path,
+    output: Option<&Path>,
+    stdout: &mut dyn Write,
+    rendered: &[u8],
+) -> Result<()> {
+    match output {
+        Some(path) => {
+            let mut file = BufWriter::new(
+                fs::File::create(cwd.join(path)).map_err(|e| InputError::at(path, e))?,
+            );
+            file.write_all(rendered)
+                .and_then(|()| file.flush())
+                .map_err(|e| InputError::at(path, e))
+        },
+        None => stdout
+            .write_all(rendered)
+            .and_then(|()| stdout.flush())
+            .map_err(|e| InputError::at(Path::new("stdout"), e)),
+    }
 }
 
 /// Text formats render the notice in the report body, so only formats
@@ -293,6 +536,69 @@ fn machine_notice(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn size(step: Step) -> usize {
+        match step {
+            Step::Complete => 100,
+            Step::CoreSummarized => 60,
+            Step::ChangedRows(rows) => 30 + 10 * rows,
+        }
+    }
+
+    fn fitted_at(
+        budget: usize,
+        rows: usize,
+    ) -> (Option<usize>, Vec<Step>) {
+        let mut tried = Vec::new();
+        let body = fit(
+            rows,
+            |size: &usize| *size <= budget,
+            |step| {
+                tried.push(step);
+                Ok::<_, ()>(size(step))
+            },
+        )
+        .unwrap();
+        (body, tried)
+    }
+
+    #[test]
+    fn a_comment_is_fitted_by_summarizing_the_core_then_dropping_changed_rows() {
+        use Step::{ChangedRows, Complete, CoreSummarized};
+        assert_eq!(fitted_at(100, 3), (Some(100), vec![Complete]));
+        assert_eq!(fitted_at(99, 3).0, Some(60));
+        assert_eq!(
+            fitted_at(59, 3),
+            (Some(50), vec![Complete, CoreSummarized, ChangedRows(2)])
+        );
+        assert_eq!(fitted_at(45, 3).0, Some(40));
+        assert_eq!(fitted_at(30, 3).0, Some(30));
+        assert_eq!(
+            fitted_at(29, 3),
+            (
+                None,
+                vec![
+                    Complete,
+                    CoreSummarized,
+                    ChangedRows(2),
+                    ChangedRows(1),
+                    ChangedRows(0)
+                ]
+            )
+        );
+        assert_eq!(fitted_at(29, 0).0, None);
+    }
+
+    #[test]
+    fn only_a_blank_line_directly_after_the_marker_is_dropped() {
+        let marker = "<!-- m -->";
+        let fixed = |body: &str| {
+            String::from_utf8(summary_after_marker(body.as_bytes().to_vec(), marker)).unwrap()
+        };
+        assert_eq!(fixed("<!-- m -->\n\nChanged\n"), "<!-- m -->\nChanged\n");
+        assert_eq!(fixed("<!-- m -->\nChanged\n"), "<!-- m -->\nChanged\n");
+        assert_eq!(fixed("x<!-- m -->\n\n"), "x<!-- m -->\n\n");
+    }
 
     #[test]
     fn the_tool_owns_its_package_version_schemas_and_gate_population() {

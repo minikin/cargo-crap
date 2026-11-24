@@ -258,13 +258,19 @@ pub(crate) fn visible_delta_entries(
         .collect()
 }
 
+/// The terminal columns `text` occupies: a wide character takes two and a
+/// combining mark none, as the core's own tables count them.
+#[must_use]
+pub fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
 fn stdout_terminal_width() -> Option<u16> {
     std::io::stdout()
         .is_terminal()
         .then(|| comfy_table::Table::new().width())
         .flatten()
 }
-
 /// The width the human tables may use, in terminal columns, or `None` for
 /// no limit. A terminal's own width wins when the report goes to stdout
 /// (`writes_to_stdout`) and stdout is one. Without it a positive
@@ -468,6 +474,14 @@ pub(crate) fn format_location_with_prev(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn display_width_counts_terminal_columns() {
+        assert_eq!(display_width(""), 0);
+        assert_eq!(display_width("ab"), 2);
+        assert_eq!(display_width("\u{540d}\u{524d}"), 4);
+        assert_eq!(display_width("e\u{301}"), 1);
+    }
 
     #[test]
     fn a_path_inside_the_workspace_root_is_written_below_it() {

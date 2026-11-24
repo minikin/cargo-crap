@@ -1702,3 +1702,187 @@ fn an_extreme_baseline_score_keeps_a_finite_delta_that_reloads() {
     );
     assert_row(&reloaded, "hot", "unchanged", Some(12.0), 12.0);
 }
+
+const F_SOURCE: &str = "function f() { return 7; }";
+const F_DIGEST: &str = "4af25d2ede8038d8005027c94023967275843d12c7fdf71170f0e3577702a8a7";
+
+fn f_tree(coverage: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/f.ts"), F_SOURCE).unwrap();
+    fs::write(dir.path().join("cov.info"), coverage).unwrap();
+    dir
+}
+
+/// A JSON object's member names in document order, which `Value` does not keep.
+struct Members(Vec<String>);
+
+impl<'de> serde::Deserialize<'de> for Members {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Names;
+        impl<'de> serde::de::Visitor<'de> for Names {
+            type Value = Members;
+
+            fn expecting(
+                &self,
+                f: &mut std::fmt::Formatter<'_>,
+            ) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Members, A::Error> {
+                let mut names = Vec::new();
+                while let Some((name, _)) = map.next_entry::<String, serde::de::IgnoredAny>()? {
+                    names.push(name);
+                }
+                Ok(Members(names))
+            }
+        }
+        deserializer.deserialize_map(Names)
+    }
+}
+
+fn first_row_members(report: &[u8]) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Report {
+        entries: Vec<Members>,
+    }
+    let report: Report = serde_json::from_slice(report).unwrap();
+    report.entries.into_iter().next().unwrap().0
+}
+
+#[test]
+fn crapts_json_rows_carry_the_row_fingerprint() {
+    let d = f_tree(&lcov(&[("src/f.ts", &[(1, 0)])]));
+    let out = invoke(
+        d.path(),
+        &["src/f.ts", "--coverage", "cov.info", "--format", "json"],
+    );
+    check(&out, 0);
+    let report = validated_report(&out.stdout);
+    assert_eq!(report["entries"][0]["fingerprint"], F_DIGEST);
+    assert_eq!(
+        first_row_members(&out.stdout),
+        [
+            "file",
+            "function",
+            "line",
+            "cyclomatic",
+            "coverage",
+            "crap",
+            "uncovered",
+            "fingerprint"
+        ]
+    );
+    fs::write(d.path().join("base.json"), &out.stdout).unwrap();
+    let delta = invoke(
+        d.path(),
+        &[
+            "src/f.ts",
+            "--coverage",
+            "cov.info",
+            "--baseline",
+            "base.json",
+            "--format",
+            "json",
+        ],
+    );
+    check(&delta, 0);
+    assert_eq!(
+        validated_delta(&delta.stdout)["entries"][0]["fingerprint"],
+        F_DIGEST
+    );
+    assert_eq!(
+        first_row_members(&delta.stdout)[5..9],
+        ["crap", "uncovered", "fingerprint", "baseline_crap"]
+    );
+    fs::write(
+        d.path().join("cov.info"),
+        lcov(&[("src/other.ts", &[(1, 1)])]),
+    )
+    .unwrap();
+    let bare = invoke(
+        d.path(),
+        &["src/f.ts", "--coverage", "cov.info", "--format", "json"],
+    );
+    check(&bare, 0);
+    assert_eq!(
+        validated_report(&bare.stdout)["entries"][0]["fingerprint"],
+        F_DIGEST
+    );
+    assert_eq!(
+        first_row_members(&bare.stdout),
+        [
+            "file",
+            "function",
+            "line",
+            "cyclomatic",
+            "coverage",
+            "crap",
+            "fingerprint"
+        ]
+    );
+    fs::write(d.path().join("base.json"), &bare.stdout).unwrap();
+    let bare_delta = invoke(
+        d.path(),
+        &[
+            "src/f.ts",
+            "--coverage",
+            "cov.info",
+            "--baseline",
+            "base.json",
+            "--format",
+            "json",
+        ],
+    );
+    check(&bare_delta, 0);
+    validated_delta(&bare_delta.stdout);
+    assert_eq!(
+        first_row_members(&bare_delta.stdout)[5..8],
+        ["crap", "fingerprint", "baseline_crap"]
+    );
+}
+
+#[test]
+fn a_baseline_without_fingerprints_is_admitted_and_pairs_by_name() {
+    let d = f_tree(&lcov(&[("src/f.ts", &[(1, 0)])]));
+    let args = ["src/f.ts", "--coverage", "cov.info", "--format", "json"];
+    let current = invoke(d.path(), &args);
+    check(&current, 0);
+    let current = validated_report(&current.stdout);
+    assert_eq!(current["entries"][0]["crap"].as_f64(), Some(2.0));
+    let lowercase_a = json!("a".repeat(64));
+    for fingerprint in [
+        None,
+        Some(&lowercase_a),
+        Some(&current["entries"][0]["fingerprint"]),
+    ] {
+        let mut base = current.clone();
+        let row = base["entries"][0].as_object_mut().unwrap();
+        match fingerprint {
+            Some(value) => drop(row.insert("fingerprint".to_owned(), value.clone())),
+            None => drop(row.remove("fingerprint")),
+        }
+        write_json(&d.path().join("base.json"), &base);
+        let out = invoke(
+            d.path(),
+            &[&args[..], &["--baseline", "base.json"]].concat(),
+        );
+        check(&out, 0);
+        let delta = validated_delta(&out.stdout);
+        assert_eq!(delta["entries"][0]["function"], "f", "{fingerprint:?}");
+        assert_eq!(
+            delta["entries"][0]["status"], "unchanged",
+            "{fingerprint:?}"
+        );
+        assert_eq!(
+            delta["entries"][0]["delta"].as_f64(),
+            Some(0.0),
+            "{fingerprint:?}"
+        );
+        assert_eq!(delta["removed"], json!([]), "{fingerprint:?}");
+    }
+}

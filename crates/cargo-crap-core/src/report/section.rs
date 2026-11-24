@@ -12,6 +12,10 @@ pub enum Placement {
     Trail,
 }
 
+/// What [`Section::write`] returns, so a front end can implement the trait
+/// without depending on `anyhow`.
+pub type WriteResult = Result<()>;
+
 pub trait Section {
     /// The member name of this section in a JSON envelope that has a slot for it.
     fn json_key(&self) -> &str;
@@ -26,7 +30,7 @@ pub trait Section {
         &self,
         format: Format,
         out: &mut dyn Write,
-    ) -> Result<()>;
+    ) -> WriteResult;
 
     fn placement(&self) -> Placement;
 
