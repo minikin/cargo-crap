@@ -1,7 +1,9 @@
+mod duplicates;
 use crate::{InputError, discover::Worktree};
 use cargo_crap_core::config::find_upwards;
 use cargo_crap_core::entry::{MissingCoveragePolicy, SortOrder};
 use cargo_crap_core::signals::{SignalSettings, config::SignalsConfig};
+pub use duplicates::{DuplicatesConfig, ProviderChoice, TriageConfig};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -50,6 +52,8 @@ pub struct Config {
     pub uncovered_hints: Option<bool>,
     #[serde(default)]
     pub signals: ConfiguredSignals,
+    #[serde(default)]
+    pub duplicates: DuplicatesConfig,
 }
 
 impl Config {
@@ -93,7 +97,7 @@ impl Config {
                 format!("top must be an integer in 1..={MAX_TOP}, got {top}"),
             ));
         }
-        Ok(())
+        self.duplicates.validate(path)
     }
 }
 

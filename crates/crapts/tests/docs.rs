@@ -105,6 +105,8 @@ fn cli_help_and_the_printed_settings_cover_the_public_contract() {
         })
         .collect();
     let public = [
+        "duplicates",
+        "dup-threshold",
         "coverage",
         "threshold",
         "fail-above",
@@ -139,6 +141,10 @@ fn cli_help_and_the_printed_settings_cover_the_public_contract() {
         "{help}"
     );
     let config: Value = serde_json::from_str(&capture("--print-config")).unwrap();
+    assert_default_settings(&config);
+}
+
+fn assert_default_settings(config: &Value) {
     assert!(config["config_path"].is_null());
     let settings = config["settings"].as_object().unwrap();
     let defaults = [
@@ -194,7 +200,16 @@ fn cli_help_and_the_printed_settings_cover_the_public_contract() {
             "limits":{"nesting":unset,"lines":unset,"bumps":unset,"bool_ops":unset}
         })
     );
-    assert_eq!(settings.len(), defaults.len() + 1);
+    let default = |value: Value| json!({"origin":"default","value":value});
+    assert_eq!(
+        settings["duplicates"],
+        json!({
+            "enabled":default(json!(false)), "min_similarity":default(json!(0.82)), "min_nodes":default(json!(20)),
+            "triage":{"enabled":default(json!(false)),"provider":default(json!("typesafe")),
+            "model":default(json!("jev-latest")),"confidence_floor":default(json!(0.5)),"max_requests":unset}
+        })
+    );
+    assert_eq!(settings.len(), defaults.len() + 2);
     for (key, value) in defaults {
         let actual = &settings[key];
         assert_eq!(actual.as_object().unwrap().len(), 2);
@@ -1017,7 +1032,12 @@ fn the_key_table_names_real_aliases_and_the_flag_of_each_key() {
                 "default_excludes",
                 "show_unchanged",
                 "uncovered_hints",
-                "signals.limits.bool_ops"
+                "signals.limits.bool_ops",
+                "duplicates.threshold",
+                "duplicates.min_similarity",
+                "duplicates.min_nodes",
+                "duplicates.triage.confidence_floor",
+                "duplicates.triage.max_requests"
             ]
             .map(str::to_owned)
         )

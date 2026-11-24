@@ -30,6 +30,11 @@ const VALUES: &[(&str, &str, &str)] = &[
         "file",
         "Select a baseline report for comparison",
     ),
+    (
+        "dup-threshold",
+        "N",
+        "Minimum similarity for a duplicate pair (0 to 1)",
+    ),
     ("epsilon", "N", "Tolerance for comparing scores"),
     ("base", "revision", "Select a Git base for comparison"),
     (
@@ -61,6 +66,7 @@ const VALUES: &[(&str, &str, &str)] = &[
     ),
 ];
 const SWITCHES: &[(&str, &str)] = &[
+    ("duplicates", "Report structurally similar functions"),
     (
         "fail-above",
         "Exit 1 when an eligible score exceeds the threshold",
@@ -153,6 +159,11 @@ fn number(
     if name == "epsilon" && n < 0.0 {
         return Err(format!("--epsilon must be at least 0, got {value}"));
     }
+    if name == "dup-threshold" && !(0.0..=1.0).contains(&n) {
+        return Err(format!(
+            "--dup-threshold must be between 0 and 1, got {value}"
+        ));
+    }
     Ok(n)
 }
 fn top(value: &str) -> Result<u64, String> {
@@ -173,7 +184,9 @@ fn marker(value: &str) -> Result<String, String> {
 
 fn value_parser(name: &'static str) -> ValueParser {
     match name {
-        "min" | "threshold" | "epsilon" => ValueParser::new(move |v: &str| number(name, v)),
+        "min" | "threshold" | "dup-threshold" | "epsilon" => {
+            ValueParser::new(move |v: &str| number(name, v))
+        },
         "top" => ValueParser::new(top),
         "format" => ValueParser::new(|v: &str| Format::parse("format", v)),
         "sort" => ValueParser::new(|v: &str| SortOrder::parse("sort", v)),
@@ -192,7 +205,7 @@ fn command() -> Command {
         .no_binary_name(true)
         .args_override_self(true)
         .color(clap::ColorChoice::Never)
-        .override_usage("crapts [paths...] --coverage <file> [options]")
+        .override_usage("crapts [paths...] --coverage <file> [options]\n       crapts [paths...] --duplicates [options]")
         .about("Score JavaScript and TypeScript functions using cyclomatic complexity and test coverage.")
         .arg(
             Arg::new("paths")
@@ -282,8 +295,10 @@ fn argument_value<'a>(
         && text.starts_with('-')
         && text != "-"
     {
-        let signed =
-            matches!(name, "min" | "threshold" | "epsilon" | "top") && !text.starts_with("--");
+        let signed = matches!(
+            name,
+            "min" | "threshold" | "dup-threshold" | "epsilon" | "top"
+        ) && !text.starts_with("--");
         if !signed {
             return Err(InputError::message(format!(
                 "ambiguous argument for --{name}: {text}"

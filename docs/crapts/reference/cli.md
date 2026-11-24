@@ -17,6 +17,8 @@ The thresholds, filters, row limits and gate switches can also come from [`.crap
 | Flag | Default | Description |
 |---|---|---|
 | `--coverage <file>` | none | LCOV or Istanbul `coverage-final.json` file to read. Required for a report. |
+| `--duplicates` | off | Report groups of structurally similar functions. |
+| `--dup-threshold <N>` | 0.82 | Minimum similarity for a pair, from 0 to 1 inclusive. |
 | `--threshold <N>` | 30 | A function scores as crappy when its CRAP is strictly above N. |
 | `--baseline <file>` | none | A saved crapts JSON report to compare with. |
 | `--epsilon <N>` | 0.01 | Score changes up to N count as unchanged against a baseline. |
@@ -50,6 +52,7 @@ The thresholds, filters, row limits and gate switches can also come from [`.crap
 Score JavaScript and TypeScript functions using cyclomatic complexity and test coverage.
 
 Usage: crapts [paths...] --coverage <file> [options]
+       crapts [paths...] --duplicates [options]
 
 Arguments:
   [paths]...
@@ -64,6 +67,9 @@ Options:
 
       --baseline <file>
           Select a baseline report for comparison
+
+      --dup-threshold <N>
+          Minimum similarity for a duplicate pair (0 to 1)
 
       --epsilon <N>
           Tolerance for comparing scores
@@ -103,6 +109,9 @@ Options:
 
       --comment-marker <text>
           Set the first line of a PR comment
+
+      --duplicates
+          Report structurally similar functions
 
       --fail-above
           Exit 1 when an eligible score exceeds the threshold

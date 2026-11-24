@@ -1,7 +1,8 @@
 use super::{ArgMatches, Choice, Config, Format, MissingCoveragePolicy, SortOrder};
 use super::{InputError, Result};
-use crate::config::ConfiguredSignals;
+use crate::config::{ConfiguredSignals, DuplicatesConfig, ProviderChoice};
 use crate::{DiscoveryOptions, ExcludePattern, GlobOrigin};
+use cargo_crap_core::duplicates::triage::provider::default_provider;
 use cargo_crap_core::filter::AllowSet;
 use serde::{Serialize, Serializer};
 use std::path::{Path, PathBuf};
@@ -152,6 +153,52 @@ fn signals<S: Serializer>(
 }
 
 #[derive(Debug, Serialize)]
+pub(super) struct DuplicateSettings {
+    pub enabled: Setting<bool>,
+    pub min_similarity: Setting<f64>,
+    pub min_nodes: Setting<usize>,
+    pub triage: TriageSettings,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct TriageSettings {
+    pub enabled: Setting<bool>,
+    pub provider: Setting<&'static str>,
+    pub model: Setting<String>,
+    pub confidence_floor: Setting<f64>,
+    pub max_requests: Setting<Option<u32>>,
+}
+
+impl DuplicateSettings {
+    fn resolve(
+        args: &ArgMatches,
+        config: DuplicatesConfig,
+    ) -> Self {
+        let triage = config.triage;
+        let provider = Setting::pick(
+            ProviderChoice::from(default_provider()),
+            triage.provider,
+            None,
+        );
+        Self {
+            enabled: switch(args, "duplicates", config.enabled),
+            min_similarity: scalar(args, "dup-threshold", 0.82, config.min_similarity),
+            min_nodes: Setting::pick(20, config.min_nodes, None),
+            triage: TriageSettings {
+                enabled: Setting::pick(false, triage.enabled, None),
+                provider: Setting {
+                    value: provider.value.id,
+                    origin: provider.origin,
+                },
+                model: Setting::pick(provider.value.default_model.to_owned(), triage.model, None),
+                confidence_floor: Setting::pick(0.5, triage.confidence_floor, None),
+                max_requests: Setting::pick(None, triage.max_requests.map(Some), None),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub(super) struct Effective {
     #[serde(skip)]
     pub config_path: Option<PathBuf>,
@@ -189,6 +236,7 @@ pub(super) struct Effective {
     pub uncovered_hints: Setting<bool>,
     #[serde(serialize_with = "signals")]
     pub signals: ConfiguredSignals,
+    pub duplicates: DuplicateSettings,
 }
 
 fn rules(
@@ -367,6 +415,7 @@ impl Effective {
             ),
             uncovered_hints: Setting::pick(false, config.uncovered_hints, None),
             signals: config.signals,
+            duplicates: DuplicateSettings::resolve(args, config.duplicates),
         })
     }
 

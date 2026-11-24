@@ -31,6 +31,18 @@ nesting = 4
 lines = 100
 bumps = 3
 bool-ops = 5
+
+[duplicates]
+enabled = true
+min-similarity = 0.85
+min-nodes = 25
+
+[duplicates.triage]
+enabled = false
+provider = "openai"
+model = "gpt-6-luna"
+confidence-floor = 0.6
+max-requests = 4
 ```
 
 An unknown key, a key written twice through its alias, or a value of the wrong type stops the run with exit 2 and names the key.
@@ -59,6 +71,14 @@ An unknown key, a key written twice through its alias, or a value of the wrong t
 | `signals.limits.lines` | none | config only | integer from 0 to 4294967295 | unset |
 | `signals.limits.bumps` | none | config only | integer from 0 to 4294967295 | unset |
 | `signals.limits.bool-ops` | `signals.limits.bool_ops` | config only | integer from 0 to 4294967295 | unset |
+| `duplicates.enabled` | none | `--duplicates` | boolean | false |
+| `duplicates.min-similarity` | `duplicates.min_similarity`, `duplicates.threshold` | `--dup-threshold` | finite number from 0 to 1 | 0.82 |
+| `duplicates.min-nodes` | `duplicates.min_nodes` | config only | nonnegative integer | 20 |
+| `duplicates.triage.enabled` | none | config only | boolean | false |
+| `duplicates.triage.provider` | none | config only | typesafe or openai | typesafe |
+| `duplicates.triage.model` | none | config only | string | jev-latest |
+| `duplicates.triage.confidence-floor` | `duplicates.triage.confidence_floor` | config only | finite number from 0 to 1 | 0.5 |
+| `duplicates.triage.max-requests` | `duplicates.triage.max_requests` | config only | integer from 0 to 4294967295 | unset |
 
 `--no-default-excludes` sets `default-excludes` to an empty list. `exclude` adds to the defaults, so `default-excludes` is the key to change when a default pattern is wrong for a project. The defaults, in order:
 
@@ -78,6 +98,12 @@ An unknown key, a key written twice through its alias, or a value of the wrong t
 Patterns in `exclude`, `default-excludes` and `allow` are relative to the directory that holds `.crapts.toml`. Patterns given as flags are relative to the working directory. An `allow` pattern matches a source path or a function name.
 
 `uncovered-hints = true` adds an Uncovered column to the text, markdown and pr-comment tables. Each displayed row lists up to three of its uncovered line ranges and counts the rest. The text table leaves the column out when the terminal is too narrow for it.
+
+## Duplicate detection
+
+Similarity measures the fraction of distinct subtree hashes that two functions share. Both cutoffs are inclusive. Set `min-nodes = 0` to compare functions of any size. The model defaults to `jev-latest` for `typesafe` and `gpt-6-luna` for `openai`. Omitting `max-requests` allows any number of fresh requests. Zero permits cached answers only.
+
+Run `crapts --duplicates --dup-threshold 0.75 --print-config` to inspect the effective settings. The `duplicates.min_similarity` entry reads `{"value":0.75,"origin":"flag"}`. Under `duplicates.triage`, an omitted budget reads `{"value":null,"origin":"default"}`.
 
 ## Structural signals
 

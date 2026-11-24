@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 pub const CONFIG: &str = "docs/crapts/reference/config.md";
 
-pub const CONFIG_KEYS: [&str; 20] = [
+pub const CONFIG_KEYS: [&str; 28] = [
     "threshold",
     "fail-above",
     "missing",
@@ -26,6 +26,14 @@ pub const CONFIG_KEYS: [&str; 20] = [
     "signals.limits.lines",
     "signals.limits.bumps",
     "signals.limits.bool-ops",
+    "duplicates.enabled",
+    "duplicates.min-similarity",
+    "duplicates.min-nodes",
+    "duplicates.triage.enabled",
+    "duplicates.triage.provider",
+    "duplicates.triage.model",
+    "duplicates.triage.confidence-floor",
+    "duplicates.triage.max-requests",
 ];
 
 pub const PER_RUN: [&str; 11] = [
@@ -124,6 +132,17 @@ pub fn check_example(
     }
     let config = with_config(repo, &body)?;
     for key in &set {
+        if key.starts_with("duplicates.") {
+            let expected =
+                serde_json::to_value(example_value(&table, key)).map_err(|e| e.to_string())?;
+            let actual = &setting(&config, key)["value"];
+            if actual != &expected {
+                return Err(format!(
+                    "{}: {key} prints {actual}, expected {expected}",
+                    page.at(line)
+                ));
+            }
+        }
         let origin = origin(&config, key);
         if origin != "config" {
             return Err(format!(
@@ -138,13 +157,13 @@ pub fn check_example(
 pub struct KeyRow {
     pub line: usize,
     pub key: String,
-    pub alias: Option<String>,
+    pub aliases: Vec<String>,
     pub flag: Option<String>,
     pub kind: String,
     pub default: String,
 }
 
-const KINDS: [(&str, &[&str]); 20] = [
+const KINDS: [(&str, &[&str]); 28] = [
     ("threshold", &["finite number"]),
     ("fail-above", &["boolean"]),
     ("missing", &["`pessimistic`", "`optimistic`", "`skip`"]),
@@ -165,6 +184,20 @@ const KINDS: [(&str, &[&str]); 20] = [
     ("signals.limits.lines", &["integer", "0", "4294967295"]),
     ("signals.limits.bumps", &["integer", "0", "4294967295"]),
     ("signals.limits.bool-ops", &["integer", "0", "4294967295"]),
+    ("duplicates.enabled", &["boolean"]),
+    ("duplicates.min-similarity", &["finite number from 0 to 1"]),
+    ("duplicates.min-nodes", &["nonnegative integer"]),
+    ("duplicates.triage.enabled", &["boolean"]),
+    ("duplicates.triage.provider", &["typesafe or openai"]),
+    ("duplicates.triage.model", &["string"]),
+    (
+        "duplicates.triage.confidence-floor",
+        &["finite number from 0 to 1"],
+    ),
+    (
+        "duplicates.triage.max-requests",
+        &["integer from 0 to 4294967295"],
+    ),
 ];
 
 pub fn key_rows(page: &Page) -> Result<Vec<KeyRow>, String> {
@@ -177,12 +210,17 @@ pub fn key_rows(page: &Page) -> Result<Vec<KeyRow>, String> {
                 page.at(line)
             ));
         }
-        let alias = pages::unquote(&cells[1]);
+        let aliases = cells[1]
+            .split(", ")
+            .map(pages::unquote)
+            .filter(|name| *name != "none")
+            .map(str::to_owned)
+            .collect();
         let flag = pages::unquote(&cells[2]);
         rows.push(KeyRow {
             line,
             key: pages::unquote(&cells[0]).to_owned(),
-            alias: (alias != "none").then(|| alias.to_owned()),
+            aliases,
             flag: (flag != "config only").then(|| flag.to_owned()),
             kind: cells[3].clone(),
             default: pages::unquote(&cells[4]).to_owned(),
@@ -265,6 +303,15 @@ fn with_config(
     config
 }
 
+fn example_value<'a>(
+    example: &'a toml::Table,
+    key: &str,
+) -> Option<&'a toml::Value> {
+    let mut parts = key.split('.');
+    let first = example.get(parts.next()?)?;
+    parts.try_fold(first, |table, part| table.get(part))
+}
+
 pub fn check_keys(
     page: &Page,
     repo: &Repo,
@@ -272,13 +319,13 @@ pub fn check_keys(
     let (_, _, example) = example(page)?;
     let rows = key_rows(page)?;
     for row in &rows {
-        if let Some(alias) = &row.alias {
+        for alias in &row.aliases {
             check_alias(page, repo, row, alias, &example)?;
         }
         let Some(flag) = &row.flag else {
             continue;
         };
-        let value = example.get(&row.key).ok_or_else(|| {
+        let value = example_value(&example, &row.key).ok_or_else(|| {
             format!(
                 "{}: the example does not set {}",
                 page.at(row.line),
@@ -305,7 +352,12 @@ pub fn check_keys(
     let expected: Vec<_> = CONFIG_KEYS
         .iter()
         .copied()
-        .filter(|key| *key == "uncovered-hints" || key.starts_with("signals."))
+        .filter(|key| {
+            *key == "uncovered-hints"
+                || key.starts_with("signals.")
+                || (key.starts_with("duplicates.")
+                    && !matches!(*key, "duplicates.enabled" | "duplicates.min-similarity"))
+        })
         .collect();
     if config_only == expected {
         Ok(())
@@ -324,17 +376,13 @@ fn check_alias(
     alias: &str,
     example: &toml::Table,
 ) -> Result<(), String> {
-    let mut parts = row.key.split('.');
-    let value = example
-        .get(parts.next().unwrap())
-        .and_then(|first| parts.try_fold(first, |table, key| table.get(key)))
-        .ok_or_else(|| {
-            format!(
-                "{}: the example does not set {}",
-                page.at(row.line),
-                row.key
-            )
-        })?;
+    let value = example_value(example, &row.key).ok_or_else(|| {
+        format!(
+            "{}: the example does not set {}",
+            page.at(row.line),
+            row.key
+        )
+    })?;
     // Every aliased value here is a boolean, integer or string list with
     // the same literal syntax in TOML and JSON.
     let literal = serde_json::to_string(value).map_err(|e| e.to_string())?;
@@ -353,7 +401,7 @@ fn check_alias(
 pub fn aliases(page: &Page) -> Result<BTreeSet<String>, String> {
     Ok(key_rows(page)?
         .into_iter()
-        .filter_map(|r| r.alias)
+        .flat_map(|r| r.aliases)
         .collect())
 }
 

@@ -2434,3 +2434,117 @@ fn an_injected_writer_uses_pipe_width_and_colour_when_stdout_is_a_terminal() {
     .env_remove("FORCE_COLOR");
     run_in_pty(cmd);
 }
+
+#[test]
+fn s12_duplicate_settings_keep_flags_and_provider_specific_default_origins() {
+    let dir = tempfile::tempdir().unwrap();
+    let child = dir.path().join("src");
+    fs::create_dir(&child).unwrap();
+    fs::write(
+        dir.path().join(".crapts.toml"),
+        "[duplicates]\nenabled=false\nmin-similarity=0.82\n[duplicates.triage]\nprovider='openai'",
+    )
+    .unwrap();
+    let cfg = settings(
+        &child,
+        &[
+            "absent.ts",
+            "--coverage",
+            "absent.json",
+            "--duplicates",
+            "--dup-threshold",
+            "1",
+            "--dup-threshold",
+            "0.75",
+        ],
+    );
+    assert_eq!(
+        cfg["settings"]["duplicates"],
+        json!({
+            "enabled":{"value":true,"origin":"flag"},
+            "min_similarity":{"value":0.75,"origin":"flag"},
+            "min_nodes":{"value":20,"origin":"default"},
+            "triage":{
+                "enabled":{"value":false,"origin":"default"},
+                "provider":{"value":"openai","origin":"config"},
+                "model":{"value":"gpt-6-luna","origin":"default"},
+                "confidence_floor":{"value":0.5,"origin":"default"},
+                "max_requests":{"value":null,"origin":"default"}
+            }
+        })
+    );
+}
+
+#[test]
+fn s13_invalid_duplicate_config_names_its_source_even_when_overridden() {
+    let dir = tempfile::tempdir().unwrap();
+    for (group, key, value) in [
+        ("duplicates", "min-similarity", "nan"),
+        ("duplicates", "min-similarity", "-0.01"),
+        ("duplicates", "min-nodes", "-1"),
+        ("duplicates", "min-lines", "1"),
+        ("duplicates.triage", "confidence-floor", "1.01"),
+        ("duplicates.triage", "max-requests", "-1"),
+        ("duplicates.triage", "max-requests", "4294967296"),
+        ("duplicates.triage", "provider", "'other'"),
+    ] {
+        fs::write(
+            dir.path().join(".crapts.toml"),
+            format!("[{group}]\n{key}={value}"),
+        )
+        .unwrap();
+        let out = invoke(dir.path(), &["--print-config", "--dup-threshold", "0.8"]);
+        check(&out, 2);
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(err.contains(".crapts.toml") && err.contains(key), "{err}");
+    }
+}
+
+#[test]
+fn s39_duplicate_aliases_are_mutually_exclusive_and_accept_closed_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".crapts.toml");
+    fs::write(&path, "[duplicates]\nthreshold=0.7\nmin-similarity=0.82").unwrap();
+    let rejected = invoke(dir.path(), &["--print-config"]);
+    check(&rejected, 2);
+    let error = String::from_utf8(rejected.stderr).unwrap();
+    assert!(
+        error.contains(".crapts.toml") && error.contains("duplicate min-similarity"),
+        "{error}"
+    );
+    for key in ["threshold", "min-similarity", "min_similarity"] {
+        fs::write(&path, format!("[duplicates]\n{key}=0.0\nmin_nodes=0\n[duplicates.triage]\nconfidence_floor=1.0\nmax_requests=4294967295")).unwrap();
+        let cfg = settings(dir.path(), &[]);
+        let duplicates = &cfg["settings"]["duplicates"];
+        assert_eq!(
+            duplicates["min_similarity"],
+            json!({"value":0.0,"origin":"config"})
+        );
+        assert_eq!(duplicates["min_nodes"]["value"], 0);
+        assert_eq!(duplicates["triage"]["confidence_floor"]["value"], 1.0);
+        assert_eq!(duplicates["triage"]["max_requests"]["value"], u32::MAX);
+    }
+}
+
+#[test]
+fn s40_a_later_duplicate_threshold_cannot_hide_an_invalid_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    for value in ["1.1", "-0.1", "NaN", "inf"] {
+        let out = invoke(
+            dir.path(),
+            &[
+                "--dup-threshold",
+                value,
+                "--dup-threshold",
+                "0.8",
+                "--print-config",
+            ],
+        );
+        check(&out, 2);
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(
+            err.contains("--dup-threshold") && err.contains(value),
+            "{err}"
+        );
+    }
+}
