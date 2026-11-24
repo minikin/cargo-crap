@@ -1424,10 +1424,7 @@ fn duplicate_pairs(
     }
     // Only four formats can carry the pairs. Paying for a quadratic sweep and
     // then discarding it silently is worse than saying so and skipping it.
-    if !matches!(
-        format,
-        Format::Human | Format::Json | Format::Markdown | Format::PrComment
-    ) {
+    if !format.carries_duplicates() {
         eprintln!(
             "warning: --duplicates has no effect with this format; \
              use --format human, json, markdown or pr-comment"

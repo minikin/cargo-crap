@@ -4728,3 +4728,58 @@ mod rendering {
         assert!(!body.contains("## Changed functions"));
     }
 }
+
+#[test]
+fn s21_git_keeps_untouched_peers_and_json_alone_supplies_duplicate_history() {
+    let src = "export function copy(x){if (x) return 1; return 0}";
+    let repo = cli::Repo::with(&[("a.ts", src), (".crapts.toml", "[duplicates]\nmin-nodes=0")]);
+    repo.uncovered();
+    let recorded = repo.run_in(
+        &repo.root(),
+        &["--coverage", "cov.info", "--duplicates", "--format", "json"],
+    );
+    common::check(&recorded, 0);
+    repo.write("baseline.json", recorded.stdout);
+    repo.write("b.ts", src);
+    repo.commit("copy");
+    let gate = ["--fail-changed", "--threshold", "1"];
+    let plain = repo.report(&gate, 1);
+    for (flags, recorded) in [
+        (&["--duplicates"][..], false),
+        (&["--duplicates", "--baseline", "baseline.json"][..], true),
+    ] {
+        let doc = repo.report(&[flags, &gate].concat(), 1);
+        assert_eq!(doc["changed"], plain["changed"]);
+        let group = &doc["duplicate_groups"][0];
+        assert_eq!(group["members"][0]["file"], "a.ts");
+        assert_eq!(group["members"][1]["file"], "b.ts");
+        assert_eq!(
+            group.get("status").and_then(Value::as_str),
+            recorded.then_some("new")
+        );
+    }
+    let out = repo.run_in(
+        &repo.root(),
+        &[
+            "--duplicates",
+            "--base",
+            "main",
+            "--format",
+            "json",
+            "--missing",
+            "skip",
+        ],
+    );
+    common::check(&out, 0);
+    let doc = common::validated_report(&out.stdout);
+    assert_eq!(
+        doc["duplicate_groups"][0]["members"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(doc["coverage_kind"], "none");
+    assert_eq!(doc["changed"]["entries"], json!([]));
+    assert_eq!(doc["changed"]["counts"]["missing_skipped"], 1);
+}

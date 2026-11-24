@@ -19,6 +19,29 @@ crapts first summarizes the core report, then removes changed rows from
 the end until the comment fits. Each candidate keeps the full counts and
 verdict. Shields keeps its CRAP badge even when a structural gate trips.
 
+Text, JSON, Markdown and PR comments carry duplicate groups when you pass
+`--duplicates`. Text names every member. Markdown lists every group, and PR
+comments show the first 25. Their tables name up to five members per group
+and count the rest. Source links point to the repository revision while the
+visible paths stay relative to the invocation directory. JSON includes all
+groups and pairs. GitHub annotations, SARIF and Shields skip detection and
+triage and print one warning when detection is enabled.
+
+A Git comparison still checks untouched files for copies. A saved JSON
+baseline supplies group history. Markdown and PR comments list new and
+grown groups and count unchanged and resolved groups. A summary keeps the
+duplicate section. An empty scan of the cart project produces this Markdown
+summary. A PR comment omits the empty section.
+
+<!-- crapts-output: --coverage coverage/lcov.info --duplicates --format markdown --summary -->
+```markdown
+<!-- crapts-report -->
+
+✗ Analyzed: 2 · Crappy: 1 (threshold 30) · Worst: checkout (CRAP 42.0)
+
+No candidate duplicates found.
+```
+
 ## text
 
 The default, also accepted as `human`. A Unicode table for a terminal, colored by default when the report goes to a terminal and `NO_COLOR` is unset or empty. A `FORCE_COLOR` other than empty or `0` colors a piped stdout, `NO_COLOR` still wins, and `--output` is never colored. Without `--top` or `--min` it lists every function above the threshold and the ten worst of the rest.

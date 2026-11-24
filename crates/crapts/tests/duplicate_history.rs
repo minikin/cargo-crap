@@ -202,7 +202,7 @@ fn s20_cross_minor_admission_preserves_history_and_rejects_mixed_coverage_before
 }
 
 #[test]
-fn a_delta_preserves_grown_unchanged_and_new_groups_for_the_next_read() {
+fn s17_a_delta_preserves_grown_unchanged_and_new_groups_for_the_next_read() {
     let then = project(false);
     let now = project(false);
     for (names, body) in [("ab", "return x+1"), ("de", "return !x"), ("fg", "throw x")] {
@@ -231,6 +231,25 @@ fn a_delta_preserves_grown_unchanged_and_new_groups_for_the_next_read() {
     assert_eq!(statuses(&delta), ["grown", "unchanged", "new"]);
     assert_eq!(delta["duplicate_groups"][0]["grown_from"], 2);
     assert_eq!(delta["duplicates"].as_array().unwrap().len(), 5);
+    for format in ["text", "markdown", "pr-comment"] {
+        let body = rendering(
+            now.path(),
+            format,
+            &["--missing", "skip", "--baseline", "history.json"],
+        );
+        for name in ["a.ts", "h.ts"] {
+            assert!(body.contains(name), "{body}");
+        }
+        if format == "text" {
+            assert!(body.contains("e.ts"), "{body}");
+        } else {
+            assert!(!body.contains("e.ts"), "{body}");
+            assert!(
+                body.contains("1 existing candidate unchanged, 1 resolved"),
+                "{body}"
+            );
+        }
+    }
     assert_eq!(
         statuses(&compare(now.path(), &delta, &[]).0),
         ["unchanged"; 3]
@@ -267,4 +286,164 @@ fn absent_history_warns_once_only_if_a_group_needs_a_baseline() {
     );
     let (_, stderr) = compare(cwd, &old, &["--exclude", "a.ts"]);
     assert!(!stderr.contains("no duplicate record"));
+}
+
+fn rendering(
+    cwd: &Path,
+    format: &str,
+    args: &[&str],
+) -> String {
+    let mut flags = vec!["--duplicates", "--format", format];
+    flags.extend(args);
+    let out = invoke(cwd, &flags);
+    check(&out, 0);
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn s22_linked_member_and_group_caps_are_presentation_only() {
+    let dir = project(true);
+    let cwd = dir.path().join("pkg");
+    fs::create_dir(&cwd).unwrap();
+    write(
+        &cwd,
+        ".crapts.toml",
+        "[duplicates]\nmin-nodes=0\nmin-similarity=1.0",
+    );
+    for g in 0..27 {
+        let ops = "!".repeat(g);
+        for i in 0..if g == 0 { 6 } else { 2 } {
+            let name = format!("g{g:02}m{i}");
+            write(
+                &cwd,
+                &format!("{name}.ts"),
+                &format!("function {name}(x){{return {ops}x}}"),
+            );
+        }
+    }
+    let doc = absolute(&cwd);
+    assert_eq!(doc["duplicates"].as_array().unwrap().len(), 41);
+    assert_eq!(doc["duplicate_groups"].as_array().unwrap().len(), 27);
+    let args = [
+        "--summary",
+        "--repo-url",
+        "https://example.invalid/r",
+        "--commit-ref",
+        "abc",
+    ];
+    for format in ["text", "human"] {
+        let body = rendering(&cwd, format, &args);
+        for name in ["g00m5", "g26m0", "g26m1"] {
+            assert!(body.contains(name), "{body}");
+        }
+    }
+    for (format, count) in [("markdown", 27), ("pr-comment", 25)] {
+        let body = rendering(&cwd, format, &args);
+        let rows: Vec<_> = body
+            .lines()
+            .filter(|line| line.contains("<br><sub>"))
+            .collect();
+        assert_eq!(rows.len(), count, "{body}");
+        assert!(
+            rows[0].contains("/blob/abc/pkg/g00m0.ts#L1)"),
+            "{}",
+            rows[0]
+        );
+        assert!(
+            rows[0].contains("and 1 more") && !rows[0].contains("g00m5"),
+            "{}",
+            rows[0]
+        );
+        assert!(rows[0].contains("<sub>`g00m0.ts:1-1`"), "{}", rows[0]);
+        assert_eq!(body.contains("and 2 more, see CI artifact"), count == 25);
+    }
+}
+
+#[test]
+fn s23_empty_and_resolved_only_sections_survive_summary_rules() {
+    let dir = project(false);
+    let cwd = dir.path();
+    for f in ["a", "b"] {
+        write(
+            cwd,
+            &format!("{f}.ts"),
+            &format!("function {f}(){{return 0}}"),
+        );
+    }
+    write(cwd, "baseline.json", &absolute(cwd).to_string());
+    fs::remove_file(cwd.join("b.ts")).unwrap();
+    write(cwd, "cov.info", "SF:a.ts\nDA:1,1\nend_of_record\n");
+    for summary in [false, true] {
+        for format in ["text", "markdown", "pr-comment"] {
+            let mut flags = vec!["--coverage", "cov.info"];
+            if summary {
+                flags.push("--summary");
+            }
+            let out = rendering(cwd, format, &flags);
+            assert_eq!(
+                out.contains("No candidate duplicates found."),
+                format != "pr-comment",
+                "{out}"
+            );
+            if format != "text" {
+                let mut flags = vec!["--baseline", "baseline.json"];
+                if summary {
+                    flags.push("--summary");
+                }
+                let out = rendering(cwd, format, &flags);
+                assert!(out.contains("1 resolved"), "{out}");
+            }
+        }
+    }
+}
+
+#[test]
+fn s23_noncarrying_formats_skip_detection_and_triage_with_one_warning() {
+    let dir = project(false);
+    let cwd = dir.path();
+    for f in ["a", "b"] {
+        write(
+            cwd,
+            &format!("{f}.ts"),
+            &format!("function {f}(){{return 0}}"),
+        );
+    }
+    write(
+        cwd,
+        "cov.info",
+        "SF:a.ts\nDA:1,1\nend_of_record\nSF:b.ts\nDA:1,1\nend_of_record\n",
+    );
+    write(
+        cwd,
+        ".crapts.toml",
+        "[duplicates]\nmin-nodes=0\n[duplicates.triage]\nenabled=true",
+    );
+    let old = invoke(cwd, &["--coverage", "cov.info", "--format", "json"]);
+    check(&old, 0);
+    fs::write(cwd.join("baseline.json"), old.stdout).unwrap();
+    for format in ["github", "sarif", "shields"] {
+        let args = ["--coverage", "cov.info", "--format", format];
+        let plain = invoke(cwd, &args);
+        let out = invoke(cwd, &[args.as_slice(), &["--duplicates"]].concat());
+        check(&plain, 0);
+        check(&out, 0);
+        assert_eq!(plain.stdout, out.stdout);
+        let warning = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(warning.lines().count(), 1, "{warning}");
+        for part in ["--duplicates", "human", "json", "markdown", "pr-comment"] {
+            assert!(warning.contains(part), "{warning}");
+        }
+        if format != "sarif" {
+            let delta = invoke(
+                cwd,
+                &[
+                    args.as_slice(),
+                    &["--duplicates", "--baseline", "baseline.json"],
+                ]
+                .concat(),
+            );
+            check(&delta, 0);
+            assert_eq!(String::from_utf8(delta.stderr).unwrap(), warning);
+        }
+    }
 }

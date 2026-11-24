@@ -98,6 +98,17 @@ pub enum Format {
     Shields,
 }
 
+impl Format {
+    /// Whether the renderer can present structural duplicate groups.
+    #[must_use]
+    pub const fn carries_duplicates(self) -> bool {
+        matches!(
+            self,
+            Self::Human | Self::Json | Self::Markdown | Self::PrComment
+        )
+    }
+}
+
 /// Options shared by [`render`] and [`render_delta`], so their signatures
 /// survive new knobs without breaking every call site again.
 ///

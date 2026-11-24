@@ -1,3 +1,4 @@
+use super::settings::DuplicateSettings;
 use super::{Choice, Effective, Format, InputError, Result, StdoutSink};
 use crate::attribute::{Attribution, attribute};
 use crate::changed::matching::{ChangedFile, classify};
@@ -11,7 +12,7 @@ use crate::duplicates::Scan;
 use crate::{Discovery, DiscoveryScope, FileAnalysis, Mode};
 use cargo_crap_core::coverage::CoverageKind;
 use cargo_crap_core::delta::{CraptsBaseline, load_crapts_baseline};
-use cargo_crap_core::entry::{CrapEntry, ScopeDiagnostics};
+use cargo_crap_core::entry::{CrapEntry, MissingCoveragePolicy, ScopeDiagnostics};
 use cargo_crap_core::filter::AllowSet;
 use cargo_crap_core::gate::GateOutcome;
 use cargo_crap_core::policy::{
@@ -156,7 +157,8 @@ fn head_analysis(
 
 fn measure(
     cwd: &Path,
-    settings: &Effective,
+    missing: MissingCoveragePolicy,
+    duplicates: Option<&DuplicateSettings>,
     coverage: &Coverage,
     discovery: &Discovery,
     selection: Option<&mut Selection>,
@@ -175,22 +177,15 @@ fn measure(
         if skipped.is_some_and(|skipped| skipped.contains(file)) {
             continue;
         }
-        let (analysis, rows) = head_analysis(
-            cwd,
-            file,
-            &mut strict,
-            settings.duplicates.enabled.value,
-            err,
-        )?;
+        let (analysis, rows) = head_analysis(cwd, file, &mut strict, duplicates.is_some(), err)?;
         files.push(analysis);
         prints.extend(rows);
     }
-    let result = attribute(cwd, &files, coverage, settings.missing.value);
+    let result = attribute(cwd, &files, coverage, missing);
     for message in &result.warnings {
         warn(err, message)?;
     }
-    let duplicates = &settings.duplicates;
-    let scan = duplicates.enabled.value.then(|| {
+    let scan = duplicates.map(|duplicates| {
         Scan::collect(
             prints,
             &files,
@@ -311,14 +306,28 @@ fn coverage_path(options: &Effective) -> Result<Option<&Path>> {
     let path = options.coverage.value.as_deref();
     if path.is_none()
         && !(options.duplicates.enabled.origin == super::settings::Origin::Flag
-            && matches!(
-                options.format.value,
-                Format::Human | Format::Json | Format::Markdown | Format::PrComment
-            ))
+            && options.format.value.carries_duplicates())
     {
         return Err(InputError::message("--coverage <file> is required"));
     }
     Ok(path)
+}
+
+fn requested_duplicates<'a>(
+    options: &'a Effective,
+    err: &mut dyn Write,
+) -> Result<Option<&'a DuplicateSettings>> {
+    if !options.duplicates.enabled.value {
+        return Ok(None);
+    }
+    if options.format.value.carries_duplicates() {
+        return Ok(Some(&options.duplicates));
+    }
+    warn(
+        err,
+        "--duplicates has no effect with this format; use --format human, json, markdown or pr-comment",
+    )?;
+    Ok(None)
 }
 
 fn coverage_notices(
@@ -377,14 +386,22 @@ pub(super) fn score(
         worktree,
     )?;
     let (coverage, baseline) = read_inputs(cwd, options, coverage, &discovery, err)?;
+    let duplicates = requested_duplicates(options, err)?;
     let mut selection = options
         .base
         .value
         .as_deref()
-        .map(|rev| select(&discovery.scope, cwd, rev, options.duplicates.enabled.value))
+        .map(|rev| select(&discovery.scope, cwd, rev, duplicates.is_some()))
         .transpose()?;
-    let (files, result, mut scan) =
-        measure(cwd, options, &coverage, &discovery, selection.as_mut(), err)?;
+    let (files, result, mut scan) = measure(
+        cwd,
+        options.missing.value,
+        duplicates,
+        &coverage,
+        &discovery,
+        selection.as_mut(),
+        err,
+    )?;
     let notices = coverage_notices(result.unit, options.missing.value.label(), err)?;
     let scope = ScoringScope::new(&discovery.scope);
     let prepared = prepare_history(baseline, &scope, options, scan.as_mut(), err)?;
@@ -517,23 +534,19 @@ impl Render<'_> {
         let analysis = self.analysis(entries, diagnostics);
         let report = PreparedReport::new(&TOOL, &settings, analysis, self.prepared, &full)
             .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
+        let extras = self
+            .scan
+            .map_or_else(RenderExtras::default, |s| RenderExtras {
+                duplicates: Some(&s.pairs),
+                groups: Some(&s.groups),
+                novelty: s.comparison.as_ref(),
+                duplicate_context: Some(&s.context),
+                ..RenderExtras::default()
+            });
         let once = |summary, limit| {
             let mut body = Vec::new();
             let verdict = report::with_color(self.color, || {
-                report.write(
-                    summary,
-                    limit,
-                    &self
-                        .scan
-                        .map_or_else(RenderExtras::default, |s| RenderExtras {
-                            duplicates: Some(&s.pairs),
-                            groups: Some(&s.groups),
-                            novelty: s.comparison.as_ref(),
-                            duplicate_context: Some(&s.context),
-                            ..RenderExtras::default()
-                        }),
-                    &mut body,
-                )
+                report.write(summary, limit, &extras, &mut body)
             })
             .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
             Ok::<_, InputError>((body, verdict))
