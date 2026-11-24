@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>cargo-crap hero</title>
+<title>cargo-crap and crapts hero</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fira+Code:wght@400;600&display=block" rel="stylesheet">
 <script>
@@ -89,7 +89,11 @@ header {
 }
 .eyebrow b { font-weight: 700; }
 .eyebrow span { color: var(--muted); }
+.eyebrows { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.eyebrows .eyebrow { margin-bottom: 0; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.dot.ts { background: #2563eb; }
+:root[data-theme="dark"] .dot.ts { background: #60a5fa; }
 h1 {
   margin: 0;
   font-size: 54px;
@@ -248,7 +252,6 @@ h1 {
 .annot-msg { padding: 7px 10px; font: 11.5px "Fira Code", monospace; color: var(--gh-ink); }
 
 /* The PR comment's duplicate section */
-.gh-head .cont { color: var(--gh-muted); }
 .md.dups { padding-top: 2px; }
 .md.dups h2 { margin: 4px 0 6px; font-size: 17px; }
 .md.dups p { margin: 0 0 7px; }
@@ -263,11 +266,14 @@ pre, code, .dl, .label code, .col-head code { font-variant-ligatures: none; }
 <body>
 <header>
   <div>
-    <div class="eyebrow"><span class="dot"></span><b>cargo-crap</b><span>for Rust</span></div>
+    <div class="eyebrows">
+      <div class="eyebrow"><span class="dot"></span><b>cargo-crap</b><span>for Rust</span></div>
+      <div class="eyebrow"><span class="dot ts"></span><b>crapts</b><span>for TypeScript &amp; JavaScript</span></div>
+    </div>
     <h1>Find the complex code<br>your tests don't cover,<br>and the code you wrote twice</h1>
   </div>
   <div class="side">
-    <p class="tagline">One score per function, from <b>complexity</b> and <b>coverage</b>, wherever you review code. <b>OpenAI</b> or <b>TypeSafe</b> suggests which duplicates to merge.</p>
+    <p class="tagline">One score per function, from <b>complexity</b> and <b>coverage</b>, for <b>Rust</b>, <b>TypeScript</b> and <b>JavaScript</b>. <b>OpenAI</b> or <b>TypeSafe</b> suggests which Rust duplicates to merge.</p>
     <div class="badge-row">
       <span class="label" style="margin:0"><span class="dot"></span>README badge <code>--format shields</code></span>
       {{BADGE}}
@@ -277,7 +283,7 @@ pre, code, .dl, .label code, .col-head code { font-variant-ligatures: none; }
 
 <main class="grid">
   <section class="slot t-human">
-    <div class="label"><span class="dot"></span>Terminal <code>cargo crap</code></div>
+    <div class="label"><span class="dot"></span>Terminal <code>cargo crap --threshold 15</code></div>
     <div class="card term">
       <div class="term-bar"><i></i><i></i><i></i></div>
 <pre><span class="prompt">$ <b>cargo crap --threshold 15</b></span>
@@ -286,7 +292,7 @@ pre, code, .dl, .label code, .col-head code { font-variant-ligatures: none; }
   </section>
 
   <section class="slot t-comment">
-    <div class="label"><span class="dot"></span>Pull request comment <code>--format pr-comment --baseline main.json</code></div>
+    <div class="label"><span class="dot ts"></span>Pull request comment <code>crapts --base main --format pr-comment</code></div>
     <div class="card gh">
       <div class="gh-head"><span class="avatar"></span><b>github-actions</b> bot commented</div>
       <div class="md">{{COMMENT}}</div>
@@ -294,7 +300,7 @@ pre, code, .dl, .label code, .col-head code { font-variant-ligatures: none; }
   </section>
 
   <section class="slot t-diff">
-    <div class="label"><span class="dot"></span>Diff annotation <code>--format github</code></div>
+    <div class="label"><span class="dot ts"></span>Diff annotation <code>crapts --base main --format github</code></div>
     <div class="card diff">
       <div class="diff-head">{{FILE}}</div>
       {{DIFF}}
@@ -304,7 +310,7 @@ pre, code, .dl, .label code, .col-head code { font-variant-ligatures: none; }
   <section class="slot t-triage">
     <div class="label"><span class="dot"></span>Duplicates, triaged by OpenAI or TypeSafe <code>--duplicates</code> <code>provider = "openai"</code></div>
     <div class="card gh">
-      <div class="gh-head"><span class="avatar"></span><b>github-actions</b> bot commented <span class="cont">· same comment, further down</span></div>
+      <div class="gh-head"><span class="avatar"></span><b>github-actions</b> bot commented</div>
       <div class="md dups">{{DUPLICATES}}</div>
     </div>
   </section>
