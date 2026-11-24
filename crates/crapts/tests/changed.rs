@@ -3203,6 +3203,22 @@ mod cli {
 }
 
 mod gates {
+    #[test]
+    fn s50_an_absolute_git_comparison_keeps_the_signal_count_unavailable() {
+        let repo = Repo::standard();
+        repo.write(".crapts.toml", "[signals]\nenabled = true\n");
+        for flags in [
+            &[][..],
+            &["--top", "1"],
+            &["--min", "500"],
+            &["--summary"],
+            &["--fail-changed"],
+        ] {
+            let doc = repo.report(flags, 0);
+            assert!(doc.get("changed").is_some());
+            assert_eq!(doc["summary"].get("signal_regressions"), Some(&Value::Null));
+        }
+    }
     use std::fmt::Write as _;
 
     use proptest::prelude::*;

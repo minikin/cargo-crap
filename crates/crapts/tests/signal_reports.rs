@@ -1,4 +1,6 @@
 mod common;
+#[path = "signal_reports/comparison.rs"]
+mod comparison;
 #[path = "signal_reports/generated.rs"]
 mod generated;
 mod support;

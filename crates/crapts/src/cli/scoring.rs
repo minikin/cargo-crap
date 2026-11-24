@@ -229,6 +229,21 @@ fn top(options: &Effective) -> Option<usize> {
         .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
 }
 
+fn warn_if_unmeasured(
+    baseline: Option<&PreparedBaseline>,
+    enabled: bool,
+    err: &mut dyn Write,
+) -> Result<()> {
+    if enabled && baseline.is_some_and(|b| !b.as_baseline().entries.is_empty() && !b.has_signals())
+    {
+        warn(
+            err,
+            "the baseline has no signals. Run crapts with signals enabled to regenerate it.",
+        )?;
+    }
+    Ok(())
+}
+
 fn color_enabled(
     stdout: bool,
     terminal: bool,
@@ -278,6 +293,7 @@ pub(super) fn score(
     let (files, result) = measure(cwd, options, &coverage, &discovery, selection.as_mut(), err)?;
     let scope = ScoringScope::new(&discovery.scope);
     let prepared = prepare(baseline, &scope, &options.allow_set)?;
+    warn_if_unmeasured(prepared.as_ref(), options.signals.settings.enabled, err)?;
     let links = source_links(
         options.repo_url.value.as_deref(),
         options.commit_ref.value.as_deref(),
