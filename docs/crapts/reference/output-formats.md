@@ -2,11 +2,11 @@
 
 `--format` picks one of seven renderers. Every sample on this page scores the cart project from the [crapts index](../README.md) with `--coverage coverage/lcov.info` and no comparison. With `--baseline` the formats compare each function with the baseline, except two: shields renders the same absolute badge, and sarif exits 2. With `--base` the text, markdown, pr-comment, github and JSON formats add the changed functions, and sarif exits 2. See the [baseline](../guides/baseline.md) and [changed-function](../guides/changed-gate.md) guides.
 
-`--output <file>` writes any format to a file instead of stdout. When the format supports the requested comparison, the exit code does not depend on the format.
+`--output <file>` writes any format to a file instead of stdout. When the format supports the requested comparison, the exit code does not depend on the format. `pr-comment` is the exception: a body that cannot fit GitHub's comment limit exits 2.
 
 ## text
 
-The default, also accepted as `human`. A Unicode table for a terminal, colored when stdout is a terminal and `NO_COLOR` is unset. Without `--top` or `--min` it lists every function above the threshold and the ten worst of the rest.
+The default, also accepted as `human`. A Unicode table for a terminal, colored by default when the report goes to a terminal and `NO_COLOR` is unset or empty. A `FORCE_COLOR` other than empty or `0` colors a piped stdout, `NO_COLOR` still wins, and `--output` is never colored. Without `--top` or `--min` it lists every function above the threshold and the ten worst of the rest.
 
 <!-- crapts-output: --coverage coverage/lcov.info --format text -->
 ```text
@@ -107,7 +107,7 @@ A GitHub-flavored Markdown table of every displayed function, for a job summary 
 
 ## pr-comment
 
-A Markdown body sized for a pull request comment. It leads with the functions above the threshold and starts with the `--comment-marker` line, `<!-- crapts-report -->` by default, so a workflow can find and update its earlier comment.
+A Markdown body sized for a pull request comment. It leads with the functions above the threshold and starts with the `--comment-marker` line, `<!-- crapts-report -->` by default, so a workflow can find and update its earlier comment. The body is fitted to GitHub's 65,536 UTF-16 code units: complete, then with the core report summarized, then with fewer changed rows. A body that still does not fit exits 2.
 
 <!-- crapts-output: --coverage coverage/lcov.info --format pr-comment -->
 ```markdown
@@ -124,7 +124,7 @@ A Markdown body sized for a pull request comment. It leads with the functions ab
 
 ## github
 
-One GitHub Actions `::warning` annotation per function above the threshold. Printed by a workflow step, each annotation shows on the source line it names.
+One GitHub Actions `::warning` annotation per shown function above the threshold. Printed by a workflow step, each annotation shows on the source line it names.
 
 <!-- crapts-output: --coverage coverage/lcov.info --format github -->
 ```text
@@ -133,7 +133,7 @@ One GitHub Actions `::warning` annotation per function above the threshold. Prin
 
 ## sarif
 
-A SARIF 2.1.0 log with one `crap/high-score` result per function above the threshold, for GitHub code scanning. SARIF describes one run, so `--format sarif` with `--baseline` or `--base` exits 2.
+A SARIF 2.1.0 log with one `crap/high-score` result per shown function above the threshold, for GitHub code scanning. SARIF describes one run, so `--format sarif` with `--baseline` or `--base` exits 2.
 
 <!-- crapts-output: --coverage coverage/lcov.info --format sarif -->
 ```json
@@ -192,7 +192,7 @@ A SARIF 2.1.0 log with one `crap/high-score` result per function above the thres
 
 ## shields
 
-A Shields.io endpoint badge: `passing` in bright green when no function is above the threshold, otherwise the count of crappy functions.
+A Shields.io endpoint badge: `passing` in bright green when no shown function is above the threshold, otherwise their count. `--top` and `--min` narrow what `github`, `sarif` and `shields` see, while `--fail-above` counts every eligible row. So with `--fail-above` on and a function above the threshold, a `--min` above the worst score gives a `passing` badge from a run that exits 1.
 
 <!-- crapts-output: --coverage coverage/lcov.info --format shields -->
 ```json

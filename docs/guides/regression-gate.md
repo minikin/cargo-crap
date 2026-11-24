@@ -18,25 +18,94 @@ noise. Score deltas with absolute value at or below it (0.01 by default) are
 reported `Unchanged`. Set it to `0.0` to flag every increase, or higher when coverage
 numbers wobble between runs.
 
-```yaml
-# On main branch — upload baseline as a CI artifact
-- run: cargo llvm-cov --lcov --output-path lcov.info
-- run: cargo crap --lcov lcov.info --format json --output baseline.json
-- uses: actions/upload-artifact@v4
-  with:
-    name: crap-baseline
-    path: baseline.json
+With `[signals]` enabled, `--fail-regression` also fails when a gated
+signal rose, or when a function new since the baseline is above a
+`[signals.limits]` ceiling, even where no score moved. The baseline must
+have been recorded with signals on. See
+[Structural signals](../explanation/signals.md).
 
-# On pull requests — download baseline and compare
-# NOTE: actions/download-artifact@v4 extracts to a subfolder named after the
-# artifact by default — pin `path:` so the file lands somewhere predictable.
-- uses: actions/download-artifact@v4
-  with:
-    name: crap-baseline
-    path: baseline
-- run: cargo llvm-cov --lcov --output-path lcov.info
-- run: cargo crap --lcov lcov.info --baseline baseline/baseline.json --fail-regression
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  crap:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # find and download the baseline of another run
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-binstall
+      - run: cargo binstall --no-confirm cargo-crap
+      - run: cargo llvm-cov --lcov --output-path lcov.info
+
+      # On main: record the baseline as an artifact of this run.
+      - if: github.event_name == 'push'
+        run: cargo crap --lcov lcov.info --format json --output baseline.json
+      - if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crap-baseline
+          path: baseline.json
+
+      # On pull requests: find this workflow's main run of the base commit
+      # that still holds the artifact, then compare with it.
+      - if: github.event_name == 'pull_request'
+        id: baseline_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          workflow=$(basename "${WORKFLOW_REF%@*}")
+          runs=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=main&event=push&status=success&head_sha=$BASE_SHA" \
+            --jq '.workflow_runs[].id')
+          for run in $runs; do
+            count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=crap-baseline" \
+              --jq '[.artifacts[] | select(.expired | not)] | length')
+            if [ "$count" -gt 0 ]; then
+              echo "id=$run" >> "$GITHUB_OUTPUT"
+              break
+            fi
+          done
+      - if: steps.baseline_run.outputs.id != ''
+        id: download
+        uses: actions/download-artifact@v4
+        with:
+          name: crap-baseline
+          # A named artifact extracts straight into path, outside the checkout.
+          path: ${{ runner.temp }}/crap-baseline
+          run-id: ${{ steps.baseline_run.outputs.id }}
+          github-token: ${{ github.token }}
+      - if: github.event_name == 'pull_request'
+        env:
+          RUN_ID: ${{ steps.baseline_run.outputs.id }}
+        run: |
+          if [ -z "$RUN_ID" ]; then
+            echo "No baseline for the base commit: the regression check is skipped."
+          elif [ ! -f "$RUNNER_TEMP/crap-baseline/baseline.json" ]; then
+            echo "::error::the crap-baseline artifact of run $RUN_ID holds no baseline.json"
+            exit 1
+          else
+            cargo crap --lcov lcov.info --baseline "$RUNNER_TEMP/crap-baseline/baseline.json" --fail-regression
+          fi
 ```
+
+The comparison is exact only against this workflow's run of the base
+commit. When that run recorded no baseline, because it failed, was still
+running or its artifact expired, the check is skipped rather than failed,
+and the job log says so. An artifact without `baseline.json` fails the
+job. The [GitHub Action](github-action.md) scores the base commit itself
+and needs none of this.
 
 A baseline can also be committed to git instead of uploaded as an artifact.
 Add `--sort file` when generating it so entries are ordered by

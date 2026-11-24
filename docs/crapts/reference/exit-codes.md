@@ -1,14 +1,14 @@
 # Exit codes
 
-[crapts](../README.md) exits with one of three codes, so a CI job can tell a failing gate from a report that was never produced.
+[crapts](../README.md) exits with one of three codes, so a CI job can tell a failing gate from a run that went wrong.
 
 | Code | Meaning |
 |---|---|
 | `0` | The report was written and no requested gate failed. |
 | `1` | The report was written and a requested gate failed: `--fail-above`, `--fail-regression` or `--fail-changed`. |
-| `2` | No report: a usage error, an unreadable input, a Git failure under `--base`, or a failed write. The reason goes to stderr. |
+| `2` | The run failed, from a usage error, an unreadable input, a Git failure under `--base`, a `pr-comment` body too long for GitHub, or a failed write, and the report may be missing or incomplete. The reason goes to stderr. |
 
-Scores above the threshold alone do not fail a run. Without a gate flag the run exits 0:
+Scores above the threshold alone do not fail a run. With no gate requested, by flag or in `.crapts.toml`, the run exits 0:
 
 <!-- crapts-output: --coverage coverage/lcov.info --summary -->
 ```text

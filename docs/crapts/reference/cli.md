@@ -29,8 +29,8 @@ The thresholds, filters, row limits and gate switches can also come from [`.crap
 | `--sort <order>` | crap | Row order: `crap` (worst first) or `file`. |
 | `--format <format>` | text | `text` (alias `human`), `json`, `markdown`, `pr-comment`, `github`, `sarif` or `shields`. |
 | `--output <file>` | none | Write the report to a file instead of stdout. |
-| `--repo-url <url>` | none | Repository URL for source links. |
-| `--commit-ref <ref>` | none | Revision for source links. |
+| `--repo-url <url>` | none | Repository URL for source links. Falls back to `GITHUB_SERVER_URL` and `GITHUB_REPOSITORY`. |
+| `--commit-ref <ref>` | none | Revision for source links. Falls back to `GITHUB_SHA`. |
 | `--comment-marker <text>` | `<!-- crapts-report -->` | First line of a `pr-comment` report, which identifies the comment to update. |
 | `--fail-above` | off | Exit 1 when any eligible function scores above the threshold. |
 | `--fail-regression` | off | Exit 1 when a function regressed against `--baseline`. |
@@ -144,7 +144,7 @@ Options:
 | Default format | `text`, with `human` accepted as an alias | `human` |
 | Zero rows | `--top 0` exits 2 | `--top 0` prints no rows |
 | Gate population | `--fail-above` counts every eligible row, whatever `--min` and `--top` show | `--fail-above` counts only the rows `--min` and `--top` select |
-| SARIF with a comparison | `--format sarif` with `--baseline` or `--base` exits 2 before the comparison input is read | `--format sarif` with `--baseline` exits 2 after the baseline is read |
+| SARIF with a comparison | `--format sarif` with `--baseline` or `--base` exits 2 before the comparison input is read | `--format sarif` with `--baseline` exits 2 after the baseline is read, unless `--summary` turns the run into a text summary |
 | Changed functions | `--base` and `--fail-changed` gate the functions a branch edits | no equivalent |
 
 Exit codes are listed in [Exit codes](exit-codes.md).

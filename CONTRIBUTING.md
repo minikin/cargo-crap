@@ -20,17 +20,18 @@ request. Implementation starts once the maintainer approves it, and from then
 on the spec is the acceptance criteria. A spec changes only with the
 maintainer's approval, including during implementation.
 
-New settings go in `.cargo-crap.toml` by default. The CLI already has more
-than twenty flags, so a new flag needs a reason to exist per run, the way
-`--baseline` or `--output` does.
+New settings go in `.cargo-crap.toml` by default, or `.crapts.toml` for
+crapts. The CLI already has more than twenty flags, so a new flag needs a
+reason to exist per run, the way `--baseline` or `--output` does.
 
 **Docs, comments, anything with no change in behaviour.** Send the pull
 request. If a test fails because of it, it changed behaviour after all.
 
 ## Setup
 
-Rust stable (the crate's minimum is 1.88, and CI checks it), plus the tools
-the gates run:
+Rust stable. cargo-crap and cargo-crap-core build on 1.88 and crapts needs
+1.98, so `just dev`, which builds the whole workspace, needs 1.98. CI
+checks both. Plus the tools the gates run:
 
 ```bash
 rustup component add llvm-tools-preview
@@ -38,7 +39,8 @@ cargo install --locked just cargo-nextest cargo-llvm-cov cargo-mutants
 just            # lists every recipe
 ```
 
-`just dev` also runs the gate scripts' tests, which need `jq` on PATH, and
+`just dev` also runs the gate and release scripts' tests, which need `jq`,
+Python 3.11 or later, Ruby with `minitest`, Perl, Node and npm on PATH, and
 shellcheck when it is installed.
 
 ## The two commands to run before you push
@@ -49,34 +51,46 @@ just dev-mutants-diff   # the same, then mutation tests on the lines you changed
 ```
 
 `just dev` checks formatting, runs Clippy with pedantic lints as errors
-(with and without the optional `triage` feature), runs the tests and doc
-tests in both builds, and then scores cargo-crap with itself: any function
-above 15 fails it.
+(with and without the optional `triage` feature), runs the tests in both
+builds and the doc tests with every feature on, runs the Action, release
+and gate scripts' tests and the parser guard, and then scores cargo-crap
+with itself: any function above 15 fails it.
 
 `just dev-mutants-diff` runs `cargo mutants` on the lines you changed under
 `src/` and `crates/*/src/`. A surviving mutant means a test would still pass with that line
 broken. Fix it by writing the test that catches it, never by reshaping the
 code until the mutant goes away. A diff that touches only Markdown can skip
-both commands.
+both commands, unless a test reads the file: `README.md`, anything under
+`docs/`, `specs/44-golden-outputs.md` and the changelogs need `just dev`.
 
 `just cov` prints line coverage and fails below 90%. It is not part of
 `just dev`, but new code should have no uncovered lines.
 
 `just crap-delta-main` runs CI's Self-score check locally: it downloads the
-CRAP baseline CI recorded for `main` and fails when any function scores
-higher on your branch. It needs `gh` logged in, and is worth running before
+CRAP baseline CI recorded for the newest main commit at or below your merge
+base, within 30 commits, whose run still holds one, and fails when a function
+scores higher or a gated signal rose on your branch. With no such run it
+fails, so rebase first. It needs `gh` logged in, and is worth running before
 a pull request that adds branches to existing functions.
 
 CI runs the same gates and adds:
 
-- the tests on Linux, macOS and Windows;
-- a build and test run on Rust 1.88;
-- `cargo audit`;
+- the tests on Linux, macOS and Windows
+- a build and test run on Rust 1.88 for cargo-crap and cargo-crap-core,
+  and on Rust 1.98 for crapts
+- `cargo audit`
+- the packed npm packages and the candidate crapts Action on Linux, macOS
+  and Windows
+- the pinned Excalidraw corpus, in `.github/workflows/corpus.yml`. Replay
+  it with `bash scripts/corpus/checkout.sh <dir>`, then
+  `CRAPTS_CORPUS_DIR=<dir> cargo test -p crapts --test corpus -- --ignored`
 - mutation tests on the lines the pull request changed under `src/` and
-  `crates/*/src/`;
-- a CRAP comparison against the pull request's merge base, which fails when
-  any function's score went up and posts its table as a comment on the pull
-  request, so you can see which function it means.
+  `crates/*/src/`
+- a CRAP comparison against the baseline CI recorded for the newest main
+  commit at or below the merge base, which fails when a function's score
+  went up or a gated signal rose, and posts its table as a comment on the
+  pull request, so you can see which function it means. With no baseline
+  left the comparison is skipped.
 
 ## Tests
 
@@ -84,8 +98,12 @@ CI runs the same gates and adds:
   has an invariant (ordering, round-trip, bounds), add a `proptest` property
   beside the examples. If proptest finds a counterexample it writes a file
   under `proptest-regressions/`: commit it.
-- `tests/acceptance.rs` holds one test per spec scenario, named after the
-  scenario, with Given/When/Then comments.
+- `tests/acceptance.rs` holds one test per cargo-crap spec scenario, named
+  after the scenario, with Given/When/Then comments.
+  `crates/cargo-crap-core/tests/acceptance.rs` does the same for the core,
+  and crapts scenarios live in `crates/crapts/tests/` by topic.
+- `tests/docs.rs` and `crates/crapts/tests/docs.rs` check the
+  documentation against the binaries.
 - `tests/cli.rs` runs the binary end to end with `assert_cmd`.
 - `tests/integration.rs` runs the whole pipeline on
   `tests/fixtures/sample_project/`. It is the test that catches a path
@@ -101,11 +119,12 @@ CI runs the same gates and adds:
 | Path                    | What it is                                                          |
 | ----------------------- | ------------------------------------------------------------------- |
 | `src/`                  | the library and the CLI; `src/lib.rs` has a table of the modules    |
+| `crates/`               | cargo-crap-core, shared with crapts, and crapts itself              |
 | `specs/`                | one spec per feature, with its scenarios and tasks                  |
 | `tests/`                | acceptance, CLI and integration tests, and their fixtures           |
 | `schemas/`              | the published JSON Schemas for `--format json`; consumers pin these |
 | `reviews/`              | the review record for each spec task                                |
-| `Justfile`              | every gate, local and CI                                            |
+| `Justfile`              | the local gates. CI adds the corpus, npm and Action runs            |
 | `CLAUDE.md`, `.claude/` | instructions for Claude Code, which the maintainer works with       |
 | `KEELER.md`             | the spec-first workflow those instructions follow                   |
 

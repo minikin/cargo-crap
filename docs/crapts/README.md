@@ -1,6 +1,6 @@
 # crapts
 
-crapts scores JavaScript and TypeScript functions with the CRAP metric. It reads the source with a TypeScript parser, reads a coverage file your test runner already writes, and reports the functions where high complexity meets low coverage. It is the TypeScript sibling of [cargo-crap](../../README.md) and shares its report formats and gates.
+crapts scores JavaScript and TypeScript functions with the CRAP metric. It reads the source with the oxc TypeScript parser, reads a coverage file your test runner already writes, and reports the functions where high complexity meets low coverage. It is the TypeScript sibling of [cargo-crap](../../README.md) and shares its report formats and gates.
 
 ## The score
 

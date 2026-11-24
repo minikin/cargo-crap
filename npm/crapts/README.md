@@ -6,4 +6,6 @@ Measure the Change Risk Anti-Patterns (CRAP) score of JavaScript and TypeScript 
 npx @minikin/crapts --coverage coverage/lcov.info src
 ```
 
-Run `crapts --help` for report formats and threshold options.
+Run `npx @minikin/crapts --help` for report formats and threshold options.
+
+Documentation: https://github.com/minikin/cargo-crap/tree/main/docs/crapts

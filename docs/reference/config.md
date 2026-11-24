@@ -27,7 +27,7 @@ jobs    = 4               # cap parallel analysis at 4 threads
 sort    = "file"          # entry ordering: crap (default) | file
 min     = 5.0             # hide entries scoring below this
 top     = 20              # keep only the N worst offenders
-fail-regression = true    # exit 1 when a score rises against --baseline
+fail-regression = true    # exit 1 when a score or gated signal rises against --baseline
 show_unchanged = false    # list Unchanged rows in --baseline mode
 # Append an Uncovered column (per-function uncovered line ranges, e.g.
 # `142–158, 171, 180–184 +2 more`) to the human, markdown, and pr-comment

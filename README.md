@@ -201,7 +201,7 @@ crapts brings the same score to JavaScript and TypeScript. It reads the LCOV or 
 npx @minikin/crapts
 ```
 
-Without arguments it asks for a coverage file. Point it at one:
+Without arguments it exits 2 and asks for a coverage file. Point it at one:
 
 ```bash
 npx @minikin/crapts --coverage coverage/lcov.info
