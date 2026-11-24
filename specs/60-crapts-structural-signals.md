@@ -828,7 +828,7 @@ Then the strict-side diagnostic names its path, the exit is 2 and the file still
 ## Tasks
 
 - [x] **T1 - Measure owned body chunks with oxc.** S01, S02, S03, S04, S05, S06, S13, S41, S46. Implement row ownership, inclusive lines, depth and bumps in the existing pass. Tests: analyzer units and fixtures.
-- [ ] **T2 - Count predicates and explicit sites.** Needs: T1. S07, S08, S09, S10, S12, S27, S44, S45. Use the pinned AST nodes and preserve the stack bound for logical chains. Tests: analyzer units, bounded properties and parser regressions.
+- [x] **T2 - Count predicates and explicit sites.** Needs: T1. S07, S08, S09, S10, S12, S27, S44, S45. Use the pinned AST nodes and preserve the stack bound for logical chains. Tests: analyzer units, bounded properties and parser regressions.
 - [ ] **T3 - Resolve and print config.** S14, S15, S16. Admit both tables, reuse core validation and record origins per leaf. Tests: config units and CLI acceptance.
 - [ ] **T4 - Carry measurements through coverage and JSON.** Needs: T2, T3. S11, S17, S19, S47, S57. Wire both coverage units, writers, schemas and strict baseline admission, including the optional summary member. Tests: property, schema, docs goldens and baseline admission.
 - [ ] **T5 - Compare and gate saved baselines.** Needs: T4. S18, S20, S21, S22, S23, S24, S25, S26, S42, S43, S48, S49, S50, S55. Count gated reasons before display limits, apply scope to baseline completeness and issue the warning once. Tests: pairing, core run and CLI acceptance.

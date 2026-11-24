@@ -15,6 +15,7 @@ use oxc_ast::ast::{
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{Kind, Parser, Token, config::TokensParserConfig};
 use oxc_span::{GetSpan, SourceType, Span};
+use oxc_syntax::operator::LogicalOperator;
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::fingerprint::{self, Fingerprint, Regions};
@@ -220,6 +221,7 @@ struct Collector<'s> {
     rows: Vec<Row>,
     regions: Vec<Regions>,
     bodies: Vec<crate::signals::Body>,
+    predicates: Vec<crate::signals::Predicate>,
     owner: Option<usize>,
     names: Names,
     method: Option<Method>,
@@ -274,6 +276,7 @@ impl<'s> Collector<'s> {
             rows: Vec::new(),
             regions: Vec::new(),
             bodies: Vec::new(),
+            predicates: Vec::new(),
             owner: None,
             names: Names::default(),
             method: None,
@@ -567,19 +570,21 @@ fn executable_statement(statement: &Statement<'_>) -> bool {
 pub(crate) fn visit_logical_operands<'a>(
     root: &LogicalExpression<'a>,
     mut visit: impl FnMut(&Expression<'a>),
-) -> u32 {
+) -> (u32, u32) {
     let mut pending = vec![&root.right, &root.left];
     let mut decisions = 1;
+    let mut bool_ops = u32::from(root.operator != LogicalOperator::Coalesce);
     while let Some(expr) = pending.pop() {
         if let Expression::LogicalExpression(child) = expr {
             decisions += 1;
+            bool_ops += u32::from(child.operator != LogicalOperator::Coalesce);
             pending.push(&child.right);
             pending.push(&child.left);
         } else {
             visit(expr);
         }
     }
-    decisions
+    (decisions, bool_ops)
 }
 
 impl<'a> Visit<'a> for Collector<'_> {
@@ -775,9 +780,13 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         root: &LogicalExpression<'a>,
     ) {
-        let decisions = visit_logical_operands(root, |expr| self.visit_expression(expr));
+        let (decisions, bool_ops) =
+            visit_logical_operands(root, |expr| self.visit_expression(expr));
         if let Some(owner) = self.owner {
             self.rows[owner].cyclomatic += decisions;
+            if let Some(predicate) = self.predicates.last_mut() {
+                predicate.add(owner, root.span, bool_ops);
+            }
         }
     }
 
@@ -790,6 +799,10 @@ impl<'a> Visit<'a> for Collector<'_> {
             self.record_statement(directive.span);
         }
         if let Some(owner) = self.owner {
+            if let Some(test) = crate::signals::test_span(kind) {
+                self.predicates
+                    .push(crate::signals::Predicate::new(owner, test));
+            }
             self.bodies[owner].observe(kind);
             self.rows[owner].cyclomatic += u32::from(is_decision(kind));
         }
@@ -797,8 +810,15 @@ impl<'a> Visit<'a> for Collector<'_> {
 
     fn leave_node(
         &mut self,
-        _: AstKind<'a>,
+        kind: AstKind<'a>,
     ) {
+        if self.owner.is_some() && crate::signals::test_span(kind).is_some() {
+            let test = self
+                .predicates
+                .pop()
+                .expect("each control test enters before it leaves");
+            self.bodies[test.owner].record_test(&test);
+        }
         self.names.leave();
     }
 

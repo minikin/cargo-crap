@@ -3,11 +3,51 @@ use std::cmp::Reverse;
 use cargo_crap_core::coverage::LineRange;
 use cargo_crap_core::signals::Measured;
 use oxc_ast::AstKind;
-use oxc_ast::ast::{Expression, Statement};
+use oxc_ast::ast::{Argument, CallExpression, Expression, Statement};
 use oxc_span::{GetSpan, Span};
-use oxc_syntax::operator::LogicalOperator;
 
 use crate::lines::{LineIndex, SourceSpan};
+
+pub(crate) struct Predicate {
+    pub(crate) owner: usize,
+    span: Span,
+    ops: u32,
+}
+
+impl Predicate {
+    pub(crate) fn new(
+        owner: usize,
+        span: Span,
+    ) -> Self {
+        Self {
+            owner,
+            span,
+            ops: 0,
+        }
+    }
+
+    pub(crate) fn add(
+        &mut self,
+        owner: usize,
+        span: Span,
+        count: u32,
+    ) {
+        if self.owner == owner && self.span.contains_inclusive(span) {
+            self.ops += count;
+        }
+    }
+}
+
+pub(crate) fn test_span(node: AstKind<'_>) -> Option<Span> {
+    match node {
+        AstKind::IfStatement(s) => Some(s.test.span()),
+        AstKind::WhileStatement(s) => Some(s.test.span()),
+        AstKind::DoWhileStatement(s) => Some(s.test.span()),
+        AstKind::ForStatement(s) => s.test.as_ref().map(GetSpan::span),
+        AstKind::ConditionalExpression(e) => Some(e.test.span()),
+        _ => None,
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct Body {
@@ -43,14 +83,35 @@ impl Body {
             AstKind::StaticBlock(block) => self.statements(&block.body),
             _ => {},
         }
-        let span = node.span();
+        if let Some(chunk) = self.containing(node.span()) {
+            chunk.observe(node);
+        }
+    }
+
+    fn containing(
+        &mut self,
+        span: Span,
+    ) -> Option<&mut Chunk> {
         let end = self
             .chunks
             .partition_point(|chunk| chunk.span.start <= span.start);
-        if let Some(chunk) = self.chunks[..end].last_mut()
-            && chunk.span.contains_inclusive(span)
-        {
-            chunk.observe(node);
+        self.chunks[..end]
+            .last_mut()
+            .filter(|chunk| chunk.span.contains_inclusive(span))
+    }
+
+    pub(crate) fn record_test(
+        &mut self,
+        test: &Predicate,
+    ) {
+        if let Some(chunk) = self.containing(test.span) {
+            // Nested tests finish first. Break equal counts by source order,
+            // with the outer test first when both begin at the same byte.
+            chunk.worst_test = chunk
+                .worst_test
+                .into_iter()
+                .chain([(test.ops, test.span)])
+                .max_by_key(|(n, span)| (*n, Reverse(span.start), span.end));
         }
     }
 
@@ -94,12 +155,13 @@ impl Chunk {
     ) {
         match node {
             AstKind::DebuggerStatement(s) => self.stubs.push(s.span),
+            AstKind::ThrowStatement(s) if placeholder_throw(&s.argument) => self.stubs.push(s.span),
+            AstKind::CallExpression(call) => self.panics.extend(assert_fail(call)),
             AstKind::TSNonNullExpression(e) => {
                 // The postfix bang and its exclusive end always share a line.
                 self.panics.push(Span::empty(e.span.end));
             },
             AstKind::IfStatement(s) => {
-                self.predicate(&s.test);
                 self.nested.push(s.consequent.span());
                 if let Some(other) = &s.alternate
                     && !matches!(other, Statement::IfStatement(_))
@@ -143,26 +205,6 @@ impl Chunk {
         }
     }
 
-    fn predicate(
-        &mut self,
-        test: &Expression<'_>,
-    ) {
-        let mut pending = vec![test];
-        let mut count = 0;
-        while let Some(expr) = pending.pop() {
-            if let Expression::LogicalExpression(logical) = expr.without_parentheses() {
-                count += u32::from(matches!(
-                    logical.operator,
-                    LogicalOperator::And | LogicalOperator::Or
-                ));
-                pending.extend([&logical.left, &logical.right]);
-            }
-        }
-        if count > self.worst_test.map_or(0, |(n, _)| n) {
-            self.worst_test = Some((count, test.span()));
-        }
-    }
-
     fn measure(
         mut self,
         lines: &LineIndex,
@@ -194,6 +236,56 @@ impl Chunk {
             result.spans.panics.push(range(site));
         }
     }
+}
+
+fn bare_name(
+    expr: &Expression<'_>,
+    name: &str,
+) -> bool {
+    matches!(expr.without_parentheses(), Expression::Identifier(id) if id.name == name)
+}
+
+fn placeholder_throw(thrown: &Expression<'_>) -> bool {
+    let (callee, args) = match thrown.without_parentheses() {
+        Expression::NewExpression(e) if e.type_arguments.is_none() => (&e.callee, &e.arguments),
+        Expression::CallExpression(e) if e.type_arguments.is_none() => (&e.callee, &e.arguments),
+        _ => return false,
+    };
+    let [arg] = args.as_slice() else { return false };
+    bare_name(callee, "Error") && placeholder_argument(arg)
+}
+
+fn placeholder_argument(arg: &Argument<'_>) -> bool {
+    let Some(Expression::StringLiteral(literal)) =
+        arg.as_expression().map(Expression::without_parentheses)
+    else {
+        return false;
+    };
+    let message = String::from_utf8_lossy(literal.value.as_bytes())
+        .trim_ascii()
+        .to_ascii_lowercase();
+    let phrase = match message.split_once(':') {
+        Some((phrase, _)) => phrase,
+        None => message.strip_suffix(['.', '!', '?']).unwrap_or(&message),
+    };
+    matches!(
+        phrase,
+        "todo"
+            | "fixme"
+            | "unimplemented"
+            | "not implemented"
+            | "not implemented yet"
+            | "method not implemented"
+    )
+}
+
+fn assert_fail(call: &CallExpression<'_>) -> Option<Span> {
+    let Expression::StaticMemberExpression(member) = call.callee.without_parentheses() else {
+        return None;
+    };
+    let direct = !call.optional && !member.optional && call.type_arguments.is_none();
+    (direct && member.property.name == "fail" && bare_name(&member.object, "assert"))
+        .then(|| Span::new(member.property.span.start, call.span.end))
 }
 
 fn deepest(bodies: &mut [Span]) -> u32 {
