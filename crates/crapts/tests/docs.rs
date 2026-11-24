@@ -153,7 +153,16 @@ fn cli_help_and_the_printed_settings_cover_the_public_contract() {
         ("comment_marker", json!("<!-- crapts-report -->")),
         ("uncovered_hints", json!(false)),
     ];
-    assert_eq!(settings.len(), defaults.len());
+    let unset = json!({"value":null,"origin":"default"});
+    assert_eq!(
+        settings["signals"],
+        json!({
+            "enabled":{"value":false,"origin":"default"},
+            "gate":{"value":["nesting","bumps","bool_ops","stubs"],"origin":"default"},
+            "limits":{"nesting":unset,"lines":unset,"bumps":unset,"bool_ops":unset}
+        })
+    );
+    assert_eq!(settings.len(), defaults.len() + 1);
     for (key, value) in defaults {
         let actual = &settings[key];
         assert_eq!(actual.as_object().unwrap().len(), 2);

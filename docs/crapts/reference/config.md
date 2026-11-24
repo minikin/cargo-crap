@@ -63,6 +63,21 @@ Patterns in `exclude`, `default-excludes` and `allow` are relative to the direct
 
 `uncovered-hints = true` adds an Uncovered column to the text, markdown and pr-comment tables. Each displayed row lists up to three of its uncovered line ranges and counts the rest. The text table leaves the column out when the terminal is too narrow for it.
 
+## Structural signals
+
+These two tables are config-only. Signals default to disabled. The default gate covers `nesting`, `bumps`, `bool_ops` and `stubs`. An empty gate makes all paired signal increases advisory. The four optional limits apply to new functions and default to unset.
+
+```toml
+[signals]
+enabled = true
+gate = ["nesting", "bumps", "bool-ops", "stubs"]
+
+[signals.limits]
+nesting = 4
+```
+
+`gate` also accepts `lines` and `panics`. Each of `nesting`, `lines`, `bumps` and `bool-ops` accepts an integer limit from 0 through 4294967295. Both tables accept `bool_ops` as an alias for `bool-ops`. `--print-config` writes `bool_ops` and gives the value and origin of each setting, including an explicitly empty gate.
+
 ## Per-run settings
 
 These settings describe one invocation, so they exist only as flags and arguments. `.crapts.toml` refuses each of them as an unknown key.

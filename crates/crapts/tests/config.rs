@@ -110,3 +110,145 @@ fn git_free_lookup_stops_at_a_marker_and_walks_past_its_former_location() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+fn signal_config(cwd: &std::path::Path) -> serde_json::Value {
+    let out = Command::new(env!("CARGO_BIN_EXE_crapts"))
+        .current_dir(cwd)
+        .args([
+            "--print-config",
+            "--coverage",
+            "missing",
+            "--baseline",
+            "absent",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["settings"]["signals"].clone()
+}
+
+#[test]
+fn s14_print_each_signal_default_without_scoring_inputs() {
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let unset = json!({"value":null,"origin":"default"});
+    assert_eq!(
+        signal_config(dir.path()),
+        json!({
+            "enabled":{"value":false,"origin":"default"},
+            "gate":{"value":["nesting","bumps","bool_ops","stubs"],"origin":"default"},
+            "limits":{"nesting":unset,"lines":unset,"bumps":unset,"bool_ops":unset}
+        })
+    );
+}
+
+#[test]
+fn s15_configured_leaves_keep_their_origin_and_canonical_names() {
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("sub");
+    fs::create_dir(&nested).unwrap();
+    let path = dir.path().join(".crapts.toml");
+    let input = "[signals]\nenabled=false\ngate=['stubs','bool_ops','bool-ops']\n[signals.limits]\nlines=0\nbool-ops=4294967295\n";
+    for spelling in ["bool-ops=", "bool_ops="] {
+        fs::write(&path, input.replace("bool-ops=", spelling)).unwrap();
+        let value = signal_config(&nested);
+        assert_eq!(
+            value,
+            json!({
+               "enabled":{"value":false,"origin":"config"},
+               "gate":{"value":["bool_ops","stubs"],"origin":"config"},
+               "limits":{"nesting":{"value":null,"origin":"default"},"lines":{"value":0,"origin":"config"},
+                         "bumps":{"value":null,"origin":"default"},"bool_ops":{"value":u32::MAX,"origin":"config"}}
+            })
+        );
+    }
+    fs::write(
+        &path,
+        "[signals]\nenabled=true\ngate=[]\n[signals.limits]\nnesting=1\nbumps=3",
+    )
+    .unwrap();
+    let value = signal_config(&nested);
+    for (pointer, expected) in [
+        ("/enabled", json!(true)),
+        ("/gate", json!([])),
+        ("/limits/nesting", json!(1)),
+        ("/limits/bumps", json!(3)),
+    ] {
+        assert_eq!(
+            value.pointer(pointer),
+            Some(&json!({"value":expected,"origin":"config"}))
+        );
+    }
+}
+
+#[test]
+fn s16_invalid_signal_config_precedes_scoring_even_when_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    fs::write(cwd.join("f.ts"), "function f() {}").unwrap();
+    fs::write(cwd.join("lcov.info"), "SF:f.ts\nDA:1,1\nend_of_record\n").unwrap();
+    fs::write(cwd.join("report"), "keep").unwrap();
+    for (bad, details) in [
+        (
+            "gate=['nestng']",
+            vec!["nestng", "nesting, lines, bumps, bool-ops, stubs, panics"],
+        ),
+        ("gate='stubs'", vec!["gate"]),
+        ("extra=true", vec!["extra"]),
+        (
+            "[signals.limits]\nnesting=-1",
+            vec!["signals.limits.nesting", "-1"],
+        ),
+        (
+            "[signals.limits]\nlines=4294967296",
+            vec!["signals.limits.lines", "4294967296"],
+        ),
+        ("[signals.limits]\nbumps=1.5", vec!["bumps"]),
+        ("[signals.limits]\nstubs=0", vec!["unknown key stubs"]),
+        ("[signals.limits]\npanics=1", vec!["unknown key panics"]),
+        (
+            "[signals.limits]\nbool-ops=1\nbool_ops=1",
+            vec!["duplicate", "bool-ops"],
+        ),
+    ] {
+        fs::write(
+            cwd.join(".crapts.toml"),
+            format!("[signals]\nenabled=false\n{bad}"),
+        )
+        .unwrap();
+        for args in [
+            vec!["--print-config"],
+            vec!["--coverage", "lcov.info", "--output", "report"],
+        ] {
+            let out = Command::new(env!("CARGO_BIN_EXE_crapts"))
+                .current_dir(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            let err = String::from_utf8(out.stderr).unwrap();
+            assert_eq!(out.status.code(), Some(2), "{bad}: {err}");
+            assert_eq!(out.stdout, [] as [u8; 0]);
+            assert!(err.contains(".crapts.toml"), "{err}");
+            for detail in &details {
+                assert!(err.contains(detail), "{bad}: {err}");
+            }
+            assert_eq!(fs::read(cwd.join("report")).unwrap(), b"keep");
+        }
+    }
+    for flag in ["--help", "--version"] {
+        assert!(
+            Command::new(env!("CARGO_BIN_EXE_crapts"))
+                .current_dir(cwd)
+                .arg(flag)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
