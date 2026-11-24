@@ -44,6 +44,11 @@ pub fn run(
             &settings.model,
             request::QUESTION_SET_VERSION,
         );
-        Ok(cargo_crap_core::duplicates::triage::Excerpts { first, second, key })
+        Ok(cargo_crap_core::duplicates::triage::Excerpts {
+            first,
+            second,
+            key,
+            locations: None,
+        })
     })
 }

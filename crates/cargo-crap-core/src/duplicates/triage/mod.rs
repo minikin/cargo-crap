@@ -34,7 +34,7 @@ use provider::Provider;
 #[cfg(feature = "triage")]
 use rayon::prelude::*;
 #[cfg(feature = "triage")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 #[cfg(feature = "triage")]
 use verdict::Verdict;
 
@@ -66,6 +66,30 @@ pub fn run<const N: usize>(
     questions: &provider::QuestionSet,
     prepare: impl Fn(&DuplicatePair) -> std::io::Result<Excerpts<N>> + Sync,
 ) -> Result<Triaged, TriageError> {
+    let cache = settings.cache_dir.as_ref().map(Cache::new);
+    run_with_cache(
+        pairs,
+        settings,
+        questions,
+        cache.as_ref(),
+        |message| eprintln!("warning: {message}"),
+        prepare,
+    )
+}
+
+/// Run triage with the front end's cache policy and prepared source excerpts.
+///
+/// # Errors
+/// Returns the same request, source and credential errors as [`run`].
+#[cfg(feature = "triage")]
+pub fn run_with_cache<const N: usize>(
+    pairs: &[DuplicatePair],
+    settings: &Settings,
+    questions: &provider::QuestionSet,
+    cache: Option<&Cache>,
+    mut warn: impl FnMut(String),
+    prepare: impl Fn(&DuplicatePair) -> std::io::Result<Excerpts<N>> + Sync,
+) -> Result<Triaged, TriageError> {
     if pairs.is_empty() {
         return Ok(Triaged {
             verdicts: Vec::new(),
@@ -82,16 +106,24 @@ pub fn run<const N: usize>(
         .num_threads(REQUEST_THREADS)
         .build()
         .map_err(|e| TriageError::Threads(e.to_string()))?;
-    let cache = settings.cache_dir.as_ref().map(Cache::new);
     let run = Run {
         questions,
         client: client.as_ref(),
         provider: settings.provider,
         model: &settings.model,
-        cache: cache.as_ref(),
-        warned: AtomicBool::new(false),
+        cache,
+        write_error: OnceLock::new(),
     };
-    pool.install(|| run.answer(pairs, settings.max_requests, &prepare))
+    let result = pool.install(|| run.answer(pairs, settings.max_requests, &prepare));
+    let cleanup = cache.map_or(Ok(()), Cache::prune::<N>);
+    if let Some(error) = run.write_error.into_inner() {
+        warn(format!(
+            "could not write the triage cache ({error}); verdicts will be asked for again next run"
+        ));
+    } else if let Err(error) = cleanup {
+        warn(format!("could not clean the triage cache ({error})"));
+    }
+    result
 }
 
 /// Submitted excerpts and the result of looking up their digest.
@@ -107,6 +139,8 @@ struct Lookup<const N: usize> {
 pub struct Excerpts<const N: usize> {
     pub first: String,
     pub second: String,
+    /// Front-end source locations when a side spans disjoint regions.
+    pub locations: Option<[String; 2]>,
     pub key: CacheKey<N>,
 }
 
@@ -130,8 +164,8 @@ struct Run<'a> {
     provider: &'a dyn Provider,
     model: &'a str,
     cache: Option<&'a Cache>,
-    /// Set once a cache write has failed and been reported.
-    warned: AtomicBool,
+    /// Report on the calling thread, which can already hold the CLI stderr lock.
+    write_error: OnceLock<std::io::Error>,
 }
 
 /// How many requests a run keeps in flight at once.
@@ -183,7 +217,12 @@ impl Run<'_> {
             var: self.provider.key_var(),
         })?;
         let excerpts = &lookup.excerpts;
-        let state = request::state(pair, &excerpts.first, &excerpts.second);
+        let state = request::state_at(
+            pair,
+            &excerpts.first,
+            &excerpts.second,
+            excerpts.locations.as_ref(),
+        );
         let body = self.provider.encode(state, self.model, self.questions);
         let verdict = self
             .provider
@@ -204,13 +243,8 @@ impl Run<'_> {
         verdict: &Verdict,
     ) {
         let Some(cache) = self.cache else { return };
-        if let Err(e) = cache.put(key, verdict)
-            && !self.warned.swap(true, Ordering::Relaxed)
-        {
-            eprintln!(
-                "warning: could not write the triage cache ({e}); \
-                 verdicts will be asked for again next run"
-            );
+        if let Err(error) = cache.put(key, verdict) {
+            let _ = self.write_error.set(error);
         }
     }
 }

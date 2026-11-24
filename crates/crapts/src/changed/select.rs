@@ -4,11 +4,10 @@ use std::path::{Path, PathBuf};
 use cargo_crap_core::git::{Change, CommitId, GitError, Hunk, Mode, Repo, Side};
 
 use super::section::{Comparison, SkipReason, Skipped};
+use crate::analyze::{Capture, HeadAnalysis};
 use crate::discover::{DiscoveryScope, Placement};
 use crate::{FileAnalysis, InputError, Side as Version, analyze};
-use cargo_crap_core::duplicates::model::FunctionPrint;
 
-pub(crate) type HeadAnalysis = (FileAnalysis, Vec<FunctionPrint>);
 type Heads = HashMap<PathBuf, HeadAnalysis>;
 
 #[derive(Debug)]
@@ -75,7 +74,7 @@ pub(crate) fn select(
     scope: &DiscoveryScope,
     cwd: &Path,
     rev: &str,
-    with_prints: bool,
+    capture: Capture,
 ) -> Result<Selection, InputError> {
     let repo = Repo::open(cwd).map_err(|e| base_error(&e))?;
     // Discovery holds canonical paths, which on Windows carry a verbatim
@@ -120,7 +119,7 @@ pub(crate) fn select(
             .collect::<Vec<_>>()
     });
     let read = read_sides(&repo, &merge_base.commit, planned)?;
-    let (files, heads) = analyze_sides(read, with_prints)?;
+    let (files, heads) = analyze_sides(read, capture)?;
     Ok(Selection {
         comparison: Comparison {
             rev: rev.to_owned(),
@@ -325,7 +324,7 @@ fn read_sides(
 
 fn analyze_sides(
     read: Vec<Read>,
-    with_prints: bool,
+    capture: Capture,
 ) -> Result<(Vec<SelectedFile>, Heads), InputError> {
     let mut files = Vec::with_capacity(read.len());
     let mut heads = HashMap::new();
@@ -342,11 +341,11 @@ fn analyze_sides(
             .transpose()?;
         let head = match read.head {
             Some(side) => {
-                let analysis = crate::analyze::analyze_file(
+                let analysis = HeadAnalysis::read(
                     &side.display,
-                    &side.bytes,
+                    side.bytes,
                     crate::Mode::Strict(Version::Head),
-                    with_prints,
+                    capture,
                 )?;
                 heads.insert(side.display.clone(), analysis);
                 Some(side.display)

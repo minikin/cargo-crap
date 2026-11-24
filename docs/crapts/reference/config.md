@@ -105,6 +105,13 @@ Similarity measures the fraction of distinct subtree hashes that two functions s
 
 Run `crapts --duplicates --dup-threshold 0.75 --print-config` to inspect the effective settings. The `duplicates.min_similarity` entry reads `{"value":0.75,"origin":"flag"}`. Under `duplicates.triage`, an omitted budget reads `{"value":null,"origin":"default"}`.
 
+TypeSafe reads `TYPESAFE_API_KEY`. OpenAI reads `OPENAI_API_KEY`. A cache
+hit uses neither a credential nor a budget slot. With a recorded baseline,
+only new and grown groups are eligible. The confidence floor applies on
+every read, so raising it can turn a cached verdict into `uncertain`.
+A failed request leaves the score and gate intact. The warning identifies
+the cause, and the report still includes the duplicate candidates.
+
 ## Structural signals
 
 These two tables are config-only. Signals default to disabled. The default gate covers `nesting`, `bumps`, `bool_ops` and `stubs`. An empty gate makes all paired signal increases advisory. The four optional limits apply to new functions and default to unset.

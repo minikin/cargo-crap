@@ -42,6 +42,12 @@ summary. A PR comment omits the empty section.
 No candidate duplicates found.
 ```
 
+When triage succeeds, JSON attaches the same `triage` object to the group
+and its pairs. At confidence 0.50 and a floor of 0.51, the object is
+`{"kind":"uncertain","confidence":0.5}`. Markdown and PR comments credit
+the provider and model under the table. Text and Markdown explain a spent
+budget. JSON counts those groups in `untriaged_groups`.
+
 ## text
 
 The default, also accepted as `human`. A Unicode table for a terminal, colored by default when the report goes to a terminal and `NO_COLOR` is unset or empty. A `FORCE_COLOR` other than empty or `0` colors a piped stdout, `NO_COLOR` still wins, and `--output` is never colored. Without `--top` or `--min` it lists every function above the threshold and the ten worst of the rest.

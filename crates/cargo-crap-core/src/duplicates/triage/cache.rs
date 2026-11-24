@@ -1,6 +1,9 @@
 //! Raw verdict files shared by the triage front ends. A read failure is a cache miss.
 //! The caller chooses the cache directory and content digest.
 
+mod retention;
+pub use retention::Retention;
+
 use crate::cache_file::{read_retrying, write_atomic};
 use crate::duplicates::fnv::Fnv1a;
 use crate::duplicates::triage::provider::Provider;
@@ -70,13 +73,34 @@ impl<const N: usize> CacheKey<N> {
 #[derive(Debug, Clone)]
 pub struct Cache {
     dir: PathBuf,
+    retention: Option<Retention>,
 }
 
 impl Cache {
     /// A cache in `dir`, which need not exist until the first
     /// [`put`](Self::put).
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            dir: dir.into(),
+            retention: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_retention(
+        mut self,
+        retention: Retention,
+    ) -> Self {
+        self.retention = Some(retention);
+        self
+    }
+
+    /// Remove expired regular verdict files and evict the oldest excess entries.
+    ///
+    /// # Errors
+    /// Returns the first filesystem error other than a concurrent disappearance.
+    pub fn prune<const N: usize>(&self) -> io::Result<()> {
+        self.retention.map_or(Ok(()), |p| p.prune::<N>(&self.dir))
     }
 
     /// The verdict stored under `key`, or `None` when there is none or it
@@ -87,6 +111,12 @@ impl Cache {
         key: CacheKey<N>,
     ) -> Option<Verdict> {
         let path = self.dir.join(key.file_name());
+        if let Some(policy) = self.retention {
+            let modified = retention::file_time(&path).ok()??;
+            if policy.expired(modified) {
+                return None;
+            }
+        }
         let raw = read_retrying(|| std::fs::read_to_string(&path)).ok()?;
         serde_json::from_str::<Entry>(&raw).ok()?.verdict()
     }
@@ -161,6 +191,101 @@ mod tests {
 
     fn key() -> CacheKey {
         CacheKey::new(&TypeSafe, "fn a() {}", "fn b() {}", "jev-latest", 1)
+    }
+
+    #[test]
+    fn cleanup_ignores_a_vanished_directory_and_reports_an_unreadable_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache");
+        let cache = Cache::new(&path).with_retention(Retention {
+            now: std::time::SystemTime::now(),
+            max_age: std::time::Duration::ZERO,
+            max_entries: 0,
+        });
+        assert!(cache.prune::<32>().is_ok());
+        std::fs::write(path, b"file").unwrap();
+        assert!(cache.prune::<32>().is_err());
+    }
+
+    #[test]
+    fn s52_an_expired_digest_is_a_miss_and_cleanup_evicts_the_oldest_tie() {
+        use std::{
+            fs,
+            time::{Duration, UNIX_EPOCH},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let day = Duration::from_secs(86_400);
+        let now = UNIX_EPOCH + day * 100;
+        let policy = Retention {
+            now,
+            max_age: day * 30,
+            max_entries: 4096,
+        };
+        let cache = Cache::new(dir.path()).with_retention(policy);
+        let key_for = |i: u32| {
+            let mut bytes = [0; 32];
+            bytes[28..].copy_from_slice(&i.to_be_bytes());
+            CacheKey::from_digest(bytes)
+        };
+        for n in 0..4098 {
+            let key = key_for(n);
+            let path = dir.path().join(key.file_name());
+            if n < 4 {
+                cache.put(key, &verdict()).unwrap();
+            } else {
+                fs::write(&path, b"{}").unwrap();
+            }
+            let mtime = match n {
+                0 => now - day * 30,
+                1 | 2 => now - day * 30 + Duration::from_secs(1),
+                _ => now,
+            };
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+        }
+        assert_eq!(cache.get(key_for(0)), None);
+        assert_eq!(cache.get(key_for(1)), Some(verdict()));
+        fs::write(dir.path().join("unrelated.json"), "keep").unwrap();
+        fs::write(dir.path().join("temp.tmp"), "keep").unwrap();
+        let uppercase = dir.path().join(format!("{}.json", "A".repeat(64)));
+        fs::write(&uppercase, "keep").unwrap();
+        let wrong_length = dir.path().join(format!("{}.json", "a".repeat(63)));
+        fs::write(&wrong_length, "keep").unwrap();
+        let directory = dir.path().join(format!("{}.json", "f".repeat(64)));
+        fs::create_dir(&directory).unwrap();
+        #[cfg(unix)]
+        let link = {
+            let link = dir.path().join(format!("{}.json", "b".repeat(64)));
+            std::os::unix::fs::symlink(dir.path().join(key_for(3).file_name()), &link).unwrap();
+            assert_eq!(cache.get(CacheKey::from_digest([0xbb; 32])), None);
+            link
+        };
+        cache.prune::<32>().unwrap();
+        assert_eq!(cache.get(key_for(0)), None);
+        assert_eq!(cache.get(key_for(1)), None);
+        assert_eq!(cache.get(key_for(2)), Some(verdict()));
+        assert_eq!(cache.get(key_for(3)), Some(verdict()));
+        assert!(!dir.path().join(key_for(0).file_name()).exists());
+        assert!(!dir.path().join(key_for(1).file_name()).exists());
+        assert_eq!(
+            fs::metadata(dir.path().join(key_for(2).file_name()))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            now - day * 30 + Duration::from_secs(1)
+        );
+        assert!(directory.is_dir() && uppercase.is_file() && wrong_length.is_file());
+        assert!(dir.path().join("unrelated.json").exists() && dir.path().join("temp.tmp").exists());
+        #[cfg(unix)]
+        assert!(link.is_symlink());
+        let surviving = (0..4098)
+            .filter(|&n| dir.path().join(key_for(n).file_name()).exists())
+            .count();
+        assert_eq!(surviving, 4096);
     }
 
     #[test]

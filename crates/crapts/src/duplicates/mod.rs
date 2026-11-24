@@ -33,7 +33,16 @@ pub(crate) struct Scan {
     pub pairs: Vec<DuplicatePair>,
     pub groups: Vec<DuplicateGroup>,
     pub context: DuplicateContext,
+    pub judgments: Option<Judgments>,
     pub comparison: Option<cargo_crap_core::duplicates::novelty::Comparison>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Judgments {
+    pub assessments: Vec<Option<cargo_crap_core::duplicates::verdict::Assessment>>,
+    pub skipped: usize,
+    pub provider: &'static str,
+    pub model: String,
 }
 
 fn detect(
@@ -53,6 +62,25 @@ fn detect(
 }
 
 impl Scan {
+    pub fn extras(&self) -> cargo_crap_core::run::RenderExtras<'_> {
+        cargo_crap_core::run::RenderExtras {
+            duplicates: Some(&self.pairs),
+            groups: Some(&self.groups),
+            novelty: self.comparison.as_ref(),
+            duplicate_context: Some(&self.context),
+            triage: self.judgments.as_ref().map(|j| j.assessments.as_slice()),
+            untriaged: self.judgments.as_ref().map_or(0, |j| j.skipped),
+            triaged_by: self
+                .judgments
+                .as_ref()
+                .map(|j| cargo_crap_core::report::TriagedBy {
+                    provider: j.provider,
+                    model: &j.model,
+                }),
+            ..Default::default()
+        }
+    }
+
     pub fn collect(
         prints: Vec<FunctionPrint>,
         files: &[FileAnalysis],
@@ -98,6 +126,7 @@ impl Scan {
             groups,
             context,
             comparison: None,
+            judgments: None,
         }
     }
 }

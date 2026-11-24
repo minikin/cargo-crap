@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 mod scoring;
 mod settings;
+mod triage;
 use settings::Effective;
 
 const VALUES: &[(&str, &str, &str)] = &[

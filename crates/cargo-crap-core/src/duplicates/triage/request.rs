@@ -37,9 +37,18 @@ pub fn state(
     source_a: &str,
     source_b: &str,
 ) -> Value {
+    state_at(pair, source_a, source_b, None)
+}
+
+pub(super) fn state_at(
+    pair: &DuplicatePair,
+    source_a: &str,
+    source_b: &str,
+    locations: Option<&[String; 2]>,
+) -> Value {
     json!({
-        "function_a": side(&pair.first, source_a),
-        "function_b": side(&pair.second, source_b),
+        "function_a": side(&pair.first, source_a, locations.map(|l|l[0].as_str())),
+        "function_b": side(&pair.second, source_b, locations.map(|l|l[1].as_str())),
         "structural_similarity": pair.score,
     })
 }
@@ -47,10 +56,11 @@ pub fn state(
 fn side(
     at: &Location,
     source: &str,
+    location: Option<&str>,
 ) -> Value {
     json!({
         "name": at.name,
-        "location": format!("{}:{}-{}", at.file.display(), at.start_line, at.end_line),
+        "location": location.map_or_else(|| format!("{}:{}-{}", at.file.display(), at.start_line, at.end_line), str::to_owned),
         "source": source,
     })
 }

@@ -62,7 +62,7 @@ pub(crate) fn collect(
         .collect()
 }
 
-fn last_line(span: SourceSpan) -> u32 {
+pub(crate) fn last_line(span: SourceSpan) -> u32 {
     if span.end.column == 0 && span.end.line > span.start.line {
         span.end.line - 1
     } else {

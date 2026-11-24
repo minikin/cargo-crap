@@ -119,6 +119,10 @@ pub struct DiscoveryScope {
 }
 
 impl DiscoveryScope {
+    pub(crate) fn cache_boundary(&self) -> &Path {
+        self.worktree.root.as_deref().unwrap_or(&self.cwd)
+    }
+
     #[must_use]
     pub(crate) fn anchored_prefix(&self) -> Option<&Path> {
         self.worktree.root.as_ref().map(|_| self.repo_prefix())

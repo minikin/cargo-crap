@@ -152,6 +152,36 @@ pub fn analyze(
     analyze_file(path, bytes, mode, false).map(|(file, _)| file)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Capture {
+    Scores,
+    Prints,
+    Excerpts,
+}
+
+#[derive(Debug)]
+pub(crate) struct HeadAnalysis {
+    pub file: FileAnalysis,
+    pub prints: Vec<cargo_crap_core::duplicates::model::FunctionPrint>,
+    pub source: Option<Vec<u8>>,
+}
+
+impl HeadAnalysis {
+    pub fn read(
+        path: &Path,
+        bytes: Vec<u8>,
+        mode: Mode,
+        capture: Capture,
+    ) -> Result<Self, InputError> {
+        let (file, prints) = analyze_file(path, &bytes, mode, capture != Capture::Scores)?;
+        Ok(Self {
+            file,
+            prints,
+            source: (capture == Capture::Excerpts).then_some(bytes),
+        })
+    }
+}
+
 pub(crate) fn analyze_file(
     path: &Path,
     bytes: &[u8],
