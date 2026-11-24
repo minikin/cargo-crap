@@ -193,6 +193,22 @@ Harder to maintain:
 CRAP scores never change. [Structural signals](docs/explanation/signals.md)
 explains what each one counts and why there is no single score.
 
+## crapts for TypeScript
+
+crapts brings the same score to JavaScript and TypeScript. It reads the LCOV or Istanbul coverage that Vitest, Jest, nyc or c8 writes, and shares cargo-crap's report formats and baseline gate. It has its own GitHub Action. It also gates the functions a pull request changes without a saved baseline. The npm package needs no install step:
+
+```bash
+npx @minikin/crapts
+```
+
+Without arguments it asks for a coverage file. Point it at one:
+
+```bash
+npx @minikin/crapts --coverage coverage/lcov.info
+```
+
+[Install options](docs/crapts/install.md) cover npm, `cargo binstall` and source builds. The [crapts documentation](docs/crapts/README.md) has the guides and the reference.
+
 ## Documentation
 
 - Guides: [integrating with CI](docs/guides/ci.md), [the GitHub Action](docs/guides/github-action.md),
