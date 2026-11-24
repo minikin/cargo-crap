@@ -10,6 +10,7 @@ mod discover;
 pub mod fingerprint;
 mod lines;
 mod names;
+mod signals;
 
 pub use analyze::{FileAnalysis, FileStatus, InputError, Mode, Row, Side, analyze};
 pub use discover::{

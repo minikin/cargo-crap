@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use cargo_crap_core::signals::Measured;
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
@@ -56,6 +57,7 @@ pub struct Row {
     pub cyclomatic: u32,
     pub is_arrow: bool,
     pub fingerprint: Fingerprint,
+    pub measured: Measured,
 }
 
 #[derive(Debug)]
@@ -189,8 +191,9 @@ pub fn analyze(
     let mut collector = Collector::new(path, source, &parsed.tokens);
     collector.visit_program(&parsed.program);
     let prints = fingerprint::compute(source, &parsed.tokens, &parsed.program, &collector.regions);
-    for (row, print) in collector.rows.iter_mut().zip(prints) {
+    for ((row, print), body) in collector.rows.iter_mut().zip(prints).zip(collector.bodies) {
         row.fingerprint = print;
+        row.measured = body.finish(row.span, &collector.lines);
     }
     collector.rows.sort_by_key(|row| row.span.start);
     crate::names::assign_ordinals(collector.rows.iter_mut().map(|row| &mut row.name));
@@ -216,6 +219,7 @@ struct Collector<'s> {
     lines: LineIndex,
     rows: Vec<Row>,
     regions: Vec<Regions>,
+    bodies: Vec<crate::signals::Body>,
     owner: Option<usize>,
     names: Names,
     method: Option<Method>,
@@ -269,6 +273,7 @@ impl<'s> Collector<'s> {
             lines: LineIndex::new(source),
             rows: Vec::new(),
             regions: Vec::new(),
+            bodies: Vec::new(),
             owner: None,
             names: Names::default(),
             method: None,
@@ -293,8 +298,10 @@ impl<'s> Collector<'s> {
             cyclomatic: 1,
             is_arrow,
             fingerprint: Fingerprint::UNSET,
+            measured: Measured::default(),
         });
         self.regions.push(Regions::default());
+        self.bodies.push(crate::signals::Body::default());
         index
     }
 
@@ -388,6 +395,7 @@ impl<'s> Collector<'s> {
         };
         self.rows[row].body_regions.push(self.lines.span(span));
         self.regions[row].selected.push(span);
+        self.bodies[row].add_chunk(span);
         self.with_owner(row, |v| {
             v.record_statement(span);
             v.visit_expression(value);
@@ -781,10 +789,9 @@ impl<'a> Visit<'a> for Collector<'_> {
         if let AstKind::Directive(directive) = kind {
             self.record_statement(directive.span);
         }
-        if let Some(owner) = self.owner
-            && is_decision(kind)
-        {
-            self.rows[owner].cyclomatic += 1;
+        if let Some(owner) = self.owner {
+            self.bodies[owner].observe(kind);
+            self.rows[owner].cyclomatic += u32::from(is_decision(kind));
         }
     }
 
@@ -837,6 +844,9 @@ impl<'a> Visit<'a> for Collector<'_> {
         self.in_callable(name, arrow.span, arrow.body.span(), true, None, |visitor| {
             if let Some(expr) = arrow.body.as_expression() {
                 visitor.record_statement(expr.span());
+                if let Some(row) = visitor.owner {
+                    visitor.bodies[row].add_chunk(expr.span());
+                }
             }
             walk::walk_arrow_function_expression(visitor, arrow);
         });
