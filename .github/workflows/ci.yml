@@ -289,6 +289,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p crapts --all-targets
+      - run: cargo test --locked -p crapts --all-targets --features triage
 
   audit:
     name: Security audit

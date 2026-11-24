@@ -14,7 +14,9 @@ use crate::duplicates::triage::provider::{
 use crate::duplicates::triage::verdict::{
     DIVERGENCE_QUESTION, KIND_QUESTION, Kind, WORTH_QUESTION,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::io;
 use std::path::Path;
 
@@ -23,32 +25,6 @@ use std::path::Path;
 /// the state's similarity score is computed. It is part of the cache key, so
 /// a verdict never outlives the question that produced it.
 pub const QUESTION_SET_VERSION: u32 = 1;
-
-/// The worth-extracting levels in the order they are sent, each beside the
-/// label the report prints for it. One table, so the two orders cannot drift
-/// apart.
-pub const WORTH_LEVELS: [(&str, &str); 4] = [
-    (
-        "leave-it",
-        "The two do different jobs, or their shape is imposed from outside; one shared \
-         function would couple code that changes for different reasons.",
-    ),
-    (
-        "optional",
-        "The two share a few lines of real logic, but it is short and stable, so a shared \
-         function would save little and cost an extra indirection.",
-    ),
-    (
-        "worthwhile",
-        "The two share a substantial block of logic that is likely to change; a shared \
-         function would remove real repetition.",
-    ),
-    (
-        "should-be-one",
-        "The two are the same routine in all but name; keeping both means every change has \
-         to be made twice.",
-    ),
-];
 
 const KIND_INSTRUCTIONS: &str = "`function_a` and `function_b` are two Rust functions that a \
      structural clone detector flagged as similar; `structural_similarity` is its score from 0 \
@@ -99,31 +75,7 @@ pub fn body(
     provider.encode(state(pair, source_a, source_b), model, &QUESTIONS)
 }
 
-/// What the model judges: each side's name, location and source, plus the
-/// similarity score that made them a pair.
-#[must_use]
-pub fn state(
-    pair: &DuplicatePair,
-    source_a: &str,
-    source_b: &str,
-) -> Value {
-    json!({
-        "function_a": side(&pair.first, source_a),
-        "function_b": side(&pair.second, source_b),
-        "structural_similarity": pair.score,
-    })
-}
-
-fn side(
-    at: &Location,
-    source: &str,
-) -> Value {
-    json!({
-        "name": at.name,
-        "location": format!("{}:{}-{}", at.file.display(), at.start_line, at.end_line),
-        "source": source,
-    })
-}
+pub use cargo_crap_core::duplicates::triage::request::{WORTH_LEVELS, state};
 
 /// The three questions every provider asks, keyed by the ids the verdict
 /// decodes.

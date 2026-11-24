@@ -252,7 +252,6 @@ dependencies = [
  "tempfile",
  "toml",
  "unicode-width",
- "ureq",
 ]
 
 [[package]]
@@ -266,10 +265,12 @@ dependencies = [
  "owo-colors",
  "percent-encoding",
  "proptest",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",
  "unicode-width",
+ "ureq",
 ]
 
 [[package]]

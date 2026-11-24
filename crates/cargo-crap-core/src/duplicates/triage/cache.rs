@@ -1,21 +1,8 @@
-//! The on-disk verdict cache, keyed by the content it judged.
-//!
-//! One JSON file per pair under `target/cargo-crap/triage/`: gitignored with
-//! the rest of `target/`, cleaned by `cargo clean`, machine-local. The key
-//! covers both function bodies, the model, the provider's cache namespace
-//! and the question-set version, so an unchanged pair costs nothing after
-//! its first run and a changed body, model, provider or question never
-//! reuses an old verdict. `TypeSafe` has no namespace: its keys predate
-//! providers and stay as they were, and every other provider's keys carry
-//! one, so no two providers share a key. A cache that cannot be read is
-//! a miss, never an error: the worst it can do is ask the API again.
-//!
-//! Entries are never evicted: an edited function, a new model or a bumped
-//! question set leaves the old entries behind, unread. `cargo clean` is the
-//! sweep, as it is for everything else under `target/`.
+//! Raw verdict files shared by the triage front ends. A read failure is a cache miss.
+//! The caller chooses the cache directory and content digest.
 
-use crate::cache::file::{read_retrying, write_atomic};
-use crate::duplicates::fingerprint::Fnv1a;
+use crate::cache_file::{read_retrying, write_atomic};
+use crate::duplicates::fnv::Fnv1a;
 use crate::duplicates::triage::provider::Provider;
 use crate::duplicates::triage::verdict::{Kind, Verdict, WorthExtracting};
 use serde::{Deserialize, Serialize};
@@ -29,18 +16,9 @@ pub fn default_dir(target_dir: &Path) -> PathBuf {
     target_dir.join("cargo-crap").join("triage")
 }
 
-/// What a cached verdict is keyed by: FNV-1a over both bodies, the model,
-/// the provider's cache namespace when it has one, and the question-set
-/// version. Stable across processes and toolchains, unlike `DefaultHasher`.
-///
-/// The request also carries each side's location and the similarity score.
-/// A location is context, not content: a function that moved is the same
-/// function. Anything else that changes what the model is asked, including
-/// how the similarity score is computed, must bump
-/// [`QUESTION_SET_VERSION`](super::request::QUESTION_SET_VERSION), or old
-/// verdicts are reused for a different question.
+/// A fixed-width content digest. Rust uses its original eight-byte FNV-1a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CacheKey(u64);
+pub struct CacheKey<const N: usize = 8>([u8; N]);
 
 impl CacheKey {
     /// The key for a verdict on `source_a` and `source_b` by `provider`'s
@@ -53,7 +31,7 @@ impl CacheKey {
         model: &str,
         version: u32,
     ) -> Self {
-        let mut hasher = Fnv1a::new();
+        let mut hasher = Fnv1a::default();
         // Length-prefixed, so a boundary moving between fields ("ab" + "c"
         // against "a" + "bc") changes the key.
         let namespace = provider.cache_namespace();
@@ -62,13 +40,27 @@ impl CacheKey {
             hasher.write(field.as_bytes());
         }
         hasher.write(&version.to_le_bytes());
-        Self(hasher.finish())
+        Self(hasher.finish().to_be_bytes())
+    }
+}
+
+impl<const N: usize> CacheKey<N> {
+    /// A content digest computed by the calling front end.
+    #[must_use]
+    pub fn from_digest(bytes: [u8; N]) -> Self {
+        Self(bytes)
     }
 
     /// The entry's file name within the cache directory.
     #[must_use]
     pub fn file_name(self) -> String {
-        format!("{:016x}.json", self.0)
+        use std::fmt::Write;
+        let mut name = String::new();
+        for byte in self.0 {
+            write!(name, "{byte:02x}").expect("writing to a String");
+        }
+        name.push_str(".json");
+        name
     }
 }
 
@@ -88,9 +80,9 @@ impl Cache {
     /// The verdict stored under `key`, or `None` when there is none or it
     /// cannot be trusted: unreadable, not JSON, or out of range.
     #[must_use]
-    pub fn get(
+    pub fn get<const N: usize>(
         &self,
-        key: CacheKey,
+        key: CacheKey<N>,
     ) -> Option<Verdict> {
         let path = self.dir.join(key.file_name());
         let raw = read_retrying(|| std::fs::read_to_string(&path)).ok()?;
@@ -102,9 +94,9 @@ impl Cache {
     /// # Errors
     ///
     /// When the directory cannot be created or the entry cannot be written.
-    pub fn put(
+    pub fn put<const N: usize>(
         &self,
-        key: CacheKey,
+        key: CacheKey<N>,
         verdict: &Verdict,
     ) -> io::Result<()> {
         let entry = serde_json::to_string(&Entry::from(verdict)).map_err(io::Error::other)?;
@@ -317,7 +309,7 @@ mod tests {
             write(field.as_bytes());
         }
         write(&version.to_le_bytes());
-        CacheKey(hash)
+        CacheKey(hash.to_be_bytes())
     }
 
     proptest! {

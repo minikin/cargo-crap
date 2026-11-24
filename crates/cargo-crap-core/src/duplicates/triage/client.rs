@@ -92,14 +92,24 @@ impl Settings {
     /// base-URL variables read through `lookup`, so tests can supply an
     /// environment without mutating the process's. No other provider's
     /// variables are read. An empty value counts as unset. Verdicts are
-    /// cached under `target_dir`, the directory
-    /// [`target_dir`](crate::cache::target::target_dir) resolves for every
+    /// cached under `target_dir`, the directory the Rust front end resolves for every
     /// cache (spec 10), so `cargo clean` sweeps them; `None` caches nothing.
     #[must_use]
     pub fn from_lookup(
         provider: &'static dyn Provider,
         model: &str,
         target_dir: Option<&Path>,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Self {
+        Self::for_cache(provider, model, target_dir.map(cache::default_dir), lookup)
+    }
+
+    /// Read provider settings while using the caller's resolved verdict directory.
+    #[must_use]
+    pub fn for_cache(
+        provider: &'static dyn Provider,
+        model: &str,
+        cache_dir: Option<PathBuf>,
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Self {
         let set = |name| lookup(name).filter(|value: &String| !value.is_empty());
@@ -113,7 +123,7 @@ impl Settings {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
             backoff: DEFAULT_BACKOFF,
-            cache_dir: target_dir.map(cache::default_dir),
+            cache_dir,
             max_requests: None,
         }
     }

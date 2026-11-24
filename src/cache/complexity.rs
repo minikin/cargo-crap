@@ -165,7 +165,7 @@ impl FileRecord {
 
 /// FNV-1a over `bytes`, as 16 hex digits.
 fn content_hash(bytes: &[u8]) -> String {
-    let mut hasher = Fnv1a::new();
+    let mut hasher = Fnv1a::default();
     hasher.write(bytes);
     format!("{:016x}", hasher.finish())
 }

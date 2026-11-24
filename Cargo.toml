@@ -120,13 +120,12 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 quote.workspace = true
 syn = { workspace = true, features = ["full", "visit", "printing"] }
 toml = { workspace = true, features = ["parse"] }
-ureq = { workspace = true, optional = true, features = ["rustls"] }
 
 [features]
 # Duplicate-pair triage by a TypeSafe model (spec 30). Off by default: a plain
 # `cargo install cargo-crap` compiles no HTTP client and no TLS stack. The
 # release binaries are built with it.
-triage = ["dep:ureq"]
+triage = ["cargo-crap-core/triage"]
 
 [dev-dependencies]
 tempfile.workspace = true
