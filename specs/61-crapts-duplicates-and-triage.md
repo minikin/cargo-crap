@@ -1,6 +1,6 @@
 # Spec 61: Structural duplicates and triage for crapts
 
-**Status:** Draft
+**Status:** Approved
 **Effort:** Large
 **Module:** `crates/crapts/src/` and `crates/cargo-crap-core/src/`. Rust adapters live in `src/duplicates/` and `src/cache/`. Contracts and delivery cover `schemas/crapts/`, `schemas/duplicates-v1.json`, `.github/workflows/` and `docs/crapts/`.
 
