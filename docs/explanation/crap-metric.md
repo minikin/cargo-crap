@@ -17,7 +17,6 @@ Properties of the formula:
 
 - A trivial function (CC=1, 100% covered) scores exactly 1.0, the lower bound.
 - At 100% coverage the quadratic term collapses and **CRAP equals CC**.
-  Matching values in those two columns mean the function is fully covered.
   Tests cap the damage, but the complexity itself remains.
 - Above CC ≈ 30 no amount of coverage keeps a function under the default
   threshold of 30, since at full coverage the score is CC itself.

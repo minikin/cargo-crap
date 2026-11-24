@@ -5,6 +5,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+ACTION = Path("actions/crapts/action.yml")
+
 PLATFORMS = {
     "@minikin/crapts-" + suffix
     for suffix in (
@@ -46,6 +48,30 @@ def wrapper_at(version):
     return wrapper
 
 
+def action_at(text, version, replacement):
+    lines = text.splitlines(keepends=True)
+    inputs = version_input = False
+    matches = 0
+    for i, line in enumerate(lines):
+        key = line.partition("#")[0].rstrip()
+        if not key:
+            continue
+        if not key.startswith(" "):
+            inputs = key == "inputs:"
+            version_input = False
+        elif inputs and not key.startswith("    "):
+            version_input = key == "  version:"
+        elif version_input and key.startswith("    default:"):
+            value = key.removeprefix("    default:").strip()
+            if value not in (version, '"' + version + '"', "'" + version + "'"):
+                raise ValueError(f"{ACTION}: version pin {value} does not match {version}")
+            lines[i] = line.replace(version, replacement, 1)
+            matches += 1
+    if matches != 1:
+        raise ValueError(f"{ACTION}: expected one literal inputs.version.default pin")
+    return "".join(lines)
+
+
 def check_tag(product, tag):
     path, prefix = {
         "cargo-crap": ("Cargo.toml", "v"),
@@ -59,6 +85,7 @@ def check_tag(product, tag):
         raise ValueError(f"{path} does not match {tag}")
     if product == "crapts":
         wrapper_at(version)
+        action_at(ACTION.read_text(), version, version)
     output = (
         f"version={version}\nmajor={major}\nis_prerelease={str(prerelease).lower()}\n"
     )

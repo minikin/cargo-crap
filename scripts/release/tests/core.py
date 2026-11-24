@@ -367,6 +367,8 @@ class CoreRelease(unittest.TestCase):
                 "optionalDependencies": dict.fromkeys(PACKAGES, version),
             }
             self.write("npm/crapts/package.json", json.dumps(pkg))
+            action = 'inputs:\n  version:\n    default: "' + version + '"\n'
+            self.write("actions/crapts/action.yml", action)
             output = self.base / "outputs"
             output.write_text("")
             self.env["GITHUB_OUTPUT"] = str(output)
@@ -380,6 +382,11 @@ class CoreRelease(unittest.TestCase):
                 ],
             )
             self.assertEqual(output.read_text().strip(), result)
+            self.write("actions/crapts/action.yml", action.replace(version, "0.0.9"))
+            output.write_text("")
+            self.helper("check-tag", "crapts", "crapts-v" + version, code=1, message="actions/crapts/action.yml")
+            self.assertEqual(output.read_bytes(), b"")
+            self.write("actions/crapts/action.yml", action)
         for tag in [
             "crapts-v1",
             "v1.0.0",

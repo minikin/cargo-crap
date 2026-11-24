@@ -24,48 +24,51 @@ Actions both default from the environment (`GITHUB_SERVER_URL` plus
 Elsewhere, pass a base URL such as `https://github.com/owner/repo`.
 `--commit-ref` alone does nothing without it.
 
-The job below expects `lcov.info` and a baseline, produced as in [Regression gate](regression-gate.md).
-With `--duplicates`, record the baseline with `--duplicates` too, so the
-comment lists only the duplicates the pull request adds.
+The steps below go at the end of the `crap` job in
+[Regression gate](regression-gate.md), which produces `lcov.info` and
+downloads the baseline. Add `pull-requests: write` to that job's
+`permissions`. They run after a failed regression check too, so the comment
+says what failed. A fork's token cannot comment, so on a fork pull request
+the report goes to the job summary instead. With `--duplicates`, record the
+baseline with `--duplicates` too, so the comment lists only the duplicates
+the pull request adds.
 
 ```yaml
-self_score:
-  permissions:
-    pull-requests: write
-  steps:
-    # ...generate lcov.info and download the baseline as above...
+- name: Generate PR comment
+  id: comment
+  if: always() && github.event_name == 'pull_request' && steps.download.outcome == 'success'
+  run: |
+    # Exit 1 is a tripped gate in .cargo-crap.toml, after the report was written.
+    cargo crap \
+      --lcov lcov.info \
+      --baseline "$RUNNER_TEMP/crap-baseline/baseline.json" \
+      --format pr-comment \
+      --output crap-comment.md || [ "$?" -eq 1 ]
 
-    - name: Generate PR comment
-      if: github.event_name == 'pull_request'
-      run: |
-        cargo crap \
-          --lcov lcov.info \
-          --baseline baseline.json \
-          --format pr-comment \
-          --output crap-comment.md
-
-    - name: Post or update PR comment
-      if: github.event_name == 'pull_request'
-      uses: actions/github-script@v8
-      with:
-        script: |
-          const fs = require('fs');
-          const body = fs.readFileSync('crap-comment.md', 'utf8');
-          const marker = '<!-- cargo-crap-report -->';
-          const { data: comments } = await github.rest.issues.listComments({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            issue_number: context.issue.number,
-          });
-          const existing = comments.find(c => c.body.startsWith(marker));
-          const args = {
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body,
-          };
-          if (existing) {
-            await github.rest.issues.updateComment({ ...args, comment_id: existing.id });
-          } else {
-            await github.rest.issues.createComment({ ...args, issue_number: context.issue.number });
-          }
+- name: Post or update PR comment
+  if: always() && steps.comment.outcome == 'success'
+  uses: actions/github-script@v8
+  with:
+    script: |
+      const fs = require('fs');
+      const body = fs.readFileSync('crap-comment.md', 'utf8');
+      const marker = '<!-- cargo-crap-report -->';
+      const firstLine = text => (text || '').split('\n', 1)[0].trim();
+      const { owner, repo } = context.repo;
+      const issue_number = context.issue.number;
+      try {
+        const comments = await github.paginate(github.rest.issues.listComments, {
+          owner, repo, issue_number, per_page: 100,
+        });
+        const existing = comments.find(c => firstLine(c.body) === marker);
+        if (existing) {
+          await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+        } else {
+          await github.rest.issues.createComment({ owner, repo, issue_number, body });
+        }
+      } catch (error) {
+        if (error.status !== 403) throw error;
+        core.warning('Could not comment on the pull request: the report is in the job summary.');
+        await core.summary.addRaw(body).write();
+      }
 ```

@@ -20,7 +20,8 @@ jobs:
   # read the schemas and the proptest seeds, so those count as Rust too,
   # and the gate scripts under scripts/gates/ count as both: the gates job
   # tests them, and the mutants job runs the diff script. `docs` gates the
-  # one test that checks the README and docs/ against real runs.
+  # docs test targets of cargo-crap and crapts, which check the README and
+  # docs/ against real runs.
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
@@ -38,6 +39,7 @@ jobs:
         with:
           filters: |
             rust:
+              - 'actions/crapts/action.yml'
               - 'npm/crapts/package.json'
               - '**/*.rs'
               # Both: the root manifest does not depend on how picomatch reads
@@ -218,8 +220,8 @@ jobs:
       - name: Doc tests
         run: cargo test --doc --workspace --all-features --locked
 
-  # A docs-only change runs the docs test alone. When Rust changed too, the
-  # test job above already runs it, unless the change is to this file.
+  # A docs-only change runs the docs tests alone. When Rust changed too, the
+  # test job above already runs them, unless the change is to this file.
   docs:
     name: Docs
     needs: [changes]
@@ -233,7 +235,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-nextest
       - name: Docs match real runs
-        run: cargo nextest run --test docs
+        run: cargo nextest run --workspace --test docs
 
   lints:
     name: Lints

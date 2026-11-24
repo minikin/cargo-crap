@@ -160,13 +160,15 @@ there is any:
 ```
 
 - Record the baseline with the same `--path` or `--workspace` as the run
-  that compares against it: files are matched by the paths both runs
-  print.
+  that compares against it: the baseline's exclude filter and `-p`
+  scoping expect one root.
 - A function is the same on both sides when its name matches in the same
   file, whatever its lines, so inserting lines above a candidate does not
-  make it new. A function moved to another file keeps its candidates when
-  no other function of that name left or arrived. A renamed function is
-  new.
+  make it new. A file seen under another root (`./src/a.rs` against
+  `/app/src/a.rs`) pairs with the same-named function whose file shares
+  the longest path suffix, when that match is unique both ways. A function
+  moved to another file keeps its candidates when no other function of
+  that name left or arrived. A renamed function is new.
 - A group is unchanged when one baseline group held every member, and
   grown when one held two or more. `grew from N` gives the most of its
   members one baseline group held, so a group that lost one member and
@@ -182,6 +184,18 @@ there is any:
 - A baseline recorded without `--duplicates` has nothing to compare with:
   every candidate is shown, as without a baseline, and stderr says to
   record the baseline with `--duplicates`.
+
+## Harder to maintain
+
+*Since 0.10.0.*
+
+With `[signals] enabled = true` and `--baseline`, `human`, `markdown` and
+`pr-comment` add a "Harder to maintain" section when the rows shown carry a
+reason: one row per reason on those rows, gated ones first. `--top` and
+`--min` can hide a reason that still fails the gate. `github` adds one
+annotation per gated signal reason, and `json` carries the reasons as
+`reasons` on each delta entry that has any. See
+[Structural signals](../explanation/signals.md).
 
 ## SARIF output
 
@@ -199,3 +213,5 @@ rust-analyzer, and most static-analysis tooling.
   full `runs[0].tool.driver` envelope.
 - `--baseline` is rejected with `--format sarif`, since SARIF describes
   findings, not deltas. Use `--format json` for delta output.
+  `--summary` replaces the SARIF document with the text summary, so
+  `--summary --baseline` is accepted.

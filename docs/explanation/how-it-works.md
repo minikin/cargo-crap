@@ -16,7 +16,7 @@ join between them has its own integration test.
         └──────────┬──────────────┘
                    ▼
              ┌──────────┐
-             │  merge   │  ← path normalization lives here
+             │  merge   │  ← coverage joined to functions by path
              └─────┬────┘
                    ▼
              ┌──────────┐     ┌───────┐
@@ -35,6 +35,11 @@ join between them has its own integration test.
           │ duplicates │  ← second pass, only on --duplicates
           └────────────┘
 ```
+
+The coverage reader, path matching, score, delta and report live in the
+`cargo-crap-core` crate, which [crapts](../crapts/README.md) shares. `merge`
+and the passes that read Rust with `syn`, structural signals included, stay
+in cargo-crap.
 
 See [The path-matching problem](path-matching.md) for the merge step, and
 [What gets a score](../reference/complexity.md) for the complexity pass.

@@ -623,6 +623,8 @@ fn cargo_crap_s_published_package_holds_no_core_and_no_gate_script() {
         .iter()
         .filter(|p| {
             p.starts_with("crates/")
+                || p.starts_with("actions/")
+                || p.starts_with("scripts/action/crapts/")
                 || p.starts_with("scripts/gates/")
                 || p.starts_with("scripts/release/")
                 || p.starts_with("npm/")
@@ -767,6 +769,22 @@ fn wrapper_version_stays_synchronized_with_crates_crapts() {
     let member = manifest(&root().join("crates/crapts"));
     let version = member["package"]["version"].as_str().unwrap();
     assert_eq!(wrapper["version"], version);
+    let action = std::fs::read_to_string(root().join("actions/crapts/action.yml")).unwrap();
+    let pin = action
+        .lines()
+        .skip_while(|line| *line != "inputs:")
+        .skip(1)
+        .take_while(|line| line.is_empty() || line.starts_with(' '))
+        .skip_while(|line| *line != "  version:")
+        .skip(1)
+        .take_while(|line| line.starts_with("    "))
+        .find_map(|line| line.strip_prefix("    default: "))
+        .expect("actions/crapts/action.yml lacks inputs.version.default")
+        .trim_matches(['\'', '"']);
+    assert_eq!(
+        pin, version,
+        "actions/crapts/action.yml version pin mismatch"
+    );
     let deps = wrapper["optionalDependencies"].as_object().unwrap();
     assert_eq!(deps.len(), 6);
     for suffix in [

@@ -108,6 +108,36 @@ class ReleaseWorkflows < Minitest::Test
     assert_includes alpine.fetch('run'), '--expect-package @minikin/crapts-linux-x64-musl'
     assert_includes commands(jobs['promote-npm']), 'npm dist-tag add'
   end
+  def test_tagged_action_smokes_gate_both_promotions
+    jobs = workflow('release-crapts').fetch('jobs')
+    smoke = jobs.fetch('crapts-action-smoke')
+    assert_equal %w[npm-smoke preflight], edges(jobs, 'crapts-action-smoke').sort
+    assert_nil smoke['if']
+    assert_equal({'contents' => 'read'}, smoke.fetch('permissions'))
+    assert_equal %w[macos-latest ubuntu-latest windows-latest], smoke.dig('strategy', 'matrix', 'os').sort
+    assert_equal '${{ matrix.os }}', smoke.fetch('runs-on')
+    assert_equal '${{ needs.preflight.outputs.version }}', smoke.dig('env', 'VERSION')
+    setup = smoke.fetch('steps').index { |s| s['uses'].to_s.start_with?('actions/setup-node@') && s.dig('with', 'node-version').to_s == '24' }
+    fixture = smoke.fetch('steps').index { |s| s['id'] == 'fixture' }
+    assert_operator setup, :<, fixture
+    checkout = smoke.fetch('steps').find { |s| s['uses'].to_s.start_with?('actions/checkout@') }
+    assert_equal '${{ github.sha }}', checkout.dig('with', 'ref')
+    actions = smoke.fetch('steps').select { |s| s['uses'] == './actions/crapts' }
+    assert_equal %w[push-score pr-score], actions.map { |s| s['id'] }
+    actions.each { |s| assert_empty s.fetch('with').keys & %w[version package] }
+    assert_equal ['pr-score'], smoke.fetch('steps').select { |s| s['continue-on-error'] }.map { |s| s['id'] }
+    assert_match(/smoke.py pr/, smoke.fetch('steps').last.fetch('run'))
+    %w[promote-npm move-crapts-v1].each do |name|
+      assert_equal %w[crapts-action-smoke npm-smoke preflight], edges(jobs, name).sort
+      assert_includes jobs[name].fetch('if'), "needs.preflight.outputs.is_prerelease == 'false'"
+      refute_match(/always\(|failure\(|continue-on-error/, jobs[name].inspect)
+    end
+    refute_includes jobs['promote-npm']['if'], 'major'
+    tag = jobs.fetch('move-crapts-v1')
+    assert_equal({'contents' => 'write'}, tag.fetch('permissions'))
+    %w[0 1].each { |major| assert_includes tag.fetch('if'), "needs.preflight.outputs.major == '#{major}'" }
+    assert_includes commands(tag), 'move-tag.sh'
+  end
   def test_frontend_publication_skips_existing_versions_and_fails_closed_on_registry_errors
     script = File.expand_path('../publish-frontend.sh', __dir__)
     Dir.mktmpdir do |dir|
