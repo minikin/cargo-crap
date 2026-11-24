@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `crapts --duplicates` finds matching JavaScript and TypeScript functions without a coverage file. A saved JSON baseline identifies new and grown groups. Release binaries and the npm launcher include optional TypeSafe and OpenAI triage with cached verdicts and a per-run request budget.
+
 - Enable structural signals in `.crapts.toml` to compare JS and TS functions
   against a saved baseline.
 - `cargo_crap_core::run::PreparedReport` lets a front end render several

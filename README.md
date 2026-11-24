@@ -38,7 +38,7 @@ fail a build when a score crosses the threshold or goes up.
 | Run | `cargo crap --lcov lcov.info` | `crapts --coverage coverage/lcov.info` |
 | Pull request gate | a saved baseline | a saved baseline, or `--base` with none |
 | Structural signals | yes | yes |
-| Duplicates and triage | yes | no |
+| Duplicates and triage | yes | yes |
 
 ```text
 CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)
@@ -112,7 +112,7 @@ The npm package needs no install step:
 npx @minikin/crapts
 ```
 
-Without arguments it exits 2 and asks for a coverage file. Point it at one:
+Without arguments it exits 2. To score with coverage, pass the LCOV file.
 
 ```bash
 npx @minikin/crapts --coverage coverage/lcov.info
@@ -128,6 +128,10 @@ npx @minikin/crapts --coverage coverage/lcov.info --base main --fail-changed
 It exits 1 when the branch adds a function above the threshold or makes one
 above it more complex. [The changed-function
 gate](docs/crapts/guides/changed-gate.md) explains how functions are paired.
+Run `npx @minikin/crapts --duplicates` for a coverage-free scan. The
+[duplicate guide](docs/crapts/guides/duplicates.md) shows how to compare a
+branch with a saved report and budget TypeSafe or OpenAI requests.
+
 [Install options](docs/crapts/install.md) cover npm, `cargo binstall` and
 source builds. The [crapts documentation](docs/crapts/README.md) has the
 guides and the reference.

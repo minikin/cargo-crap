@@ -59,6 +59,8 @@ keep their meanings. The [combined comparison](../guides/changed-gate.md#one-deb
 
 ## Duplicate history
 
+A judged group carries `triage`, and each of its pairs carries the same assessment. A verdict includes the kind, confidence, extraction rating and divergence risk. An uncertain assessment carries only its kind and confidence. A group the provider never judged omits `triage`. The [duplicate guide](../guides/duplicates.md) shows how to record and compare a pair that grows.
+
 A full absolute or delta report can supply the next baseline. The reader uses the current groups in that file and ignores their earlier verdicts and status labels. With coverage kind `none`, the next comparison must also run without coverage. An older report that omits the duplicate fields has no history. A recorded empty array means the scan found zero groups.
 
 A delta labels a group `unchanged` if one baseline group held all its members. It labels a group `grown` if one old group held at least two of its members and writes that largest overlap in `grown_from`. All other groups are `new`. For example, a group containing functions A, B and C gets `"status": "grown", "grown_from": 2` when A and B belonged to one previous group.

@@ -9,6 +9,8 @@ mod common;
 mod config;
 #[path = "docs/coverage.rs"]
 mod coverage;
+#[path = "docs/duplicates.rs"]
+mod duplicate_guide;
 #[path = "docs/fixture.rs"]
 mod fixture;
 #[path = "docs/formats.rs"]
