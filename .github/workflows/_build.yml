@@ -61,6 +61,22 @@ jobs:
           $archive = "$env:BINARY-$env:TARGET.zip"
           Compress-Archive -Path "target/$env:TARGET/release/$env:BINARY.exe" -DestinationPath $archive
           "ARCHIVE=$archive" >> $env:GITHUB_ENV
+      - name: Inspect Linux cross archive
+        if: matrix.use_cross && inputs.package == 'crapts'
+        shell: bash
+        run: |
+          unpacked="$(mktemp -d)"
+          tar -xzf "$ARCHIVE" -C "$unpacked" "$BINARY"
+          test -x "$unpacked/$BINARY"
+          case "$TARGET" in
+            aarch64-unknown-linux-gnu) machine=AArch64 ;;
+            x86_64-unknown-linux-musl) machine='Advanced Micro Devices X86-64' ;;
+            *) exit 1 ;;
+          esac
+          readelf -h "$unpacked/$BINARY" > "$unpacked/header"
+          grep -Eq 'Class:[[:space:]]+ELF64$' "$unpacked/header"
+          grep -Eq 'Type:[[:space:]]+(EXEC|DYN) ' "$unpacked/header"
+          grep -Eq "Machine:[[:space:]]+$machine$" "$unpacked/header"
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}

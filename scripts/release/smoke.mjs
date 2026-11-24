@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { parseArgs } from "node:util";
+import { parseArgs, promisify } from "node:util";
 import resolver from "../../npm/crapts/lib/resolve.js";
 
 const { values } = parseArgs({
@@ -52,6 +54,91 @@ async function waitForPackage(name, version) {
         spec + ": " + (result.stderr.trim() || "version unavailable"),
       );
     await delay(3000 * attempt);
+  }
+}
+
+async function smokeTriage(command) {
+  const project = join(dir, "copies");
+  const home = join(dir, "cache-home");
+  mkdirSync(project);
+  mkdirSync(home);
+  for (const name of ["first", "second"])
+    writeFileSync(
+      join(project, name + ".ts"),
+      `export function ${name}(n: number) { return n + 1; }\n`,
+    );
+  const config = join(project, ".crapts.toml");
+  const detection = "[duplicates]\nmin-nodes = 0\n";
+  writeFileSync(config, detection);
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    requests.push({
+      path: req.url,
+      method: req.method,
+      body: Buffer.concat(chunks).toString(),
+    });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        answers: {
+          duplication_kind: {
+            type: "choice",
+            choice: "same_logic",
+            confidence: 0.95,
+          },
+          worth_extracting: { type: "score", score: 3, confidence: 1 },
+          divergence_risk: { type: "noul", noul: 0.25 },
+        },
+      }),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  try {
+    await once(server, "listening");
+    const endpoint = "http://127.0.0.1:" + server.address().port;
+    const env = {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      XDG_CACHE_HOME: home,
+      LOCALAPPDATA: home,
+      TYPESAFE_API_KEY: "release-smoke",
+      TYPESAFE_BASE_URL: endpoint,
+      OPENAI_API_KEY: "",
+      OPENAI_BASE_URL: endpoint + "/v1",
+      npm_config_offline: "true",
+    };
+    const scan = async () => {
+      const { stdout } = await promisify(execFile)(
+        command[0],
+        [...command.slice(1), "--duplicates", "--format", "json"],
+        { cwd: project, env, timeout: 60_000 },
+      );
+      const groups = JSON.parse(stdout).duplicate_groups;
+      assert.equal(groups.length, 1);
+      return groups[0];
+    };
+    assert.equal((await scan()).triage, undefined);
+    assert.equal(requests.length, 0);
+    writeFileSync(config, detection + "[duplicates.triage]\nenabled = true\n");
+    assert.deepEqual((await scan()).triage, {
+      kind: "same-logic",
+      confidence: 0.95,
+      worth_extracting_score: 3,
+      worth_extracting: "should-be-one",
+      divergence_risk: 0.25,
+    });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, "POST");
+    assert.equal(requests[0].path, "/v1/systemone");
+    assert.equal(JSON.parse(requests[0].body).model, "jev-latest");
+    console.log(
+      "Triage smoke passed (0 default requests, 1 verdict from 1 request).",
+    );
+  } finally {
+    server.close();
   }
 }
 
@@ -125,6 +212,7 @@ try {
     if (argv[0] === "--version")
       assert.equal(result.stdout.trim(), "crapts " + values.version);
   }
+  await smokeTriage(command);
 } finally {
   rmSync(dir, { force: true, recursive: true });
 }

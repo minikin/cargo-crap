@@ -12,8 +12,8 @@ env:
 jobs:
   # Detect whether any Rust-relevant files changed. Every Rust job is gated
   # on `rust`, and mutation testing on `src`, so a pull request that touches
-  # only docs, other scripts or workflows other than this one, the Action
-  # workflow, and the corpus workflow (which Rust tests read) skips them.
+  # only docs or unrelated scripts skips them. The build and release workflows
+  # select the target features used in the Linux cross-builds.
   # The workflow still runs, and GitHub sees the jobs as "skipped", which
   # satisfies required checks. This file is in both filters: a change to
   # a job runs that job, on the pull request and again on main. The tests
@@ -42,6 +42,8 @@ jobs:
               - 'actions/crapts/action.yml'
               - 'npm/crapts/package.json'
               - '**/*.rs'
+              - 'crates/crapts/**'
+              - 'crates/cargo-crap-core/**'
               # Both: the root manifest does not depend on how picomatch reads
               # a leading `**/`.
               - 'Cargo.toml'
@@ -71,6 +73,8 @@ jobs:
               - 'crates/cargo-crap-core/src/report/*.inc'
               - 'crates/cargo-crap-core/src/coverage/*.info'
               - '.github/workflows/ci.yml'
+              - '.github/workflows/_build.yml'
+              - '.github/workflows/release-crapts.yml'
               # tests/golden/gates.rs reads the Action workflow's paths.
               - '.github/workflows/action.yml'
               - '.github/workflows/corpus.yml'
@@ -137,6 +141,19 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
           ./actionlint -ignore SC2016 .github/workflows/_build.yml .github/workflows/release.yml .github/workflows/release-crapts.yml .github/workflows/ci.yml .github/workflows/action.yml .github/workflows/demo.yml
 
+  crapts-cross:
+    name: Link Linux release binaries
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      package: crapts
+      binary: crapts
+      features: 'triage'
+      targets: >-
+        [{"target":"aarch64-unknown-linux-gnu","os":"ubuntu-latest","use_cross":true},
+         {"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest","use_cross":true}]
+
   npm-wrapper:
     needs: [changes]
     if: needs.changes.outputs.npm == 'true'
@@ -153,7 +170,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci --prefix scripts/release --ignore-scripts
-      - run: cargo build --locked -p crapts
+      - run: cargo build --locked -p crapts --features triage
       - name: Test packed npm packages
         shell: bash
         run: |
