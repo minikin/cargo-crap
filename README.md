@@ -21,12 +21,12 @@
   <a href="https://www.youtube.com/watch?v=XuMR1pgc6pc"><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.com/minikin/cargo-crap/raw/HEAD/docs/assets/link-talk-youtube-dark.svg?sanitize=true"><img alt="Talk on YouTube: Your AI Code Might Be CRAP! (Here's How To Fix It)" src="docs/assets/link-talk-youtube.svg"></picture></a>
 </p>
 
-cargo-crap finds the Rust functions that are both complex and untested: the
-ones where a change is most likely to break something without a test
-failing. It parses your source with `syn`, reads the LCOV file your coverage
-tool already writes, and gives every function a CRAP score. Run it locally to
-see where tests are missing, or in CI to fail a build when a score crosses
-the threshold or goes up.
+cargo-crap finds the functions that are both complex and untested: the ones
+where a change is most likely to break something without a test failing.
+`cargo-crap` scores Rust (`syn` and LCOV), and its companion
+[`crapts`](#crapts-for-typescript) scores TypeScript and JavaScript (`oxc`
+and LCOV or Istanbul). Run either locally to see where tests are missing, or
+in CI to fail a build when a score crosses the threshold or goes up.
 
 ```text
 CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)
@@ -47,7 +47,8 @@ cargo install cargo-crap --locked  # from source, Rust 1.88 or newer
 
 On Arch Linux, `paru -S cargo-crap`. [Install](docs/install.md) has the
 download commands for the release archives on Linux and macOS, and the
-Windows steps.
+Windows steps. For TypeScript and JavaScript, run `npx @minikin/crapts`
+(see [crapts for TypeScript](#crapts-for-typescript)).
 
 ## Quick start
 
@@ -193,6 +194,22 @@ Harder to maintain:
 CRAP scores never change. [Structural signals](docs/explanation/signals.md)
 explains what each one counts and why there is no single score.
 
+## crapts for TypeScript
+
+crapts brings the same score to JavaScript and TypeScript. It reads the LCOV or Istanbul coverage that Vitest, Jest, nyc or c8 writes, and shares cargo-crap's report formats and baseline gate. It has its own GitHub Action. It also gates the functions a pull request changes without a saved baseline. The npm package needs no install step:
+
+```bash
+npx @minikin/crapts
+```
+
+Without arguments it exits 2 and asks for a coverage file. Point it at one:
+
+```bash
+npx @minikin/crapts --coverage coverage/lcov.info
+```
+
+[Install options](docs/crapts/install.md) cover npm, `cargo binstall` and source builds. The [crapts documentation](docs/crapts/README.md) has the guides and the reference.
+
 ## Documentation
 
 - Guides: [integrating with CI](docs/guides/ci.md), [the GitHub Action](docs/guides/github-action.md),
@@ -212,6 +229,11 @@ explains what each one counts and why there is no single score.
   [structural signals](docs/explanation/signals.md),
   [design](docs/explanation/how-it-works.md),
   [the path-matching problem](docs/explanation/path-matching.md).
+- TypeScript and JavaScript (`crapts`):
+  [overview and guides](docs/crapts/README.md),
+  [install](docs/crapts/install.md),
+  [GitHub Action](docs/crapts/guides/github-action.md),
+  [changed-function gate](docs/crapts/guides/changed-gate.md).
 - [Troubleshooting](docs/troubleshooting.md) starts with the usual cause of a
   table full of 0%.
 

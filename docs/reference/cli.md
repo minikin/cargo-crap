@@ -20,9 +20,9 @@
 | `--summary`                                                      | off           | Print aggregate stats instead of the per-function table.             |
 | `--workspace`                                                    | off           | Analyze every Cargo workspace member.                                |
 | `-p, --package <NAME>`                                           | none          | Analyze only the named workspace member(s), repeatable.              |
-| `--fail-above`                                                   | off           | Exit 1 if any function exceeds `--threshold`.                        |
+| `--fail-above`                                                   | off           | Exit 1 if a shown function exceeds `--threshold`.                    |
 | `--baseline <FILE>`                                              | none          | JSON from a previous `--format json` run; turns on delta mode.       |
-| `--fail-regression`                                              | off           | Exit 1 if any function's score increased since `--baseline`.         |
+| `--fail-regression`                                              | off           | Exit 1 if a score or a gated signal regressed since `--baseline`.    |
 | `--show-unchanged`                                               | off           | Also list `Unchanged` rows in `--baseline` mode.                     |
 | `--epsilon <VALUE>`                                              | `0.01`        | Tolerance of the regression detector.                                |
 | `--jobs <N>`                                                     | host CPUs     | Cap parallel source-file analysis at N threads.                      |
@@ -62,7 +62,10 @@ highest-scoring below it. `--top` or `--min` turns that cap off, and so does
 With `--baseline`, `--top` and `--min` choose only the rows shown: the
 comparison, the Removed list, the summary line and `--fail-regression`
 still cover every function. See
-[Regression gate](../guides/regression-gate.md).
+[Regression gate](../guides/regression-gate.md). `--fail-above` is the
+exception: it counts only the rows `--top` and `--min` leave. With
+`[signals]` on, a gated signal that rose fails `--fail-regression` even
+where no score moved. See [Structural signals](../explanation/signals.md).
 
 `--summary` replaces the per-function table with the total, the crappy count
 and the worst offender. Under `--workspace` or `-p`/`--package` it prints
@@ -77,10 +80,15 @@ pool from the host. A `--jobs` of zero, a negative `--epsilon` and a
 `--dup-threshold` outside `0.0..=1.0` are all rejected before analysis starts,
 with exit code 2.
 
-Colour in the `human` and `--summary` formats is automatic, enabled only when
-writing to a terminal and never into an `--output` file or a pipe. Set
-`NO_COLOR=1` to disable colour unconditionally, or `FORCE_COLOR=1` to force it
-on (e.g. for `| less -R`). `NO_COLOR` wins when both are set.
+Inside GitHub Actions `--repo-url` defaults from `GITHUB_SERVER_URL` and
+`GITHUB_REPOSITORY`, and `--commit-ref` from `GITHUB_SHA`. See
+[PR comment bot](../guides/pr-comment.md).
+
+Colour in the `human` and `--summary` formats is automatic: by default it
+is enabled only when writing to a terminal, never into an `--output` file or
+a pipe. Set `NO_COLOR=1` to disable colour unconditionally, or
+`FORCE_COLOR=1` to force it on, into a pipe or an `--output` file too (e.g.
+for `| less -R`). `NO_COLOR` wins when both are set.
 
 ## The `--missing` policy
 

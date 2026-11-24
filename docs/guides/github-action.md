@@ -34,7 +34,12 @@ nothing is compiled but your own tests.
 
 On a **push**, it runs your tests under `cargo llvm-cov`, scores the crate,
 and writes the report to the job summary. It fails only when `fail-above`
-is `true` and a function scores above the threshold.
+is on, as the input or in `.cargo-crap.toml`, and a shown function scores
+above the threshold. Give it a `baseline`, or a `base` it can score, with a
+coverage run rather than `lcov` and a `working-directory` that exists
+there, and a push compares and gates like a pull request. A `base` with
+`lcov` and no `baseline` fails the step before scoring unless
+`fail-regression` is `false`.
 
 On a **pull request**, it first scores the pull request's base commit in
 the same job: it checks that commit out in place, runs the tests and
@@ -45,7 +50,8 @@ permission. The cost is a second test run. Then it:
 1. writes the delta report to the job summary,
 2. posts it as a comment on the pull request, or updates the one it posted
    before,
-3. fails the step when a function's score rose, after commenting.
+3. fails the step when a function's score rose, or with `[signals]` on
+   when a gated signal rose, after commenting.
 
 The links in the report name the pull request's head commit, which GitHub
 keeps after the pull request closes. A line number can be a few lines off
@@ -53,6 +59,8 @@ when the base branch changed the same file after the branch point.
 
 A pull request from a fork has a read-only token, which cannot comment. The
 report is then in the job summary, the step warns once, and it still gates.
+A report of 1,000,000 bytes or more does not fit the job summary, which
+then holds one line pointing at the step's `report` output.
 Keep the Action on `pull_request`. It runs the pull request's build
 scripts and tests in the job that holds the token, and nothing inside the
 Action can keep that code from the token. On `pull_request` a fork's token
@@ -77,11 +85,11 @@ the base commit fails to build.
 | `coverage-args` | none | extra arguments for `cargo llvm-cov` |
 | `lcov` | none | an existing LCOV file, used instead of a coverage run |
 | `baseline` | none | a baseline JSON file, used instead of the base-commit run |
-| `base` | the pull request's base commit | the commit to compare with |
+| `base` | the pull request's base commit | the commit to compare with, ignored when `baseline` is given |
 | `comment` | `true` | post or update the PR comment |
 | `comment-marker` | `<!-- cargo-crap-report -->` | the hidden first line that finds the comment again |
-| `fail-regression` | `true` | fail when a score rose, whenever there is something to compare with |
-| `fail-above` | `false` | fail when a function scores above the threshold |
+| `fail-regression` | `true` | fail when a score or a gated signal rose, whenever there is something to compare with |
+| `fail-above` | `false` | fail when a shown function scores above the threshold |
 | `github-token` | `${{ github.token }}` | the token that writes the comment |
 
 `binary`, `lcov` and `baseline` are relative to `working-directory`.
@@ -96,9 +104,12 @@ coverage to score, so give `baseline` with it, or set `fail-regression` to
 
 | Output | Meaning |
 |---|---|
-| `crappy` | how many functions score above the threshold |
-| `regressed` | on a pull request, how many functions' scores rose |
+| `crappy` | how many shown functions score above the threshold |
+| `regressed` | how many shown functions' scores rose, when there was something to compare with |
 | `report` | the path of the markdown report |
+
+Both counts cover the rows the report shows, so `--top` or `--min` in
+`args` can leave `regressed` at `0` on a job the regression gate failed.
 
 ## One comment per pull request
 

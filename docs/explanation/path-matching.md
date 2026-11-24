@@ -1,12 +1,13 @@
 # The path-matching problem
 
-This is where silent failures happen. Complexity analysis produces
-absolute paths (whatever was passed to the walker). LCOV files contain
-whatever the coverage tool decided to write:
+This is where silent failures happen. Complexity analysis produces paths
+below the root it walked, `--path` or each member's directory in workspace
+mode, absolute when that root is absolute and relative otherwise. LCOV
+files contain whatever the coverage tool decided to write:
 
 1. Absolute paths: `/home/alice/project/src/foo.rs`
-2. Workspace-relative paths: `src/foo.rs`
-3. Crate-relative paths in a workspace: `crates/core/src/foo.rs`
+2. Crate-relative paths: `src/foo.rs`
+3. Workspace-relative paths to a member's file: `crates/core/src/foo.rs`
 4. Paths with `./` or `../` components
 
 A naïve `HashMap<PathBuf, _>` lookup silently returns `None` for 100% of
@@ -17,7 +18,7 @@ files when the two don't agree, and every function reports as 0% covered.
 - Relative coverage paths → suffix match on path components, not bytes:
   `/foo/bar.rs` must not match `oofoo/bar.rs`.
 
-Ambiguous inputs resolve deterministically (spec 26): when several
+Ambiguous inputs resolve deterministically: when several
 relative keys suffix-match one file (`src/lib.rs` vs
 `vendor/dep/src/lib.rs`), the longest and most specific suffix wins, and
 different spellings of the same file (symlinked roots, `lcov -a`-merged

@@ -10,7 +10,7 @@ counts per function, measured in the same pass as cyclomatic complexity:
 | `nesting`  | Deepest nested bodies: `if`, `match`, loops, `let … else`, closures, `async`.  |
 | `lines`    | The function's span, signature to closing brace.                               |
 | `bumps`    | Top-level statements whose own nesting reaches 2: separate chunks of nesting. |
-| `bool_ops` | Most `&&` / `||` in a single `if` / `while` condition or match guard.          |
+| `bool_ops` | Most `&&` / `\|\|` in a single `if` / `while` condition or match guard.        |
 | `stubs`    | `todo!`, `unimplemented!`, `dbg!`.                                             |
 | `panics`   | `.unwrap()`, `.expect(…)`, `panic!`.                                           |
 

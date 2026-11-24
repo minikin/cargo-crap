@@ -554,6 +554,38 @@ fn a_change_only_under_crates_runs_the_action_workflow() {
 }
 
 #[test]
+fn candidate_action_inputs_schedule_both_events_and_pin_changes_run_workspace_tests() {
+    let action = read(".github/workflows/action.yml");
+    for event in ["  pull_request:", "  push:"] {
+        let paths: Vec<_> = block(&block(&lines(&action), event), "    paths:")
+            .iter()
+            .filter_map(|line| line.trim().strip_prefix("- '")?.strip_suffix('\''))
+            .map(str::to_owned)
+            .collect();
+        for (glob, input) in [
+            ("actions/crapts/**", "actions/crapts/action.yml"),
+            ("scripts/action/crapts/**", "scripts/action/crapts/test.sh"),
+            ("npm/crapts/**", "npm/crapts/package.json"),
+            ("crates/crapts/**", "crates/crapts/Cargo.toml"),
+            (
+                ".github/workflows/release-crapts.yml",
+                ".github/workflows/release-crapts.yml",
+            ),
+        ] {
+            assert!(
+                paths.iter().any(|path| path == glob),
+                "{event} misses {glob}"
+            );
+            assert!(any_glob_matches(&paths, input), "{event} misses {input}");
+        }
+    }
+    let rust = globs(CI, "            rust:");
+    for input in ["actions/crapts/action.yml", "npm/crapts/package.json"] {
+        assert!(any_glob_matches(&rust, input), "rust filter misses {input}");
+    }
+}
+
+#[test]
 fn a_change_only_to_the_action_workflow_runs_the_check_that_reads_it() {
     assert!(
         any_glob_matches(

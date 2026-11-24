@@ -18,7 +18,7 @@ All feature specs live in `specs/`. They are written in Gherkin style (Given/Whe
 Both must be clean before any commit. Never commit with a failing CRAP gate or surviving mutants.
 
 Exception: a diff that touches only `.md` files (docs, specs) needs no pre-commit check: `just dev` and `just dev-mutants-diff` can be skipped.
-The exception does not cover a `specs/` file that a test reads, such as `specs/44-golden-outputs.md`, whose Cases table `tests/golden.rs` checks: an edit there needs `just dev`.
+The exception does not cover a Markdown file that a test reads, and an edit there needs `just dev`. `tests/docs.rs` and `crates/crapts/tests/docs.rs` read `README.md` and everything under `docs/`, `tests/golden.rs` checks the Cases table of `specs/44-golden-outputs.md`, and `scripts/release/test.sh` reads the changelogs.
 
 ## Commands
 
@@ -51,7 +51,7 @@ just crap
 
 ## Architecture
 
-Seven orthogonal modules feed into a pipeline. The language-neutral ones live in the `cargo-crap-core` package, written `core/` below for `crates/cargo-crap-core/src/`. cargo-crap re-exports each at its old `cargo_crap::` path, so both crate names refer to the same types.
+The modules below feed into a pipeline. The language-neutral ones live in the `cargo-crap-core` package, written `core/` below for `crates/cargo-crap-core/src/`. cargo-crap re-exports each at its old `cargo_crap::` path, so both crate names refer to the same types.
 
 ```
 syn (Rust AST)                          LCOV file (cargo llvm-cov / tarpaulin)
@@ -97,12 +97,14 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
                      └── triage/           opt-in advisory verdicts (spec 30)
                          ├── request.rs    one pair's state + the three questions
                          ├── cache.rs      content-keyed verdicts under target/
+                         ├── budget.rs     the per-run request cap
+                         ├── provider/     TypeSafe and OpenAI, their keys and URLs
                          └── client.rs     ureq client, retries (`triage` feature)
 ```
 
 **`core/score.rs`** holds the pure formula `CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)`. No I/O, no dependencies on other modules.
 
-**`src/complexity.rs`** walks the Rust AST with `syn` and extracts `FunctionComplexity` tuples. It handles `ItemFn` (free functions) and `ImplItemFn` (methods) via the `Visit` trait. Closures and items nested inside function bodies (local `fn`, `impl`, `mod` and the rest) are not recursed into, since their decision points belong to their own scope. `analyze_tree` uses the `ignore` crate to respect `.gitignore`. The `proc-macro2` dependency must have the `span-locations` feature enabled to call `Span::start()`/`Span::end()` at runtime.
+**`src/complexity.rs`** walks the Rust AST with `syn` and extracts `FunctionComplexity` tuples. It handles `ItemFn` (free functions), `ImplItemFn` (methods) and a `TraitItemFn` with a default body (named `Trait::method`) via the `Visit` trait. Closures and items nested inside function bodies (local `fn`, `impl`, `mod` and the rest) are not recursed into, since their decision points belong to their own scope. `analyze_tree` uses the `ignore` crate to respect `.gitignore`. The `proc-macro2` dependency must have the `span-locations` feature enabled to call `Span::start()`/`Span::end()` at runtime.
 
 **`core/signals/`** keeps signal values and settings in `model.rs` and their configuration in `config.rs`. The Rust syntax walker stays in cargo-crap as `src/signals/compute.rs`.
 
@@ -127,7 +129,7 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`src/tool.rs`** holds `CARGO_CRAP`, cargo-crap's `report::Tool`: the name, version, URLs, PR-comment marker and baseline hint its reports carry. It stays in cargo-crap so `env!("CARGO_PKG_VERSION")` expands to cargo-crap's version, not the core's.
 
-**`src/duplicates/`** is a second, opt-in pass over the same AST (`--duplicates`). Its `model`, `verdict`, `compare`, `group` and `novelty` submodules live in `core/duplicates/` and are re-exported here. `extract` collects one `FunctionPrint` per non-test function, `normalize` erases identifiers, literal values and field/path names while keeping control flow, operators, receiver shape and statement order, `fingerprint` hashes every normalized subtree into a `BTreeSet<Fingerprint>` (FNV-1a, not `DefaultHasher`, because the fingerprints must be stable across processes), and `compare` scores every pair by Jaccard similarity. The pass is quadratic in the number of functions, which is why it is off by default; functions below `duplicates.min-nodes` (default 20) are dropped before comparison. It reuses the complexity pass's test filter, so the two analyses cannot disagree about what counts as source. Its `triage/` submodule (spec 30) asks a TypeSafe model three typed questions about each reported pair and annotates the human and JSON output. Triage is opt-in twice: the HTTP client is behind the `triage` Cargo feature (off by default), and the run needs `[duplicates.triage] enabled = true` plus `TYPESAFE_API_KEY`. Any failure degrades to the untriaged report. `just dev` and CI test both builds.
+**`src/duplicates/`** is a second, opt-in pass over the same AST (`--duplicates`). Its `model`, `verdict`, `compare`, `group` and `novelty` submodules live in `core/duplicates/` and are re-exported here. `extract` collects one `FunctionPrint` per non-test function, `normalize` erases identifiers, literal values and field/path names while keeping control flow, operators, receiver shape and statement order, `fingerprint` hashes every normalized subtree into a `BTreeSet<Fingerprint>` (FNV-1a, not `DefaultHasher`, because the fingerprints must be stable across processes), and `compare` scores every pair by Jaccard similarity. The pass is quadratic in the number of functions, which is why it is off by default; functions below `duplicates.min-nodes` (default 20) are dropped before comparison. It reuses the complexity pass's test filter, so the two analyses cannot disagree about what counts as test code. Unlike the complexity pass, `extract` recurses into nested items, so a local `fn` is a duplicate candidate with no CRAP row. Its `triage/` submodule (spec 30) asks the configured provider (TypeSafe by default, or OpenAI, registered in `triage/provider/`) three typed questions about each reported group, through its most similar pair, and annotates the human, markdown, pr-comment and JSON output. `docs/guides/triage.md` is the user guide. Triage is opt-in twice: the HTTP client is behind the `triage` Cargo feature (off by default), and the run needs `[duplicates.triage] enabled = true` plus the provider's key, `TYPESAFE_API_KEY` or `OPENAI_API_KEY`. Any failure degrades to the untriaged report. `just dev` and CI test both builds.
 
 **`src/main.rs`** builds the CLI with `clap`. It handles the `cargo crap` subcommand invocation by stripping the leading `crap` argument when detected. It resolves settings, runs analysis and coverage, prepares the baseline with the Cargo file scope, opens the destination and gathers duplicate data. It passes those inputs to `run::run` and returns the resulting gate exit code.
 
@@ -209,10 +211,11 @@ or exit 2.
 ## Tests
 
 - Unit tests live in each module (`#[cfg(test)]` blocks in `src/*.rs` and `core/*.rs`).
-- `crates/cargo-crap-core/tests/acceptance.rs` calls the core as an external crate. Root tests cannot reach the core's `#[cfg(test)]` helpers. The core's property seeds live under `crates/cargo-crap-core/proptest-regressions/`, and `tests/workspace.rs` lists every seed file of both packages.
+- `crates/cargo-crap-core/tests/acceptance.rs` calls the core as an external crate. Root tests cannot reach the core's `#[cfg(test)]` helpers. The core's property seeds live under `crates/cargo-crap-core/proptest-regressions/`, and `tests/workspace.rs` lists every seed file of all three packages.
 - CLI integration tests live in `tests/cli.rs` and exercise the binary end-to-end via `assert_cmd`.
-- The integration test in `tests/integration.rs` exercises the full pipeline against `tests/fixtures/sample_project/` and is the only test that catches path-matching regressions across the complexity/coverage boundary.
+- The integration test in `tests/integration.rs` exercises the full pipeline against `tests/fixtures/sample_project/` and is the end-to-end check for path matching across the complexity/coverage boundary. `tests/cli.rs::ambiguous_lcov_suffixes_bind_deterministically` pins the longest-suffix rule.
 - The fixture includes a deliberate relative-path LCOV file to exercise suffix matching.
+- crapts tests live in `crates/crapts/tests/` by topic, with the documentation checks in `crates/crapts/tests/docs.rs`.
 
 ## Keeler workflow
 
@@ -243,6 +246,25 @@ CRAP tool:
   nextest and the doc tests, because a bare cargo command at the root of
   this workspace skips `crates/cargo-crap-core`. `just keeler-upgrade`
   reinstalls that file: put the flag back afterwards.
+- Some stock statements in `.claude/keeler.md` and `KEELER.md` do not hold
+  here. They are corrected in this list, not in those files, because
+  `just keeler-upgrade` reinstalls both:
+  - Review leaves a record, `reviews/<spec-slug>/<task-id>.md`. The
+    `review-record` job in `ci.yml` checks it on `keeler/*` pull requests,
+    and `just keeler-land` refuses to clean up a ticked task without it.
+    On the linear road nothing checks it.
+  - `just keeler-land` refuses a recorded nonzero verdict, but a task with
+    no `.keeler/runs/<slug>/<task>.exit` passes that check. Its worktree is
+    still removed only when clean and merged, so check that a zero was
+    recorded before relying on the cleanup.
+  - No `crap-baseline.json` is committed. `just keeler-branch` skips the
+    delta without it, and `just crap-delta-main` downloads CI's artifact
+    for main instead.
+  - `just cov` enforces 90% workspace line coverage, `just mutants-diff`
+    mutates changed lines under `src/` and `crates/*/src/`, and the test
+    and lint recipes also run with `--all-features`.
+  - On a `keeler/*` or `feat/*` branch /keeler:mutants ticks the box only,
+    and `just keeler-land` on main sets `Status: Implemented`.
 - The justfile is tracked as `Justfile` (capital J) here, so anything reading
   it by path in CI must spell it that way. A case-insensitive filesystem
   hides the difference locally and git does not.

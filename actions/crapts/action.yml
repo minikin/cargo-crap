@@ -1,0 +1,132 @@
+name: crapts
+description: Score JavaScript and TypeScript functions using project coverage.
+inputs:
+  version:
+    description: Exact npm package version or latest.
+    default: "0.1.0"
+  package:
+    description: Local wrapper tarball to install.
+    default: ""
+  working-directory:
+    description: Project directory for commands and relative inputs.
+    default: "."
+  args:
+    description: Additional quoted scoring arguments.
+    default: ""
+  coverage:
+    description: Existing head LCOV or Istanbul file.
+    default: ""
+  coverage-command:
+    description: Bash command to generate coverage.
+    default: ""
+  coverage-file:
+    description: File produced by the coverage command.
+    default: "coverage/coverage-final.json"
+  install-command:
+    description: Bash command to install project dependencies.
+    default: ""
+  baseline:
+    description: Complete saved crapts JSON report.
+    default: ""
+  base:
+    description: Git revision for changed-function comparison.
+    default: "${{ github.event.pull_request.base.sha }}"
+  fail-regression:
+    description: Fail on score regressions with a baseline.
+    default: "true"
+  fail-changed:
+    description: Fail on changed-function violations with a Git base.
+    default: "true"
+  fail-above:
+    description: Fail on scores above the threshold.
+    default: "false"
+  comment:
+    description: Post or update the report on pull requests.
+    default: "true"
+  comment-marker:
+    description: First line identifying this report comment.
+    default: "<!-- crapts-report -->"
+  github-token:
+    description: Token for posting the pull request comment.
+    default: "${{ github.token }}"
+outputs:
+  crappy:
+    description: Functions above threshold.
+    value: ${{ steps.score.outputs.crappy }}
+  regressed:
+    description: Regressed functions when comparing a baseline.
+    value: ${{ steps.score.outputs.regressed }}
+  changed:
+    description: Changed-function failures when comparing a Git base.
+    value: ${{ steps.score.outputs.changed }}
+  report:
+    description: Path to the rendered Markdown report.
+    value: ${{ steps.score.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - name: Install crapts
+      id: install
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_PACKAGE: ${{ inputs.package }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_FAIL_REGRESSION: ${{ inputs.fail-regression }}
+        INPUT_FAIL_CHANGED: ${{ inputs.fail-changed }}
+        INPUT_FAIL_ABOVE: ${{ inputs.fail-above }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_COMMENT_MARKER: ${{ inputs.comment-marker }}
+      run: bash "$GITHUB_ACTION_PATH/../../scripts/action/crapts/install.sh"
+    - name: Prepare head coverage and Git history
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CRAPTS_TEMP: ${{ steps.install.outputs.temp }}
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_INSTALL_COMMAND: ${{ inputs.install-command }}
+        INPUT_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
+        INPUT_COVERAGE_FILE: ${{ inputs.coverage-file }}
+        INPUT_COVERAGE: ${{ inputs.coverage }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/prepare.mjs" "$BASH"
+    - name: Select or generate score baseline
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CRAPTS_TEMP: ${{ steps.install.outputs.temp }}
+        CRAPTS_BINARY: ${{ steps.install.outputs.binary }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_INSTALL_COMMAND: ${{ inputs.install-command }}
+        INPUT_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
+        INPUT_COVERAGE_FILE: ${{ inputs.coverage-file }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/baseline.mjs" "$BASH"
+    - name: Render report and count gate results
+      id: score
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CRAPTS_TEMP: ${{ steps.install.outputs.temp }}
+        CRAPTS_BINARY: ${{ steps.install.outputs.binary }}
+        CRAPTS_PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && env.CRAPTS_TEST_PR_NUMBER) || github.event.pull_request.number }}
+        CRAPTS_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        INPUT_FAIL_REGRESSION: ${{ inputs.fail-regression }}
+        INPUT_FAIL_CHANGED: ${{ inputs.fail-changed }}
+        INPUT_FAIL_ABOVE: ${{ inputs.fail-above }}
+        INPUT_COMMENT_MARKER: ${{ inputs.comment-marker }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/score.mjs"
+    - name: Comment on the pull request
+      shell: bash
+      env:
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_COMMENT_MARKER: ${{ inputs.comment-marker }}
+        CRAPTS_TOKEN: ${{ inputs.github-token }}
+        REPORT: ${{ steps.score.outputs.report }}
+        CRAPTS_PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && env.CRAPTS_TEST_PR_NUMBER) || github.event.pull_request.number }}
+        CRAPTS_API_URL: ${{ (github.repository == 'minikin/cargo-crap' && env.CRAPTS_TEST_API_URL) || github.api_url }}
+      run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/comment.mjs"
+    - name: Return gate status
+      shell: bash
+      env:
+        STATUS: ${{ steps.score.outputs.status }}
+      run: exit "$STATUS"
