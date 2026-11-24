@@ -180,7 +180,15 @@ fn s07_a_nested_callable_contributes_one_opaque_node() {
     let leaf = prints("a.js", "function f(){return xs.map(v)}");
     assert_eq!(a[0].node_count, leaf[0].node_count);
     assert_ne!(a[0].prints, leaf[0].prints);
-    assert!(a[0].node_count < 20);
+    assert_eq!(a[0].node_count, 8);
+    let large = prints(
+        "a.js",
+        &format!(
+            "function f(){{return xs.map(v=>{{{}return;}})}}",
+            "g();".repeat(18)
+        ),
+    );
+    assert_eq!((large[0].node_count, large[1].node_count), (8, 60));
     let copies = prints("a.js", "function f(){hook(()=>1);hook(()=>1)}");
     assert_ne!(copies[1].location.name, copies[2].location.name);
 }
@@ -502,4 +510,105 @@ fn abstract_field_and_accessor_signatures_contribute_no_class_storage() {
         assert_eq!(class(member), class(""), "{member}");
     }
     assert_ne!(class("value: string;"), class(""));
+}
+
+#[test]
+fn s03_a_trailing_non_null_on_an_optional_chain_is_erased() {
+    assert_eq!(body("return a?.b!"), body("return a?.b"));
+}
+
+#[test]
+fn class_heritage_is_distinct_from_the_class_binding() {
+    assert_ne!(
+        body("return class Foo {}"),
+        body("return class extends Foo {}")
+    );
+}
+
+#[test]
+fn for_loop_header_positions_survive_normalization() {
+    let shapes: std::collections::BTreeSet<_> =
+        ["for(x;;){}", "for(;x;){}", "for(;;x){}"].map(body).into();
+    assert_eq!(shapes.len(), 3);
+}
+
+#[test]
+fn shorthand_and_spelled_assignment_properties_match() {
+    assert_eq!(body("({a}=b)"), body("({a:a}=b)"));
+    assert_eq!(body("({a=f()}=b)"), body("({a:a=f()}=b)"));
+}
+
+#[test]
+fn empty_statements_and_jsx_closing_tags_do_not_add_runtime_nodes() {
+    assert_eq!(body("work();;"), body("work();"));
+    assert_eq!(body("return <Foo/>"), body("return <Foo></Foo>"));
+}
+
+#[test]
+fn constructor_fields_keep_declaration_order_and_precede_the_written_body() {
+    let a = shape("a.ts", "class A { x=f(); constructor(){run()} y=g()+1 }");
+    assert_eq!(
+        a,
+        shape("a.ts", "class A { x=f(); y=g()+1; constructor(){run()} }")
+    );
+    assert_ne!(
+        a,
+        shape("a.ts", "class A { y=g()+1; x=f(); constructor(){run()} }")
+    );
+}
+
+fn vector(
+    tag: &str,
+    children: &[Fingerprint],
+) -> Fingerprint {
+    use std::hash::Hasher;
+    let mut hash = cargo_crap_core::duplicates::fnv::Fnv1a::default();
+    hash.write(&(tag.len() as u32).to_le_bytes());
+    hash.write(tag.as_bytes());
+    hash.write(&(children.len() as u32).to_le_bytes());
+    for child in children {
+        hash.write(&child.0.to_le_bytes());
+    }
+    Fingerprint(hash.finish())
+}
+
+#[test]
+fn s48_class_body_places_parameter_decorators_before_the_method_placeholder() {
+    let shape = body("class C { @mark m(@arg x){} }");
+    let decorator = vector("Decorator", &[vector("id", &[])]);
+    let expected = vector(
+        "ClassBody",
+        &[
+            decorator,
+            vector("key", &[]),
+            decorator,
+            vector("nested", &[]),
+        ],
+    );
+    assert!(shape.1.contains(&expected));
+}
+
+#[test]
+fn excerpt_regions_follow_sorted_rows_and_preserve_disjoint_constructor_sources() {
+    let source =
+        "// café\nclass A { x = a(1); other(){return side} constructor(){inside()} y = b(2) }";
+    let (analysis, _) =
+        analyze_with_prints(Path::new("f.ts"), source.as_bytes(), Mode::Ordinary).unwrap();
+    let slices: Vec<Vec<_>> = analysis
+        .rows
+        .iter()
+        .map(|row| {
+            row.excerpt_regions
+                .iter()
+                .map(|range| &source[range.clone()])
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        slices,
+        [
+            vec!["other(){return side}"],
+            vec!["a(1)", "constructor(){inside()}", "b(2)"]
+        ]
+    );
 }

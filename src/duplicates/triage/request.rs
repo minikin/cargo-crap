@@ -1,19 +1,10 @@
-//! The request sent for one pair: its state and the three questions.
-//!
-//! One request per pair, carrying that pair's two function bodies and
-//! nothing else. The three questions share the state and are evaluated
-//! independently. They are written once, here, as data: each provider
-//! translates them into its own wire shape and decodes the answers by the
-//! same ids.
+//! Rust excerpts and question wording for the shared triage providers.
 
 use crate::duplicates::compare::DuplicatePair;
 use crate::duplicates::extract::Location;
-use crate::duplicates::triage::provider::{
-    BinaryQuestion, ChoiceQuestion, Provider, QuestionSet, ScoreQuestion,
-};
-use crate::duplicates::triage::verdict::{
-    DIVERGENCE_QUESTION, KIND_QUESTION, Kind, WORTH_QUESTION,
-};
+use crate::duplicates::triage::provider::{Provider, QuestionSet};
+use crate::duplicates::triage::verdict::Kind;
+pub use cargo_crap_core::duplicates::triage::request::{WORTH_LEVELS, state};
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
@@ -75,69 +66,33 @@ pub fn body(
     provider.encode(state(pair, source_a, source_b), model, &QUESTIONS)
 }
 
-pub use cargo_crap_core::duplicates::triage::request::{WORTH_LEVELS, state};
-
-/// The three questions every provider asks, keyed by the ids the verdict
-/// decodes.
-pub const QUESTIONS: QuestionSet = QuestionSet {
-    kind: ChoiceQuestion {
-        id: KIND_QUESTION,
-        instructions: KIND_INSTRUCTIONS,
-        options: &KIND_RUBRICS,
-    },
-    worth: ScoreQuestion {
-        id: WORTH_QUESTION,
-        instructions: WORTH_INSTRUCTIONS,
-        levels: &WORTH_LEVELS,
-    },
-    divergence: BinaryQuestion {
-        id: DIVERGENCE_QUESTION,
-        instructions: DIVERGENCE_INSTRUCTIONS,
-        if_true: "Yes: the two share logic a fix would have to change in both, and nothing \
+/// Rust question text paired with core's wire IDs, choices and levels.
+pub const QUESTIONS: QuestionSet = QuestionSet::new(
+    KIND_INSTRUCTIONS,
+    WORTH_INSTRUCTIONS,
+    DIVERGENCE_INSTRUCTIONS,
+    KIND_RUBRICS,
+    "Yes: the two share logic a fix would have to change in both, and nothing \
                   about them — the same file, a shared name, a common caller — would lead \
                   someone fixing one to the other.",
-        if_false: "No: a fix in one would not apply to the other, or anyone fixing one would \
+    "No: a fix in one would not apply to the other, or anyone fixing one would \
                    plainly see the other needs it too.",
-    },
-};
+);
 
-/// Every kind beside the rubric the model reads for it, in `Kind::ALL`
-/// order, so a new kind is offered as soon as it has a rubric.
-const KIND_RUBRICS: [(Kind, &str); Kind::ALL.len()] = {
-    let mut rubrics = [(Kind::SameLogic, ""); Kind::ALL.len()];
-    let mut i = 0;
-    while i < rubrics.len() {
-        rubrics[i] = (Kind::ALL[i], kind_rubric(Kind::ALL[i]));
-        i += 1;
-    }
-    rubrics
-};
-
-/// The rubric sentence the model reads for `kind`. Exhaustive, so a new
-/// kind does not compile until it has one.
-const fn kind_rubric(kind: Kind) -> &'static str {
-    match kind {
-        Kind::SameLogic => {
-            "One routine written twice: the same steps on the same kinds of values, differing \
+/// Rust descriptions in the wire order defined by `Kind::ALL`.
+const KIND_RUBRICS: [&str; Kind::ALL.len()] = [
+    "One routine written twice: the same steps on the same kinds of values, differing \
              only in the names of functions and variables. Either could replace the other as \
-             it is, without adding a parameter."
-        },
-        Kind::SharedShapeOnly => {
-            "The similarity is only a shared Rust idiom or a run of similar calls, such as a \
+             it is, without adding a parameter.",
+    "The similarity is only a shared Rust idiom or a run of similar calls, such as a \
              sequence of `writeln!` or builder calls; the two do different jobs and there is \
-             nothing to consolidate."
-        },
-        Kind::StructuralObligation => {
-            "The shared shape is imposed from outside — a trait's method, a visitor, a macro or \
-             a framework contract — so it cannot be shared away."
-        },
-        Kind::Parameterisable => {
-            "The same routine except for something that genuinely differs between them — a \
+             nothing to consolidate.",
+    "The shared shape is imposed from outside — a trait's method, a visitor, a macro or \
+             a framework contract — so it cannot be shared away.",
+    "The same routine except for something that genuinely differs between them — a \
              constant, a type, a field, or one step — so merging them needs a new parameter, \
-             closure or generic."
-        },
-    }
-}
+             closure or generic.",
+];
 
 fn read_location(at: &Location) -> io::Result<String> {
     read_span(&at.file, at.start_line, at.end_line)
@@ -180,33 +135,11 @@ mod tests {
     use crate::duplicates::extract::Location;
     use crate::duplicates::triage::provider::typesafe::TypeSafe;
     use crate::duplicates::triage::verdict::{
-        DIVERGENCE_QUESTION, KIND_QUESTION, Kind, WORTH_QUESTION, WorthExtracting,
+        DIVERGENCE_QUESTION, KIND_QUESTION, Kind, WORTH_QUESTION,
     };
     use proptest::prelude::*;
     use std::collections::BTreeSet;
-    use std::path::{Path, PathBuf};
-
-    fn located(
-        file: &str,
-        start_line: usize,
-        end_line: usize,
-        name: &str,
-    ) -> Location {
-        Location {
-            file: PathBuf::from(file),
-            start_line,
-            end_line,
-            name: name.to_owned(),
-        }
-    }
-
-    fn pair() -> DuplicatePair {
-        DuplicatePair {
-            first: located("src/a.rs", 1, 5, "alpha"),
-            second: located("src/b.rs", 10, 14, "beta"),
-            score: 0.91,
-        }
-    }
+    use std::path::Path;
 
     /// The questions as `TypeSafe` sends them: the encoding the version pin
     /// below was taken from.
@@ -239,20 +172,6 @@ mod tests {
     }
 
     #[test]
-    fn the_question_set_offers_each_kind_with_its_rubric_in_kind_order() {
-        let offered: Vec<Kind> = QUESTIONS
-            .kind
-            .options
-            .iter()
-            .map(|(kind, _)| *kind)
-            .collect();
-        assert_eq!(offered, Kind::ALL);
-        for (kind, rubric) in QUESTIONS.kind.options {
-            assert_eq!(*rubric, kind_rubric(*kind), "{kind:?}");
-        }
-    }
-
-    #[test]
     fn every_kind_is_offered_with_its_own_rubric() {
         // The rubric is what the model reads to tell the kinds apart: four
         // options sharing one description, or none, would leave it guessing.
@@ -273,37 +192,6 @@ mod tests {
             rubrics.iter().all(|r| r.split_whitespace().count() >= 8),
             "each rubric is a sentence: {rubrics:?}"
         );
-    }
-
-    #[test]
-    fn worth_levels_are_sent_in_label_order() {
-        // The model answers with a position across the levels in the order
-        // they were sent; the report labels that position with
-        // `WorthExtracting::LABELS`. The two orders must be one order.
-        let labels: Vec<&str> = WORTH_LEVELS.iter().map(|(label, _)| *label).collect();
-        assert_eq!(labels, WorthExtracting::LABELS);
-        let questions = questions();
-        let sent: Vec<&str> = questions[WORTH_QUESTION]["criteria"]
-            .as_array()
-            .expect("ordered levels")
-            .iter()
-            .map(|level| level.as_str().expect("a rubric sentence"))
-            .collect();
-        let rubrics: Vec<&str> = WORTH_LEVELS.iter().map(|(_, rubric)| *rubric).collect();
-        assert_eq!(sent, rubrics);
-    }
-
-    #[test]
-    fn the_state_carries_both_sides_and_the_score() {
-        let state = state(&pair(), "fn alpha() {}", "fn beta() {}");
-        assert_eq!(state["function_a"]["name"], "alpha");
-        assert_eq!(state["function_a"]["location"], "src/a.rs:1-5");
-        assert_eq!(state["function_a"]["source"], "fn alpha() {}");
-        assert_eq!(state["function_b"]["name"], "beta");
-        assert_eq!(state["function_b"]["location"], "src/b.rs:10-14");
-        assert_eq!(state["function_b"]["source"], "fn beta() {}");
-        assert_eq!(state["structural_similarity"], 0.91);
-        assert_eq!(state.as_object().expect("a map").len(), 3, "nothing else");
     }
 
     fn write_lines(lines: &[String]) -> tempfile::NamedTempFile {

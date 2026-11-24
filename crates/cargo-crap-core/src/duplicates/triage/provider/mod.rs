@@ -66,33 +66,87 @@ pub trait Provider: Sync {
 /// translates into its own wire shape and never rewords.
 #[derive(Debug, Clone, Copy)]
 pub struct QuestionSet {
-    pub kind: ChoiceQuestion,
-    pub worth: ScoreQuestion,
-    pub divergence: BinaryQuestion,
+    kind: ChoiceQuestion,
+    worth: ScoreQuestion,
+    divergence: BinaryQuestion,
 }
+
+impl QuestionSet {
+    /// Supply language-specific wording. Kind rubrics follow [`Kind::ALL`] order.
+    #[must_use]
+    pub const fn new(
+        kind: &'static str,
+        worth: &'static str,
+        divergence: &'static str,
+        rubrics: [&'static str; Kind::ALL.len()],
+        if_true: &'static str,
+        if_false: &'static str,
+    ) -> Self {
+        use crate::duplicates::verdict::{DIVERGENCE_QUESTION, KIND_QUESTION, WORTH_QUESTION};
+        Self {
+            kind: ChoiceQuestion {
+                id: KIND_QUESTION,
+                instructions: kind,
+                rubrics,
+            },
+            worth: ScoreQuestion {
+                id: WORTH_QUESTION,
+                instructions: worth,
+                levels: &super::request::WORTH_LEVELS,
+            },
+            divergence: BinaryQuestion {
+                id: DIVERGENCE_QUESTION,
+                instructions: divergence,
+                if_true,
+                if_false,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) const FIXTURE: QuestionSet = QuestionSet::new(
+    "Classify the pair",
+    "Rate extraction",
+    "Assess divergence",
+    [
+        "Same operations",
+        "Similar structure",
+        "Required by a contract",
+        "A parameter can vary",
+    ],
+    "Both need the fix",
+    "Each can change independently",
+);
 
 /// A question answered by picking one of several options.
 #[derive(Debug, Clone, Copy)]
 pub struct ChoiceQuestion {
-    pub id: &'static str,
+    id: &'static str,
     pub instructions: &'static str,
     /// Each option and the rubric the model reads for it.
-    pub options: &'static [(Kind, &'static str)],
+    rubrics: [&'static str; Kind::ALL.len()],
+}
+
+impl ChoiceQuestion {
+    fn options(&self) -> impl Iterator<Item = (Kind, &'static str)> {
+        Kind::ALL.into_iter().zip(self.rubrics)
+    }
 }
 
 /// A question answered by a position across ordered levels.
 #[derive(Debug, Clone, Copy)]
 pub struct ScoreQuestion {
-    pub id: &'static str,
+    id: &'static str,
     pub instructions: &'static str,
     /// Each level's label and rubric, lowest first.
-    pub levels: &'static [(&'static str, &'static str)],
+    levels: &'static [(&'static str, &'static str)],
 }
 
 /// A question answered by the probability that a statement holds.
 #[derive(Debug, Clone, Copy)]
 pub struct BinaryQuestion {
-    pub id: &'static str,
+    id: &'static str,
     pub instructions: &'static str,
     /// What "true" means.
     pub if_true: &'static str,

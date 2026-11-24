@@ -161,7 +161,7 @@ dev-full: dev mutants-all
 # Live triage check against a provider's real API: `typesafe` (needs
 # TYPESAFE_API_KEY), `openai` (needs OPENAI_API_KEY) or `all`. The names and
 # key variables follow the provider registry in
-# src/duplicates/triage/provider/mod.rs. Keep the two in step.
+# crates/cargo-crap-core/src/duplicates/triage/provider/mod.rs. Keep the two in step.
 triage-live provider="typesafe":
     #!/usr/bin/env bash
     set -euo pipefail

@@ -2,6 +2,7 @@ use super::{tags, tree::Tree};
 use crate::{Position, Row, SourceSpan, lines::LineIndex};
 use cargo_crap_core::duplicates::model::{FunctionPrint, Location};
 use oxc_allocator::Allocator;
+use oxc_ast::ast;
 use oxc_ast::{
     AstKind,
     ast::{
@@ -16,24 +17,23 @@ use oxc_ast::{
     },
 };
 use oxc_ast_visit::{Visit, walk};
-use oxc_parser::{Kind, Token};
+use oxc_parser::Token;
 use oxc_span::{GetSpan, Span};
 use oxc_syntax::scope::ScopeFlags;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) fn collect(
+pub(crate) fn collect(
     program: &Program<'_>,
     rows: &[Row],
-    source: &str,
+    lines: &LineIndex,
     arena: &Allocator,
     tokens: &[Token],
 ) -> Vec<FunctionPrint> {
     let mut visitor = Shapes {
         arena,
         tokens,
-        lines: LineIndex::new(source),
+        lines,
         regions: BTreeMap::new(),
-        ends: BTreeMap::new(),
         trees: (0..rows.len()).map(|_| Tree::default()).collect(),
         owner: None,
         nested: BTreeSet::new(),
@@ -41,7 +41,6 @@ pub(super) fn collect(
     for (index, row) in rows.iter().enumerate() {
         for span in &row.body_regions {
             visitor.regions.insert((span.start, span.end), index);
-            visitor.ends.insert(span.end, index);
         }
     }
     visitor.visit_program(program);
@@ -74,10 +73,8 @@ fn last_line(span: SourceSpan) -> u32 {
 struct Shapes<'s> {
     arena: &'s Allocator,
     tokens: &'s [Token],
-    lines: LineIndex,
+    lines: &'s LineIndex,
     regions: BTreeMap<(Position, Position), usize>,
-    // The static block's display span starts at its brace. Oxc includes "static" and decorators.
-    ends: BTreeMap<Position, usize>,
     trees: Vec<Tree>,
     owner: Option<usize>,
     nested: BTreeSet<(usize, usize)>,
@@ -227,22 +224,207 @@ fn meaningful_text(
     !text.is_empty() && !multiline
 }
 
+// These Oxc nodes use their declared type name as their stable tag unless tags::node
+// supplies an operator or a shared leaf. Semantic rewrites have their own visitors.
+macro_rules! runtime_nodes {
+    ($( $visit:ident, $walk:ident, $node:ident $(<$life:lifetime>)?; )*) => {$(
+        fn $visit(&mut self, node: &ast::$node $(<$life>)?) {
+            self.open(tags::node(AstKind::$node(self.alloc(node)), stringify!($node)));
+            walk::$walk(self, node);
+            self.close();
+        }
+    )*};
+}
+
 impl<'a> Visit<'a> for Shapes<'_> {
-    fn enter_node(
+    runtime_nodes! {
+        visit_program, walk_program, Program<'a>;
+        visit_identifier_name, walk_identifier_name, IdentifierName<'a>;
+        visit_identifier_reference, walk_identifier_reference, IdentifierReference<'a>;
+        visit_binding_identifier, walk_binding_identifier, BindingIdentifier<'a>;
+        visit_label_identifier, walk_label_identifier, LabelIdentifier<'a>;
+        visit_this_expression, walk_this_expression, ThisExpression;
+        visit_array_expression, walk_array_expression, ArrayExpression<'a>;
+        visit_elision, walk_elision, Elision;
+        visit_object_expression, walk_object_expression, ObjectExpression<'a>;
+        visit_template_literal, walk_template_literal, TemplateLiteral<'a>;
+        visit_tagged_template_expression, walk_tagged_template_expression, TaggedTemplateExpression<'a>;
+        visit_template_element, walk_template_element, TemplateElement<'a>;
+        visit_computed_member_expression, walk_computed_member_expression, ComputedMemberExpression<'a>;
+        visit_static_member_expression, walk_static_member_expression, StaticMemberExpression<'a>;
+        visit_private_field_expression, walk_private_field_expression, PrivateFieldExpression<'a>;
+        visit_call_expression, walk_call_expression, CallExpression<'a>;
+        visit_new_expression, walk_new_expression, NewExpression<'a>;
+        visit_import_meta, walk_import_meta, ImportMeta;
+        visit_new_target, walk_new_target, NewTarget;
+        visit_spread_element, walk_spread_element, SpreadElement<'a>;
+        visit_update_expression, walk_update_expression, UpdateExpression<'a>;
+        visit_unary_expression, walk_unary_expression, UnaryExpression<'a>;
+        visit_binary_expression, walk_binary_expression, BinaryExpression<'a>;
+        visit_private_in_expression, walk_private_in_expression, PrivateInExpression<'a>;
+        visit_conditional_expression, walk_conditional_expression, ConditionalExpression<'a>;
+        visit_assignment_expression, walk_assignment_expression, AssignmentExpression<'a>;
+        visit_object_assignment_target, walk_object_assignment_target, ObjectAssignmentTarget<'a>;
+        visit_assignment_target_rest, walk_assignment_target_rest, AssignmentTargetRest<'a>;
+        visit_assignment_target_with_default, walk_assignment_target_with_default, AssignmentTargetWithDefault<'a>;
+        visit_sequence_expression, walk_sequence_expression, SequenceExpression<'a>;
+        visit_super, walk_super, Super;
+        visit_await_expression, walk_await_expression, AwaitExpression<'a>;
+        visit_chain_expression, walk_chain_expression, ChainExpression<'a>;
+        visit_parenthesized_expression, walk_parenthesized_expression, ParenthesizedExpression<'a>;
+        visit_directive, walk_directive, Directive<'a>;
+        visit_hashbang, walk_hashbang, Hashbang<'a>;
+        visit_block_statement, walk_block_statement, BlockStatement<'a>;
+        visit_variable_declaration, walk_variable_declaration, VariableDeclaration<'a>;
+        visit_variable_declarator, walk_variable_declarator, VariableDeclarator<'a>;
+        visit_expression_statement, walk_expression_statement, ExpressionStatement<'a>;
+        visit_if_statement, walk_if_statement, IfStatement<'a>;
+        visit_do_while_statement, walk_do_while_statement, DoWhileStatement<'a>;
+        visit_while_statement, walk_while_statement, WhileStatement<'a>;
+        visit_for_in_statement, walk_for_in_statement, ForInStatement<'a>;
+        visit_for_of_statement, walk_for_of_statement, ForOfStatement<'a>;
+        visit_continue_statement, walk_continue_statement, ContinueStatement<'a>;
+        visit_break_statement, walk_break_statement, BreakStatement<'a>;
+        visit_return_statement, walk_return_statement, ReturnStatement<'a>;
+        visit_with_statement, walk_with_statement, WithStatement<'a>;
+        visit_switch_statement, walk_switch_statement, SwitchStatement<'a>;
+        visit_switch_case, walk_switch_case, SwitchCase<'a>;
+        visit_labeled_statement, walk_labeled_statement, LabeledStatement<'a>;
+        visit_throw_statement, walk_throw_statement, ThrowStatement<'a>;
+        visit_try_statement, walk_try_statement, TryStatement<'a>;
+        visit_catch_clause, walk_catch_clause, CatchClause<'a>;
+        visit_catch_parameter, walk_catch_parameter, CatchParameter<'a>;
+        visit_debugger_statement, walk_debugger_statement, DebuggerStatement;
+        visit_assignment_pattern, walk_assignment_pattern, AssignmentPattern<'a>;
+        visit_object_pattern, walk_object_pattern, ObjectPattern<'a>;
+        visit_binding_rest_element, walk_binding_rest_element, BindingRestElement<'a>;
+        visit_function_body, walk_function_body, FunctionBody<'a>;
+        visit_yield_expression, walk_yield_expression, YieldExpression<'a>;
+        visit_class, walk_class, Class<'a>;
+        visit_class_body, walk_class_body, ClassBody<'a>;
+        visit_private_identifier, walk_private_identifier, PrivateIdentifier<'a>;
+        visit_import_expression, walk_import_expression, ImportExpression<'a>;
+        visit_import_declaration, walk_import_declaration, ImportDeclaration<'a>;
+        visit_import_specifier, walk_import_specifier, ImportSpecifier<'a>;
+        visit_import_default_specifier, walk_import_default_specifier, ImportDefaultSpecifier<'a>;
+        visit_import_namespace_specifier, walk_import_namespace_specifier, ImportNamespaceSpecifier<'a>;
+        visit_with_clause, walk_with_clause, WithClause<'a>;
+        visit_import_attribute, walk_import_attribute, ImportAttribute<'a>;
+        visit_export_declaration, walk_export_declaration, ExportDeclaration<'a>;
+        visit_export_named_declaration, walk_export_named_declaration, ExportNamedDeclaration<'a>;
+        visit_export_from_declaration, walk_export_from_declaration, ExportFromDeclaration<'a>;
+        visit_export_default_declaration, walk_export_default_declaration, ExportDefaultDeclaration<'a>;
+        visit_export_all_declaration, walk_export_all_declaration, ExportAllDeclaration<'a>;
+        visit_export_specifier, walk_export_specifier, ExportSpecifier<'a>;
+        visit_v8_intrinsic_expression, walk_v8_intrinsic_expression, V8IntrinsicExpression<'a>;
+        visit_boolean_literal, walk_boolean_literal, BooleanLiteral;
+        visit_null_literal, walk_null_literal, NullLiteral;
+        visit_numeric_literal, walk_numeric_literal, NumericLiteral<'a>;
+        visit_string_literal, walk_string_literal, StringLiteral<'a>;
+        visit_big_int_literal, walk_big_int_literal, BigIntLiteral<'a>;
+        visit_reg_exp_literal, walk_reg_exp_literal, RegExpLiteral<'a>;
+        visit_jsx_element, walk_jsx_element, JSXElement<'a>;
+        visit_jsx_opening_element, walk_jsx_opening_element, JSXOpeningElement<'a>;
+        visit_jsx_fragment, walk_jsx_fragment, JSXFragment<'a>;
+        visit_jsx_opening_fragment, walk_jsx_opening_fragment, JSXOpeningFragment;
+        visit_jsx_closing_fragment, walk_jsx_closing_fragment, JSXClosingFragment;
+        visit_jsx_namespaced_name, walk_jsx_namespaced_name, JSXNamespacedName<'a>;
+        visit_jsx_member_expression, walk_jsx_member_expression, JSXMemberExpression<'a>;
+        visit_jsx_empty_expression, walk_jsx_empty_expression, JSXEmptyExpression;
+        visit_jsx_attribute, walk_jsx_attribute, JSXAttribute<'a>;
+        visit_jsx_spread_attribute, walk_jsx_spread_attribute, JSXSpreadAttribute<'a>;
+        visit_jsx_identifier, walk_jsx_identifier, JSXIdentifier<'a>;
+        visit_jsx_spread_child, walk_jsx_spread_child, JSXSpreadChild<'a>;
+        visit_ts_enum_declaration, walk_ts_enum_declaration, TSEnumDeclaration<'a>;
+        visit_ts_enum_body, walk_ts_enum_body, TSEnumBody<'a>;
+        visit_ts_enum_member, walk_ts_enum_member, TSEnumMember<'a>;
+        visit_ts_qualified_name, walk_ts_qualified_name, TSQualifiedName<'a>;
+        visit_ts_module_block, walk_ts_module_block, TSModuleBlock<'a>;
+        visit_ts_import_equals_declaration, walk_ts_import_equals_declaration, TSImportEqualsDeclaration<'a>;
+        visit_ts_external_module_reference, walk_ts_external_module_reference, TSExternalModuleReference<'a>;
+        visit_decorator, walk_decorator, Decorator<'a>;
+        visit_ts_export_assignment, walk_ts_export_assignment, TSExportAssignment<'a>;
+    }
+
+    fn visit_chain_element(
         &mut self,
-        kind: AstKind<'a>,
+        node: &ast::ChainElement<'a>,
     ) {
-        if let Some(row) = self.owner {
-            self.trees[row].open(tags::node(kind));
+        if let ast::ChainElement::TSNonNullExpression(assertion) = node {
+            self.visit_expression(&assertion.expression);
+        } else {
+            walk::walk_chain_element(self, node);
         }
     }
-    fn leave_node(
+
+    fn visit_class_heritage(
         &mut self,
-        _kind: AstKind<'a>,
+        base: &ast::ClassHeritage<'a>,
     ) {
+        self.open("extends");
+        self.visit_expression(&base.expression);
         self.close();
     }
 
+    fn visit_for_statement(
+        &mut self,
+        node: &ast::ForStatement<'a>,
+    ) {
+        self.open("ForStatement");
+        if let Some(init) = &node.init {
+            self.visit_for_statement_init(init);
+        } else {
+            self.leaf("hole");
+        }
+        for slot in [&node.test, &node.update] {
+            if let Some(expr) = slot {
+                self.visit_expression(expr);
+            } else {
+                self.leaf("hole");
+            }
+        }
+        self.visit_statement(&node.body);
+        self.close();
+    }
+
+    fn visit_assignment_target_property_identifier(
+        &mut self,
+        node: &ast::AssignmentTargetPropertyIdentifier<'a>,
+    ) {
+        self.open("assignment-property");
+        self.leaf("key");
+        if let Some(init) = &node.init {
+            self.open("AssignmentTargetWithDefault");
+            self.visit_identifier_reference(&node.binding);
+            self.visit_expression(init);
+            self.close();
+        } else {
+            self.visit_identifier_reference(&node.binding);
+        }
+        self.close();
+    }
+
+    fn visit_empty_statement(
+        &mut self,
+        _: &ast::EmptyStatement,
+    ) {
+    }
+    fn visit_jsx_closing_element(
+        &mut self,
+        _: &ast::JSXClosingElement<'a>,
+    ) {
+    }
+
+    fn visit_formal_parameters(
+        &mut self,
+        params: &FormalParameters<'a>,
+    ) {
+        if !params.items.is_empty() || params.rest.is_some() {
+            self.open("FormalParameters");
+            walk::walk_formal_parameters(self, params);
+            self.close();
+        }
+    }
     fn visit_expression(
         &mut self,
         expr: &Expression<'a>,
@@ -436,6 +618,15 @@ impl<'a> Visit<'a> for Shapes<'_> {
                 tags::key_kind(&m.key, m.computed)
             );
             self.function(&m.value, &form);
+            if m.kind == ast::MethodDefinitionKind::Constructor
+                && let Some(row) = m
+                    .value
+                    .body
+                    .as_ref()
+                    .and_then(|body| self.region(body.span))
+            {
+                self.trees[row].defer_constructor_body();
+            }
         }
     }
     fn visit_object_property(
@@ -491,15 +682,7 @@ impl<'a> Visit<'a> for Shapes<'_> {
         p: &AccessorProperty<'a>,
     ) {
         self.visit_decorators(&p.decorators);
-        // Oxc keeps the initializer but drops an illegal declare modifier on recovery.
-        let start = p.decorators.last().map_or(p.span.start, |d| d.span.end);
-        let key = p.key.span().start;
-        let prefix = &self.tokens[self.tokens.partition_point(|t| t.start() < start)..];
-        if prefix
-            .iter()
-            .take_while(|t| t.start() < key)
-            .any(|t| t.kind() == Kind::Declare)
-        {
+        if crate::analyze::Collector::declared_accessor(self.tokens, p) {
             if !p.decorators.is_empty() {
                 self.property_key(&p.key, p.computed);
             }
@@ -529,9 +712,13 @@ impl<'a> Visit<'a> for Shapes<'_> {
         &mut self,
         block: &StaticBlock<'a>,
     ) {
-        let end = self.lines.position(block.span.end);
-        if let Some(&row) = self.ends.get(&end) {
-            self.in_row(row, |v| walk::walk_static_block(v, block));
+        let span = crate::analyze::static_block_span(block, self.tokens);
+        if let Some(row) = self.region(span) {
+            self.in_row(row, |v| {
+                v.open("StaticBlock");
+                walk::walk_static_block(v, block);
+                v.close();
+            });
         }
     }
     fn visit_jsx_text(
@@ -547,7 +734,9 @@ impl<'a> Visit<'a> for Shapes<'_> {
         node: &JSXExpressionContainer<'a>,
     ) {
         if !matches!(node.expression, JSXExpression::EmptyExpression(_)) {
+            self.open("JSXExpressionContainer");
             walk::walk_jsx_expression_container(self, node);
+            self.close();
         }
     }
 

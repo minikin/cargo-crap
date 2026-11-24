@@ -1,16 +1,4 @@
-//! Advisory triage of duplicate pairs by a model behind a typed-answer API.
-//!
-//! Opt-in and annotation-only: for each pair the duplicate pass already
-//! found, the model is asked what kind of duplication it is, whether it is
-//! worth extracting, and whether a fix to one side would likely miss the
-//! other. The answers are printed beside the pair; they never filter,
-//! reorder or gate anything.
-//!
-//! Which API is asked is a [`provider`]: it owns the wire shape, the
-//! endpoint and the environment, and everything else here is shared. The
-//! HTTP client (the `client` module and `run`) is compiled only with the
-//! `triage` Cargo feature. Providers, decoding, requests, the cache and
-//! rendering use no network and are always present.
+//! Rust source extraction, question wording and Cargo target resolution for shared triage.
 
 #[cfg(feature = "triage")]
 pub use cargo_crap_core::duplicates::triage::{Settings, TriageError, Triaged, client};

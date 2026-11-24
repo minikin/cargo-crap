@@ -19,8 +19,9 @@ fn subtree(
 pub(super) struct Tree {
     stack: Vec<(Cow<'static, str>, Vec<Fingerprint>)>,
     parts: Vec<Fingerprint>,
-    pub count: usize,
-    pub prints: BTreeSet<Fingerprint>,
+    constructor_body: Option<Fingerprint>,
+    pub(super) count: usize,
+    pub(super) prints: BTreeSet<Fingerprint>,
 }
 
 impl Tree {
@@ -55,14 +56,20 @@ impl Tree {
         self.record(subtree(&kind, &children));
     }
 
+    pub(super) fn defer_constructor_body(&mut self) {
+        self.constructor_body = self.parts.pop();
+    }
+
     pub fn finish(mut self) -> Self {
         // Instance fields and an explicit constructor may own disjoint source regions.
+        self.parts.extend(self.constructor_body);
         if self.parts.len() > 1 {
             self.record(subtree("constructor-regions", &self.parts));
         }
         self
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +88,50 @@ mod tests {
             subtree("add", &[number, id]),
             Fingerprint(0x8f92_9c3e_6742_72d1)
         );
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+    struct Node(&'static str, Vec<Node>);
+
+    fn trees() -> impl proptest::strategy::Strategy<Value = Node> {
+        use proptest::prelude::*;
+        let tag = prop::sample::select(vec!["id", "return", "add"]);
+        tag.clone()
+            .prop_map(|t| Node(t, vec![]))
+            .prop_recursive(4, 64, 4, move |inner| {
+                (tag.clone(), prop::collection::vec(inner, 1..5))
+                    .prop_map(|(tag, children)| Node(tag, children))
+            })
+    }
+
+    fn visit<'a>(
+        node: &'a Node,
+        tree: &mut Tree,
+        distinct: &mut BTreeSet<&'a Node>,
+    ) -> usize {
+        distinct.insert(node);
+        tree.open(node.0);
+        let descendants: usize = node
+            .1
+            .iter()
+            .map(|child| visit(child, tree, distinct))
+            .sum();
+        tree.close();
+        1 + descendants
+    }
+
+    proptest::proptest! {
+        // A deliberately broken encoder in a mutation run must not create a new workspace seed file.
+        #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..Default::default() })]
+        #[test]
+        fn s09_random_trees_count_all_nodes_and_hash_each_distinct_subtree(node in trees()) {
+            let mut tree = Tree::default();
+            let mut distinct = BTreeSet::new();
+            let count = visit(&node, &mut tree, &mut distinct);
+            let tree = tree.finish();
+            proptest::prop_assert_eq!(tree.count, count);
+            proptest::prop_assert_eq!(tree.prints.len(), distinct.len());
+        }
     }
 
     #[test]

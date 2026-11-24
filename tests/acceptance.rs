@@ -4777,6 +4777,53 @@ const BOTH_KEYS: Keys = Keys {
 };
 
 #[cfg(feature = "triage")]
+fn seed_legacy_verdict(dir: &Path) {
+    let source = |file: &str| {
+        let text = std::fs::read_to_string(dir.join(file)).expect("source");
+        text.trim_end_matches('\n').to_owned()
+    };
+    let entry =
+        cache_file_before_providers(&source("alpha.rs"), &source("beta.rs"), "jev-latest", 1);
+    let cache = dir.join("target/cargo-crap/triage");
+    std::fs::create_dir_all(&cache).expect("cache dir");
+    std::fs::write(
+        cache.join(entry),
+        r#"{"kind":"parameterisable","confidence":0.77,"worth_extracting":1.0,"divergence_risk":0.2}"#,
+    )
+    .expect("cache entry");
+}
+
+#[cfg(feature = "triage")]
+#[test]
+fn s36_cold_rust_request_and_keyless_legacy_cache_hit() {
+    let cold = alpha_beta_tree();
+    let stub = same_logic_stub();
+    let output = run_against(cold.path(), TRIAGE_ON, &stub.base_url(), true, &[]);
+    assert!(output.status.success());
+    assert_eq!(stub.request_count(), 1);
+    assert_eq!(
+        rooted(&stub.requests()[0].body, cold.path()),
+        typesafe_golden()
+    );
+
+    let seeded = alpha_beta_tree();
+    seed_legacy_verdict(seeded.path());
+    let output = run_against(seeded.path(), TRIAGE_ON, &stub.base_url(), false, &[]);
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("triage: parameterisable")
+    );
+    assert!(
+        !String::from_utf8(output.stderr)
+            .unwrap()
+            .contains(TRIAGE_SKIPPED)
+    );
+    assert_eq!(stub.request_count(), 1);
+}
+
+#[cfg(feature = "triage")]
 #[test]
 fn existing_typesafe_verdicts_stay_cached_across_the_upgrade() {
     // Given a verdict cache entry stored under the key spec 30 computes for a
@@ -4785,19 +4832,7 @@ fn existing_typesafe_verdicts_stay_cached_across_the_upgrade() {
     // a side's source is its lines without the final newline, and TypeSafe's
     // default model is jev-latest. A failure here may mean one of those moved.
     let dir = alpha_beta_tree();
-    let source = |file: &str| {
-        let text = std::fs::read_to_string(dir.path().join(file)).expect("source");
-        text.trim_end_matches('\n').to_owned()
-    };
-    let entry =
-        cache_file_before_providers(&source("alpha.rs"), &source("beta.rs"), "jev-latest", 1);
-    let cache = dir.path().join("target/cargo-crap/triage");
-    std::fs::create_dir_all(&cache).expect("cache dir");
-    std::fs::write(
-        cache.join(entry),
-        r#"{"kind":"parameterisable","confidence":0.77,"worth_extracting":1.0,"divergence_risk":0.2}"#,
-    )
-    .expect("cache entry");
+    seed_legacy_verdict(dir.path());
     // And neither body has changed
     let stub = both_providers_stub("same_logic");
     // When cargo-crap runs with triage enabled and no provider named

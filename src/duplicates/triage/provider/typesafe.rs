@@ -7,12 +7,9 @@ mod tests {
     use super::*;
     use crate::duplicates::compare::DuplicatePair;
     use crate::duplicates::extract::Location;
-    use crate::duplicates::triage::provider::{Answers, Provider};
+    use crate::duplicates::triage::provider::Provider;
     use crate::duplicates::triage::request::{self, QUESTIONS};
-    use crate::duplicates::triage::verdict::{Kind, Verdict};
-    use crate::duplicates::verdict::{DIVERGENCE_QUESTION, KIND_QUESTION, WORTH_QUESTION};
     use proptest::prelude::*;
-    use serde_json::{Map, json};
     use std::path::PathBuf;
 
     /// The request builder as it was before the seam, pasted unchanged: the
@@ -160,212 +157,6 @@ mod tests {
     }
 
     /// A response carrying `answers` under the ids the encoded questions use.
-    fn response_for(answers: &Answers) -> String {
-        let questions = TypeSafe.encode(json!({}), "jev", &QUESTIONS)["questions"].clone();
-        let ids: Vec<&String> = questions.as_object().expect("keyed by id").keys().collect();
-        let mut by_id = Map::new();
-        for id in ids {
-            let answer = match questions[id]["type"].as_str().expect("a type") {
-                "choice" => json!({
-                    "type": "choice",
-                    "choice": answers.kind.wire_name(),
-                    "confidence": answers.kind_confidence,
-                }),
-                "score" => json!({
-                    "type": "score",
-                    "score": answers.worth,
-                    "confidence": answers.worth_confidence,
-                }),
-                other => {
-                    assert_eq!(other, "noul");
-                    json!({"type": "noul", "noul": answers.divergence})
-                },
-            };
-            by_id.insert(id.clone(), answer);
-        }
-        json!({"model": "jev", "answers": by_id, "usage": {}}).to_string()
-    }
-
-    /// A full `/v1/systemone` response with the three answers, overridable
-    /// one answer at a time.
-    fn response(
-        kind: &str,
-        worth: &str,
-        divergence: &str,
-    ) -> String {
-        format!(
-            r#"{{"model":"jev-1.13.0","answers":{{"duplication_kind":{kind},"worth_extracting":{worth},"divergence_risk":{divergence}}},"usage":{{"input_tokens":900,"output_tokens":40}}}}"#
-        )
-    }
-
-    const KIND: &str = r#"{"type":"choice","choice":"same_logic","probabilities":{"same_logic":0.86,"shared_shape_only":0.08,"structural_obligation":0.04,"parameterisable":0.02},"confidence":0.81}"#;
-    const WORTH: &str = r#"{"type":"score","score":2.4,"legend":{"0":"a","1":"b","2":"c","3":"d"},"probabilities":{"0":0.0,"1":0.1,"2":0.4,"3":0.5},"confidence":0.62}"#;
-    const DIVERGENCE: &str = r#"{"type":"noul","noul":0.8}"#;
-
-    #[test]
-    fn typesafe_names_its_api_and_environment() {
-        let provider = TypeSafe;
-        assert_eq!(provider.id(), "typesafe");
-        assert_eq!(provider.display_name(), "TypeSafe API");
-        assert_eq!(provider.key_var(), "TYPESAFE_API_KEY");
-        assert_eq!(provider.base_url_var(), "TYPESAFE_BASE_URL");
-        assert_eq!(provider.default_base_url(), "https://api.typesafe.ai");
-        assert_eq!(provider.endpoint_path(), "/v1/systemone");
-        assert_eq!(provider.default_model(), "jev-latest");
-    }
-
-    #[test]
-    fn decodes_a_canned_response() {
-        let answers = TypeSafe
-            .decode(&response(KIND, WORTH, DIVERGENCE))
-            .expect("decodes");
-        assert_eq!(
-            answers,
-            Answers {
-                kind: Kind::SameLogic,
-                kind_confidence: 0.81,
-                worth: 2.4,
-                worth_confidence: 0.62,
-                divergence: 0.8,
-            }
-        );
-    }
-
-    #[test]
-    fn a_missing_answer_is_an_error_naming_the_question() {
-        let body = r#"{"model":"jev","answers":{},"usage":{}}"#;
-        let err = TypeSafe.decode(body).expect_err("nothing to decode");
-        assert!(err.to_string().contains(KIND_QUESTION), "{err}");
-        let without_worth = response(KIND, WORTH, DIVERGENCE)
-            .replace(&format!(r#","worth_extracting":{WORTH}"#), "");
-        let err = TypeSafe
-            .decode(&without_worth)
-            .expect_err("no worth answer");
-        assert!(err.to_string().contains(WORTH_QUESTION), "{err}");
-        let without_divergence = response(KIND, WORTH, DIVERGENCE)
-            .replace(&format!(r#","divergence_risk":{DIVERGENCE}"#), "");
-        let err = TypeSafe
-            .decode(&without_divergence)
-            .expect_err("no divergence answer");
-        assert!(err.to_string().contains(DIVERGENCE_QUESTION), "{err}");
-    }
-
-    #[test]
-    fn an_answer_of_the_wrong_type_is_an_error_naming_both_types() {
-        // The message names the question, the type it needed and the type
-        // that came back: the three facts a mismatched question set needs.
-        let cases = [
-            (
-                response(DIVERGENCE, WORTH, DIVERGENCE),
-                KIND_QUESTION,
-                "a choice answer, got noul",
-            ),
-            (
-                response(KIND, KIND, DIVERGENCE),
-                WORTH_QUESTION,
-                "a score answer, got choice",
-            ),
-            (
-                response(KIND, WORTH, WORTH),
-                DIVERGENCE_QUESTION,
-                "a noul answer, got score",
-            ),
-        ];
-        for (body, question, types) in cases {
-            let err = TypeSafe
-                .decode(&body)
-                .expect_err("wrong answer type")
-                .to_string();
-            assert!(err.contains(question) && err.contains(types), "{err}");
-        }
-    }
-
-    #[test]
-    fn an_option_that_was_never_offered_is_an_error() {
-        let kind = r#"{"type":"choice","choice":"copy_paste","probabilities":{},"confidence":0.9}"#;
-        let err = TypeSafe
-            .decode(&response(kind, WORTH, DIVERGENCE))
-            .expect_err("unknown option")
-            .to_string();
-        assert_eq!(
-            err,
-            r#"duplication_kind: "copy_paste" is not an offered option"#
-        );
-    }
-
-    #[test]
-    fn a_body_that_is_not_a_response_is_an_error() {
-        let err = TypeSafe
-            .decode("not json")
-            .expect_err("not JSON")
-            .to_string();
-        assert!(err.starts_with("not a /v1/systemone response: "), "{err}");
-        assert!(TypeSafe.decode(r#"{"error":"overloaded"}"#).is_err());
-    }
-
-    #[test]
-    fn an_answer_nobody_asked_for_is_ignored() {
-        let body = response(KIND, WORTH, DIVERGENCE).replace(
-            r#""answers":{"#,
-            r#""answers":{"diagnostic":{"type":"trace","id":"x"},"#,
-        );
-        let answers = TypeSafe
-            .decode(&body)
-            .expect("the three answers still decode");
-        assert_eq!(answers.kind, Kind::SameLogic);
-    }
-
-    #[test]
-    fn a_malformed_answer_names_its_question() {
-        let kind = r#"{"type":"choice","choice":"same_logic"}"#;
-        let err = TypeSafe
-            .decode(&response(kind, WORTH, DIVERGENCE))
-            .expect_err("a choice without confidence")
-            .to_string();
-        assert!(
-            err.contains(KIND_QUESTION) && err.contains("confidence"),
-            "{err}"
-        );
-
-        let divergence = r#"{"type":"verdict","noul":0.8}"#;
-        let err = TypeSafe
-            .decode(&response(KIND, WORTH, divergence))
-            .expect_err("an unknown answer type")
-            .to_string();
-        assert!(err.contains(DIVERGENCE_QUESTION), "{err}");
-    }
-
-    #[test]
-    fn an_answer_naming_any_offered_option_decodes() {
-        let body = TypeSafe.encode(json!({}), "jev", &QUESTIONS);
-        let offered = body["questions"][KIND_QUESTION]["criteria"]
-            .as_object()
-            .expect("option -> rubric");
-        assert_eq!(offered.len(), Kind::ALL.len(), "every kind is offered");
-        for option in offered.keys() {
-            let kind = Kind::from_wire(option).expect("an offered option is a kind");
-            let answers = Answers {
-                kind,
-                kind_confidence: 0.9,
-                worth: 1.0,
-                worth_confidence: 0.9,
-                divergence: 0.5,
-            };
-            let decoded = TypeSafe.decode(&response_for(&answers)).expect("decodes");
-            assert_eq!(decoded.kind.wire_name(), option);
-        }
-    }
-
-    #[test]
-    fn the_body_names_the_model_and_carries_state_and_questions() {
-        let state = json!({"function_a": {"name": "alpha"}});
-        let body = TypeSafe.encode(state.clone(), "jev-latest", &QUESTIONS);
-        assert_eq!(body["model"], "jev-latest");
-        assert_eq!(body["state"], state);
-        assert_eq!(body["questions"], before_seam::questions());
-        assert_eq!(body.as_object().expect("a map").len(), 3);
-    }
-
     fn located(
         file: String,
         name: String,
@@ -376,25 +167,6 @@ mod tests {
             end_line: 9,
             name,
         }
-    }
-
-    fn answers() -> impl Strategy<Value = Answers> {
-        (
-            0..Kind::ALL.len(),
-            0.0..=1.0f64,
-            0.0..=3.0f64,
-            0.0..=1.0f64,
-            0.0..=1.0f64,
-        )
-            .prop_map(
-                |(kind, kind_confidence, worth, worth_confidence, divergence)| Answers {
-                    kind: Kind::ALL[kind],
-                    kind_confidence,
-                    worth,
-                    worth_confidence,
-                    divergence,
-                },
-            )
     }
 
     proptest! {
@@ -424,13 +196,5 @@ mod tests {
             prop_assert_eq!(through_seam.to_string(), before.to_string());
         }
 
-        /// Every question encoded is answered by the id decode reads, and
-        /// every answer it reads comes back as sent.
-        #[test]
-        fn encode_and_decode_agree(answers in answers()) {
-            let decoded = TypeSafe.decode(&response_for(&answers)).expect("decodes");
-            prop_assert_eq!(decoded, answers);
-            prop_assert!(Verdict::from_answers(decoded).is_ok());
-        }
     }
 }

@@ -718,18 +718,29 @@ fn the_msrv_job_tests_the_1_88_packages_by_name() {
         .map(|c| c.split_whitespace().collect::<Vec<_>>())
         .filter(|c| cargo_args(c).is_some())
         .collect();
-    assert_eq!(cargo.len(), 3, "{cargo:?}");
+    assert_eq!(cargo.len(), 5, "{cargo:?}");
     // The 1.88 packages are the workspace members that declare 1.88, so a
     // new member at that MSRV cannot be left out of the job unnoticed.
     let msrv_members = msrv_members("1.88");
     assert_eq!(msrv_members, ["cargo-crap", "cargo-crap-core"]);
+    let mut standalone = Vec::new();
+    let mut joint = 0;
     for command in &cargo {
         let args = cargo_args(command).expect("a cargo run");
         let selected = selected_packages(args);
-        assert_eq!(selected, msrv_members, "{command:?}");
+        if selected == ["cargo-crap-core"] {
+            assert!(args.contains(&"--all-targets"), "{command:?}");
+            standalone.push(args.windows(2).any(|pair| pair == ["--features", "triage"]));
+        } else {
+            assert_eq!(selected, msrv_members, "{command:?}");
+            joint += 1;
+        }
         assert!(args.contains(&"--locked"), "{command:?}");
         assert!(!args.contains(&"--workspace"), "{command:?}");
     }
+    assert_eq!(joint, 3);
+    standalone.sort_unstable();
+    assert_eq!(standalone, [false, true]);
 }
 
 #[test]

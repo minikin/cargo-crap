@@ -5,11 +5,7 @@
 //! similarity is computed over, so the set contains one entry per distinct
 //! shape appearing anywhere in the function — including the whole function.
 //!
-//! The hash is FNV-1a with the standard 64-bit parameters, written out here
-//! rather than taken from `DefaultHasher`, whose output std explicitly
-//! declines to guarantee across releases. A fingerprint that changed with the
-//! toolchain would make two runs of the same tool disagree about the same
-//! source.
+//! The shared 64-bit FNV-1a implementation keeps these hashes stable across toolchains.
 
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};

@@ -54,6 +54,8 @@ pub struct Row {
     pub name: String,
     pub span: SourceSpan,
     pub body_regions: Vec<SourceSpan>,
+    /// Half-open UTF-8 byte ranges of the exact excerpts, in source order, when prints are requested.
+    pub excerpt_regions: Vec<std::ops::Range<usize>>,
     pub statement_lines: Vec<u32>,
     pub cyclomatic: u32,
     pub is_arrow: bool,
@@ -147,6 +149,21 @@ pub fn analyze(
     bytes: &[u8],
     mode: Mode,
 ) -> Result<FileAnalysis, InputError> {
+    analyze_file(path, bytes, mode, false).map(|(file, _)| file)
+}
+
+pub(crate) fn analyze_file(
+    path: &Path,
+    bytes: &[u8],
+    mode: Mode,
+    with_prints: bool,
+) -> Result<
+    (
+        FileAnalysis,
+        Vec<cargo_crap_core::duplicates::model::FunctionPrint>,
+    ),
+    InputError,
+> {
     let side = match mode {
         Mode::Ordinary => None,
         Mode::Strict(side) => Some(side),
@@ -187,7 +204,7 @@ pub fn analyze(
         file.warnings.push(problem.to_string());
         if parsed.fatal_error {
             file.status = FileStatus::SkippedFatal;
-            return Ok(file);
+            return Ok((file, Vec::new()));
         }
         file.status = FileStatus::Recovered;
     }
@@ -198,6 +215,16 @@ pub fn analyze(
         row.fingerprint = print;
         row.measured = body.finish(row.span, &collector.lines);
     }
+    if with_prints {
+        for (row, regions) in collector.rows.iter_mut().zip(collector.regions) {
+            row.excerpt_regions = regions
+                .selected
+                .into_iter()
+                .map(|span| span.start as usize..span.end as usize)
+                .collect();
+            row.excerpt_regions.sort_unstable_by_key(|r| r.start);
+        }
+    }
     collector.rows.sort_by_key(|row| row.span.start);
     crate::names::assign_ordinals(collector.rows.iter_mut().map(|row| &mut row.name));
     for row in &mut collector.rows {
@@ -205,10 +232,21 @@ pub fn analyze(
         row.statement_lines.dedup();
     }
     file.rows = collector.rows;
-    Ok(file)
+    let prints = if with_prints {
+        crate::duplicates::normalize::collect(
+            &parsed.program,
+            &file.rows,
+            &collector.lines,
+            &allocator,
+            &parsed.tokens,
+        )
+    } else {
+        Vec::new()
+    };
+    Ok((file, prints))
 }
 
-fn grammar_for(path: &Path) -> Result<SourceType, oxc_span::UnknownExtension> {
+pub(crate) fn grammar_for(path: &Path) -> Result<SourceType, oxc_span::UnknownExtension> {
     SourceType::from_path(path)
         .or_else(|error| {
             crate::discover::source_extension(path).map_or(Err(error), SourceType::from_extension)
@@ -216,7 +254,20 @@ fn grammar_for(path: &Path) -> Result<SourceType, oxc_span::UnknownExtension> {
         .map(|grammar| grammar.with_jsx(grammar.is_javascript()))
 }
 
-struct Collector<'s> {
+pub(crate) fn static_block_span(
+    block: &StaticBlock<'_>,
+    tokens: &[Token],
+) -> Span {
+    // Oxc includes the modifiers and any recovered decorators in the block span.
+    let inside = block
+        .body
+        .first()
+        .map_or_else(|| block.span.end - 1, |s| s.span().start);
+    let open = tokens.partition_point(|token| token.start() < inside) - 1;
+    Span::new(tokens[open].start(), block.span.end)
+}
+
+pub(crate) struct Collector<'s> {
     path: &'s Path,
     source: Source<'s>,
     lines: LineIndex,
@@ -299,6 +350,7 @@ impl<'s> Collector<'s> {
             name,
             span: self.lines.span(span),
             body_regions: Vec::new(),
+            excerpt_regions: Vec::new(),
             statement_lines: Vec::new(),
             cyclomatic: 1,
             is_arrow,
@@ -347,7 +399,9 @@ impl<'s> Collector<'s> {
             ClassElement::PropertyDefinition(p) if !p.r#static && !p.declare => {
                 p.value.as_ref().map(GetSpan::span)
             },
-            ClassElement::AccessorProperty(p) if !p.r#static && !self.declared_accessor(p) => {
+            ClassElement::AccessorProperty(p)
+                if !p.r#static && !Self::declared_accessor(self.source.tokens, p) =>
+            {
                 p.value.as_ref().map(GetSpan::span)
             },
             _ => None,
@@ -407,8 +461,8 @@ impl<'s> Collector<'s> {
         });
     }
 
-    fn declared_accessor(
-        &self,
+    pub(crate) fn declared_accessor(
+        tokens: &[Token],
         property: &AccessorProperty<'_>,
     ) -> bool {
         // On recovery Oxc retains the initializer but drops the illegal declare modifier.
@@ -416,7 +470,6 @@ impl<'s> Collector<'s> {
             .decorators
             .last()
             .map_or(property.span.start, |d| d.span.end);
-        let tokens = self.source.tokens;
         let first = tokens.partition_point(|token| token.start() < start);
         let key = property.key.span().start;
         tokens[first..]
@@ -625,17 +678,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         block: &StaticBlock<'a>,
     ) {
-        // Oxc includes the modifiers and any recovered decorators in the block span.
-        let inside = block
-            .body
-            .first()
-            .map_or_else(|| block.span.end - 1, |s| s.span().start);
-        let open = self
-            .source
-            .tokens
-            .partition_point(|token| token.start() < inside)
-            - 1;
-        let span = Span::new(self.source.tokens[open].start(), block.span.end);
+        let span = static_block_span(block, self.source.tokens);
         let name = self
             .names
             .resolve(span, Some("<static-block>"), Unit::FunctionDeclaration);
@@ -773,7 +816,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         property: &AccessorProperty<'a>,
     ) {
-        if self.declared_accessor(property) {
+        if Self::declared_accessor(self.source.tokens, property) {
             self.visit_declared_field(&property.decorators, &property.key);
             return;
         }

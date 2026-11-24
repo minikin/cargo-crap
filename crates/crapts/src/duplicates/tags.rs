@@ -16,18 +16,24 @@ pub(super) fn key_kind(
     }
 }
 
-pub(super) fn node(kind: AstKind<'_>) -> Tag {
+pub(super) fn node(
+    kind: AstKind<'_>,
+    name: &'static str,
+) -> Tag {
     match kind {
         AstKind::IdentifierReference(_) | AstKind::BindingIdentifier(_) => "id".into(),
         AstKind::IdentifierName(_) => "key".into(),
         AstKind::NumericLiteral(_) => "number".into(),
         AstKind::FunctionBody(_) => "body".into(),
         AstKind::ReturnStatement(_) => "return".into(),
-        other => expression(other),
+        other => expression(other, name),
     }
 }
 
-fn expression(kind: AstKind<'_>) -> Tag {
+fn expression(
+    kind: AstKind<'_>,
+    name: &'static str,
+) -> Tag {
     match kind {
         AstKind::BinaryExpression(n) => match n.operator.as_str() {
             "+" => "add".into(),
@@ -42,7 +48,7 @@ fn expression(kind: AstKind<'_>) -> Tag {
         AstKind::StaticMemberExpression(n) => optional("member", n.optional),
         AstKind::ComputedMemberExpression(n) => optional("computed-member", n.optional),
         AstKind::PrivateFieldExpression(n) => optional("private-member", n.optional),
-        other => runtime(other),
+        other => runtime(other, name),
     }
 }
 
@@ -57,12 +63,14 @@ fn optional(
     }
 }
 
-fn runtime(kind: AstKind<'_>) -> Tag {
+fn runtime(
+    kind: AstKind<'_>,
+    name: &'static str,
+) -> Tag {
     match kind {
         AstKind::YieldExpression(n) if n.delegate => "yield-star".into(),
         AstKind::ForOfStatement(n) if n.r#await => "for-await".into(),
         AstKind::VariableDeclaration(n) => n.kind.as_str().into(),
-        // Oxc's pinned node type contains no source spelling, offsets or arena identity.
-        other => format!("{:?}", other.ty()).into(),
+        _ => name.into(),
     }
 }

@@ -10,7 +10,7 @@ use std::hash::Hasher;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Where the cache lives under a Cargo target directory.
+/// The Rust adapter's legacy cache directory. Other front ends supply a directory to `Settings::for_cache`.
 #[must_use]
 pub fn default_dir(target_dir: &Path) -> PathBuf {
     target_dir.join("cargo-crap").join("triage")
@@ -21,8 +21,10 @@ pub fn default_dir(target_dir: &Path) -> PathBuf {
 pub struct CacheKey<const N: usize = 8>([u8; N]);
 
 impl CacheKey {
-    /// The key for a verdict on `source_a` and `source_b` by `provider`'s
-    /// `model`, asked with question-set `version`.
+    /// Rust's legacy FNV key covers both sources in pair order, the provider namespace,
+    /// model and question-set version. `TypeSafe` omits the namespace to reuse pre-provider
+    /// entries. Bump the version whenever the question or its scoring changes.
+    /// Other front ends can supply their own digest with [`CacheKey::from_digest`].
     #[must_use]
     pub fn new(
         provider: &dyn Provider,

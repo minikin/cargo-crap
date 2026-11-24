@@ -94,8 +94,7 @@ pub fn run<const N: usize>(
     pool.install(|| run.answer(pairs, settings.max_requests, &prepare))
 }
 
-/// One pair as the cache saw it: its two bodies, their key, and the verdict
-/// cached for them, if any.
+/// Submitted excerpts and the result of looking up their digest.
 #[cfg(feature = "triage")]
 struct Lookup<const N: usize> {
     excerpts: Excerpts<N>,
@@ -104,6 +103,7 @@ struct Lookup<const N: usize> {
 
 /// Text to submit for one pair and the front end's key for those bytes.
 #[cfg(feature = "triage")]
+#[derive(Debug, Clone)]
 pub struct Excerpts<const N: usize> {
     pub first: String,
     pub second: String,

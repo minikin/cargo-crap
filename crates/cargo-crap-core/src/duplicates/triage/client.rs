@@ -93,7 +93,7 @@ impl Settings {
     /// environment without mutating the process's. No other provider's
     /// variables are read. An empty value counts as unset. Verdicts are
     /// cached under `target_dir`, the directory the Rust front end resolves for every
-    /// cache (spec 10), so `cargo clean` sweeps them; `None` caches nothing.
+    /// cache. This is the Rust legacy scheme. Use [`Self::for_cache`] for a per-user directory.
     #[must_use]
     pub fn from_lookup(
         provider: &'static dyn Provider,
