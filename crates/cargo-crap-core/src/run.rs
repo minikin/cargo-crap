@@ -247,6 +247,8 @@ pub struct Settings<'a> {
 
 pub struct RenderExtras<'a> {
     pub duplicate_context: Option<&'a crate::duplicates::model::DuplicateContext>,
+    /// Cap duplicate rows while fitting a PR comment, preserving group totals.
+    pub duplicate_row_limit: Option<usize>,
     /// Ordered duplicate pairs.
     pub duplicates: Option<&'a [DuplicatePair]>,
     /// Duplicate groups in report order.
@@ -262,6 +264,7 @@ pub struct RenderExtras<'a> {
 impl Default for RenderExtras<'_> {
     fn default() -> Self {
         Self {
+            duplicate_row_limit: None,
             duplicates: None,
             duplicate_context: None,
             groups: None,
@@ -415,6 +418,7 @@ impl<'a> PreparedReport<'a> {
             width: settings.width,
             cwd: settings.cwd,
             workspace_root: settings.workspace_root,
+            duplicate_row_limit: extras.duplicate_row_limit,
             duplicates: extras.duplicates,
             groups: extras.groups,
             novelty: extras.novelty,

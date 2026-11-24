@@ -525,6 +525,7 @@ struct Render<'a> {
 enum Step {
     Complete,
     CoreSummarized,
+    DuplicateRows(usize),
     ChangedRows(usize),
 }
 
@@ -602,36 +603,46 @@ impl Render<'_> {
         let report = PreparedReport::new(&TOOL, &settings, analysis, self.prepared, &full)
             .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
         let extras = self.scan.map_or_else(RenderExtras::default, Scan::extras);
-        let once = |summary, limit| {
+        let once = |core_summary, changed_limit, duplicate_row_limit| {
             let mut body = Vec::new();
+            let layout = RenderExtras {
+                duplicate_row_limit,
+                ..extras
+            };
             let verdict = report::with_color(self.color, || {
-                report.write(summary, limit, &extras, &mut body)
+                report.write(core_summary, changed_limit, &layout, &mut body)
             })
             .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
             Ok::<_, InputError>((body, verdict))
         };
-        if !comment || summary {
-            let (mut body, verdict) = once(summary, None)?;
-            if comment && section.is_some() {
-                body = summary_after_marker(body, &self.options.comment_marker.value);
-            }
-            return if !comment || fits(&body) {
-                Ok((body, verdict))
-            } else {
-                Err(too_long())
-            };
+        if !comment {
+            return once(summary, None, None);
         }
-        let rows = section.map_or(0, |s| s.shown_rows().min(PR_COMMENT_ROWS));
-        let body = fit(
-            rows,
+        let changed = section.map_or(0, ChangedSection::shown_rows);
+        let duplicates = self.scan.map_or(0, |s| {
+            s.comparison
+                .as_ref()
+                .map_or(s.groups.len(), |c| c.reported().count())
+        });
+        fit(
+            summary,
+            duplicates,
+            changed,
             |(body, _): &(Vec<u8>, GateOutcome)| fits(body),
-            |step| match step {
-                Step::Complete => once(false, None),
-                Step::CoreSummarized => once(true, None),
-                Step::ChangedRows(limit) => once(true, Some(limit)),
+            |step| {
+                let (mut body, verdict) = match step {
+                    Step::Complete => once(summary, None, None),
+                    Step::CoreSummarized => once(true, None, None),
+                    Step::DuplicateRows(n) => once(true, None, Some(n)),
+                    Step::ChangedRows(n) => once(true, Some(n), Some(0)),
+                }?;
+                if summary && section.is_some() {
+                    body = summary_after_marker(body, &self.options.comment_marker.value);
+                }
+                Ok((body, verdict))
             },
-        )?;
-        body.ok_or_else(too_long)
+        )?
+        .ok_or_else(too_long)
     }
 }
 
@@ -655,13 +666,25 @@ fn too_long() -> InputError {
 }
 
 fn fit<T, E>(
-    rows: usize,
+    summary: bool,
+    duplicates: usize,
+    changed: usize,
     fits: impl Fn(&T) -> bool,
     mut render: impl FnMut(Step) -> Result<T, E>,
 ) -> Result<Option<T>, E> {
-    let steps = [Step::Complete, Step::CoreSummarized]
-        .into_iter()
-        .chain((0..rows).rev().map(Step::ChangedRows));
+    let changed = if summary {
+        0
+    } else {
+        changed.min(PR_COMMENT_ROWS)
+    };
+    let steps = std::iter::once(Step::Complete)
+        .chain((!summary).then_some(Step::CoreSummarized))
+        .chain(
+            (0..duplicates.min(PR_COMMENT_ROWS))
+                .rev()
+                .map(Step::DuplicateRows),
+        )
+        .chain((0..changed).rev().map(Step::ChangedRows));
     for step in steps {
         let body = render(step)?;
         if fits(&body) {
@@ -724,6 +747,7 @@ mod tests {
         match step {
             Step::Complete => 100,
             Step::CoreSummarized => 60,
+            Step::DuplicateRows(_) => unreachable!("no duplicate rows in this fixture"),
             Step::ChangedRows(rows) => 30 + 10 * rows,
         }
     }
@@ -734,6 +758,8 @@ mod tests {
     ) -> (Option<usize>, Vec<Step>) {
         let mut tried = Vec::new();
         let body = fit(
+            false,
+            0,
             rows,
             |size: &usize| *size <= budget,
             |step| {
@@ -770,6 +796,37 @@ mod tests {
             )
         );
         assert_eq!(fitted_at(29, 0).0, None);
+    }
+
+    #[test]
+    fn explicit_summary_only_reduces_duplicates_and_both_sections_start_at_the_comment_cap() {
+        let attempts = |summary, duplicates, changed| {
+            let mut tried = Vec::new();
+            let _ = fit(
+                summary,
+                duplicates,
+                changed,
+                |()| false,
+                |step| {
+                    tried.push(step);
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap();
+            tried
+        };
+        let mut expected = vec![Step::Complete];
+        expected.extend((0..25).rev().map(Step::DuplicateRows));
+        assert_eq!(attempts(true, 80, 90), expected);
+        assert_eq!(attempts(true, 0, 90), vec![Step::Complete]);
+        let mut expected = vec![
+            Step::Complete,
+            Step::CoreSummarized,
+            Step::DuplicateRows(1),
+            Step::DuplicateRows(0),
+        ];
+        expected.extend((0..25).rev().map(Step::ChangedRows));
+        assert_eq!(attempts(false, 2, 90), expected);
     }
 
     #[test]

@@ -726,4 +726,150 @@ mod enabled {
             "{err}"
         );
     }
+
+    fn reject_invalid_records(
+        report: &Value,
+        historical: bool,
+    ) {
+        let schema = if historical { "delta" } else { "report" };
+        let validator = common::compile(&format!("schemas/crapts/{schema}-v1.json"));
+        let mut unknown = report.clone();
+        unknown["extra"] = json!(true);
+        assert!(!validator.is_valid(&unknown));
+        let mut single = report.clone();
+        single["duplicate_groups"][0]["members"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        assert!(!validator.is_valid(&single));
+        let mut orphan = report.clone();
+        for field in ["duplicate_groups", "duplicate_context", "duplicates"] {
+            orphan.as_object_mut().unwrap().remove(field);
+        }
+        orphan["untriaged_groups"] = json!(1);
+        assert!(!validator.is_valid(&orphan));
+        if historical {
+            let mut unchanged = report.clone();
+            unchanged["duplicate_groups"][0]["status"] = json!("unchanged");
+            unchanged["duplicate_groups"][0]["grown_from"] = json!(2);
+            assert!(!validator.is_valid(&unchanged));
+        }
+    }
+
+    #[test]
+    fn s26_measured_absolute_and_delta_schemas_cover_every_duplicate_state_with_git() {
+        let p = Project::new();
+        p.pair("group", "return x");
+        p.write("empty.ts", "function alone(){throw 0}");
+        p.write("cov.info","SF:group/a.ts\nDA:1,1\nend_of_record\nSF:group/b.ts\nDA:1,1\nend_of_record\nSF:empty.ts\nDA:1,1\nend_of_record\n");
+        git(&p, &["init", "-q", "-b", "main"]);
+        git(&p, &["add", "."]);
+        git(&p, &["commit", "-qm", "fixture"]);
+        let stub = ApiStub::scripted(vec![answer(false)]);
+        for mode in ["off", "empty", "triaged"] {
+            let paths: &[&str] = if mode == "empty" {
+                &["empty.ts"]
+            } else {
+                &["group"]
+            };
+            let record = doc(&ask(
+                &p,
+                &stub,
+                &p.source,
+                &["empty.ts", "--coverage", "cov.info"],
+            ));
+            p.write("baseline.json", &record.to_string());
+            for historical in [false, true] {
+                for changed in [false, true] {
+                    let mut flags = vec!["--coverage", "cov.info"];
+                    flags.extend(paths);
+                    if historical {
+                        flags.extend(["--baseline", "baseline.json"]);
+                    }
+                    if changed {
+                        flags.extend(["--base", "main"]);
+                    }
+                    let out = if mode == "off" {
+                        p.command()
+                            .args(["--format", "json"])
+                            .args(&flags)
+                            .output()
+                            .unwrap()
+                    } else {
+                        ask(&p, &stub, &p.source, &flags)
+                    };
+                    let report = doc(&out);
+                    assert_eq!(report.get("changed").is_some(), changed);
+                    assert_eq!(report.get("regression_gate").is_some(), historical);
+                    match mode {
+                        "off" => assert!(report.get("duplicate_groups").is_none()),
+                        "empty" => assert_eq!(report["duplicate_groups"], json!([])),
+                        _ => {
+                            assert!(report["duplicate_groups"][0].get("triage").is_some());
+                            if !changed {
+                                reject_invalid_records(&report, historical);
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn s24_fitting_never_repeats_provider_work_even_with_persistence_disabled() {
+        let p = Project::new();
+        for (id, body) in [
+            ("aaa", "return x"),
+            ("bbb", "return !x"),
+            ("ccc", "throw x"),
+            ("ddd", "return [x]"),
+            ("eee", "return x()"),
+            ("fff", "return x+1"),
+            ("ggg", "return x.y"),
+            ("hhh", "return typeof x"),
+        ] {
+            p.pair(id, body);
+        }
+        let stub = ApiStub::scripted(vec![answer(false)]);
+        let url = format!("https://example.invalid/{}", "x".repeat(5100));
+        let out = p
+            .command()
+            .env("TYPESAFE_API_KEY", "local-fixture")
+            .env("TYPESAFE_BASE_URL", stub.base_url())
+            .env("HOME", &p.source)
+            .env("XDG_CACHE_HOME", &p.source)
+            .env("LOCALAPPDATA", &p.source)
+            .args([
+                "--duplicates",
+                "--summary",
+                "--format",
+                "pr-comment",
+                "--repo-url",
+                &url,
+                "--commit-ref",
+                "abc",
+            ])
+            .output()
+            .unwrap();
+        common::check(&out, 0);
+        assert_eq!(stub.request_count(), 8);
+        let body = String::from_utf8(out.stdout).unwrap();
+        assert!(body.encode_utf16().count() <= 65_536);
+        assert_eq!(
+            body.lines()
+                .filter(|line| line.contains("<br><sub>"))
+                .count(),
+            6
+        );
+        assert!(body.contains("and 2 more") && body.contains("Triaged by"));
+        assert_eq!(
+            String::from_utf8(out.stderr)
+                .unwrap()
+                .lines()
+                .filter(|s| s.contains("cache"))
+                .count(),
+            1
+        );
+    }
 }

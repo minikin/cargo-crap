@@ -4783,3 +4783,147 @@ fn s21_git_keeps_untouched_peers_and_json_alone_supplies_duplicate_history() {
     assert_eq!(doc["changed"]["entries"], json!([]));
     assert_eq!(doc["changed"]["counts"]["missing_skipped"], 1);
 }
+
+mod duplicate_fitting {
+    use super::cli::Repo;
+    use std::{ffi::OsString, fs, process::ExitCode};
+
+    fn project() -> Repo {
+        let repo = Repo::init();
+        repo.write(
+            ".crapts.toml",
+            "[duplicates]\nmin-nodes=0\nmin-similarity=1.0",
+        );
+        for (n, body) in ["return x+1", "return x()", "throw x"]
+            .into_iter()
+            .enumerate()
+        {
+            for i in 0..2 {
+                let name = format!("f{n}_{i}{}", "𐐀".repeat(220));
+                repo.write(
+                    &format!("g{n}_{i}.ts"),
+                    format!("function {name}(x){{{body}}}"),
+                );
+            }
+        }
+        repo.commit("duplicate fixture");
+        repo.git(&["checkout", "-q", "-b", "feature"]);
+        repo.write(
+            "change.ts",
+            "function changedOnly(x){if(x) return 1;return 0}",
+        );
+        repo.commit("add changed row");
+        repo.uncovered();
+        repo
+    }
+
+    fn render(
+        repo: &Repo,
+        mark: &str,
+        flags: &[&str],
+    ) -> (ExitCode, String, String) {
+        let args = [
+            "--coverage",
+            "cov.info",
+            "--duplicates",
+            "--format",
+            "pr-comment",
+            "--threshold",
+            "1",
+            "--comment-marker",
+            mark,
+        ]
+        .into_iter()
+        .chain(flags.iter().copied())
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = crapts::cli::run(&repo.root(), &args, &mut out, &mut err);
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    fn two_rows_marker(
+        full: &str,
+        spare: usize,
+    ) -> String {
+        let row = full.lines().rfind(|l| l.contains("<br><sub>")).unwrap();
+        let footer = "\n_…and 1 more, see CI artifact for the full report._\n";
+        let cost = full.encode_utf16().count() - row.encode_utf16().count() - 1
+            + footer.encode_utf16().count();
+        "M".repeat(65_536 - cost + 1 - spare)
+    }
+
+    #[test]
+    fn s24_s50_first_fit_reduces_duplicate_rows_before_changed_details() {
+        let repo = project();
+        for base in [true, false] {
+            let flags: &[&str] = if base {
+                &["--base", "main", "--fail-changed"]
+            } else {
+                &[]
+            };
+            let summary = [flags, &["--summary"]].concat();
+            let (expected, short, _) = render(&repo, "M", &summary);
+            assert_eq!(short.lines().filter(|l| l.contains("<br><sub>")).count(), 3);
+            let mark = two_rows_marker(&short, 0);
+            let (code, body, err) = render(&repo, &mark, &summary);
+            assert_eq!(code, expected, "{err}");
+            assert_eq!(body.encode_utf16().count(), 65_536);
+            assert_eq!(body.lines().next(), Some(mark.as_str()));
+            assert_eq!(body.lines().filter(|l| l.contains("<br><sub>")).count(), 2);
+            assert!(body.contains("and 1 more, see CI artifact"));
+            assert_eq!(body.contains("Changed functions: 1 touched, 1 fail."), base);
+            assert!(!body.contains("changedOnly`"));
+            if base {
+                let mark = two_rows_marker(&short, 550);
+                let (code, fitted, err) = render(&repo, &mark, flags);
+                assert_eq!(code, ExitCode::from(1), "{err}");
+                assert_eq!(fitted.lines().next(), Some(mark.as_str()));
+                assert_eq!(fitted.lines().nth(1), Some(""));
+                assert!(fitted.encode_utf16().count() <= 65_536);
+                assert_eq!(
+                    fitted.lines().filter(|l| l.contains("<br><sub>")).count(),
+                    2
+                );
+                assert!(
+                    fitted.contains("## Changed functions")
+                        && fitted.contains("changedOnly")
+                        && fitted.contains("and 1 more, see CI artifact")
+                );
+                assert!(!fitted.contains("| CRAP | CC |"));
+            }
+        }
+    }
+
+    #[test]
+    fn s25_the_smallest_duplicate_summary_fits_at_the_limit_and_preserves_a_file_above_it() {
+        let repo = project();
+        let flags = ["--summary", "--base", "main", "--fail-changed"];
+        let (_, full, _) = render(&repo, "M", &flags);
+        let first = full.find("| Pair | Similarity |").unwrap();
+        let expected = format!(
+            "{}\n_…and 3 more, see CI artifact for the full report._\n",
+            &full[..first]
+        );
+        let mark = "M".repeat(65_536 + 1 - expected.encode_utf16().count());
+        let mut output = flags.to_vec();
+        output.extend(["--output", "out.md"]);
+        let (code, stdout, err) = render(&repo, &mark, &output);
+        assert_eq!(code, ExitCode::from(1), "{err}");
+        assert_eq!(stdout, "");
+        let out = repo.read("out.md");
+        assert_eq!(out.encode_utf16().count(), 65_536);
+        assert_eq!(out, expected.replacen("M\n", &format!("{mark}\n"), 1));
+        fs::write(repo.root().join("out.md"), "keep me").unwrap();
+        let (code, stdout, err) = render(&repo, &format!("{mark}x"), &output);
+        assert_eq!(code, ExitCode::from(2));
+        assert!(err.contains("65536") || err.contains("65,536"), "{err}");
+        assert_eq!(stdout, "");
+        assert_eq!(repo.read("out.md"), "keep me");
+    }
+}

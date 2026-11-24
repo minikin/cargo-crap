@@ -15,9 +15,9 @@ count gated reasons across all eligible functions.
 GitHub emits one annotation per gated structural reason at its first source
 range. JSON retains every range. PR comments show the first 25 reasons
 in the table and fold the rest. To fit GitHub's 65,536 UTF-16 code units,
-crapts first summarizes the core report, then removes changed rows from
-the end until the comment fits. Each candidate keeps the full counts and
-verdict. Shields keeps its CRAP badge even when a structural gate trips.
+crapts first summarizes the score report. It then removes duplicate rows
+one at a time, followed by changed rows, until the comment fits. The
+counts and gate verdict cover the full report. Shields keeps its CRAP badge even when a structural gate trips.
 
 Text, JSON, Markdown and PR comments carry duplicate groups when you pass
 `--duplicates`. Text names every member. Markdown lists every group, and PR
@@ -151,7 +151,7 @@ A GitHub-flavored Markdown table of every displayed function, for a job summary 
 
 ## pr-comment
 
-A Markdown body sized for a pull request comment. It leads with the functions above the threshold and starts with the `--comment-marker` line, `<!-- crapts-report -->` by default, so a workflow can find and update its earlier comment. The body is fitted to GitHub's 65,536 UTF-16 code units: complete, then with the core report summarized, then with fewer changed rows. A body that still does not fit exits 2.
+The first line is the `--comment-marker`, which defaults to `<!-- crapts-report -->`. A workflow can use it to update an existing comment. With `--summary`, the changed section occupies one line. If the body is too long, crapts removes duplicate rows and counts the omitted groups. If the marker, summaries and counts alone exceed 65,536 UTF-16 units, the command exits 2 and preserves the output file.
 
 <!-- crapts-output: --coverage coverage/lcov.info --format pr-comment -->
 ```markdown

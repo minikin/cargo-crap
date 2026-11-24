@@ -1481,6 +1481,7 @@ impl DuplicateSection<'_> {
         try_weight: f64,
     ) -> RenderExtras<'_> {
         RenderExtras {
+            duplicate_row_limit: None,
             duplicate_context: None,
             duplicates: self.pairs.as_deref(),
             groups: self.groups.as_deref(),
