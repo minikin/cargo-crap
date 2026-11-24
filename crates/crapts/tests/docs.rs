@@ -37,6 +37,36 @@ use std::collections::BTreeSet;
 use std::process::Command;
 
 #[test]
+fn s17_omitted_and_explicitly_disabled_signals_match_the_published_cart_reports() {
+    let repo = fixture::cart_with(FeatureCoverage::Own).unwrap();
+    for explicit in [false, true] {
+        if explicit {
+            let path = repo.root().join(".crapts.toml");
+            let mut cfg = std::fs::read_to_string(&path).unwrap_or_default();
+            cfg.push_str("\n[signals]\nenabled = false\n");
+            std::fs::write(path, cfg).unwrap();
+        }
+        for name in ["output-formats", "json"] {
+            let page = Page::load(&format!("docs/crapts/reference/{name}.md"));
+            let sample = pages::samples(&page)
+                .unwrap()
+                .into_iter()
+                .find(|s| s.marker.effective_format().as_deref() == Some("json"))
+                .unwrap();
+            let run = repo.crapts(&sample.marker.args());
+            check::check_sample(&sample, &run).unwrap();
+            let doc: Value = serde_json::from_str(&run.stdout).unwrap();
+            assert!(doc["summary"].get("signal_regressions").is_none());
+            for row in doc["entries"].as_array().unwrap() {
+                for key in ["signals", "baseline_signals", "signal_spans", "reasons"] {
+                    assert!(row.get(key).is_none(), "{name}: {key}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn cli_help_and_the_printed_settings_cover_the_public_contract() {
     let dir = tempfile::tempdir().unwrap();
     let capture = |arg| {

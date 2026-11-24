@@ -120,6 +120,14 @@ impl PreparedBaseline {
         self.crapts.as_ref().and_then(|meta| meta.notice.as_deref())
     }
 
+    #[must_use]
+    pub fn has_signals(&self) -> bool {
+        self.baseline
+            .entries
+            .iter()
+            .any(|row| row.signals.is_some())
+    }
+
     pub(crate) fn baseline_version(&self) -> Option<&str> {
         self.crapts
             .as_ref()
@@ -539,11 +547,7 @@ fn compute_prepared_delta(
     let before = &baseline.as_baseline().entries;
     let mut delta = compare(eligible, before, settings.epsilon, tool.policy.pairing);
     if settings.signals.enabled {
-        attach_reasons(
-            &mut delta,
-            settings.signals,
-            before.iter().any(|row| row.signals.is_some()),
-        );
+        attach_reasons(&mut delta, settings.signals, baseline.has_signals());
     } else {
         for row in &mut delta.entries {
             row.baseline_signals = None;
@@ -567,7 +571,12 @@ fn write_crapts_json(
         .diagnostics
         .ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
     let selection = report::CraptsSelection::from_limits(body.settings.top, body.settings.min)?;
-    let ctx = report::CraptsJsonContext {
+    let mut ctx = report::CraptsJsonContext {
+        signal_regressions: body
+            .settings
+            .signals
+            .enabled
+            .then_some(report::SignalRegressions::Unavailable),
         tool: body.tool,
         coverage_kind,
         threshold: body.settings.threshold,
@@ -592,6 +601,9 @@ fn write_crapts_json(
         baseline,
         body.tool,
     );
+    if body.settings.signals.enabled && baseline.has_signals() {
+        ctx.signal_regressions = Some(report::SignalRegressions::Count(gating_signals));
+    }
     report::render_crapts_delta_json(
         &delta,
         &counts,

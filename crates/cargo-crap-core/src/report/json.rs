@@ -13,6 +13,7 @@ use crate::duplicates::novelty::Novelty;
 use crate::duplicates::verdict::Assessment;
 use crate::entry::{CrapEntry, ScopeDiagnostics, StrayFiles};
 use crate::report::{RenderOptions, Section, Tool};
+use crate::signals::Signals;
 use anyhow::{Result, bail};
 use serde_json::value::RawValue;
 use std::io::Write;
@@ -496,8 +497,16 @@ pub(crate) struct CraptsJsonContext<'a> {
     pub(crate) notices: &'a [&'a str],
     pub(crate) total: usize,
     pub(crate) crappy: usize,
+    pub(crate) signal_regressions: Option<SignalRegressions>,
     pub(crate) changed: Option<&'a CraptsChangedSection>,
     pub(crate) diagnostics: &'a ScopeDiagnostics,
+}
+
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum SignalRegressions {
+    Unavailable,
+    Count(usize),
 }
 
 #[derive(serde::Serialize)]
@@ -511,6 +520,8 @@ struct CraptsSummary {
     unchanged: Option<usize>,
     removed: Option<usize>,
     changed_failures: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signal_regressions: Option<SignalRegressions>,
 }
 
 #[derive(serde::Serialize)]
@@ -547,6 +558,8 @@ struct CraptsAbsoluteRow<'a> {
     uncovered: &'a [LineRange],
     #[serde(skip_serializing_if = "Option::is_none")]
     fingerprint: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signals: Option<Signals>,
 }
 
 #[derive(serde::Serialize)]
@@ -568,6 +581,10 @@ struct CraptsDeltaRow<'a> {
     previous_file: Option<String>,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     reasons: &'a [Reason],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signals: Option<Signals>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline_signals: Option<Signals>,
 }
 
 #[derive(serde::Serialize)]
@@ -661,6 +678,16 @@ fn crapts_diagnostics(d: &ScopeDiagnostics) -> CraptsDiagnostics {
     }
 }
 
+fn vector_with_length(
+    signals: Option<Signals>,
+    slot: &str,
+) -> Result<Option<Signals>> {
+    if matches!(signals, Some(Signals { lines: 0, .. })) {
+        bail!("crapts JSON requires {slot}.lines to be positive");
+    }
+    Ok(signals)
+}
+
 fn build_crapts_abs_row(entry: &CrapEntry) -> Result<CraptsAbsoluteRow<'_>> {
     let file = normalize_crapts_path(&entry.file);
     let cyclomatic = integer_cyclomatic(&file, &entry.function, entry.cyclomatic)?;
@@ -673,6 +700,7 @@ fn build_crapts_abs_row(entry: &CrapEntry) -> Result<CraptsAbsoluteRow<'_>> {
         crap: entry.crap,
         uncovered: &entry.uncovered,
         fingerprint: entry.fingerprint.as_deref(),
+        signals: vector_with_length(entry.signals, "signals")?,
     })
 }
 
@@ -688,6 +716,11 @@ fn build_crapts_delta_row(de: &DeltaEntry) -> Result<CraptsDeltaRow<'_>> {
         crap: de.current.crap,
         uncovered: &de.current.uncovered,
         fingerprint: de.current.fingerprint.as_deref(),
+        signals: vector_with_length(de.current.signals, "signals")?,
+        baseline_signals: vector_with_length(
+            de.current.signals.and(de.baseline_signals),
+            "baseline_signals",
+        )?,
         baseline_crap: de.baseline_crap,
         delta: de.delta,
         status: de.status,
@@ -723,6 +756,7 @@ pub(crate) fn render_crapts_json(
             unchanged: None,
             removed: None,
             changed_failures: ctx.changed.and_then(|c| c.failures),
+            signal_regressions: ctx.signal_regressions,
         },
         entries: rows,
         changed: ctx.changed.map(|c| c.raw.as_ref()),
@@ -778,6 +812,7 @@ pub(crate) fn render_crapts_delta_json(
             unchanged: Some(counts.unchanged),
             removed: Some(counts.removed),
             changed_failures: ctx.changed.and_then(|c| c.failures),
+            signal_regressions: ctx.signal_regressions,
         },
         entries: rows,
         removed,
@@ -1419,6 +1454,34 @@ mod tests {
     }
 
     #[test]
+    fn crapts_writers_require_physical_length_and_omit_unpaired_measurements() {
+        let current = sample().remove(0);
+        let mut old = current.clone();
+        old.signals = Some(Signals {
+            lines: 2,
+            ..Signals::default()
+        });
+        let report = crate::delta::compare(
+            std::slice::from_ref(&current),
+            &[old],
+            crate::delta::DEFAULT_EPSILON,
+            crate::policy::PairPolicy::FileFunction,
+        );
+        let mut pair = report.entries.into_iter().next().unwrap();
+        let row = serde_json::to_value(build_crapts_delta_row(&pair).unwrap()).unwrap();
+        assert!(row.get("baseline_signals").is_none());
+        pair.current.signals = Some(Signals::default());
+        assert!(build_crapts_abs_row(&pair.current).is_err());
+        assert!(build_crapts_delta_row(&pair).is_err());
+        pair.current.signals = Some(Signals {
+            lines: 1,
+            ..Signals::default()
+        });
+        pair.baseline_signals = Some(Signals::default());
+        assert!(build_crapts_delta_row(&pair).is_err());
+    }
+
+    #[test]
     fn crapts_envelopes_preserve_outer_member_order_and_cyclomatic_tokens() {
         let mut row = sample().remove(0);
         row.file = PathBuf::from("./src\\f.ts");
@@ -1442,6 +1505,7 @@ mod tests {
             crappy: 0,
             changed: None,
             diagnostics: &diag,
+            signal_regressions: None,
         };
 
         let mut abs_buf = Vec::new();
@@ -1634,6 +1698,7 @@ mod tests {
             crappy: 0,
             changed: Some(&extracted),
             diagnostics: &diag,
+            signal_regressions: None,
         };
         let mut abs_buf = Vec::new();
         render_crapts_json(&[], &ctx, &mut abs_buf).unwrap();

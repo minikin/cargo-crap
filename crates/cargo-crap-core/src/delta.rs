@@ -1060,6 +1060,8 @@ struct RawCraptsSummary {
     unchanged: Box<RawValue>,
     removed: Box<RawValue>,
     changed_failures: Box<RawValue>,
+    #[serde(default, deserialize_with = "present_raw")]
+    signal_regressions: Option<Box<RawValue>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1098,6 +1100,8 @@ struct RawCraptsEntry {
     uncovered: Option<Box<RawValue>>,
     #[serde(default, deserialize_with = "present_raw")]
     fingerprint: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    signals: Option<Box<RawValue>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1120,6 +1124,10 @@ struct RawCraptsDeltaEntry {
     previous_file: Option<Box<RawValue>>,
     #[serde(default, deserialize_with = "present_raw")]
     reasons: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    signals: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    baseline_signals: Option<Box<RawValue>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1283,6 +1291,15 @@ fn validate_crapts_summary(
     is_delta: bool,
 ) -> Result<()> {
     let s: RawCraptsSummary = decode_raw_object(v, path, "summary")?;
+    if let Some(count) = s.signal_regressions.as_deref().filter(|v| !raw_is_null(v)) {
+        if !is_delta {
+            bail!(
+                "baseline {}: summary.signal_regressions must be null in an absolute report",
+                path.display()
+            );
+        }
+        require_nonneg_int(count, path, "summary.signal_regressions")?;
+    }
     require_nonneg_int(&s.total, path, "summary.total")?;
     require_nonneg_int(&s.crappy, path, "summary.crappy")?;
     if !raw_is_null(&s.changed_failures) {
@@ -1398,6 +1415,7 @@ fn parse_crapts_delta_row(
             crap: raw.crap,
             uncovered: raw.uncovered,
             fingerprint: raw.fingerprint,
+            signals: raw.signals,
         },
     )
 }
@@ -1413,6 +1431,15 @@ fn validate_delta_row(
             path.display()
         );
     };
+    if let Some(historical) = &raw.baseline_signals {
+        if raw.signals.is_none() || status == "new" {
+            bail!(
+                "baseline {}: entries[{index}].baseline_signals requires a paired row with signals",
+                path.display()
+            );
+        }
+        parse_crapts_signals(path, index, "baseline_signals", historical)?;
+    }
     match status.as_str() {
         "new" => {
             if !raw_is_null(&raw.baseline_crap)
@@ -1492,6 +1519,42 @@ fn validate_reasons(
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSignals {
+    nesting: Box<RawValue>,
+    lines: Box<RawValue>,
+    bumps: Box<RawValue>,
+    bool_ops: Box<RawValue>,
+    stubs: Box<RawValue>,
+    panics: Box<RawValue>,
+}
+
+fn parse_crapts_signals(
+    path: &Path,
+    index: usize,
+    slot: &str,
+    value: &RawValue,
+) -> Result<Signals> {
+    let label = format!("entries[{index}].{slot}");
+    let raw: RawSignals = decode_raw_object(value, path, &label)?;
+    let count = |name: &str, value: &RawValue| {
+        match parse_json_nonneg_int(value) {
+            Some(JsonNonNegInt::Fits(n)) => u32::try_from(n).ok(),
+            _ => None,
+        }
+        .ok_or_else(|| anyhow::anyhow!("baseline {}: invalid {label}.{name}", path.display()))
+    };
+    Ok(Signals {
+        nesting: count("nesting", &raw.nesting)?,
+        lines: require_pos_u32(&raw.lines, path, &format!("{label}.lines"))?,
+        bumps: count("bumps", &raw.bumps)?,
+        bool_ops: count("bool_ops", &raw.bool_ops)?,
+        stubs: count("stubs", &raw.stubs)?,
+        panics: count("panics", &raw.panics)?,
+    })
+}
+
 fn parse_entry_core(
     path: &Path,
     index: usize,
@@ -1525,7 +1588,11 @@ fn parse_entry_core(
         crap,
         crate_name: None,
         uncovered,
-        signals: None,
+        signals: raw
+            .signals
+            .as_deref()
+            .map(|v| parse_crapts_signals(path, index, "signals", v))
+            .transpose()?,
         signal_spans: crate::signals::Spans::default(),
         fingerprint,
     })

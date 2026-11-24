@@ -19,7 +19,6 @@ use cargo_crap_core::report::{self, Schemas, Section, SourceLinks, Tool};
 use cargo_crap_core::run::{
     self, Analysis, BaselineFilter, PreparedBaseline, RenderExtras, Scope, Settings,
 };
-use cargo_crap_core::signals::SignalSettings;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -380,7 +379,7 @@ impl Render<'_> {
             sort: options.sort.value,
             threshold: options.threshold.value,
             epsilon: options.epsilon.value,
-            signals: &SignalSettings::default(),
+            signals: &options.signals.settings,
             fail_above: options.fail_above.value,
             fail_regression: options.fail_regression.value,
             format: options.format.value,

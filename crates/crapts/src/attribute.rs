@@ -215,6 +215,8 @@ impl Evidence {
             uncovered: self
                 .fully_hit_lines
                 .uncovered_ranges_in_span(0, u32::MAX as usize),
+            signals: Some(row.measured.signals),
+            signal_spans: row.measured.spans.clone(),
             fingerprint: Some(row.fingerprint.to_string()),
             ..CrapEntry::default()
         };
