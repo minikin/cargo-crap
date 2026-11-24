@@ -15,7 +15,8 @@ MANIFEST = CRATE / "Cargo.toml"
 CHANGELOG = CRATE / "CHANGELOG.md"
 WRAPPER = Path("npm/crapts/package.json")
 LOCK = Path("Cargo.lock")
-CHANGED = [MANIFEST, CHANGELOG, WRAPPER, LOCK]
+ACTION = Path("actions/crapts/action.yml")
+CHANGED = [MANIFEST, CHANGELOG, WRAPPER, LOCK, ACTION]
 ISOLATED = [
     Path("Cargo.toml"),
     Path("CHANGELOG.md"),
@@ -33,9 +34,10 @@ class PrepareRelease(unittest.TestCase):
         for path in CHANGED + ISOLATED:
             (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(ROOT / path, self.repo / path)
+        self.original_action = self.read(ACTION)
         self.old = tomllib.loads(self.read(MANIFEST).decode())["package"]["version"]
         self.dependencies = set(json.loads(self.read(WRAPPER))["optionalDependencies"])
-        self.next = "8.9.0" if self.old != "8.9.0" else "8.10.0"
+        self.next = "0.2.0" if self.old != "0.2.0" else "0.3.0"
         self.changes = "## [Unreleased]\n\n### Added\n\n- Check reports.\n"
         self.write(CHANGELOG, "# Changelog\n\n" + self.changes)
         self.original = self.snapshot(ISOLATED)
@@ -68,6 +70,10 @@ class PrepareRelease(unittest.TestCase):
         self.assertEqual(
             tomllib.loads(self.read(MANIFEST).decode())["package"]["version"], version
         )
+        old_pin = f'    default: "{self.old}"'.encode()
+        new_pin = f'    default: "{version}"'.encode()
+        self.assertEqual(self.original_action.count(old_pin), 1)
+        self.assertEqual(self.read(ACTION), self.original_action.replace(old_pin, new_pin, 1))
         npm = json.loads(self.read(WRAPPER))
         self.assertEqual(npm["version"], version)
         self.assertEqual(

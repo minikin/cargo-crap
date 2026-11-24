@@ -9,7 +9,7 @@ import tomllib
 from contextlib import ExitStack
 from pathlib import Path
 
-from release_version import version_parts, wrapper_at
+from release_version import ACTION, action_at, version_parts, wrapper_at
 
 MANIFEST = Path("crates/crapts/Cargo.toml")
 WRAPPER = Path("npm/crapts/package.json")
@@ -108,7 +108,7 @@ def apply_changes(original, updated):
 
 
 def prepare(version, date, prerelease):
-    original = {p: p.read_bytes() for p in (MANIFEST, LOCK, WRAPPER, LOG)}
+    original = {p: p.read_bytes() for p in (MANIFEST, LOCK, WRAPPER, ACTION, LOG)}
     manifest = original[MANIFEST].decode()
     old = tomllib.loads(manifest)["package"]["version"]
     if old == version:
@@ -119,6 +119,7 @@ def prepare(version, date, prerelease):
         optionalDependencies=dict.fromkeys(wrapper["optionalDependencies"], version),
     )
     updated = {
+        ACTION: action_at(original[ACTION].decode(), old, version).encode(),
         MANIFEST: bump_table(manifest, "[package]", old, version).encode(),
         LOCK: bump_table(original[LOCK].decode(), "[[package]]", old, version).encode(),
         WRAPPER: (json.dumps(wrapper, indent=2) + "\n").encode(),

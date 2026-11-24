@@ -38,6 +38,7 @@ jobs:
         with:
           filters: |
             rust:
+              - 'actions/crapts/action.yml'
               - 'npm/crapts/package.json'
               - '**/*.rs'
               # Both: the root manifest does not depend on how picomatch reads
