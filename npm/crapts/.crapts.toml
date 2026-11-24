@@ -1,0 +1,3 @@
+[signals]
+enabled = true
+gate = ["nesting", "bumps", "bool-ops", "stubs"]

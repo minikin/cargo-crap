@@ -41,4 +41,4 @@ On a project with a `checkout` with five `if` branches that no test reaches and 
 
 - Getting it: [install](install.md) and [coverage input](coverage.md) for Vitest, Jest, Istanbul and LCOV.
 - Gating a pull request: [baseline regressions](guides/baseline.md), [the changed-function gate](guides/changed-gate.md) and [the GitHub Action](guides/github-action.md).
-- Reference: [command line](reference/cli.md), [configuration](reference/config.md), [output formats](reference/output-formats.md), [JSON report](reference/json.md), [exit codes](reference/exit-codes.md) and [what gets a score](reference/complexity.md).
+- Reference: [command line](reference/cli.md), [configuration](reference/config.md), [output formats](reference/output-formats.md), [JSON report](reference/json.md), [exit codes](reference/exit-codes.md), [what gets a score](reference/complexity.md) and [structural signals](reference/complexity.md#structural-signals).

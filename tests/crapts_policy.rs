@@ -25,6 +25,7 @@ const CRAPTS: Tool = Tool {
         fail_above_counts: Population::All,
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
         signal_detail_hint: None,
+        signal_slice_hint: None,
         tie_order: TieOrder::FileFunctionLine,
         notice_spacing: NoticeSpacing::Separated,
     },

@@ -1050,6 +1050,17 @@ struct RawCraptsStray {
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawSignals {
+    nesting: Box<RawValue>,
+    lines: Box<RawValue>,
+    bumps: Box<RawValue>,
+    bool_ops: Box<RawValue>,
+    stubs: Box<RawValue>,
+    panics: Box<RawValue>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawCraptsSummary {
     total: Box<RawValue>,
     crappy: Box<RawValue>,
@@ -1060,6 +1071,8 @@ struct RawCraptsSummary {
     unchanged: Box<RawValue>,
     removed: Box<RawValue>,
     changed_failures: Box<RawValue>,
+    #[serde(default, deserialize_with = "present_raw")]
+    signal_regressions: Option<Box<RawValue>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1098,6 +1111,8 @@ struct RawCraptsEntry {
     uncovered: Option<Box<RawValue>>,
     #[serde(default, deserialize_with = "present_raw")]
     fingerprint: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    signals: Option<Box<RawValue>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1120,6 +1135,10 @@ struct RawCraptsDeltaEntry {
     previous_file: Option<Box<RawValue>>,
     #[serde(default, deserialize_with = "present_raw")]
     reasons: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    signals: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    baseline_signals: Option<Box<RawValue>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1277,12 +1296,30 @@ fn validate_crapts_stray(
     Ok(())
 }
 
+fn validate_signal_regressions(
+    path: &Path,
+    raw: Option<&RawValue>,
+    is_delta: bool,
+) -> Result<()> {
+    if let Some(count) = raw.filter(|v| !raw_is_null(v)) {
+        if !is_delta {
+            bail!(
+                "baseline {}: summary.signal_regressions must be null in an absolute report",
+                path.display()
+            );
+        }
+        require_nonneg_int(count, path, "summary.signal_regressions")?;
+    }
+    Ok(())
+}
+
 fn validate_crapts_summary(
     path: &Path,
     v: &RawValue,
     is_delta: bool,
 ) -> Result<()> {
     let s: RawCraptsSummary = decode_raw_object(v, path, "summary")?;
+    validate_signal_regressions(path, s.signal_regressions.as_deref(), is_delta)?;
     require_nonneg_int(&s.total, path, "summary.total")?;
     require_nonneg_int(&s.crappy, path, "summary.crappy")?;
     if !raw_is_null(&s.changed_failures) {
@@ -1398,6 +1435,7 @@ fn parse_crapts_delta_row(
             crap: raw.crap,
             uncovered: raw.uncovered,
             fingerprint: raw.fingerprint,
+            signals: raw.signals,
         },
     )
 }
@@ -1415,6 +1453,12 @@ fn validate_delta_row(
     };
     match status.as_str() {
         "new" => {
+            if raw.baseline_signals.is_some() {
+                bail!(
+                    "baseline {}: entries[{index}].baseline_signals is forbidden on a new row",
+                    path.display()
+                );
+            }
             if !raw_is_null(&raw.baseline_crap)
                 || !raw_is_null(&raw.delta)
                 || raw.previous_file.is_some()
@@ -1441,6 +1485,15 @@ fn validate_paired_delta_row(
     index: usize,
     raw: &RawCraptsDeltaEntry,
 ) -> Result<()> {
+    if let Some(historical) = &raw.baseline_signals {
+        if raw.signals.is_none() {
+            bail!(
+                "baseline {}: entries[{index}].baseline_signals requires current signals",
+                path.display()
+            );
+        }
+        parse_crapts_signals(path, index, "baseline_signals", historical)?;
+    }
     ensure_finite_min(&raw.baseline_crap, 1.0, path, "baseline_crap")?;
     if raw_f64(&raw.delta).is_none() {
         bail!(
@@ -1492,6 +1545,24 @@ fn validate_reasons(
     Ok(())
 }
 
+fn parse_crapts_signals(
+    path: &Path,
+    index: usize,
+    slot: &str,
+    value: &RawValue,
+) -> Result<Signals> {
+    let label = format!("entries[{index}].{slot}");
+    let raw: RawSignals = decode_raw_object(value, path, &label)?;
+    Ok(Signals {
+        nesting: require_u32(&raw.nesting, path, &format!("{label}.nesting"))?,
+        lines: require_pos_u32(&raw.lines, path, &format!("{label}.lines"))?,
+        bumps: require_u32(&raw.bumps, path, &format!("{label}.bumps"))?,
+        bool_ops: require_u32(&raw.bool_ops, path, &format!("{label}.bool_ops"))?,
+        stubs: require_u32(&raw.stubs, path, &format!("{label}.stubs"))?,
+        panics: require_u32(&raw.panics, path, &format!("{label}.panics"))?,
+    })
+}
+
 fn parse_entry_core(
     path: &Path,
     index: usize,
@@ -1525,7 +1596,11 @@ fn parse_entry_core(
         crap,
         crate_name: None,
         uncovered,
-        signals: None,
+        signals: raw
+            .signals
+            .as_deref()
+            .map(|v| parse_crapts_signals(path, index, "signals", v))
+            .transpose()?,
         signal_spans: crate::signals::Spans::default(),
         fingerprint,
     })
@@ -1642,6 +1717,18 @@ fn require_pos_usize(
     draft07_pos_u64(v)
         .and_then(|n| usize::try_from(n).ok())
         .ok_or_else(|| anyhow::anyhow!("baseline {}: invalid {field}", path.display()))
+}
+
+fn require_u32(
+    v: &RawValue,
+    path: &Path,
+    field: &str,
+) -> Result<u32> {
+    match parse_json_nonneg_int(v) {
+        Some(JsonNonNegInt::Fits(n)) => u32::try_from(n).ok(),
+        _ => None,
+    }
+    .ok_or_else(|| anyhow::anyhow!("baseline {}: invalid {field}", path.display()))
 }
 
 fn require_pos_u32(
@@ -3684,6 +3771,40 @@ mod full_name_tests {
         }
     }
 
+    #[test]
+    fn file_function_pairs_moves_and_withholds_resized_sibling_groups() {
+        let history = Signals {
+            lines: 5,
+            ..Signals::default()
+        };
+        let measured = |name: &str| CrapEntry {
+            signals: Some(history),
+            ..row("old/place.ts", name, 2.0)
+        };
+        let base = vec![measured("travel"), measured("callback")];
+        let head = vec![
+            CrapEntry {
+                file: "new/place.ts".into(),
+                line: 9,
+                signals: None,
+                ..measured("travel")
+            },
+            measured("callback"),
+            measured("callback#2"),
+        ];
+        let report = compare(&head, &base, DEFAULT_EPSILON, PairPolicy::FileFunction);
+        assert_eq!(report.entries.len(), head.len());
+        for row in report.entries {
+            if row.current.function == "travel" {
+                assert_eq!(row.status, DeltaStatus::Moved);
+                assert_eq!(row.baseline_signals, Some(history));
+            } else {
+                assert_eq!(row.status, DeltaStatus::New);
+                assert_eq!(row.baseline_signals, None);
+            }
+        }
+    }
+
     const FILES: [&str; 6] = [
         "a.ts",
         "src/a.ts",
@@ -4262,6 +4383,48 @@ mod crapts_admission_tests {
         assert!(format!("{read_err:#}").contains("nope.json"));
     }
 
+    fn signal_vector() -> Signals {
+        Signals {
+            nesting: u32::MAX,
+            lines: 2,
+            bumps: 3,
+            bool_ops: 4,
+            stubs: 5,
+            panics: 6,
+        }
+    }
+
+    #[test]
+    fn both_crapts_envelopes_load_the_current_signal_vector() {
+        let tool = Tool {
+            version: "0.2.3",
+            ..SECOND_TOOL
+        };
+        let current = signal_vector();
+        for (mut doc, delta) in [(valid_absolute_doc(), false), (valid_delta_doc(), true)] {
+            doc["entries"][0]["signals"] = json!(current);
+            if delta {
+                doc["entries"][0]["baseline_signals"] = json!(Signals {
+                    lines: 1,
+                    ..Signals::default()
+                });
+            }
+            for count in [None, Some(Value::Null), delta.then(|| json!(2))] {
+                if let Some(count) = count {
+                    doc["summary"]["signal_regressions"] = count;
+                }
+                let admitted = parse_crapts_baseline(
+                    Path::new("base.json"),
+                    &tool,
+                    CoverageKind::Lines,
+                    &doc.to_string(),
+                )
+                .unwrap();
+                assert_eq!(admitted.entries[0].signals, Some(current));
+            }
+        }
+    }
+
     type DocEdit = fn(&mut Value);
 
     fn assert_rejected(
@@ -4343,6 +4506,13 @@ mod crapts_admission_tests {
     #[test]
     fn load_crapts_baseline_rejects_defective_absolute_fields() {
         let abs_cases: &[(&str, DocEdit)] = &[
+            ("summary.signal_regressions", |d| {
+                d["summary"]["signal_regressions"] = json!(0);
+            }),
+            ("signals", |d| {
+                d["entries"][0]["signals"] = json!({"lines": 1});
+            }),
+            ("signals", |d| d["entries"][0]["signals"] = Value::Null),
             ("$schema", |d| d["$schema"] = json!(123)),
             ("$schema", |d| d["$schema"] = json!(null)),
             ("$schema", |d| d["$schema"] = json!("not a uri")),
@@ -4415,12 +4585,29 @@ mod crapts_admission_tests {
                 d["entries"][0]["fingerprint"] = json!("short");
             }),
         ];
+        for (field, bad) in [
+            ("lines", json!(0)),
+            ("lines", json!(u64::from(u32::MAX) + 1)),
+            ("panics", json!(-1)),
+            ("stubs", json!(0.5)),
+            ("bool_ops", json!(true)),
+            ("nesting", json!(u64::from(u32::MAX) + 1)),
+            ("bumps", Value::Null),
+        ] {
+            let mut doc = valid_absolute_doc();
+            doc["entries"][0]["signals"] = json!(signal_vector());
+            doc["entries"][0]["signals"][field] = bad;
+            assert_rejected(&doc, CoverageKind::Lines, &format!("signals.{field}"));
+        }
         for &(needle, edit) in abs_cases {
             let mut doc = valid_absolute_doc();
             edit(&mut doc);
             assert_rejected(&doc, CoverageKind::Lines, needle);
         }
+    }
 
+    #[test]
+    fn statements_baselines_admit_ten_coverage_only_examples() {
         let tool = Tool {
             version: "0.2.3",
             ..SECOND_TOOL
@@ -4444,6 +4631,28 @@ mod crapts_admission_tests {
     #[test]
     fn load_crapts_baseline_rejects_defective_delta_fields() {
         let delta_cases: &[(&str, DocEdit)] = &[
+            ("summary.signal_regressions", |d| {
+                d["summary"]["signal_regressions"] = json!(-1);
+            }),
+            ("summary.signal_regressions", |d| {
+                d["summary"]["signal_regressions"] = json!(false);
+            }),
+            ("baseline_signals", |d| {
+                d["entries"][0]["baseline_signals"] = json!(signal_vector());
+            }),
+            ("baseline_signals", |d| {
+                d["entries"][1]["signals"] = json!(signal_vector());
+                d["entries"][1]["baseline_signals"] = json!(signal_vector());
+            }),
+            ("baseline_signals.lines", |d| {
+                d["entries"][0]["signals"] = json!(signal_vector());
+                d["entries"][0]["baseline_signals"] = json!(signal_vector());
+                d["entries"][0]["baseline_signals"]["lines"] = json!(0);
+            }),
+            ("entries[0].status", |d| {
+                d["entries"][0]["status"] = json!("unknown");
+                d["entries"][0]["baseline_signals"] = json!(signal_vector());
+            }),
             ("threshold", |d| d["threshold"] = json!(-1)),
             ("regression_gate", |d| {
                 d["regression_gate"] = json!([false, "0.2.0", "0.2.3"]);

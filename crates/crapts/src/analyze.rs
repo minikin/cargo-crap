@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use cargo_crap_core::signals::Measured;
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
@@ -14,6 +15,7 @@ use oxc_ast::ast::{
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{Kind, Parser, Token, config::TokensParserConfig};
 use oxc_span::{GetSpan, SourceType, Span};
+use oxc_syntax::operator::LogicalOperator;
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::fingerprint::{self, Fingerprint, Regions};
@@ -56,6 +58,9 @@ pub struct Row {
     pub cyclomatic: u32,
     pub is_arrow: bool,
     pub fingerprint: Fingerprint,
+    /// Structural counts and evidence for this row. A written constructor can
+    /// own an initializer outside the declaration span used for its line count.
+    pub measured: Measured,
 }
 
 #[derive(Debug)]
@@ -189,8 +194,9 @@ pub fn analyze(
     let mut collector = Collector::new(path, source, &parsed.tokens);
     collector.visit_program(&parsed.program);
     let prints = fingerprint::compute(source, &parsed.tokens, &parsed.program, &collector.regions);
-    for (row, print) in collector.rows.iter_mut().zip(prints) {
+    for ((row, print), body) in collector.rows.iter_mut().zip(prints).zip(collector.bodies) {
         row.fingerprint = print;
+        row.measured = body.finish(row.span, &collector.lines);
     }
     collector.rows.sort_by_key(|row| row.span.start);
     crate::names::assign_ordinals(collector.rows.iter_mut().map(|row| &mut row.name));
@@ -216,6 +222,8 @@ struct Collector<'s> {
     lines: LineIndex,
     rows: Vec<Row>,
     regions: Vec<Regions>,
+    bodies: Vec<crate::signals::Body>,
+    predicates: Vec<crate::signals::Predicate>,
     owner: Option<usize>,
     names: Names,
     method: Option<Method>,
@@ -269,6 +277,8 @@ impl<'s> Collector<'s> {
             lines: LineIndex::new(source),
             rows: Vec::new(),
             regions: Vec::new(),
+            bodies: Vec::new(),
+            predicates: Vec::new(),
             owner: None,
             names: Names::default(),
             method: None,
@@ -293,8 +303,10 @@ impl<'s> Collector<'s> {
             cyclomatic: 1,
             is_arrow,
             fingerprint: Fingerprint::UNSET,
+            measured: Measured::default(),
         });
         self.regions.push(Regions::default());
+        self.bodies.push(crate::signals::Body::default());
         index
     }
 
@@ -315,7 +327,7 @@ impl<'s> Collector<'s> {
         body: Span,
         is_arrow: bool,
         omit: Option<Span>,
-        visit: impl FnOnce(&mut Self),
+        visit: impl FnOnce(&mut Self, usize),
     ) {
         let row = match self.constructor {
             Some(ctor) if ctor.written == Some(span) => ctor.row,
@@ -324,7 +336,7 @@ impl<'s> Collector<'s> {
         self.rows[row].body_regions.push(self.lines.span(body));
         self.regions[row].selected.push(span);
         self.regions[row].omitted.extend(omit);
-        self.with_owner(row, |v| v.with_name(name, visit));
+        self.with_owner(row, |v| v.with_name(name, |v| visit(v, row)));
     }
 
     fn constructor_for_fields(
@@ -388,6 +400,7 @@ impl<'s> Collector<'s> {
         };
         self.rows[row].body_regions.push(self.lines.span(span));
         self.regions[row].selected.push(span);
+        self.bodies[row].add_chunk(span);
         self.with_owner(row, |v| {
             v.record_statement(span);
             v.visit_expression(value);
@@ -556,22 +569,32 @@ fn executable_statement(statement: &Statement<'_>) -> bool {
     }
 }
 
+pub(crate) struct Spine {
+    decisions: u32,
+    bool_ops: u32,
+}
+
 pub(crate) fn visit_logical_operands<'a>(
     root: &LogicalExpression<'a>,
     mut visit: impl FnMut(&Expression<'a>),
-) -> u32 {
+) -> Spine {
     let mut pending = vec![&root.right, &root.left];
     let mut decisions = 1;
+    let mut bool_ops = u32::from(root.operator != LogicalOperator::Coalesce);
     while let Some(expr) = pending.pop() {
         if let Expression::LogicalExpression(child) = expr {
             decisions += 1;
+            bool_ops += u32::from(child.operator != LogicalOperator::Coalesce);
             pending.push(&child.right);
             pending.push(&child.left);
         } else {
             visit(expr);
         }
     }
-    decisions
+    Spine {
+        decisions,
+        bool_ops,
+    }
 }
 
 impl<'a> Visit<'a> for Collector<'_> {
@@ -616,7 +639,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         let name = self
             .names
             .resolve(span, Some("<static-block>"), Unit::FunctionDeclaration);
-        self.in_callable(name, span, span, false, None, |v| {
+        self.in_callable(name, span, span, false, None, |v, _| {
             walk::walk_static_block(v, block);
         });
     }
@@ -767,9 +790,15 @@ impl<'a> Visit<'a> for Collector<'_> {
         &mut self,
         root: &LogicalExpression<'a>,
     ) {
-        let decisions = visit_logical_operands(root, |expr| self.visit_expression(expr));
+        let Spine {
+            decisions,
+            bool_ops,
+        } = visit_logical_operands(root, |expr| self.visit_expression(expr));
         if let Some(owner) = self.owner {
             self.rows[owner].cyclomatic += decisions;
+            if let Some(predicate) = self.predicates.last_mut() {
+                predicate.add(owner, root.span, bool_ops);
+            }
         }
     }
 
@@ -781,17 +810,28 @@ impl<'a> Visit<'a> for Collector<'_> {
         if let AstKind::Directive(directive) = kind {
             self.record_statement(directive.span);
         }
-        if let Some(owner) = self.owner
-            && is_decision(kind)
-        {
-            self.rows[owner].cyclomatic += 1;
+        if let Some(owner) = self.owner {
+            if let Some(test) = crate::signals::test_span(kind) {
+                self.predicates
+                    .push(crate::signals::Predicate::new(owner, test));
+            }
+            self.bodies[owner].observe(kind);
+            self.rows[owner].cyclomatic += u32::from(is_decision(kind));
         }
     }
 
     fn leave_node(
         &mut self,
-        _: AstKind<'a>,
+        kind: AstKind<'a>,
     ) {
+        // Owner changes are scoped, so enter_node and leave_node see the same owner.
+        if self.owner.is_some() && crate::signals::test_span(kind).is_some() {
+            let test = self
+                .predicates
+                .pop()
+                .expect("each control test enters before it leaves");
+            self.bodies[test.owner].record_test(&test);
+        }
         self.names.leave();
     }
 
@@ -820,7 +860,7 @@ impl<'a> Visit<'a> for Collector<'_> {
                 span.start = method.start;
                 omit = method.key;
             }
-            self.in_callable(name, span, body.span, false, omit, |visitor| {
+            self.in_callable(name, span, body.span, false, omit, |visitor, _| {
                 walk::walk_function(visitor, function, flags);
             });
         }
@@ -834,12 +874,20 @@ impl<'a> Visit<'a> for Collector<'_> {
         let name = self
             .names
             .resolve(arrow.span, None, Unit::FunctionExpression);
-        self.in_callable(name, arrow.span, arrow.body.span(), true, None, |visitor| {
-            if let Some(expr) = arrow.body.as_expression() {
-                visitor.record_statement(expr.span());
-            }
-            walk::walk_arrow_function_expression(visitor, arrow);
-        });
+        self.in_callable(
+            name,
+            arrow.span,
+            arrow.body.span(),
+            true,
+            None,
+            |visitor, row| {
+                if let Some(expr) = arrow.body.as_expression() {
+                    visitor.record_statement(expr.span());
+                    visitor.bodies[row].add_chunk(expr.span());
+                }
+                walk::walk_arrow_function_expression(visitor, arrow);
+            },
+        );
     }
 
     fn visit_class(

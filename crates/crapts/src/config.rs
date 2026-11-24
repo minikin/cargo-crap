@@ -1,10 +1,32 @@
 use crate::{InputError, discover::Worktree};
 use cargo_crap_core::config::find_upwards;
 use cargo_crap_core::entry::{MissingCoveragePolicy, SortOrder};
+use cargo_crap_core::signals::{SignalSettings, config::SignalsConfig};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 pub(crate) const MAX_TOP: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, Default, PartialEq, Deserialize)]
+#[serde(try_from = "SignalsConfig")]
+pub struct ConfiguredSignals {
+    pub settings: SignalSettings,
+    pub(crate) enabled_configured: bool,
+    pub(crate) gate_configured: bool,
+}
+
+impl TryFrom<SignalsConfig> for ConfiguredSignals {
+    type Error = String;
+
+    fn try_from(input: SignalsConfig) -> Result<Self, Self::Error> {
+        let settings = SignalSettings::resolve(&input).map_err(|error| error.to_string())?;
+        Ok(Self {
+            settings,
+            enabled_configured: input.enabled.is_some(),
+            gate_configured: input.gate.is_some(),
+        })
+    }
+}
 
 #[derive(Debug, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -26,6 +48,8 @@ pub struct Config {
     pub fail_changed: Option<bool>,
     #[serde(alias = "uncovered_hints")]
     pub uncovered_hints: Option<bool>,
+    #[serde(default)]
+    pub signals: ConfiguredSignals,
 }
 
 impl Config {
@@ -121,6 +145,18 @@ mod tests {
 
     fn read(source: &str) -> Result<Config, crate::InputError> {
         Config::parse(Path::new("parent/.crapts.toml"), source)
+    }
+
+    #[test]
+    fn explicitly_disabled_signals_and_an_empty_gate_keep_their_config_origins() {
+        let omitted = read("").unwrap().signals;
+        let explicit = read("[signals]\nenabled = false\ngate = []")
+            .unwrap()
+            .signals;
+        assert!(!omitted.enabled_configured && !omitted.gate_configured);
+        assert!(explicit.enabled_configured && explicit.gate_configured);
+        assert!(!explicit.settings.enabled);
+        assert_eq!(explicit.settings.gate, []);
     }
 
     #[test]

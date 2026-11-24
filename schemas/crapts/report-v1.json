@@ -118,6 +118,7 @@
         "moved": { "type": "null" },
         "unchanged": { "type": "null" },
         "removed": { "type": "null" },
+        "signal_regressions": { "type": "null" },
         "changed_failures": { "type": ["integer", "null"], "minimum": 0 }
       }
     },
@@ -158,10 +159,25 @@
           "minItems": 1,
           "items": { "$ref": "#/definitions/LineRange" }
         },
+        "signals": { "$ref": "#/definitions/Signals" },
         "fingerprint": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         }
+      }
+    },
+    "SignalCount": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "Signals": {
+      "type": "object",
+      "required": ["nesting", "lines", "bumps", "bool_ops", "stubs", "panics"],
+      "additionalProperties": false,
+      "properties": {
+        "nesting": { "$ref": "#/definitions/SignalCount" },
+        "lines": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "bumps": { "$ref": "#/definitions/SignalCount" },
+        "bool_ops": { "$ref": "#/definitions/SignalCount" },
+        "stubs": { "$ref": "#/definitions/SignalCount" },
+        "panics": { "$ref": "#/definitions/SignalCount" }
       }
     },
     "LineRange": {

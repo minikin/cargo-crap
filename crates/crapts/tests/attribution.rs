@@ -438,7 +438,6 @@ fn stray_lists_select_examples_from_each_side_before_path_conversion() {
 #[test]
 fn the_caller_receives_rows_the_measured_unit_and_diagnostics_from_one_run() {
     use cargo_crap_core::entry::CrapEntry;
-    use cargo_crap_core::signals::Spans;
     let fixture = Fixture::new(&[
         ("nested.ts", include_str!("fixtures/attribution/nested.ts")),
         ("types.ts", "type T = string"),
@@ -482,11 +481,9 @@ fn the_caller_receives_rows_the_measured_unit_and_diagnostics_from_one_run() {
                 entry.fingerprint.as_deref(),
                 Some(analyzed.fingerprint.to_string().as_str())
             );
-            assert_eq!(
-                (entry.crate_name.as_ref(), entry.signals.as_ref()),
-                (None, None)
-            );
-            assert_eq!(entry.signal_spans, Spans::default());
+            assert!(entry.crate_name.is_none());
+            assert_eq!(entry.signals, Some(analyzed.measured.signals));
+            assert_eq!(entry.signal_spans, analyzed.measured.spans);
         }
     }
     for policy in [Skip, Pessimistic, Optimistic] {

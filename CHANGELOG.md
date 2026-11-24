@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Enable structural signals in `.crapts.toml` to compare JS and TS functions
+  against a saved baseline.
+- `cargo_crap_core::run::PreparedReport` lets a front end render several
+  layouts with the same selection, comparison and gate verdict. Sections can
+  implement `Section::write_pr_comment` to fit a row limit.
 - Added `crapts::coverage::Coverage::unit(&self) -> CoverageUnit` (additive,
   non-breaking) so callers can inspect the measured coverage unit before
   source parsing and attribution. `--baseline` is now active in the `crapts`
@@ -71,6 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer body is written with the core report in its summary form, then with
   fewer changed rows, and a body that cannot fit exits 2 before the output
   opens.
+- `crapts::Row::measured` holds the six signal counts and their source ranges.
+  Set it in row literals and add it or `..` to exhaustive patterns.
+- Set `Policy::signal_slice_hint` to the text shown when display limits hide
+  a gated signal, or to `None` to omit the hint.
 - **Breaking library API.** Core `Policy` literals gain `notice_spacing`.
   Set it to `NoticeSpacing::Separated` to keep the blank line between a
   Markdown or pr-comment marker and the notices after it. crapts uses
@@ -116,6 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The cargo-crap and crapts Markdown and PR-comment headlines count gated
+  structural regressions across all eligible functions. When `--top` or
+  `--min` hides a reason, the report gives the command to see it.
 - A crapts delta whose magnitude is too large to round to six decimals keeps
   its value instead of serializing as `null`, so the report still matches
   `delta-v1.json` and reloads as a baseline.

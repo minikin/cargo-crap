@@ -140,6 +140,7 @@
         "moved": { "type": "integer", "minimum": 0 },
         "unchanged": { "type": "integer", "minimum": 0 },
         "removed": { "type": "integer", "minimum": 0 },
+        "signal_regressions": { "type": ["integer", "null"], "minimum": 0 },
         "changed_failures": { "type": ["integer", "null"], "minimum": 0 }
       }
     },
@@ -177,6 +178,8 @@
           "minItems": 1,
           "items": { "$ref": "#/definitions/LineRange" }
         },
+        "signals": { "$ref": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v1.json#/definitions/Signals" },
+        "baseline_signals": { "$ref": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/report-v1.json#/definitions/Signals" },
         "fingerprint": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
@@ -199,12 +202,14 @@
           "items": { "$ref": "#/definitions/Reason" }
         }
       },
+      "dependencies": { "baseline_signals": ["signals"] },
       "if": {
         "properties": { "status": { "const": "new" } },
         "required": ["status"]
       },
       "then": {
         "properties": {
+          "baseline_signals": false,
           "baseline_crap": { "type": "null" },
           "delta": { "type": "null" }
         },

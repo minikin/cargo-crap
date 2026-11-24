@@ -21,6 +21,16 @@ fail-regression = true
 show-unchanged = false
 fail-changed = true
 uncovered-hints = true
+
+[signals]
+enabled = true
+gate = ["nesting", "bumps", "bool-ops", "stubs"]
+
+[signals.limits]
+nesting = 4
+lines = 100
+bumps = 3
+bool-ops = 5
 ```
 
 An unknown key, a key written twice through its alias, or a value of the wrong type stops the run with exit 2 and names the key.
@@ -43,6 +53,12 @@ An unknown key, a key written twice through its alias, or a value of the wrong t
 | `show-unchanged` | `show_unchanged` | `--show-unchanged` | boolean | false |
 | `fail-changed` | none | `--fail-changed` | boolean | false |
 | `uncovered-hints` | `uncovered_hints` | config only | boolean | false |
+| `signals.enabled` | none | config only | boolean | false |
+| `signals.gate` | none | config only | list of signal names | nesting, bumps, bool_ops, stubs |
+| `signals.limits.nesting` | none | config only | integer from 0 to 4294967295 | unset |
+| `signals.limits.lines` | none | config only | integer from 0 to 4294967295 | unset |
+| `signals.limits.bumps` | none | config only | integer from 0 to 4294967295 | unset |
+| `signals.limits.bool-ops` | `signals.limits.bool_ops` | config only | integer from 0 to 4294967295 | unset |
 
 `--no-default-excludes` sets `default-excludes` to an empty list. `exclude` adds to the defaults, so `default-excludes` is the key to change when a default pattern is wrong for a project. The defaults, in order:
 
@@ -62,6 +78,39 @@ An unknown key, a key written twice through its alias, or a value of the wrong t
 Patterns in `exclude`, `default-excludes` and `allow` are relative to the directory that holds `.crapts.toml`. Patterns given as flags are relative to the working directory. An `allow` pattern matches a source path or a function name.
 
 `uncovered-hints = true` adds an Uncovered column to the text, markdown and pr-comment tables. Each displayed row lists up to three of its uncovered line ranges and counts the rest. The text table leaves the column out when the terminal is too narrow for it.
+
+## Structural signals
+
+These two tables are config-only. Signals default to disabled. The default gate covers `nesting`, `bumps`, `bool_ops` and `stubs`. An empty gate makes all paired signal increases advisory. The four optional limits apply to new functions and default to unset.
+
+```toml
+[signals]
+enabled = true
+gate = ["nesting", "bumps", "bool-ops", "stubs"]
+
+[signals.limits]
+nesting = 4
+```
+
+`gate` also accepts `lines` and `panics`. Each of `nesting`, `lines`, `bumps` and `bool-ops` accepts an integer limit from 0 through 4294967295. The gate list accepts `bool_ops` and `bool-ops`, as does the key for the boolean-operator limit. `--print-config` writes `bool_ops` and gives the value and origin of each setting, including an explicitly empty gate.
+
+### Inspect signal origins
+
+An explicit value gets the origin `config`, even when it equals the default.
+For example, this file keeps reporting off and sets two limits. In
+`--print-config`, the gate reads `["bool_ops", "stubs"]`. Both spellings
+select the same signal. The omitted nesting and bumps limits each have
+value `null` and origin `default`.
+
+```toml
+[signals]
+enabled = false
+gate = ["stubs", "bool_ops", "bool-ops"]
+
+[signals.limits]
+lines = 0
+bool_ops = 4294967295
+```
 
 ## Per-run settings
 

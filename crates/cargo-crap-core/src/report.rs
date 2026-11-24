@@ -53,8 +53,9 @@ pub(crate) mod test_support;
 // Re-exports — the rest of the crate depends on these names being on `report`.
 pub use json::Envelope;
 pub(crate) use json::{
-    CraptsChangedSection, CraptsJsonContext, CraptsSelection, extract_crapts_changed,
-    reject_cargo_crap_json_sections, render_crapts_delta_json, render_crapts_json,
+    CraptsChangedSection, CraptsJsonContext, CraptsSelection, SignalRegressions,
+    extract_crapts_changed, reject_cargo_crap_json_sections, render_crapts_delta_json,
+    render_crapts_json,
 };
 pub use links::SourceLinks;
 pub use section::{Placement, Section, WriteResult};
@@ -113,6 +114,7 @@ pub enum Format {
 ///         fail_above_counts: Population::Shown,
 ///         summary_formats: &[Format::Human],
 ///         signal_detail_hint: None,
+///         signal_slice_hint: None,
 ///         tie_order: TieOrder::Stable,
 ///         notice_spacing: NoticeSpacing::Separated,
 ///     },
@@ -341,19 +343,23 @@ pub fn render_delta(
     opts: &RenderOptions,
     out: &mut dyn Write,
 ) -> Result<()> {
-    render_delta_inner(report, opts, true, out)
+    render_delta_inner(report, opts, true, None, out)
 }
 
 pub(crate) fn render_delta_inner(
     report: &DeltaReport,
     opts: &RenderOptions,
     include_marker: bool,
+    signal_gates: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let threshold = opts.threshold;
     let counts = opts.delta_counts.unwrap_or_else(|| report.counts());
     let below = text_root(opts).map(|root| report_below_root(report, root));
     let shown = below.as_ref().unwrap_or(report);
+    if include_marker && matches!(opts.format, Format::Markdown | Format::PrComment) {
+        write_pr_comment_marker(opts, out)?;
+    }
     match opts.format {
         Format::Json => {
             let below = JsonBelowRoot::of(opts);
@@ -363,14 +369,12 @@ pub(crate) fn render_delta_inner(
         Format::GitHub => {
             github::render_delta_github(report, threshold, opts.cwd, opts.repo_prefix, out)
         },
-        Format::Markdown if include_marker => {
-            markdown::render_delta_markdown(shown, opts, &counts, out)
+        Format::Markdown => {
+            markdown::render_delta_markdown_body(shown, opts, &counts, signal_gates, out)
         },
-        Format::Markdown => markdown::render_delta_markdown_body(shown, opts, &counts, out),
-        Format::PrComment if include_marker => {
-            pr_comment::render_delta_pr_comment(shown, opts, &counts, out)
+        Format::PrComment => {
+            pr_comment::render_delta_pr_comment_body(shown, opts, &counts, signal_gates, out)
         },
-        Format::PrComment => pr_comment::render_delta_pr_comment_body(shown, opts, &counts, out),
         // SARIF describes the *current* set of findings, not deltas. The
         // upstream consumers (GitHub Code Scanning, VS Code) don't model
         // baseline diffs, so combining `--baseline` with `--format sarif`

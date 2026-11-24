@@ -263,33 +263,6 @@ impl<'a> DeltaBuckets<'a> {
     }
 }
 
-/// The headline, unless no CRAP score regressed while gating signal
-/// reasons (spec 43) fail the gate: then it says so instead.
-fn write_pr_comment_headline(
-    out: &mut dyn Write,
-    regressions: usize,
-    signal_gates: usize,
-) -> Result<()> {
-    if regressions == 0 && signal_gates > 0 {
-        writeln!(out, "{}\n", super::reasons::signal_headline(signal_gates))?;
-        return Ok(());
-    }
-    write_pr_comment_delta_headline(out, regressions)
-}
-
-fn write_pr_comment_delta_headline(
-    out: &mut dyn Write,
-    regressions: usize,
-) -> Result<()> {
-    if regressions == 0 {
-        writeln!(out, "## ✅ No CRAP regressions")?;
-    } else {
-        writeln!(out, "## ⚠️ {regressions} CRAP regression(s) detected")?;
-    }
-    writeln!(out)?;
-    Ok(())
-}
-
 fn write_pr_comment_breakdown(
     out: &mut dyn Write,
     counts: &DeltaCounts,
@@ -445,20 +418,11 @@ fn write_pr_comment_removed_section(
     Ok(())
 }
 
-pub(crate) fn render_delta_pr_comment(
-    report: &DeltaReport,
-    opts: &RenderOptions,
-    counts: &DeltaCounts,
-    out: &mut dyn Write,
-) -> Result<()> {
-    write_pr_comment_marker(opts, out)?;
-    render_delta_pr_comment_body(report, opts, counts, out)
-}
-
 pub(crate) fn render_delta_pr_comment_body(
     report: &DeltaReport,
     opts: &RenderOptions,
     counts: &DeltaCounts,
+    signal_gates: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let RenderOptions {
@@ -473,11 +437,7 @@ pub(crate) fn render_delta_pr_comment_body(
     }
     let buckets = DeltaBuckets::from_report(report, threshold);
     let prefix = buckets.common_prefix(cwd);
-    write_pr_comment_headline(
-        out,
-        counts.regressed,
-        super::reasons::gating_signal_count(report),
-    )?;
+    super::reasons::write_delta_headline(report, counts.regressed, signal_gates, opts, out)?;
     write_pr_comment_breakdown(out, counts)?;
     write_pr_comment_primary(out, &buckets, threshold, &prefix, opts, uncovered_hints)?;
     write_pr_comment_reasons(out, report, opts, cwd).and_then(|()| {
@@ -688,6 +648,16 @@ mod tests {
         )
         .unwrap();
         String::from_utf8(buf).unwrap()
+    }
+
+    fn render_delta_pr_comment(
+        report: &DeltaReport,
+        opts: &RenderOptions,
+        counts: &DeltaCounts,
+        out: &mut dyn Write,
+    ) -> Result<()> {
+        write_pr_comment_marker(opts, out)?;
+        render_delta_pr_comment_body(report, opts, counts, None, out)
     }
 
     #[test]

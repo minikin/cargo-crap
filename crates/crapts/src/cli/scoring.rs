@@ -17,15 +17,14 @@ use cargo_crap_core::policy::{
 };
 use cargo_crap_core::report::{self, Schemas, Section, SourceLinks, Tool};
 use cargo_crap_core::run::{
-    self, Analysis, BaselineFilter, PreparedBaseline, RenderExtras, Scope, Settings,
+    Analysis, BaselineFilter, PreparedBaseline, PreparedReport, RenderExtras, Scope, Settings,
 };
-use cargo_crap_core::signals::SignalSettings;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const TOOL: Tool = Tool {
@@ -34,7 +33,8 @@ const TOOL: Tool = Tool {
         pairing: PairPolicy::FileFunction,
         fail_above_counts: Population::All,
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
-        signal_detail_hint: None,
+        signal_detail_hint: Some("use --format json --all-rows for the reasons"),
+        signal_slice_hint: Some("use --format json --all-rows for the reasons"),
         tie_order: TieOrder::FileFunctionLine,
         notice_spacing: NoticeSpacing::Adjacent,
     },
@@ -122,6 +122,23 @@ fn read_inputs(
     Ok((coverage, baseline))
 }
 
+fn head_analysis(
+    cwd: &Path,
+    file: &Path,
+    strict: &mut HashMap<PathBuf, FileAnalysis>,
+    err: &mut dyn Write,
+) -> Result<FileAnalysis> {
+    if let Some(analysis) = strict.remove(file) {
+        return Ok(analysis);
+    }
+    let bytes = fs::read(cwd.join(file)).map_err(|e| InputError::at(file, e))?;
+    let analysis = analyze(file, &bytes, Mode::Ordinary)?;
+    for message in &analysis.warnings {
+        warn(err, message)?;
+    }
+    Ok(analysis)
+}
+
 fn measure(
     cwd: &Path,
     settings: &Effective,
@@ -142,16 +159,7 @@ fn measure(
         if skipped.is_some_and(|skipped| skipped.contains(file)) {
             continue;
         }
-        if let Some(analysis) = strict.remove(file) {
-            files.push(analysis);
-            continue;
-        }
-        let bytes = fs::read(cwd.join(file)).map_err(|e| InputError::at(file, e))?;
-        let analysis = analyze(file, &bytes, Mode::Ordinary)?;
-        for message in &analysis.warnings {
-            warn(err, message)?;
-        }
-        files.push(analysis);
+        files.push(head_analysis(cwd, file, &mut strict, err)?);
     }
     let result = attribute(cwd, &files, coverage, settings.missing.value);
     for message in &result.warnings {
@@ -230,6 +238,21 @@ fn top(options: &Effective) -> Option<usize> {
         .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
 }
 
+fn warn_if_unmeasured(
+    baseline: Option<&PreparedBaseline>,
+    enabled: bool,
+    err: &mut dyn Write,
+) -> Result<()> {
+    if enabled && baseline.is_some_and(|b| !b.as_baseline().entries.is_empty() && !b.has_signals())
+    {
+        warn(
+            err,
+            "the baseline has no signals. Run crapts with signals enabled to regenerate it.",
+        )?;
+    }
+    Ok(())
+}
+
 fn color_enabled(
     stdout: bool,
     terminal: bool,
@@ -279,6 +302,7 @@ pub(super) fn score(
     let (files, result) = measure(cwd, options, &coverage, &discovery, selection.as_mut(), err)?;
     let scope = ScoringScope::new(&discovery.scope);
     let prepared = prepare(baseline, &scope, &options.allow_set)?;
+    warn_if_unmeasured(prepared.as_ref(), options.signals.settings.enabled, err)?;
     let links = source_links(
         options.repo_url.value.as_deref(),
         options.commit_ref.value.as_deref(),
@@ -293,8 +317,7 @@ pub(super) fn score(
     };
     let entries: Vec<CrapEntry> = result.rows.into_iter().map(|row| row.entry).collect();
     let section = selection
-        .as_ref()
-        .map(|selection| changed_section(selection, &files, &entries, options, presentation))
+        .map(|selection| changed_section(&selection, &files, &entries, options, presentation))
         .transpose()?;
     drop(files);
     let output = options.output.value.as_deref();
@@ -366,25 +389,20 @@ impl Render<'_> {
         }
     }
 
-    fn once(
-        &self,
-        summary: bool,
-        sections: &[&dyn Section],
-        analysis: Analysis<'_>,
-    ) -> Result<(Vec<u8>, GateOutcome)> {
+    fn settings(&self) -> Settings<'_> {
         let options = self.options;
-        let settings = Settings {
+        Settings {
             allow: &options.allow_set,
             min: options.min.value,
             top: top(options),
             sort: options.sort.value,
             threshold: options.threshold.value,
             epsilon: options.epsilon.value,
-            signals: &SignalSettings::default(),
+            signals: &options.signals.settings,
             fail_above: options.fail_above.value,
             fail_regression: options.fail_regression.value,
             format: options.format.value,
-            summary,
+            summary: options.summary.value,
             show_unchanged: options.show_unchanged.value,
             uncovered_hints: options.uncovered_hints.value,
             width: self.width,
@@ -394,21 +412,7 @@ impl Render<'_> {
             cwd: self.cwd,
             workspace_root: None,
             fail_sections: options.fail_changed.value,
-        };
-        let mut rendered = Vec::new();
-        let verdict = report::with_color(self.color, || {
-            run::run(
-                &TOOL,
-                &settings,
-                analysis,
-                self.prepared,
-                sections,
-                &RenderExtras::default(),
-                &mut rendered,
-            )
-        })
-        .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
-        Ok((rendered, verdict))
+        }
     }
 
     fn fitted(
@@ -420,9 +424,20 @@ impl Render<'_> {
         let summary = self.options.summary.value;
         let comment = self.options.format.value == Format::PrComment;
         let full: Vec<&dyn Section> = section.iter().map(|s| *s as &dyn Section).collect();
+        let settings = self.settings();
+        let analysis = self.analysis(entries, diagnostics);
+        let report = PreparedReport::new(&TOOL, &settings, analysis, self.prepared, &full)
+            .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
+        let once = |summary, limit| {
+            let mut body = Vec::new();
+            let verdict = report::with_color(self.color, || {
+                report.write(summary, limit, &RenderExtras::default(), &mut body)
+            })
+            .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
+            Ok::<_, InputError>((body, verdict))
+        };
         if !comment || summary {
-            let (mut body, verdict) =
-                self.once(summary, &full, self.analysis(entries, diagnostics))?;
+            let (mut body, verdict) = once(summary, None)?;
             if comment && section.is_some() {
                 body = summary_after_marker(body, &self.options.comment_marker.value);
             }
@@ -436,16 +451,10 @@ impl Render<'_> {
         let body = fit(
             rows,
             |(body, _): &(Vec<u8>, GateOutcome)| fits(body),
-            |step| {
-                let analysis = self.analysis(entries.clone(), diagnostics.clone());
-                match (step, section) {
-                    (Step::ChangedRows(limit), Some(section)) => {
-                        let cut = section.with_row_limit(limit);
-                        self.once(true, &[&cut], analysis)
-                    },
-                    (Step::Complete, _) => self.once(false, &full, analysis),
-                    _ => self.once(true, &full, analysis),
-                }
+            |step| match step {
+                Step::Complete => once(false, None),
+                Step::CoreSummarized => once(true, None),
+                Step::ChangedRows(limit) => once(true, Some(limit)),
             },
         )?;
         body.ok_or_else(too_long)
@@ -622,7 +631,10 @@ mod tests {
         assert_eq!(TOOL.policy.pairing, PairPolicy::FileFunction);
         assert_eq!(TOOL.policy.fail_above_counts, Population::All);
         assert_eq!(TOOL.policy.tie_order, TieOrder::FileFunctionLine);
-        assert_eq!(TOOL.policy.signal_detail_hint, None);
+        assert_eq!(
+            TOOL.policy.signal_detail_hint,
+            Some("use --format json --all-rows for the reasons")
+        );
         assert_eq!(
             TOOL.policy.summary_formats,
             &[Format::Human, Format::Markdown, Format::PrComment]
@@ -646,6 +658,28 @@ mod tests {
                 Path::new(rejected)
             ));
         }
+    }
+
+    #[test]
+    fn a_changed_head_uses_the_strict_snapshot_when_the_worktree_moves_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = Path::new("changed.ts");
+        let strict = analyze(
+            file,
+            b"function f() { debugger }",
+            Mode::Strict(crate::Side::Head),
+        )
+        .unwrap();
+        let mut heads = HashMap::from([(file.to_path_buf(), strict)]);
+        fs::write(temp.path().join(file), "function replacement() {}").unwrap();
+        let mut warnings = Vec::new();
+        let cached = head_analysis(temp.path(), file, &mut heads, &mut warnings).unwrap();
+        assert_eq!(cached.rows[0].name, "f");
+        assert_eq!(cached.rows[0].measured.signals.stubs, 1);
+        let ordinary = head_analysis(temp.path(), file, &mut heads, &mut warnings).unwrap();
+        assert_eq!(ordinary.rows[0].name, "replacement");
+        assert_eq!(ordinary.rows[0].measured.signals.stubs, 0);
+        assert_eq!(warnings, b"");
     }
 
     #[test]

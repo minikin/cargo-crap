@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 pub const CONFIG: &str = "docs/crapts/reference/config.md";
 
-pub const CONFIG_KEYS: [&str; 14] = [
+pub const CONFIG_KEYS: [&str; 20] = [
     "threshold",
     "fail-above",
     "missing",
@@ -20,6 +20,12 @@ pub const CONFIG_KEYS: [&str; 14] = [
     "show-unchanged",
     "fail-changed",
     "uncovered-hints",
+    "signals.enabled",
+    "signals.gate",
+    "signals.limits.nesting",
+    "signals.limits.lines",
+    "signals.limits.bumps",
+    "signals.limits.bool-ops",
 ];
 
 pub const PER_RUN: [&str; 11] = [
@@ -66,15 +72,38 @@ pub fn print_config(
     serde_json::from_str(&run.stdout).map_err(|e| format!("crapts {full:?}: {e}"))
 }
 
+fn setting<'a>(
+    config: &'a Value,
+    key: &str,
+) -> &'a Value {
+    key.split('.').fold(&config["settings"], |table, part| {
+        &table[part.replace('-', "_")]
+    })
+}
+
 pub fn origin(
     config: &Value,
     key: &str,
 ) -> String {
-    let setting = key.replace('-', "_");
-    config["settings"][&setting]["origin"]
+    setting(config, key)["origin"]
         .as_str()
         .unwrap_or("absent")
         .to_owned()
+}
+
+fn leaves(
+    table: &toml::Table,
+    prefix: &str,
+    keys: &mut BTreeSet<String>,
+) {
+    for (key, value) in table {
+        let name = format!("{prefix}{}", key.replace('_', "-"));
+        if let Some(children) = value.as_table() {
+            leaves(children, &format!("{name}."), keys);
+        } else {
+            keys.insert(name);
+        }
+    }
 }
 
 pub fn check_example(
@@ -82,7 +111,8 @@ pub fn check_example(
     repo: &Repo,
 ) -> Result<(), String> {
     let (line, body, table) = example(page)?;
-    let set: BTreeSet<String> = table.keys().map(|k| k.replace('_', "-")).collect();
+    let mut set = BTreeSet::new();
+    leaves(&table, "", &mut set);
     let expected: BTreeSet<String> = CONFIG_KEYS.iter().map(|k| (*k).to_owned()).collect();
     let missing: Vec<_> = expected.difference(&set).collect();
     let extra: Vec<_> = set.difference(&expected).collect();
@@ -114,7 +144,7 @@ pub struct KeyRow {
     pub default: String,
 }
 
-const KINDS: [(&str, &[&str]); 14] = [
+const KINDS: [(&str, &[&str]); 20] = [
     ("threshold", &["finite number"]),
     ("fail-above", &["boolean"]),
     ("missing", &["`pessimistic`", "`optimistic`", "`skip`"]),
@@ -129,6 +159,12 @@ const KINDS: [(&str, &[&str]); 14] = [
     ("show-unchanged", &["boolean"]),
     ("fail-changed", &["boolean"]),
     ("uncovered-hints", &["boolean"]),
+    ("signals.enabled", &["boolean"]),
+    ("signals.gate", &["list of signal names"]),
+    ("signals.limits.nesting", &["integer", "0", "4294967295"]),
+    ("signals.limits.lines", &["integer", "0", "4294967295"]),
+    ("signals.limits.bumps", &["integer", "0", "4294967295"]),
+    ("signals.limits.bool-ops", &["integer", "0", "4294967295"]),
 ];
 
 pub fn key_rows(page: &Page) -> Result<Vec<KeyRow>, String> {
@@ -233,11 +269,11 @@ pub fn check_keys(
     page: &Page,
     repo: &Repo,
 ) -> Result<(), String> {
-    let (_, body, example) = example(page)?;
+    let (_, _, example) = example(page)?;
     let rows = key_rows(page)?;
     for row in &rows {
         if let Some(alias) = &row.alias {
-            check_alias(page, repo, row, alias, &body)?;
+            check_alias(page, repo, row, alias, &example)?;
         }
         let Some(flag) = &row.flag else {
             continue;
@@ -266,11 +302,16 @@ pub fn check_keys(
         .filter(|r| r.flag.is_none())
         .map(|r| r.key.as_str())
         .collect();
-    if config_only == ["uncovered-hints"] {
+    let expected: Vec<_> = CONFIG_KEYS
+        .iter()
+        .copied()
+        .filter(|key| *key == "uncovered-hints" || key.starts_with("signals."))
+        .collect();
+    if config_only == expected {
         Ok(())
     } else {
         Err(format!(
-            "{}: the keys marked config only are {config_only:?}, expected uncovered-hints",
+            "{}: the keys marked config only are {config_only:?}, expected {expected:?}",
             page.path
         ))
     }
@@ -281,11 +322,12 @@ fn check_alias(
     repo: &Repo,
     row: &KeyRow,
     alias: &str,
-    example: &str,
+    example: &toml::Table,
 ) -> Result<(), String> {
-    let line = example
-        .lines()
-        .find(|l| l.split('=').next().map(str::trim) == Some(row.key.as_str()))
+    let mut parts = row.key.split('.');
+    let value = example
+        .get(parts.next().unwrap())
+        .and_then(|first| parts.try_fold(first, |table, key| table.get(key)))
         .ok_or_else(|| {
             format!(
                 "{}: the example does not set {}",
@@ -293,7 +335,10 @@ fn check_alias(
                 row.key
             )
         })?;
-    let aliased = line.replacen(&row.key, alias, 1) + "\n";
+    // Every aliased value here is a boolean, integer or string list with
+    // the same literal syntax in TOML and JSON.
+    let literal = serde_json::to_string(value).map_err(|e| e.to_string())?;
+    let aliased = format!("{alias} = {literal}\n");
     let config = with_config(repo, &aliased)
         .map_err(|e| format!("{}: alias {alias}: {e}", page.at(row.line)))?;
     match origin(&config, &row.key).as_str() {
@@ -360,8 +405,18 @@ pub fn check_types_and_defaults(
                 row.kind
             ));
         }
-        let setting = &defaults["settings"][row.key.replace('-', "_")]["value"];
-        let expected = default_cell(setting);
+        let value = &setting(defaults, &row.key)["value"];
+        let expected = if row.key == "signals.gate" {
+            value
+                .as_array()
+                .expect("the gate list")
+                .iter()
+                .map(|name| name.as_str().expect("a signal name"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            default_cell(value)
+        };
         if row.default != expected {
             return Err(format!(
                 "{}: the default of {} reads {}, the binary uses {expected}",

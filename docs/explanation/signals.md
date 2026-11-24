@@ -15,6 +15,7 @@ counts per function, measured in the same pass as cyclomatic complexity:
 | `panics`   | `.unwrap()`, `.expect(…)`, `panic!`.                                           |
 
 Turn them on with `[signals] enabled = true` in `.cargo-crap.toml`.
+For JavaScript and TypeScript, see the [crapts signal definitions](../crapts/reference/complexity.md#structural-signals).
 
 ## Regressions, not scores
 

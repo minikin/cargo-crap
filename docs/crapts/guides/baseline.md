@@ -41,3 +41,24 @@ crapts pairs each function with its baseline row by file and name, and follows a
 The baseline and the run must measure the same unit. A baseline written from LCOV, with `coverage_kind` `lines`, cannot be compared with a run that reads Istanbul `coverage-final.json`, and the run exits 2. A baseline from a different major or minor version of crapts is still compared, but the regression gate is skipped and the report says so.
 
 To gate only the functions a branch edits, without saving a baseline, see the [changed-function gate](changed-gate.md).
+
+## Gate structural changes
+
+Enable signals before saving the baseline and when scoring the branch.
+A paired function can gain a stub or a deeper branch at the same CRAP
+score. A strict increase in a gated signal trips `--fail-regression`
+regardless of `--epsilon`. Other increases appear as advisory reasons.
+For a new function, a positive stub or panic count gates when selected.
+A shape count gates when it exceeds its configured new-function limit.
+
+A unique move keeps its history. A rename without a match, or a resized
+group of same-named siblings, uses the new-function rules. A paired row
+without a saved vector has no measured change. When no eligible baseline
+row has a vector, crapts skips structural comparisons, including new-row
+limits. For a nonempty eligible baseline it warns once on stderr to
+regenerate the file with signals enabled. The version check still reports
+the counts even when it skips the regression verdict.
+
+Use `--format json --all-rows` for every reason and its source ranges.
+See the [configuration](../reference/config.md#structural-signals) and
+the [combined Git and baseline example](changed-gate.md#one-debugger-two-verdicts).

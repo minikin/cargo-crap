@@ -1562,6 +1562,7 @@ const CRAPTS: Tool = Tool {
         fail_above_counts: Population::All,
         summary_formats: &[Format::Human, Format::Markdown, Format::PrComment],
         signal_detail_hint: None,
+        signal_slice_hint: None,
         tie_order: TieOrder::FileFunctionLine,
         notice_spacing: NoticeSpacing::Adjacent,
     },
@@ -1762,6 +1763,14 @@ fn a_row_limit_never_lifts_the_pr_comment_cap() {
     let cut = section.with_row_limit(7);
     assert_eq!(rows(&cut, Format::PrComment), 7);
     assert_eq!(rows(&cut, Format::Markdown), 30);
+    for (limit, expected) in [(2, 2), (10, 7)] {
+        let mut out = Vec::new();
+        cut.write_pr_comment(limit, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap().matches("| fail |").count(),
+            expected
+        );
+    }
     assert_eq!(cut.json().get(), section.json().get());
     assert_eq!(cut.json_key(), "changed");
     assert_eq!(section.failures(), Some(30));
@@ -3202,6 +3211,9 @@ mod cli {
     }
 }
 
+#[path = "changed/signals.rs"]
+mod signals;
+
 mod gates {
     use std::fmt::Write as _;
 
@@ -3210,6 +3222,23 @@ mod gates {
 
     use super::cli::{Repo, app, binary_transition, names, report_of};
     use super::{callback, common, func, outer_with_member, support};
+
+    #[test]
+    fn s50_an_absolute_git_comparison_keeps_the_signal_count_unavailable() {
+        let repo = Repo::standard();
+        repo.write(".crapts.toml", "[signals]\nenabled = true\n");
+        for flags in [
+            &[][..],
+            &["--top", "1"],
+            &["--min", "500"],
+            &["--summary"],
+            &["--fail-changed"],
+        ] {
+            let doc = repo.report(flags, 0);
+            assert!(doc.get("changed").is_some());
+            assert_eq!(doc["summary"].get("signal_regressions"), Some(&Value::Null));
+        }
+    }
 
     fn code(out: &std::process::Output) -> i32 {
         out.status.code().unwrap()

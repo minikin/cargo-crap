@@ -204,6 +204,68 @@ pub fn cart() -> &'static Repo {
     })
 }
 
+pub fn covered_wrapper() -> Repo {
+    use std::fmt::Write as _;
+    let repo = Repo::new();
+    let original = crate::pages::repo_root().join("npm/crapts");
+    for file in [".crapts.toml", "package.json", "README.md"] {
+        fs::copy(original.join(file), repo.root().join(file)).unwrap();
+    }
+    for dir in ["bin", "lib", "test"] {
+        let target = repo.root().join(dir);
+        fs::create_dir_all(&target).unwrap();
+        copy_tree(&original.join(dir), &target);
+    }
+    let source = fs::read_to_string(repo.root().join("lib/resolve.js")).unwrap();
+    let mut cov = "SF:lib/resolve.js\n".to_owned();
+    for n in 1..=source.lines().count() {
+        writeln!(cov, "DA:{n},1").unwrap();
+    }
+    cov.push_str("end_of_record\n");
+    fs::write(repo.root().join("wrapper.info"), cov).unwrap();
+    repo
+}
+
+pub fn signal_change() -> &'static Repo {
+    static SIGNAL_CHANGE: OnceLock<Repo> = OnceLock::new();
+    SIGNAL_CHANGE.get_or_init(|| {
+        let repo = Repo::shared();
+        let root = repo.root();
+        fs::create_dir(root.join("src")).unwrap();
+        fs::write(
+            root.join(".gitignore"),
+            "signals-baseline.json\nsignals.info\n",
+        )
+        .unwrap();
+        fs::write(root.join(".crapts.toml"), "[signals]\nenabled = true\n").unwrap();
+        let source = "export function f() {\n  let x = 0\n  x += 1\n  return x\n}\n";
+        fs::write(root.join("src/f.ts"), source).unwrap();
+        repo.git(&["add", "--all"]);
+        repo.git(&["commit", "--quiet", "--message", "measured base"]);
+        fs::write(
+            root.join("signals.info"),
+            "SF:src/f.ts\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nDA:5,1\nend_of_record\n",
+        )
+        .unwrap();
+        let baseline = repo.crapts(&[
+            "--coverage",
+            "signals.info",
+            "--format",
+            "json",
+            "--all-rows",
+            "--output",
+            "signals-baseline.json",
+        ]);
+        expect_exit(&baseline, 0, "the measured baseline").unwrap();
+        fs::write(
+            root.join("src/f.ts"),
+            source.replace("return x", "debugger; return x"),
+        )
+        .unwrap();
+        repo
+    })
+}
+
 pub fn cart_with(coverage: FeatureCoverage) -> Result<Repo, String> {
     prepare(Repo::new(), coverage)
 }

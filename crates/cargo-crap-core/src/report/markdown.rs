@@ -139,33 +139,6 @@ fn write_markdown_removed(
     Ok(())
 }
 
-/// The heading, unless no CRAP score regressed while gating signal reasons
-/// (spec 43) fail the gate: then it says so instead of "No CRAP regressions".
-fn write_markdown_delta_headline(
-    regressions: usize,
-    signal_gates: usize,
-    out: &mut dyn Write,
-) -> Result<()> {
-    if regressions == 0 && signal_gates > 0 {
-        writeln!(out, "{}\n", super::reasons::signal_headline(signal_gates))?;
-        return Ok(());
-    }
-    write_markdown_delta_heading(regressions, out)
-}
-
-fn write_markdown_delta_heading(
-    regressions: usize,
-    out: &mut dyn Write,
-) -> Result<()> {
-    if regressions == 0 {
-        writeln!(out, "## ✅ No CRAP regressions")?;
-    } else {
-        writeln!(out, "## ⚠️ {regressions} CRAP regression(s) detected")?;
-    }
-    writeln!(out)?;
-    Ok(())
-}
-
 fn write_delta_entries_table(
     entries: &[&DeltaEntry],
     threshold: f64,
@@ -217,20 +190,11 @@ fn write_markdown_delta_stats(
     Ok(())
 }
 
-pub(crate) fn render_delta_markdown(
-    report: &DeltaReport,
-    opts: &RenderOptions,
-    counts: &DeltaCounts,
-    out: &mut dyn Write,
-) -> Result<()> {
-    write_pr_comment_marker(opts, out)?;
-    render_delta_markdown_body(report, opts, counts, out)
-}
-
 pub(crate) fn render_delta_markdown_body(
     report: &DeltaReport,
     opts: &RenderOptions,
     counts: &DeltaCounts,
+    signal_gates: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<()> {
     let RenderOptions {
@@ -243,11 +207,7 @@ pub(crate) fn render_delta_markdown_body(
         writeln!(out, "_No functions found._")?;
         return Ok(());
     }
-    write_markdown_delta_headline(
-        counts.regressed,
-        super::reasons::gating_signal_count(report),
-        out,
-    )?;
+    super::reasons::write_delta_headline(report, counts.regressed, signal_gates, opts, out)?;
     // Unchanged rows are hidden by default (spec 16); the stats line below
     // still counts every entry.
     let visible = visible_delta_entries(&report.entries, show_unchanged);
@@ -319,6 +279,16 @@ mod tests {
             uncovered_hints,
             ..RenderOptions::new(&crate::report::test_support::CARGO_CRAP_FIXTURE)
         }
+    }
+
+    fn render_delta_markdown(
+        report: &DeltaReport,
+        opts: &RenderOptions,
+        counts: &DeltaCounts,
+        out: &mut dyn Write,
+    ) -> Result<()> {
+        write_pr_comment_marker(opts, out)?;
+        render_delta_markdown_body(report, opts, counts, None, out)
     }
 
     #[test]

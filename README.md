@@ -37,7 +37,8 @@ fail a build when a score crosses the threshold or goes up.
 | Coverage input | LCOV | LCOV or Istanbul JSON |
 | Run | `cargo crap --lcov lcov.info` | `crapts --coverage coverage/lcov.info` |
 | Pull request gate | a saved baseline | a saved baseline, or `--base` with none |
-| Duplicates and signals | yes | no |
+| Structural signals | yes | yes |
+| Duplicates and triage | yes | no |
 
 ```text
 CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)
@@ -233,7 +234,11 @@ and [the triage demo](examples/triage-demo) has three pairs to try it on.
 
 ## Harder to maintain, explained
 
-*Since 0.10.0. Rust only.*
+*Since 0.10.0.*
+
+`crapts` measures the same six signals for JavaScript and TypeScript. Set
+`[signals] enabled = true` in `.crapts.toml`. See the
+[JS and TS signal definitions](docs/crapts/reference/complexity.md#structural-signals).
 
 With `[signals] enabled = true` in `.cargo-crap.toml`, every function also
 gets six structural signals: nesting depth, length, separate nested chunks
