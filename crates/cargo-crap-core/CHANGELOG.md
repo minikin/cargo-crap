@@ -4,6 +4,10 @@ This project follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Changed
+
+- Core 0.2.0 adds `CoverageKind::Unmeasured`. The enum is now non-exhaustive. Downstream matches need a wildcard arm.
+
 ### Added
 
 - TypeSafe and OpenAI duplicate triage share question encoding, verdict decoding, cache keys and request budgets. The optional `triage` feature enables the blocking HTTP client.

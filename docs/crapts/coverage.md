@@ -1,6 +1,6 @@
 # Coverage input
 
-[crapts](README.md) reads one coverage file per run, given with `--coverage`. It accepts LCOV and the Istanbul `coverage-final.json` and tells them apart by content, not by file name. Each section below names a producer, the file it writes, and the crapts command that reads that file.
+[crapts](README.md) reads a coverage file supplied with `--coverage`. It accepts LCOV and the Istanbul `coverage-final.json` and tells them apart by content, not by file name. Each section below names a producer, the file it writes, and the crapts command that reads that file.
 
 LCOV counts lines. Istanbul records each statement with its position, so a callback written on the same line as its caller gets its own coverage. The JSON report states which unit it measured in `coverage_kind`: `lines` for LCOV, `statements` for Istanbul.
 
@@ -173,3 +173,7 @@ Scored from LCOV, the scores are the same and `coverage_kind` reads `lines`:
 ```
 
 A function whose file has no entry in the coverage file reports coverage `null` and scores as 0% covered by default. `--missing optimistic` scores it as fully covered and `--missing skip` drops it. The `diagnostics` object counts the files on each side that found no partner.
+
+## Scanning without coverage
+
+Run `crapts --duplicates` to scan without a coverage file. JSON records `coverage_kind` as `none` and leaves each row's coverage null. With `--missing pessimistic` a row of complexity 3 scores 12. With `optimistic` it scores 3. With `skip` the score row drops out and its duplicates still appear. A baseline must have the same coverage kind as the current run.

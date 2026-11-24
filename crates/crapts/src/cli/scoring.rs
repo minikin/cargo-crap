@@ -1,12 +1,14 @@
-use super::{Effective, Format, InputError, Result, StdoutSink};
+use super::{Choice, Effective, Format, InputError, Result, StdoutSink};
 use crate::attribute::{Attribution, attribute};
 use crate::changed::matching::{ChangedFile, classify};
 use crate::changed::section::{ChangedSection, PR_COMMENT_ROWS, Presentation, utf16_len};
+use crate::changed::select::HeadAnalysis;
 use crate::changed::select::{FileEdits, Selection, select};
 use crate::changed::verdict::{Edits, Inputs, Threshold, evaluate};
 use crate::coverage::{Coverage, CoverageUnit, read_coverage};
 use crate::discover::{Worktree, discover_probed};
-use crate::{Discovery, DiscoveryScope, FileAnalysis, Mode, analyze};
+use crate::duplicates::Scan;
+use crate::{Discovery, DiscoveryScope, FileAnalysis, Mode};
 use cargo_crap_core::coverage::CoverageKind;
 use cargo_crap_core::delta::{CraptsBaseline, load_crapts_baseline};
 use cargo_crap_core::entry::{CrapEntry, ScopeDiagnostics};
@@ -87,6 +89,7 @@ impl Scope for ScoringScope<'_> {
 
 fn coverage_kind(unit: CoverageUnit) -> CoverageKind {
     match unit {
+        CoverageUnit::Unmeasured => CoverageKind::Unmeasured,
         CoverageUnit::Lines => CoverageKind::Lines,
         CoverageUnit::Statements => CoverageKind::Statements,
     }
@@ -102,14 +105,17 @@ fn warn(
 fn read_inputs(
     cwd: &Path,
     settings: &Effective,
-    coverage: &Path,
+    coverage: Option<&Path>,
     discovery: &Discovery,
     err: &mut dyn Write,
 ) -> Result<(Coverage, Option<CraptsBaseline>)> {
     for rule in &discovery.unused_excludes {
         warn(err, &rule.unused_warning())?;
     }
-    let coverage = read_coverage(cwd, coverage)?;
+    let coverage = coverage
+        .map(|p| read_coverage(cwd, p))
+        .transpose()?
+        .unwrap_or_else(Coverage::unmeasured);
     let baseline = settings
         .baseline
         .value
@@ -125,18 +131,20 @@ fn read_inputs(
 fn head_analysis(
     cwd: &Path,
     file: &Path,
-    strict: &mut HashMap<PathBuf, FileAnalysis>,
+    strict: &mut HashMap<PathBuf, HeadAnalysis>,
+    with_prints: bool,
     err: &mut dyn Write,
-) -> Result<FileAnalysis> {
+) -> Result<HeadAnalysis> {
     if let Some(analysis) = strict.remove(file) {
         return Ok(analysis);
     }
     let bytes = fs::read(cwd.join(file)).map_err(|e| InputError::at(file, e))?;
-    let analysis = analyze(file, &bytes, Mode::Ordinary)?;
+    let (analysis, prints) =
+        crate::analyze::analyze_file(file, &bytes, Mode::Ordinary, with_prints)?;
     for message in &analysis.warnings {
         warn(err, message)?;
     }
-    Ok(analysis)
+    Ok((analysis, prints))
 }
 
 fn measure(
@@ -146,7 +154,7 @@ fn measure(
     discovery: &Discovery,
     selection: Option<&mut Selection>,
     err: &mut dyn Write,
-) -> Result<(Vec<FileAnalysis>, Attribution)> {
+) -> Result<(Vec<FileAnalysis>, Attribution, Option<Scan>)> {
     let (mut strict, skipped) = match selection {
         Some(selection) => (
             std::mem::take(&mut selection.heads),
@@ -155,17 +163,36 @@ fn measure(
         None => (HashMap::new(), None),
     };
     let mut files = Vec::with_capacity(discovery.files.len());
+    let mut prints = Vec::new();
     for file in &discovery.files {
         if skipped.is_some_and(|skipped| skipped.contains(file)) {
             continue;
         }
-        files.push(head_analysis(cwd, file, &mut strict, err)?);
+        let (analysis, rows) = head_analysis(
+            cwd,
+            file,
+            &mut strict,
+            settings.duplicates.enabled.value,
+            err,
+        )?;
+        files.push(analysis);
+        prints.extend(rows);
     }
     let result = attribute(cwd, &files, coverage, settings.missing.value);
     for message in &result.warnings {
         warn(err, message)?;
     }
-    Ok((files, result))
+    let duplicates = &settings.duplicates;
+    let scan = duplicates.enabled.value.then(|| {
+        Scan::collect(
+            prints,
+            &files,
+            duplicates.min_nodes.value,
+            duplicates.min_similarity.value,
+            discovery.scope.anchored_prefix(),
+        )
+    });
+    Ok((files, result, scan))
 }
 
 fn changed_section(
@@ -273,6 +300,20 @@ fn source_links(
     Some(SourceLinks::new(url.to_owned(), reference.to_owned()))
 }
 
+fn coverage_path(options: &Effective) -> Result<Option<&Path>> {
+    let path = options.coverage.value.as_deref();
+    if path.is_none()
+        && !(options.duplicates.enabled.origin == super::settings::Origin::Flag
+            && matches!(
+                options.format.value,
+                Format::Human | Format::Json | Format::Markdown | Format::PrComment
+            ))
+    {
+        return Err(InputError::message("--coverage <file> is required"));
+    }
+    Ok(path)
+}
+
 pub(super) fn score(
     cwd: &Path,
     worktree: Worktree,
@@ -281,11 +322,7 @@ pub(super) fn score(
     stdout: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<ExitCode> {
-    let coverage = options
-        .coverage
-        .value
-        .as_deref()
-        .ok_or_else(|| InputError::message("--coverage <file> is required"))?;
+    let coverage = coverage_path(options)?;
     let discovery = discover_probed(
         &options.paths.value,
         &options.discovery(cwd),
@@ -297,9 +334,22 @@ pub(super) fn score(
         .base
         .value
         .as_deref()
-        .map(|rev| select(&discovery.scope, cwd, rev))
+        .map(|rev| select(&discovery.scope, cwd, rev, options.duplicates.enabled.value))
         .transpose()?;
-    let (files, result) = measure(cwd, options, &coverage, &discovery, selection.as_mut(), err)?;
+    let (files, result, scan) =
+        measure(cwd, options, &coverage, &discovery, selection.as_mut(), err)?;
+    let notices: Vec<_> = (result.unit == CoverageUnit::Unmeasured)
+        .then(|| {
+            format!(
+                "No coverage supplied. Scores use the {} missing policy.",
+                options.missing.value.label()
+            )
+        })
+        .into_iter()
+        .collect();
+    for notice in &notices {
+        warn(err, notice)?;
+    }
     let scope = ScoringScope::new(&discovery.scope);
     let prepared = prepare(baseline, &scope, &options.allow_set)?;
     warn_if_unmeasured(prepared.as_ref(), options.signals.settings.enabled, err)?;
@@ -338,6 +388,8 @@ pub(super) fn score(
             std::env::var_os("NO_COLOR").as_deref(),
             std::env::var_os("FORCE_COLOR").as_deref(),
         ),
+        notices: &notices,
+        scan: scan.as_ref(),
         unit: coverage_kind(result.unit),
         scope: &scope,
         prepared: prepared.as_ref(),
@@ -355,6 +407,8 @@ const COMMENT_LIMIT: usize = 65_536;
 /// One run's report, which can be rendered more than once from the same
 /// inputs while a PR comment is fitted to [`COMMENT_LIMIT`].
 struct Render<'a> {
+    notices: &'a [String],
+    scan: Option<&'a Scan>,
     options: &'a Effective,
     cwd: &'a Path,
     links: Option<&'a SourceLinks>,
@@ -385,7 +439,7 @@ impl Render<'_> {
             diagnostics: Some(diagnostics),
             scope: self.scope,
             coverage_kind: Some(self.unit),
-            notices: &[],
+            notices: self.notices,
         }
     }
 
@@ -431,7 +485,19 @@ impl Render<'_> {
         let once = |summary, limit| {
             let mut body = Vec::new();
             let verdict = report::with_color(self.color, || {
-                report.write(summary, limit, &RenderExtras::default(), &mut body)
+                report.write(
+                    summary,
+                    limit,
+                    &self
+                        .scan
+                        .map_or_else(RenderExtras::default, |s| RenderExtras {
+                            duplicates: Some(&s.pairs),
+                            groups: Some(&s.groups),
+                            duplicate_context: Some(&s.context),
+                            ..RenderExtras::default()
+                        }),
+                    &mut body,
+                )
             })
             .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
             Ok::<_, InputError>((body, verdict))
@@ -664,7 +730,7 @@ mod tests {
     fn a_changed_head_uses_the_strict_snapshot_when_the_worktree_moves_on() {
         let temp = tempfile::tempdir().unwrap();
         let file = Path::new("changed.ts");
-        let strict = analyze(
+        let strict = crate::duplicates::analyze_with_prints(
             file,
             b"function f() { debugger }",
             Mode::Strict(crate::Side::Head),
@@ -673,10 +739,14 @@ mod tests {
         let mut heads = HashMap::from([(file.to_path_buf(), strict)]);
         fs::write(temp.path().join(file), "function replacement() {}").unwrap();
         let mut warnings = Vec::new();
-        let cached = head_analysis(temp.path(), file, &mut heads, &mut warnings).unwrap();
+        let (cached, prints) =
+            head_analysis(temp.path(), file, &mut heads, true, &mut warnings).unwrap();
+        assert_eq!(prints[0].location.name, "f");
         assert_eq!(cached.rows[0].name, "f");
         assert_eq!(cached.rows[0].measured.signals.stubs, 1);
-        let ordinary = head_analysis(temp.path(), file, &mut heads, &mut warnings).unwrap();
+        let (ordinary, prints) =
+            head_analysis(temp.path(), file, &mut heads, false, &mut warnings).unwrap();
+        assert_eq!(prints, []);
         assert_eq!(ordinary.rows[0].name, "replacement");
         assert_eq!(ordinary.rows[0].measured.signals.stubs, 0);
         assert_eq!(warnings, b"");

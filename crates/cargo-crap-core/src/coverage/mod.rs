@@ -1,7 +1,9 @@
 pub mod lcov;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CoverageKind {
+    Unmeasured,
     Statements,
     Lines,
 }
@@ -12,6 +14,7 @@ impl CoverageKind {
         match self {
             Self::Statements => "statements",
             Self::Lines => "lines",
+            Self::Unmeasured => "none",
         }
     }
 }

@@ -490,6 +490,10 @@ pub(crate) fn reject_cargo_crap_json_sections(sections: &[&dyn Section]) -> Resu
 }
 
 pub(crate) struct CraptsJsonContext<'a> {
+    pub(crate) duplicates: Option<(
+        &'a RenderOptions<'a>,
+        &'a crate::duplicates::model::DuplicateContext,
+    )>,
     pub(crate) tool: &'a Tool,
     pub(crate) coverage_kind: CoverageKind,
     pub(crate) threshold: f64,
@@ -595,6 +599,32 @@ struct CraptsRemovedRow<'a> {
 }
 
 #[derive(serde::Serialize)]
+struct DuplicateRecord<'a, G> {
+    duplicates: Vec<DuplicateJson>,
+    duplicate_groups: Vec<G>,
+    duplicate_context: &'a crate::duplicates::model::DuplicateContext,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    untriaged_groups: Option<usize>,
+}
+
+impl<'a> CraptsJsonContext<'a> {
+    fn record<G>(
+        &self,
+        groups: impl FnOnce(&RenderOptions) -> Option<Vec<G>>,
+    ) -> Option<DuplicateRecord<'a, G>> {
+        let (options, context) = self.duplicates?;
+        let duplicate_groups = groups(options)?;
+        let untriaged_groups = recorded_untriaged(Some(&duplicate_groups), options.untriaged);
+        Some(DuplicateRecord {
+            duplicates: wire(options.duplicates, options.pair_triage().as_deref())?,
+            duplicate_groups,
+            duplicate_context: context,
+            untriaged_groups,
+        })
+    }
+}
+
+#[derive(serde::Serialize)]
 struct CraptsAbsoluteEnvelope<'a> {
     #[serde(rename = "$schema")]
     schema: &'static str,
@@ -608,6 +638,8 @@ struct CraptsAbsoluteEnvelope<'a> {
     entries: Vec<CraptsAbsoluteRow<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     changed: Option<&'a RawValue>,
+    #[serde(flatten)]
+    record: Option<DuplicateRecord<'a, DuplicateGroupJson>>,
     diagnostics: CraptsDiagnostics,
 }
 
@@ -627,10 +659,14 @@ struct CraptsDeltaEnvelope<'a> {
     removed: Vec<CraptsRemovedRow<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     changed: Option<&'a RawValue>,
+    #[serde(flatten)]
+    record: Option<DuplicateRecord<'a, DeltaGroupJson>>,
     diagnostics: CraptsDiagnostics,
 }
 
-fn normalize_crapts_path(p: &Path) -> String {
+/// The relative path spelling shared by crapts rows and duplicate history.
+#[must_use]
+pub fn normalize_crapts_path(p: &Path) -> String {
     let mut s = crate::paths::path_key(p);
     while let Some(rest) = s.strip_prefix("./") {
         s = rest.to_owned();
@@ -767,6 +803,7 @@ pub(crate) fn render_crapts_json(
         },
         entries: rows,
         changed: ctx.changed.map(|c| c.raw.as_ref()),
+        record: ctx.record(|o| wire_groups(o.groups, o.triage)),
         diagnostics: crapts_diagnostics(ctx.diagnostics),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
@@ -824,6 +861,7 @@ pub(crate) fn render_crapts_delta_json(
         entries: rows,
         removed,
         changed: ctx.changed.map(|c| c.raw.as_ref()),
+        record: ctx.record(wire_delta_groups),
         diagnostics: crapts_diagnostics(ctx.diagnostics),
     };
     serde_json::to_writer_pretty(&mut *out, &envelope)?;
@@ -1461,6 +1499,47 @@ mod tests {
     }
 
     #[test]
+    fn a_positive_duplicate_budget_count_reaches_the_crapts_envelope() {
+        let (pairs, groups) = two_groups();
+        let options = RenderOptions {
+            duplicates: Some(&pairs),
+            groups: Some(&groups),
+            untriaged: 2,
+            ..opts(30.0, Format::Json)
+        };
+        let context = crate::duplicates::model::DuplicateContext {
+            repo_prefix: None,
+            families: groups
+                .iter()
+                .flat_map(|g| &g.members)
+                .map(|m| crate::duplicates::model::Family {
+                    file: normalize_crapts_path(&m.file),
+                    stem: m.name.clone(),
+                    fingerprints: vec!["a".repeat(64)],
+                })
+                .collect(),
+        };
+        let diagnostics = empty_diagnostics();
+        let ctx = CraptsJsonContext {
+            duplicates: Some((&options, &context)),
+            tool: options.tool,
+            coverage_kind: CoverageKind::Unmeasured,
+            threshold: 30.0,
+            selection: None,
+            notices: &[],
+            total: 0,
+            crappy: 0,
+            changed: None,
+            diagnostics: &diagnostics,
+            signal_regressions: None,
+        };
+        let mut out = Vec::new();
+        render_crapts_json(&[], &ctx, &mut out).unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(doc["untriaged_groups"], 2);
+    }
+
+    #[test]
     fn crapts_writers_require_physical_length_and_omit_unpaired_measurements() {
         let current = sample().remove(0);
         let mut old = current.clone();
@@ -1503,6 +1582,7 @@ mod tests {
         };
         let notices = ["first note"];
         let ctx = CraptsJsonContext {
+            duplicates: None,
             tool: &tool,
             coverage_kind: CoverageKind::Lines,
             threshold: 30.0,
@@ -1738,6 +1818,7 @@ mod tests {
             ..crate::report::test_support::SECOND_TOOL
         };
         let ctx = CraptsJsonContext {
+            duplicates: None,
             tool: &tool,
             coverage_kind: CoverageKind::Lines,
             threshold: 30.0,

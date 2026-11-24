@@ -7,6 +7,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoverageUnit {
+    Unmeasured,
     Statements,
     Lines,
 }
@@ -28,6 +29,7 @@ type StatementFiles = Vec<(String, Vec<Statement>)>;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum CoverageData {
+    Unmeasured,
     Statements(StatementFiles),
     Lines(Vec<StrictLcovFile>),
 }
@@ -36,9 +38,14 @@ pub(crate) enum CoverageData {
 pub struct Coverage(pub(crate) CoverageData);
 
 impl Coverage {
+    pub(crate) fn unmeasured() -> Self {
+        Self(CoverageData::Unmeasured)
+    }
+
     #[must_use]
     pub fn unit(&self) -> CoverageUnit {
         match &self.0 {
+            CoverageData::Unmeasured => CoverageUnit::Unmeasured,
             CoverageData::Statements(_) => CoverageUnit::Statements,
             CoverageData::Lines(_) => CoverageUnit::Lines,
         }
@@ -49,6 +56,7 @@ impl Coverage {
     #[must_use]
     pub fn keys(&self) -> Vec<&str> {
         match &self.0 {
+            CoverageData::Unmeasured => Vec::new(),
             CoverageData::Statements(files) => files.iter().map(|(key, _)| key.as_str()).collect(),
             CoverageData::Lines(files) => files.iter().map(|file| file.key.as_str()).collect(),
         }

@@ -169,9 +169,15 @@ pub fn field_state(
 /// Checked-in schemas by `$id`, so an external `$ref` resolves offline.
 pub fn schemas_by_id() -> BTreeMap<String, Value> {
     schema_files()
-        .iter()
-        .map(|f| schema(f))
-        .filter_map(|s| Some((s["$id"].as_str()?.to_owned(), s)))
+        .into_iter()
+        .chain(["../duplicates-v1.json".to_owned()])
+        .map(|file| schema(&file))
+        .map(|s| {
+            (
+                s["$id"].as_str().expect("published schema ID").to_owned(),
+                s,
+            )
+        })
         .collect()
 }
 
@@ -183,10 +189,17 @@ fn resolve<'a>(
     let Some(reference) = node["$ref"].as_str() else {
         return Some((root, node));
     };
-    match reference.strip_prefix("#/definitions/") {
-        Some(name) => root["definitions"].get(name).map(|n| (root, n)),
-        None => external.get(reference).map(|s| (s, s)),
-    }
+    let (resource, pointer) = reference.split_once('#').unwrap_or((reference, ""));
+    let document = if resource.is_empty() {
+        root
+    } else if let Some(document) = external.get(resource) {
+        document
+    } else {
+        let base = jsonschema::Uri::parse(root["$id"].as_str()?).ok()?;
+        let resolved = jsonschema::uri::resolve_against(&base, resource).ok()?;
+        external.get(resolved.as_str())?
+    };
+    Some((document, document.pointer(pointer)?))
 }
 
 pub fn admits_null(

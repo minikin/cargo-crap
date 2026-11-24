@@ -1425,6 +1425,17 @@ fn null_is_found_through_references_and_branches() {
             "{node}"
         );
     }
+    let shared_key = "https://example.invalid/schemas/duplicates-v1.json";
+    let nested = json!({"$id":"https://example.invalid/schemas/crapts/report-v1.json"});
+    let refs = std::collections::BTreeMap::from([(
+        shared_key.to_owned(),
+        json!({"definitions":{"field":{"type":"null"}}}),
+    )]);
+    assert!(formats::admits_null(
+        &nested,
+        &json!({"$ref":"../duplicates-v1.json#/definitions/field"}),
+        &refs
+    ));
     let real = formats::schemas_by_id();
     let report = formats::schema("report-v1.json");
     assert!(!formats::admits_null(

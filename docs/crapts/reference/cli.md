@@ -1,6 +1,6 @@
 # Command line
 
-[crapts](../README.md) scores the JavaScript and TypeScript sources under each path argument, `.` by default, against one coverage file.
+[crapts](../README.md) scores the JavaScript and TypeScript sources under each path argument, `.` by default, using the supplied coverage file. An explicit `--duplicates` scan can also run without coverage.
 
 ```bash
 crapts --coverage coverage/lcov.info
@@ -16,7 +16,7 @@ The thresholds, filters, row limits and gate switches can also come from [`.crap
 
 | Flag | Default | Description |
 |---|---|---|
-| `--coverage <file>` | none | LCOV or Istanbul `coverage-final.json` file to read. Required for a report. |
+| `--coverage <file>` | none | LCOV or Istanbul `coverage-final.json` file to read. Optional with an explicit `--duplicates` scan in text, JSON, markdown or PR-comment format. |
 | `--duplicates` | off | Report groups of structurally similar functions. |
 | `--dup-threshold <N>` | 0.82 | Minimum similarity for a pair, from 0 to 1 inclusive. |
 | `--threshold <N>` | 30 | A function scores as crappy when its CRAP is strictly above N. |
@@ -60,7 +60,7 @@ Arguments:
 
 Options:
       --coverage <file>
-          Read Istanbul or LCOV coverage from this file
+          Read Istanbul or LCOV coverage. Optional for --duplicates in text, JSON, markdown or pr-comment
 
       --threshold <N>
           Count scores strictly above this threshold

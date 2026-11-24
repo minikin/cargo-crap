@@ -51,12 +51,12 @@ mod types;
 pub(crate) mod test_support;
 
 // Re-exports — the rest of the crate depends on these names being on `report`.
-pub use json::Envelope;
 pub(crate) use json::{
     CraptsChangedSection, CraptsJsonContext, CraptsSelection, SignalRegressions,
     extract_crapts_changed, reject_cargo_crap_json_sections, render_crapts_delta_json,
     render_crapts_json,
 };
+pub use json::{Envelope, normalize_crapts_path};
 pub use links::SourceLinks;
 pub use section::{Placement, Section, WriteResult};
 pub(crate) use summary::render_delta_summary_lines;

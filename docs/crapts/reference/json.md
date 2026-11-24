@@ -18,7 +18,7 @@ The `version` field holds the crapts version that wrote the file, shown as `<ver
 | `$schema` | optional | optional | no | The schema URL above |
 | `version` | required | required | no | crapts version |
 | `name_scheme` | required | required | no | Function naming scheme, `1` |
-| `coverage_kind` | required | required | no | `lines` for LCOV, `statements` for Istanbul |
+| `coverage_kind` | required | required | no | `lines` for LCOV, `statements` for Istanbul, `none` without coverage |
 | `threshold` | required | required | no | The CRAP threshold of the run |
 | `selection` | required | required | yes | `top` and `min` when the rows were sliced, else `null` |
 | `regression_gate` | absent | required | no | Whether the baseline's version allows a regression verdict, with both versions |
@@ -27,6 +27,10 @@ The `version` field holds the crapts version that wrote the file, shown as `<ver
 | `entries` | required | required | no | One object per displayed function |
 | `removed` | absent | required | no | Baseline functions with no current row |
 | `changed` | optional | optional | no | The changed-function section under `--base` |
+| `duplicates` | optional | optional | no | Qualifying pairs in descending similarity order |
+| `duplicate_groups` | optional | optional | no | Groups of matching functions, ordered by their weakest pair |
+| `duplicate_context` | optional | optional | no | Repository prefix and ordered row fingerprints for each group member's naming family |
+| `untriaged_groups` | optional | optional | no | Positive count of groups skipped by the request budget |
 | `diagnostics` | required | required | no | File counts, and the source and coverage files that found no partner |
 
 A report written with `--top` or `--min` has a non-null `selection` and cannot serve as a baseline. `summary.regressed` and the other comparison counts are `null` in a report. `regression_gate.skipped` is true when the baseline's major or minor version differs from the running crapts. It does not record whether `--fail-regression` was passed.

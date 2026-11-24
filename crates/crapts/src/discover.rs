@@ -120,6 +120,11 @@ pub struct DiscoveryScope {
 
 impl DiscoveryScope {
     #[must_use]
+    pub(crate) fn anchored_prefix(&self) -> Option<&Path> {
+        self.worktree.root.as_ref().map(|_| self.repo_prefix())
+    }
+
+    #[must_use]
     pub fn repo_prefix(&self) -> &Path {
         &self.worktree.prefix
     }

@@ -1806,6 +1806,41 @@ mod cli {
 
     use super::{callback, common, element, func, keys, member};
 
+    #[test]
+    fn s42_unmeasured_changed_gate_uses_the_selected_missing_policy() {
+        let repo = Repo::init();
+        repo.commit("baseline");
+        repo.write(
+            "added.ts",
+            "function added(x){if(x)a();if(x)b();if(x)c();if(x)d();if(x)e();return x}",
+        );
+        for (policy, score, code) in [("pessimistic", 42.0, 1), ("optimistic", 6.0, 0)] {
+            let out = repo.run_in(
+                &repo.root(),
+                &[
+                    "--duplicates",
+                    "--base",
+                    "main",
+                    "--fail-changed",
+                    "--format",
+                    "json",
+                    "--missing",
+                    policy,
+                ],
+            );
+            common::check(&out, code);
+            let doc = common::validated_report(&out.stdout);
+            assert_eq!(doc["duplicate_context"]["repo_prefix"], "");
+            assert_eq!(doc["entries"][0]["crap"], score);
+            let notice = format!("No coverage supplied. Scores use the {policy} missing policy.");
+            assert_eq!(doc["notices"], json!([notice]));
+            assert_eq!(
+                String::from_utf8(out.stderr).unwrap(),
+                format!("warning: {notice}\n")
+            );
+        }
+    }
+
     const SIDE_FILES: &str =
         "cov.info\nbase.json\n.crapts.toml\nout.json\nreport.json\nfresh.json\nout.sarif\n";
 

@@ -35,3 +35,5 @@ So does a format that cannot carry the requested comparison:
 ```text
 error: SARIF does not support --base
 ```
+
+An explicit `--duplicates` scan can run without coverage in text, JSON, markdown and PR-comment formats. The chosen missing policy determines scores and gate exits. A supplied coverage path must be readable in every format.

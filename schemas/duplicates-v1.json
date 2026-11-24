@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/duplicates-v1.json",
-  "title": "cargo-crap duplicate definitions (v1)",
+  "title": "Structural duplicate definitions (v1)",
   "description": "The duplicate definitions behind `report-v1.json` and `delta-v2.json`: duplicate pairs, duplicate groups and triage verdicts, which both share, and the labelled group only a delta report carries.",
   "definitions": {
     "DuplicatePair": {
@@ -26,7 +26,7 @@
         },
         "first_function": {
           "type": "string",
-          "description": "Its function name. Methods include the impl-type prefix, e.g. `Foo::bar`."
+          "description": "Its qualified function or method name in the reporting language."
         },
         "first_start_line": {
           "type": "integer",
@@ -44,7 +44,7 @@
         },
         "second_function": {
           "type": "string",
-          "description": "Its function name. Methods include the impl-type prefix, e.g. `Foo::bar`."
+          "description": "Its qualified function or method name in the reporting language."
         },
         "second_start_line": {
           "type": "integer",
@@ -145,7 +145,7 @@
         },
         "function": {
           "type": "string",
-          "description": "Its function name. Methods include the impl-type prefix, e.g. `Foo::bar`."
+          "description": "Its qualified function or method name in the reporting language."
         },
         "start_line": {
           "type": "integer",

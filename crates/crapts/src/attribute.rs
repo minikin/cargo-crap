@@ -355,6 +355,7 @@ pub fn attribute(
     let mut arrows = ArrowCandidates::default();
     for (file, bound) in files.iter().zip(&assignment.bindings) {
         let evidence = match &coverage.0 {
+            CoverageData::Unmeasured => vec![Evidence::default(); file.rows.len()],
             CoverageData::Lines(line_files) => {
                 line_evidence(&file.rows, &merge_lines(line_files, bound))
             },

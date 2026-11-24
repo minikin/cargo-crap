@@ -18,7 +18,7 @@ const VALUES: &[(&str, &str, &str)] = &[
     (
         "coverage",
         "file",
-        "Read Istanbul or LCOV coverage from this file",
+        "Read Istanbul or LCOV coverage. Optional for --duplicates in text, JSON, markdown or pr-comment",
     ),
     (
         "threshold",

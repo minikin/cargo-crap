@@ -190,6 +190,7 @@ pub struct Settings<'a> {
 }
 
 pub struct RenderExtras<'a> {
+    pub duplicate_context: Option<&'a crate::duplicates::model::DuplicateContext>,
     /// Ordered duplicate pairs.
     pub duplicates: Option<&'a [DuplicatePair]>,
     /// Duplicate groups in report order.
@@ -206,6 +207,7 @@ impl Default for RenderExtras<'_> {
     fn default() -> Self {
         Self {
             duplicates: None,
+            duplicate_context: None,
             groups: None,
             novelty: None,
             triage: None,
@@ -380,7 +382,13 @@ impl<'a> PreparedReport<'a> {
         let options = self.options(extras);
         let staged = stage_sections(options.format, self.sections, pr_section_limit)?;
         let include_marker = write_prefix(&options, &self.notices, &staged, out)?;
-        self.write_body(summary, include_marker, &options, out)?;
+        self.write_body(
+            summary,
+            include_marker,
+            &options,
+            extras.duplicate_context,
+            out,
+        )?;
         report::render_duplicates(&options, out).context("writing duplicate report")?;
         write_suffix(options.format, &staged, out)?;
         out.flush().context("flushing output")?;
@@ -392,6 +400,7 @@ impl<'a> PreparedReport<'a> {
         summary: bool,
         include_marker: bool,
         options: &RenderOptions<'_>,
+        context: Option<&crate::duplicates::model::DuplicateContext>,
         out: &mut dyn Write,
     ) -> Result<()> {
         if self.tool.policy.use_summary(summary, options.format) {
@@ -402,7 +411,7 @@ impl<'a> PreparedReport<'a> {
         } else if options.format == Format::Json
             && self.tool.policy.envelope == EnvelopeKind::CraptsV1
         {
-            self.write_crapts_json(out)
+            self.write_crapts_json(options, context, out)
         } else if let Some(comparison) = &self.comparison {
             report::render_delta_inner(
                 &comparison.delta,
@@ -439,6 +448,8 @@ impl<'a> PreparedReport<'a> {
 
     fn write_crapts_json(
         &self,
+        options: &RenderOptions<'_>,
+        context: Option<&crate::duplicates::model::DuplicateContext>,
         out: &mut dyn Write,
     ) -> Result<()> {
         let coverage_kind = self
@@ -452,6 +463,7 @@ impl<'a> PreparedReport<'a> {
             .ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
         let selection = report::CraptsSelection::from_limits(self.settings.top, self.settings.min)?;
         let ctx = report::CraptsJsonContext {
+            duplicates: context.map(|c| (options, c)),
             tool: self.tool,
             coverage_kind,
             threshold: self.settings.threshold,
@@ -1022,6 +1034,7 @@ mod tests {
             duplicate_groups: None,
         });
         let prepared_crapts = filter.prepare_crapts(CraptsBaseline {
+            duplicate_history: None,
             entries: rows.clone(),
             baseline_version: "0.1.9".into(),
             regression_gate_skipped: true,
@@ -1032,6 +1045,7 @@ mod tests {
         let mut rows = rows;
         rows[0].signals = Some(crate::signals::Signals::default());
         let prepared_same_minor = filter.prepare_crapts(CraptsBaseline {
+            duplicate_history: None,
             entries: rows,
             baseline_version: "0.2.3-rc.1+build.7".into(),
             regression_gate_skipped: false,
@@ -1115,6 +1129,7 @@ mod tests {
         };
         let baseline = |entries| {
             BaselineFilter::new(&AllFiles, &allow).prepare_crapts(CraptsBaseline {
+                duplicate_history: None,
                 entries,
                 baseline_version: "0.2.3".into(),
                 regression_gate_skipped: false,
@@ -1242,6 +1257,7 @@ mod tests {
         assert!(err.contains("prepare_crapts") && out.is_empty(), "{err}");
 
         let cross_base = BaselineFilter::new(&AllFiles, &allow).prepare_crapts(CraptsBaseline {
+            duplicate_history: None,
             entries: Vec::new(),
             baseline_version: "0.1.9".into(),
             regression_gate_skipped: true,

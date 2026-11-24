@@ -145,7 +145,7 @@ These settings describe one invocation, so they exist only as flags and argument
 | Setting | Flag | Default |
 |---|---|---|
 | `paths` | positional arguments | `.` |
-| `coverage` | `--coverage` | none, required for a report |
+| `coverage` | `--coverage` | none, required unless the command admits an explicit duplicate scan |
 | `format` | `--format` | `text` |
 | `summary` | `--summary` | off |
 | `all-rows` | `--all-rows` | off |
