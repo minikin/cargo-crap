@@ -1,6 +1,6 @@
 # Spec 44: Golden outputs of cargo-crap
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** `tests/golden.rs` (new), `tests/snapshots/golden__*.snap` (new), `tests/fixtures/golden/` (new), `Justfile` (`test` recipe), `.github/workflows/ci.yml` (test step, path filter), `Cargo.lock` (now committed), `.gitignore`
 

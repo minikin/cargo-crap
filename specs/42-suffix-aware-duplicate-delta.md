@@ -1,6 +1,6 @@
 # Spec 42: The duplicate delta matches files across checkouts
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Small
 **Module:** `src/duplicates/novelty.rs`
 

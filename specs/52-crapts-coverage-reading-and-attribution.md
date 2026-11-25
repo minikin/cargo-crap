@@ -1,6 +1,6 @@
 # Spec 52: crapts coverage reading and attribution
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** In `crates/crapts/`, the change touches `Cargo.toml`, `src/lib.rs`, `src/analyze.rs`, `src/coverage/{mod,istanbul}.rs`, `src/attribute.rs` and `tests/`. Shared APIs belong in `crates/cargo-crap-core/src/{paths,entry}.rs` and `crates/cargo-crap-core/src/coverage/{mod,lcov}.rs`. The workspace dependency test lives in `tests/workspace.rs`. Record dependency edges in `Cargo.lock` and the library changes in `CHANGELOG.md`.
 **Needs:** Spec 49's shared core and spec 50's analyzer. Spec 51 defines the report that consumes these results. Spec 53 wires the library to the executable.

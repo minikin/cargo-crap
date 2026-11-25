@@ -1,6 +1,6 @@
 # Spec 60: Structural maintainability signals for crapts
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** `crates/crapts/src/` for analysis and configuration. `crates/cargo-crap-core/src/` and `schemas/crapts/` for reports and baselines. The shared headline change also covers `tests/acceptance.rs` and the root `CHANGELOG.md`.
 

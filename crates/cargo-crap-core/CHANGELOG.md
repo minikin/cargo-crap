@@ -4,6 +4,8 @@ This project follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
 ### Added
 
 - The optional `triage` feature enables the blocking HTTP client for TypeSafe
@@ -39,3 +41,6 @@ This project follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.
   full group and budget counts. Set these fields to `None` in existing literals.
 - `Excerpts.locations` accepts explicit source locations for both sides.
   Set `locations: None` in existing literals to use the members' line ranges.
+
+[Unreleased]: https://github.com/minikin/cargo-crap/compare/cargo-crap-core-v0.2.0...HEAD
+[0.2.0]: https://github.com/minikin/cargo-crap/releases/tag/cargo-crap-core-v0.2.0

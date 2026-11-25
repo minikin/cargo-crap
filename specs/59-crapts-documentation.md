@@ -1,6 +1,6 @@
 # Spec 59: crapts documentation
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** `docs/crapts/` (new pages listed below), `README.md` (one new section), `crates/crapts/tests/docs.rs` (extended), `crates/crapts/tests/fixtures/docs/` (new fixture trees `base`, `head` and `complexity`), `.github/workflows/ci.yml` (`docs` job and path filters). Compatibility checks run the root `tests/docs.rs`, the Spec 44 goldens and the guards in `tests/golden/config.rs` and `tests/golden/gates.rs`.
 **Needs:** Specs 50, 52, 53, 54, 55, 57 and 58. Specs 50 and 52 are the naming and attribution rules the complexity reference links to. Spec 53 supplies the CLI, `.crapts.toml`, `--print-config` and the first `crates/crapts/tests/docs.rs`. Spec 54 supplies `--baseline`. Spec 55 supplies `--base`, `--fail-changed` and `schemas/crapts/changed-v1.json`. Spec 57 supplies the npm packages, binstall metadata and the `npm/crapts/package.json` entry in the CI `rust` filter. Spec 58 supplies `actions/crapts/action.yml`.

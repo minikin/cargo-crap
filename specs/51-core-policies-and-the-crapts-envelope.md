@@ -1,6 +1,6 @@
 # Spec 51: Core policies and the crapts envelope
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** In `crates/cargo-crap-core/`, the change touches `Cargo.toml`, `src/{policy,delta,filter,gate,run,report}.rs`, `src/coverage/mod.rs` and `src/report/{json,section,human,markdown,pr_comment,summary,github,sarif,shields}.rs`. At the root it touches `Cargo.lock`, `src/main.rs`, `schemas/crapts/{report-v1,delta-v1}.json`, `tests/{crapts_policy,cli,acceptance,library_paths}.rs`, `tests/support/schemas.rs`, `CHANGELOG.md` and `CLAUDE.md`.
 **Needs:** Implement after spec 49 lands on the combined work from specs 45-48. Its contract is in `specs/49-move-language-neutral-modules-into-cargo-crap-core.md`. Scored-row fixtures allow spec 51 to run independently of the analyzer and coverage reader.

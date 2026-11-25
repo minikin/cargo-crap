@@ -1,6 +1,6 @@
 # Spec 49: Move language-neutral modules into cargo-crap-core
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `Cargo.toml`, `Cargo.lock`, `crates/cargo-crap-core/{Cargo.toml,src/,tests/acceptance.rs,tests/fixtures/,proptest-regressions/}`, `src/lib.rs` (exports and module table), `src/{tool,merge,config}.rs`, `src/{signals,duplicates}/`, the source files in the move table, `tests/{workspace,docs,library_paths}.rs`, `proptest-regressions/`, `.cargo/mutants.toml`, `scripts/gates/test.sh`, `.github/workflows/ci.yml`, `CHANGELOG.md`, `CLAUDE.md`, `docs/explanation/path-matching.md`
 **Needs:** Before writing tasks, re-check the move table against the landed implementations of specs 47 and 48. Implement on the combined work from specs 45-48.

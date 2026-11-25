@@ -1,6 +1,6 @@
 # Spec 45: Workspace shell and member-aware gates
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** `Cargo.toml` (`[package].exclude`, `[workspace]`, `[workspace.package]`, `[workspace.dependencies]`, `[workspace.lints]`), `crates/cargo-crap-core/{Cargo.toml,src/lib.rs}` (new), `Cargo.lock`, `Justfile`, `.github/workflows/ci.yml`, `.github/workflows/action.yml` (path filter), `scripts/gates/` (new: mutants diff, parser guard, their shell tests), `tests/workspace.rs` (new), `tests/golden/config.rs`, `scripts/release/test.sh`, `CLAUDE.md` (Commands)
 

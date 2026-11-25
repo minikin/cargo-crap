@@ -1,6 +1,6 @@
 # Spec 50: crapts Oxc analysis and names
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** `crates/crapts/{Cargo.toml,src/lib.rs,src/discover.rs,src/analyze.rs,src/lines.rs,src/names.rs,tests/analysis.rs,tests/discovery.rs,tests/names.rs,tests/properties.rs}`, `Cargo.toml`, `Cargo.lock`, `tests/workspace.rs`, `tests/fixtures/spec45-package-ids.txt`, `tests/golden/config.rs`, `tests/golden/gates.rs`, `scripts/gates/parser-guard.sh`, `scripts/gates/test.sh`, `.github/workflows/ci.yml`, `.github/dependabot.yml`
 

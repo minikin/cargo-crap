@@ -1,6 +1,6 @@
 # Spec 53: crapts CLI, config and absolute gates
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Large
 **Module:** `crates/crapts/{Cargo.toml,src/{lib,cli,config,main,discover}.rs,tests/{cli,docs}.rs}`, `Cargo.lock`, `crates/cargo-crap-core/src/{lib,config,filter,policy,run,report}.rs` and `crates/cargo-crap-core/src/report/{tool,test_support,links,pr_comment,github,sarif}.rs`. Root integration and migration touch `src/{main,tool}.rs`, `tests/{workspace,library_paths,acceptance,crapts_policy}.rs`, `scripts/gates/{parser-guard,test}.sh`, `CHANGELOG.md` and `CLAUDE.md`. Compatibility checks exercise the core `report/{human,summary,markdown,shields}.rs` renderers, the width snapshots and the Spec 44 goldens.
 **Needs:** Specs 51 and 52, including the Spec 50 analyzer and Spec 49 core on which they depend.
