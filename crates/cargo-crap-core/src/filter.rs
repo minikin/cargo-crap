@@ -751,7 +751,14 @@ mod based_tests {
     proptest! {
         #[test]
         fn moving_a_base_and_prefixing_the_pattern_preserves_the_verdict(
-            segments in prop::collection::vec("[a-z]{2,5}", 1..5),
+            segments in prop::collection::vec(
+                "[a-z]{2,5}".prop_filter(
+                    // Windows GetFullPathNameW rewrites trailing DOS device names to \\.\<name>.
+                    "Windows reserved DOS device name",
+                    |segment| !matches!(segment.as_str(), "con" | "prn" | "aux" | "nul"),
+                ),
+                1..5,
+            ),
             stem in "[a-z]{1,5}", matches in any::<bool>(),
         ) {
             let parent = std::env::current_dir().unwrap();
