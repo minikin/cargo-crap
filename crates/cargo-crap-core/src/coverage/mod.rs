@@ -9,13 +9,16 @@ pub enum CoverageKind {
 }
 
 impl CoverageKind {
+    // Indexed by the enum discriminant so validation and rendering share the wire spellings.
+    const NAMES: [&str; 3] = ["none", "statements", "lines"];
+
     #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Statements => "statements",
-            Self::Lines => "lines",
-            Self::Unmeasured => "none",
-        }
+        Self::NAMES[self as usize]
+    }
+
+    pub(crate) fn is_valid_name(name: &str) -> bool {
+        Self::NAMES.contains(&name)
     }
 }
 

@@ -673,6 +673,28 @@ mod tests {
     }
 
     #[test]
+    fn a_short_write_in_the_human_report_preserves_only_the_written_prefix() {
+        let rows = rows();
+        let pass = entry(&rows[0], Verdict::Pass);
+        let counts = Counts {
+            touched: 1,
+            coverage_null: 1,
+            ..Counts::default()
+        };
+        for shown in [&[][..], &[&pass][..]] {
+            let report = text(shown, counts, 1, 0);
+            let mut full = Vec::new();
+            report.human(&mut full).unwrap();
+            for limit in 0..full.len() {
+                let mut buffer = vec![0; limit];
+                let error = report.human(&mut buffer.as_mut_slice()).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::WriteZero);
+                assert_eq!(buffer, full[..limit]);
+            }
+        }
+    }
+
+    #[test]
     fn the_human_table_pads_by_display_width() {
         let rows = analyze(
             Path::new("src/x.ts"),

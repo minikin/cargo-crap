@@ -157,19 +157,24 @@ fn number(
         .ok()
         .filter(|n| n.is_finite())
         .ok_or_else(|| format!("--{name} must be a finite number, got {value}"))?;
-    if name == "epsilon" && n < 0.0 {
-        return Err(format!("--epsilon must be at least 0, got {value}"));
-    }
-    if name == "dup-threshold" {
-        if !(0.0..=1.0).contains(&n) {
-            return Err(format!(
-                "--dup-threshold must be between 0 and 1, got {value}"
-            ));
-        }
-        return Ok(n + 0.0);
-    }
-    Ok(n)
+    checked_range(name, value, n)
 }
+
+fn checked_range(
+    name: &str,
+    value: &str,
+    n: f64,
+) -> Result<f64, String> {
+    match name {
+        "epsilon" if n < 0.0 => Err(format!("--epsilon must be at least 0, got {value}")),
+        "dup-threshold" if !(0.0..=1.0).contains(&n) => Err(format!(
+            "--dup-threshold must be between 0 and 1, got {value}"
+        )),
+        "dup-threshold" => Ok(n + 0.0),
+        _ => Ok(n),
+    }
+}
+
 fn top(value: &str) -> Result<u64, String> {
     value
         .bytes()

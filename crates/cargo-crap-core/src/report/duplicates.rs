@@ -436,6 +436,16 @@ fn write_rows(
     if shown.is_empty() {
         return Ok(());
     }
+    write_non_empty_rows(shown, triage, grew, opts, out)
+}
+
+fn write_non_empty_rows(
+    shown: &[DuplicateGroup],
+    triage: Option<&[Option<Assessment>]>,
+    grew: Option<&[Option<usize>]>,
+    opts: &RenderOptions,
+    out: &mut dyn Write,
+) -> Result<()> {
     writeln!(out, "{}", header(triage.is_some(), shown))?;
     for (n, group) in shown.iter().enumerate() {
         let cells = triage.map(|t| verdict_cells(t[n].as_ref()));

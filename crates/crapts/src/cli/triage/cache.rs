@@ -52,7 +52,14 @@ fn physical(path: &Path) -> io::Result<PathBuf> {
             Component::Normal(name) => {
                 resolved.push(name);
                 match fs::symlink_metadata(&resolved) {
-                    Ok(_) => resolved = resolved.canonicalize()?,
+                    Ok(_) => {
+                        resolved = resolved.canonicalize()?;
+                        // On Windows, looking up a child beneath a regular file returns NotFound
+                        // instead of NotADirectory, so reject non-directory prefixes here.
+                        if !resolved.is_dir() {
+                            return Err(io::Error::other("cache path traverses a non-directory"));
+                        }
+                    },
                     Err(e) if e.kind() == io::ErrorKind::NotFound => (),
                     Err(e) => return Err(e),
                 }
@@ -160,9 +167,43 @@ mod tests {
         file.set_modified(now - Duration::from_hours(24 * 31))
             .unwrap();
         assert!(cache.get(key).is_none());
-        let blocked = d.path().join("not-a-directory");
-        fs::write(&blocked, "file").unwrap();
-        assert!(physical(&blocked.join("cache")).is_err());
+    }
+
+    #[test]
+    fn a_regular_file_blocks_the_cache_at_any_depth() {
+        for blocked in ["user", "user/crapts", "user/crapts/triage"] {
+            let temp = tempfile::tempdir().unwrap();
+            let file = temp.path().join(blocked);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "").unwrap();
+            assert!(
+                physical(&temp.path().join("user/crapts/triage")).is_err(),
+                "{blocked}"
+            );
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_directory_link_can_contain_the_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("cache");
+        let link = temp.path().join("alias");
+        fs::create_dir(&target).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(windows)]
+        if let Err(error) = std::os::windows::fs::symlink_dir(&target, &link) {
+            // Windows requires developer mode or the create-symbolic-links privilege.
+            if error.raw_os_error() == Some(1314) {
+                return;
+            }
+            panic!("creating test symlink: {error}");
+        }
+        assert_eq!(
+            physical(&link.join("crapts/triage")).unwrap(),
+            target.canonicalize().unwrap().join("crapts/triage")
+        );
     }
 
     #[cfg(unix)]

@@ -184,11 +184,7 @@ impl Run<'_> {
     ) -> Result<Triaged, TriageError> {
         let looked = pairs
             .par_iter()
-            .map(|pair| {
-                let excerpts = prepare(pair).map_err(TriageError::Source)?;
-                let cached = self.cache.and_then(|cache| cache.get(excerpts.key));
-                Ok(Lookup { excerpts, cached })
-            })
+            .map(|pair| self.lookup(pair, prepare))
             .collect::<Result<Vec<Lookup<N>>, TriageError>>()?;
         let answered: Vec<bool> = looked.iter().map(|l| l.cached.is_some()).collect();
         let plan = budget::plan(&answered, max_requests);
@@ -205,6 +201,16 @@ impl Run<'_> {
             verdicts,
             skipped: plan.skipped,
         })
+    }
+
+    fn lookup<const N: usize>(
+        &self,
+        pair: &DuplicatePair,
+        prepare: &impl Fn(&DuplicatePair) -> std::io::Result<Excerpts<N>>,
+    ) -> Result<Lookup<N>, TriageError> {
+        let excerpts = prepare(pair).map_err(TriageError::Source)?;
+        let cached = self.cache.and_then(|cache| cache.get(excerpts.key));
+        Ok(Lookup { excerpts, cached })
     }
 
     /// Ask about one pair the cache could not answer, and cache the verdict.

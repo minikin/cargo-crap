@@ -59,14 +59,17 @@ impl<const N: usize> CacheKey<N> {
     /// The entry's file name within the cache directory.
     #[must_use]
     pub fn file_name(self) -> String {
-        use std::fmt::Write;
-        let mut name = String::new();
-        for byte in self.0 {
-            write!(name, "{byte:02x}").expect("writing to a String");
-        }
-        name.push_str(".json");
-        name
+        format!("{}.json", hex_bytes(&self.0))
     }
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(hex, "{byte:02x}").expect("writing to a String");
+    }
+    hex
 }
 
 /// A verdict cache rooted at one directory.
@@ -110,15 +113,21 @@ impl Cache {
         &self,
         key: CacheKey<N>,
     ) -> Option<Verdict> {
-        let path = self.dir.join(key.file_name());
+        let raw = self.read_fresh(&self.dir.join(key.file_name()))?;
+        serde_json::from_str::<Entry>(&raw).ok()?.verdict()
+    }
+
+    fn read_fresh(
+        &self,
+        path: &Path,
+    ) -> Option<String> {
         if let Some(policy) = self.retention {
-            let modified = retention::file_time(&path).ok()??;
+            let modified = retention::file_time(path).ok()??;
             if policy.expired(modified) {
                 return None;
             }
         }
-        let raw = read_retrying(|| std::fs::read_to_string(&path)).ok()?;
-        serde_json::from_str::<Entry>(&raw).ok()?.verdict()
+        read_retrying(|| std::fs::read_to_string(path)).ok()
     }
 
     /// Store `verdict` under `key`, creating the cache directory if needed.

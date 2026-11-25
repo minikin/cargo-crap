@@ -84,10 +84,7 @@ impl<'a> BaselineFilter<'a> {
         mut baseline: CraptsBaseline,
     ) -> PreparedBaseline {
         self.filter_entries(&mut baseline.entries);
-        let (groups, families) = baseline
-            .duplicate_history
-            .map(|h| self.scope_history(h))
-            .unzip();
+        let (groups, families) = self.scoped_duplicates(baseline.duplicate_history);
         PreparedBaseline {
             baseline: Baseline {
                 entries: baseline.entries,
@@ -101,6 +98,13 @@ impl<'a> BaselineFilter<'a> {
                 notice: baseline.notice,
             }),
         }
+    }
+
+    fn scoped_duplicates(
+        &self,
+        history: Option<crate::delta::DuplicateHistory>,
+    ) -> (Option<Vec<Vec<Location>>>, Option<Vec<Family>>) {
+        history.map(|record| self.scope_history(record)).unzip()
     }
 
     fn scope_history(

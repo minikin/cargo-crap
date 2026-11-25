@@ -95,19 +95,18 @@ impl Scope for ScoringScope<'_> {
     }
 }
 
-fn coverage_kind(unit: CoverageUnit) -> CoverageKind {
-    match unit {
-        CoverageUnit::Unmeasured => CoverageKind::Unmeasured,
-        CoverageUnit::Lines => CoverageKind::Lines,
-        CoverageUnit::Statements => CoverageKind::Statements,
-    }
-}
-
 pub(super) fn warn(
     err: &mut dyn Write,
     message: &str,
 ) -> Result<()> {
     writeln!(err, "warning: {message}").map_err(|e| InputError::at(Path::new("stderr"), e))
+}
+
+fn write_warnings(
+    err: &mut dyn Write,
+    messages: &[String],
+) -> Result<()> {
+    messages.iter().try_for_each(|message| warn(err, message))
 }
 
 fn read_inputs(
@@ -129,7 +128,7 @@ fn read_inputs(
         .value
         .as_deref()
         .map(|path| {
-            load_crapts_baseline(&cwd.join(path), &TOOL, coverage_kind(coverage.unit()))
+            load_crapts_baseline(&cwd.join(path), &TOOL, coverage.unit().into())
                 .map_err(|e| InputError::reported(path, format!("{e:#}")))
         })
         .transpose()?;
@@ -148,9 +147,7 @@ fn head_analysis(
     }
     let bytes = fs::read(cwd.join(file)).map_err(|e| InputError::at(file, e))?;
     let analysis = HeadAnalysis::read(file, bytes, Mode::Ordinary, capture)?;
-    for message in &analysis.file.warnings {
-        warn(err, message)?;
-    }
+    write_warnings(err, &analysis.file.warnings)?;
     Ok(analysis)
 }
 
@@ -168,6 +165,10 @@ fn capture(triage: Option<bool>) -> Capture {
         Some(true) => Capture::Excerpts,
         Some(_) => Capture::Prints,
     }
+}
+
+fn capture_for(duplicates: Option<&DuplicateSettings>) -> Capture {
+    capture(duplicates.map(|settings| settings.triage.enabled.value))
 }
 
 fn measure(
@@ -189,17 +190,12 @@ fn measure(
     let mut files = Vec::with_capacity(discovery.files.len());
     let mut prints = Vec::new();
     let mut sources = HashMap::new();
+    let capture = capture_for(duplicates);
     for file in &discovery.files {
         if skipped.is_some_and(|skipped| skipped.contains(file)) {
             continue;
         }
-        let head = head_analysis(
-            cwd,
-            file,
-            &mut strict,
-            capture(duplicates.map(|d| d.triage.enabled.value)),
-            err,
-        )?;
+        let head = head_analysis(cwd, file, &mut strict, capture, err)?;
         if let Some(bytes) = head.source {
             sources.insert(file.clone(), bytes);
         }
@@ -207,9 +203,7 @@ fn measure(
         prints.extend(head.prints);
     }
     let result = attribute(cwd, &files, coverage, missing);
-    for message in &result.warnings {
-        warn(err, message)?;
-    }
+    write_warnings(err, &result.warnings)?;
     let scan = duplicates.map(|duplicates| {
         Scan::collect(
             prints,
@@ -421,14 +415,7 @@ pub(super) fn score(
         .base
         .value
         .as_deref()
-        .map(|rev| {
-            select(
-                &discovery.scope,
-                cwd,
-                rev,
-                capture(duplicates.map(|d| d.triage.enabled.value)),
-            )
-        })
+        .map(|rev| select(&discovery.scope, cwd, rev, capture_for(duplicates)))
         .transpose()?;
     let Measurement {
         files,
@@ -493,7 +480,7 @@ pub(super) fn score(
         ),
         notices: &notices,
         scan: scan.as_ref(),
-        unit: coverage_kind(result.unit),
+        unit: result.unit.into(),
         scope: &scope,
         prepared: prepared.as_ref(),
         destination: output.unwrap_or(Path::new("stdout")),
@@ -665,6 +652,26 @@ fn too_long() -> InputError {
     ))
 }
 
+fn fit_steps(
+    summary: bool,
+    duplicates: usize,
+    changed: usize,
+) -> impl Iterator<Item = Step> {
+    let changed = if summary {
+        0
+    } else {
+        changed.min(PR_COMMENT_ROWS)
+    };
+    std::iter::once(Step::Complete)
+        .chain((!summary).then_some(Step::CoreSummarized))
+        .chain(
+            (0..duplicates.min(PR_COMMENT_ROWS))
+                .rev()
+                .map(Step::DuplicateRows),
+        )
+        .chain((0..changed).rev().map(Step::ChangedRows))
+}
+
 fn fit<T, E>(
     summary: bool,
     duplicates: usize,
@@ -672,20 +679,7 @@ fn fit<T, E>(
     fits: impl Fn(&T) -> bool,
     mut render: impl FnMut(Step) -> Result<T, E>,
 ) -> Result<Option<T>, E> {
-    let changed = if summary {
-        0
-    } else {
-        changed.min(PR_COMMENT_ROWS)
-    };
-    let steps = std::iter::once(Step::Complete)
-        .chain((!summary).then_some(Step::CoreSummarized))
-        .chain(
-            (0..duplicates.min(PR_COMMENT_ROWS))
-                .rev()
-                .map(Step::DuplicateRows),
-        )
-        .chain((0..changed).rev().map(Step::ChangedRows));
-    for step in steps {
+    for step in fit_steps(summary, duplicates, changed) {
         let body = render(step)?;
         if fits(&body) {
             return Ok(Some(body));
@@ -950,10 +944,11 @@ mod tests {
     #[test]
     fn the_measured_unit_is_preserved_even_without_rows() {
         for (unit, kind) in [
+            (CoverageUnit::Unmeasured, CoverageKind::Unmeasured),
             (CoverageUnit::Lines, CoverageKind::Lines),
             (CoverageUnit::Statements, CoverageKind::Statements),
         ] {
-            assert_eq!(coverage_kind(unit), kind);
+            assert_eq!(CoverageKind::from(unit), kind);
         }
     }
 }

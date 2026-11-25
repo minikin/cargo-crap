@@ -918,20 +918,21 @@ fn check_coverage_kind(
     path: &Path,
     current_kind: CoverageKind,
 ) -> Result<()> {
-    let found = match obj.get("coverage_kind").and_then(|v| raw_str(v)).as_deref() {
-        Some("statements") => CoverageKind::Statements,
-        Some("lines") => CoverageKind::Lines,
-        Some("none") => CoverageKind::Unmeasured,
-        _ => bail!(
+    let Some(found) = obj
+        .get("coverage_kind")
+        .and_then(|v| raw_str(v))
+        .filter(|name| CoverageKind::is_valid_name(name))
+    else {
+        bail!(
             "baseline {} has missing or invalid coverage_kind (expected \"statements\", \"lines\", or \"none\")",
             path.display()
-        ),
+        );
     };
-    if found != current_kind {
+    if found != current_kind.as_str() {
         bail!(
             "baseline {} has coverage_kind \"{}\" which does not match current \"{}\"",
             path.display(),
-            found.as_str(),
+            found,
             current_kind.as_str()
         );
     }
@@ -1233,8 +1234,9 @@ fn parse_crapts_absolute_doc(
         },
         false,
     )?;
-    let history = duplicate_history::read(
+    crapts_entries_with_history(
         path,
+        &raw.entries,
         [
             raw.duplicates.as_deref(),
             raw.duplicate_groups.as_deref(),
@@ -1242,8 +1244,7 @@ fn parse_crapts_absolute_doc(
             raw.untriaged_groups.as_deref(),
         ],
         false,
-    )?;
-    Ok((parse_crapts_entries(path, &raw.entries, false)?, history))
+    )
 }
 
 fn parse_crapts_delta_doc(
@@ -1272,8 +1273,9 @@ fn parse_crapts_delta_doc(
         },
         true,
     )?;
-    let history = duplicate_history::read(
+    crapts_entries_with_history(
         path,
+        &raw.entries,
         [
             raw.duplicates.as_deref(),
             raw.duplicate_groups.as_deref(),
@@ -1281,8 +1283,17 @@ fn parse_crapts_delta_doc(
             raw.untriaged_groups.as_deref(),
         ],
         true,
-    )?;
-    Ok((parse_crapts_entries(path, &raw.entries, true)?, history))
+    )
+}
+
+fn crapts_entries_with_history(
+    path: &Path,
+    entries: &RawValue,
+    duplicate_fields: [Option<&RawValue>; 4],
+    is_delta: bool,
+) -> Result<(Vec<CrapEntry>, Option<DuplicateHistory>)> {
+    let history = duplicate_history::read(path, duplicate_fields, is_delta)?;
+    Ok((parse_crapts_entries(path, entries, is_delta)?, history))
 }
 
 fn validate_common_outer(
@@ -4514,7 +4525,7 @@ mod crapts_admission_tests {
                 d
             },
             CoverageKind::Lines,
-            "coverage_kind",
+            "missing or invalid coverage_kind",
         );
         assert_rejected(
             &{
@@ -4523,7 +4534,7 @@ mod crapts_admission_tests {
                 d
             },
             CoverageKind::Lines,
-            "statements",
+            r#"coverage_kind "statements" which does not match current "lines""#,
         );
         assert_rejected(
             &{
