@@ -57,6 +57,43 @@ fn help_flag_exits_successfully() {
 }
 
 #[test]
+fn signal_count_uses_the_filtered_baseline_before_display_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = dir.path().join("base.json");
+    std::fs::write(
+        dir.path().join(".cargo-crap.toml"),
+        "[signals]\nenabled = true",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("lib.rs"), "pub fn f() {}").unwrap();
+    cmd()
+        .current_dir(&dir)
+        .args(["--format", "json", "--output"])
+        .arg(&baseline)
+        .assert()
+        .success();
+    for (extra, expected) in [("--min=999", "0"), ("--allow=f", "null")] {
+        cmd()
+            .current_dir(&dir)
+            .args(["--print-signal-regressions", "--baseline"])
+            .arg(&baseline)
+            .args(["--output", "out.json", "--format", "json", extra])
+            .assert()
+            .success()
+            .stdout(expected);
+    }
+    std::fs::write(dir.path().join("lib.rs"), "").unwrap();
+    cmd()
+        .current_dir(&dir)
+        .args(["--print-signal-regressions", "--baseline"])
+        .arg(&baseline)
+        .args(["--output", "out.json"])
+        .assert()
+        .success()
+        .stdout("0");
+}
+
+#[test]
 fn version_flag_exits_successfully() {
     cmd()
         .arg("--version")

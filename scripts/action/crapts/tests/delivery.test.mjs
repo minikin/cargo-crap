@@ -37,13 +37,21 @@ test("summary byte budget includes settings and markup", () => {
 
 test("a comment belongs to the token's account by login, a bot also without its suffix", () => {
   const bot = { login: "github-actions[bot]", type: "Bot" };
-  assert.ok(ownedBy({ user: bot }, "github-actions[bot]"));
-  assert.ok(ownedBy({ user: bot }, "github-actions"));
-  assert.ok(ownedBy({ user: { login: "octo", type: "User" } }, "octo"));
-  assert.ok(!ownedBy({ user: { login: "renovate[bot]", type: "Bot" } }, "github-actions"));
-  assert.ok(!ownedBy({ user: { login: "octo[bot]", type: "User" } }, "octo"));
-  for (const comment of [{}, { user: null }]) assert.ok(!ownedBy(comment, "octo"));
-  for (const login of ["", null, undefined]) assert.ok(!ownedBy({ user: { login: "", type: "User" } }, login));
+  const app = { login: "github-actions", type: "Bot" };
+  const octo = { login: "octo", type: "User" };
+  const other = { login: "octo[bot]", type: "Bot" };
+  assert.ok(ownedBy({ user: bot }, bot));
+  assert.ok(ownedBy({ user: bot }, app));
+  assert.ok(ownedBy({ user: octo }, octo));
+  assert.ok(!ownedBy({ user: other }, octo));
+  assert.ok(!ownedBy({ user: octo }, { login: "octo", type: "Bot" }));
+  assert.ok(!ownedBy({ user: other }, { login: "octo" }));
+  assert.ok(!ownedBy({ user: other }, app));
+  assert.ok(ownedBy({ user: { id: 42, login: "app[bot]", type: "Bot" } }, { id: 42, login: "app", type: "User" }));
+  assert.ok(ownedBy({ user: { login: "app[bot]", type: "Bot" } }, { login: "app[bot]", type: "User" }));
+  assert.ok(!ownedBy({ user: { id: 99, login: "app[bot]", type: "Bot" } }, { id: 42, login: "app[bot]", type: "Bot" }));
+  for (const user of [null, {}]) assert.ok(!ownedBy({ user }, octo));
+  for (const identity of [null, {}, { login: "" }]) assert.ok(!ownedBy({ user: octo }, identity));
 });
 
 test("GraphQL lives beside REST, at /api/graphql on Enterprise Server", () => {

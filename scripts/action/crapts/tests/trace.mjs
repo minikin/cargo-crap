@@ -17,6 +17,8 @@ childProcess.spawnSync = function (command, args, options) {
 };
 const execFile = childProcess.execFileSync;
 childProcess.execFileSync = function (command, args, options) {
+  if (command === "git" && args[0] === "worktree" && args[1] === "add" && providers(options?.env ?? process.env).keys.length)
+    throw Error("worktree add received a provider key");
   const result = execFile.call(this, command, args, options);
   if (process.env.INJECT_CLEANUP_ERROR && command === "git" && args[0] === "worktree" && args[1] === "remove")
     throw Error("cleanup failed");

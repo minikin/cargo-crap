@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { generateCoverage } from "./prepare.mjs";
-import { withOptions, withoutOptions, writeReport } from "./cli.mjs";
+import { withOptions, withoutOptions, withoutProviderKeys, writeReport } from "./cli.mjs";
 
 function git(...args) {
-  return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trimEnd();
+  return execFileSync("git", args, { env: withoutProviderKeys(process.env), encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trimEnd();
 }
 
 function configPaths(root, cwd) {

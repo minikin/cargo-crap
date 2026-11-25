@@ -139,6 +139,8 @@ file_input lcov no-such.info >/dev/null 2>&1
 check "a missing file fails" "1" "$?"
 
 # A provider key reaches neither a program nor a shell function run keyless.
+mixed_key_probe() { echo "${Typesafe_Api_Key+set}/${openai_api_KEY+set}"; }
+check "keyless strips mixed-case names" "/" "$(Typesafe_Api_Key=a openai_api_KEY=b keyless mixed_key_probe)"
 key_probe() { echo "${TYPESAFE_API_KEY-unset}/${OPENAI_API_KEY-unset}"; }
 check "keyless unsets every key for a function" "unset/unset" \
     "$(TYPESAFE_API_KEY=a OPENAI_API_KEY=b keyless key_probe)"
@@ -158,57 +160,6 @@ report_run bash -c 'exit 2'
 check "a failed run fails with its status" "2" "$?"
 report_run bash -c 'exit 101'
 check "a crash fails with its status" "101" "$?"
-
-# Gated signals that rose, from a delta report and its baseline.
-signal_dir="$(mktemp -d)"
-cat > "$signal_dir/head.json" <<'JSON'
-{
-  "entries": [
-    {
-      "function": "shipping",
-      "signals": {
-        "nesting": 2
-      },
-      "status": "regressed",
-      "baseline_signals": {
-        "nesting": 1
-      },
-      "reasons": [
-        {
-          "signal": "crap",
-          "gating": true
-        },
-        {
-          "signal": "nesting",
-          "value": 2,
-          "baseline": 1,
-          "gating": true
-        },
-        {
-          "signal": "lines",
-          "gating": false
-        },
-        {
-          "signal": "bumps",
-          "gating": true
-        }
-      ]
-    }
-  ]
-}
-JSON
-printf '{"entries":[{"function":"shipping","signals":{"nesting":1}}]}\n' > "$signal_dir/base.json"
-printf '{"entries":[{"function":"shipping","crap":3.0}]}\n' > "$signal_dir/unmeasured.json"
-check "gated signals count, a score regression does not" "2" \
-    "$(signal_regressions_in "$signal_dir/head.json" "$signal_dir/base.json")"
-check "a baseline without signals counts nothing" "" \
-    "$(signal_regressions_in "$signal_dir/head.json" "$signal_dir/unmeasured.json")"
-grep -v -e '"signals"' -e '"nesting": 2' "$signal_dir/head.json" > "$signal_dir/off.json"
-check "a run without signals counts nothing" "" \
-    "$(signal_regressions_in "$signal_dir/off.json" "$signal_dir/base.json")"
-sed -e 's/"gating": true/"gating": false/' "$signal_dir/head.json" > "$signal_dir/none.json"
-check "measured and none rose is zero" "0" \
-    "$(signal_regressions_in "$signal_dir/none.json" "$signal_dir/base.json")"
 
 # A comment marker is one line, without surrounding blanks.
 check "the default marker is fine" "" "$(marker_problem '<!-- cargo-crap-report -->')"
@@ -235,23 +186,22 @@ check "elsewhere" "cargo-crap" "$(binary_name Linux)"
 
 # Whether a config sets a display limit at its top level.
 config_dir="$(mktemp -d)"
-printf 'threshold = 20\nmin = 5\n' > "$config_dir/min.toml"
-printf '  top=3\n' > "$config_dir/top.toml"
+printf 'threshold = 20\n"min" = 5\n' > "$config_dir/min.toml"
+printf '  "top"=3\n' > "$config_dir/top.toml"
 printf 'threshold = 20\n[signals]\nmin = 5\n' > "$config_dir/table.toml"
 printf '# min = 5\nminimum = 1\n' > "$config_dir/none.toml"
-config_limits "$config_dir/min.toml"
-check "min" "0" "$?"
-config_limits "$config_dir/top.toml"
-check "top" "0" "$?"
-config_limits "$config_dir/table.toml"
-check "a key in a table is not a limit" "1" "$?"
-config_limits "$config_dir/none.toml"
-check "a comment and a longer key are not" "1" "$?"
-config_limits "$config_dir/missing.toml"
-check "no config sets none" "1" "$?"
+check "quoted min" "true" "$(config_limits "$config_dir/min.toml")"
+check "quoted top" "true" "$(config_limits "$config_dir/top.toml")"
+check "a key in a table is not a limit" "false" "$(config_limits "$config_dir/table.toml")"
+check "a comment and a longer key are not limits" "false" "$(config_limits "$config_dir/none.toml")"
+printf 'min == 3\n' > "$config_dir/invalid.toml"
+for file in invalid.toml missing.toml; do
+    config_limits "$config_dir/$file" >/dev/null 2>&1
+    check "cannot inspect $file" "1" "$?"
+done
 
 # The flags of args the Action sets itself.
-for flag in --lcov --format --output --baseline --commit-ref --all-rows --help --version; do
+for flag in --lcov --format --output --baseline --commit-ref --all-rows --print-signal-regressions --help --version; do
     check "$flag is owned" "$flag" "$(owned_flag "$flag")"
 done
 check "the = form is owned" "--format" "$(owned_flag --format=json)"
@@ -279,6 +229,10 @@ check "an owned flag names itself" "::error::args: --output is set by the Action
     "$(partition_args --threshold 2 --output x 2>&1)"
 partition_args --output x 2>/dev/null
 check "an owned flag fails" "1" "$?"
+
+partition_args --threshold 2 -- --format --fail-above ''
+check "options end at the delimiter" "--threshold 2/false" "${common[*]}/$fold_fail_above"
+check "trailing operands retain order and empty words" "4/-- --format --fail-above " "${#operands[@]}/${operands[*]-}"
 
 # Absolute paths into the checkout, and nothing else.
 checkout="$(mktemp -d)"
@@ -331,21 +285,21 @@ const check = (name, expected, actual) => {
 const refuse = status => Object.assign(new Error(`HTTP ${status}`), { status });
 const DEFAULT = "<!-- cargo-crap-report -->";
 async function comment({ report = `${DEFAULT}\n\nrows\n`, marker = DEFAULT, defaultToken = "false",
-                         comments = [], user = "fixture-bot", viewer, create, update } = {}) {
+                         comments = [], user = { login: "fixture-bot", type: "Bot" }, viewer, create, update } = {}) {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "comment-")), "report.md");
   fs.writeFileSync(file, report);
   const calls = [];
   const said = { notice: [], warning: [] };
   const github = {
     rest: {
-      users: { getAuthenticated: async () => { if (typeof user === "number") throw refuse(user); return { data: { login: user } }; } },
+      users: { getAuthenticated: async () => { if (typeof user === "number") throw refuse(user); return { data: user }; } },
       issues: {
         listComments: () => {},
         updateComment: async args => { calls.push(["PATCH", args.comment_id, args.body]); if (update) throw refuse(update); },
         createComment: async args => { calls.push(["POST", args.issue_number, args.body]); if (create) throw refuse(create); },
       },
     },
-    graphql: async () => { if (viewer === undefined || typeof viewer === "number") throw refuse(viewer ?? 403); return { viewer: { login: viewer } }; },
+    graphql: async () => { if (viewer === undefined || typeof viewer === "number") throw refuse(viewer ?? 403); return { viewer }; },
     paginate: async () => comments,
   };
   const core = { notice: m => said.notice.push(m), warning: m => said.warning.push(m) };
@@ -363,13 +317,19 @@ const own = (id, body, login = "fixture-bot") => ({ id, body, user: { login, typ
   check("another bot's comment with the marker is never updated", [["POST", 42]], r.calls.map(c => c.slice(0, 2)));
   r = await comment({ comments: [own(6, `${DEFAULT}\nold`, "other-bot[bot]"), own(7, `${DEFAULT}\r\nold`)] });
   check("another token finds its account through /user, and a CRLF first line matches", [["PATCH", 7]], r.calls.map(c => c.slice(0, 2)));
-  r = await comment({ user: 403, viewer: "fixture-bot", comments: [own(7, `${DEFAULT}\nold`)] });
-  check("then through the GraphQL viewer", [["PATCH", 7]], r.calls.map(c => c.slice(0, 2)));
+  r = await comment({ user: 403, viewer: { login: "fixture[bot]", __typename: "User" }, comments: [own(7, DEFAULT, "fixture[bot]")] });
+  check("then through the GraphQL viewer (User __typename with [bot] login)", [["PATCH", 7]], r.calls.map(c => c.slice(0, 2)));
+  r = await comment({ user: 403, viewer: { login: "fixture", databaseId: 42, __typename: "User" }, comments: [{ id: 7, body: DEFAULT, user: { id: 42, login: "fixture[bot]", type: "Bot" } }] });
+  check("and through GraphQL viewer databaseId", [["PATCH", 7]], r.calls.map(c => c.slice(0, 2)));
   r = await comment({ user: 403, viewer: 403, comments: [own(6, `${DEFAULT}\nold`, "other-bot[bot]"), own(7, `${DEFAULT}\nold`)] });
   check("an account that cannot be told writes a new comment", [["POST", 42]], r.calls.map(c => c.slice(0, 2)));
   check("and says so", 1, r.said.notice.length);
-  r = await comment({ user: 401, viewer: 401, create: 401 });
-  check("a token GitHub refuses warns", [1, null], [r.said.warning.length, r.thrown]);
+  r = await comment({ user: { login: "octo", type: "User" }, comments: [own(1, DEFAULT, "octo[bot]")] });
+  check("a user cannot update the bot with the same name", [["POST", 42]], r.calls.map(c => c.slice(0, 2)));
+  r = await comment({ user: 401 });
+  check("invalid credentials fail at lookup", [[], 401], [r.calls, r.thrown]);
+  r = await comment({ create: 401 });
+  check("invalid credentials fail at write", 401, r.thrown);
   r = await comment({ marker: "<!-- demo -->" });
   check("a custom marker takes the default marker's line", "<!-- demo -->\n\nrows\n", r.calls[0][2]);
   r = await comment({ report: "rows\n" });
@@ -419,8 +379,7 @@ if [ -n "${CARGO_CRAP_TEST_BIN:-}" ]; then
             export RUNNER_TEMP="$temp" RUNNER_OS=macOS RUNNER_ARCH=ARM64 GITHUB_OUTPUT="$outputs" \
                 GITHUB_PATH="$temp/path" GITHUB_STEP_SUMMARY="$temp/summary" BINARY="$bin" VERSION=unused
             "$here/install.sh" > "$log" 2>&1 || exit 2
-            PATH="$(cat "$temp/path"):$PATH"
-            "$here/score.sh"
+            PATH="$(cat "$temp/path"):$PATH" "$here/score.sh"
         ) >> "$log" 2>&1 || step=$?
     }
     exists() { if [ -e "$1" ]; then echo yes; else echo no; fi; }
@@ -437,17 +396,21 @@ if [ -n "${CARGO_CRAP_TEST_BIN:-}" ]; then
     # A rise across a `min` in config is a regression, not a new function.
     unset_inputs
     fixture "$e2e_root/cross" regress
-    printf 'min = 5\n' > "$e2e_root/cross/.cargo-crap.toml"
+    printf '"min" = 5\n' > "$e2e_root/cross/.cargo-crap.toml"
     CRAP_BASE="$(pr "$e2e_root/cross")" step_in "$e2e_root/cross" "$bin"
     check "e2e: a rise across min ran" "0" "$step"
     check "e2e: a rise across min is a regression" "1/1" "$(output status)/$(output regressed)"
     check "e2e: the base run recorded the function" "1" "$(grep -c '"shipping"' "$(dirname "$(output report)")/base.json")"
-    CRAP_BASE="$(pr "$e2e_root/cross")" CRAP_ARGS="--min 5" step_in "$e2e_root/cross" "$bin"
+    CRAP_BASE="$(pr "$e2e_root/cross")" CRAP_ARGS="--min 5 --" step_in "$e2e_root/cross" "$bin"
     check "e2e: and across a min in args" "1/1" "$(output status)/$(output regressed)"
     if [ -n "${CARGO_CRAP_OLD_BIN:-}" ]; then
         CRAP_BASE="$(pr "$e2e_root/cross")" step_in "$e2e_root/cross" "$CARGO_CRAP_OLD_BIN"
         check "e2e: a release without --all-rows and a min in config fails" "1" "$step"
         check "e2e: and says why" "1" "$(grep -c 'has no --all-rows, and .* sets top or min' "$log")"
+        printf 'min == 5\n' > "$e2e_root/cross/.cargo-crap.toml"
+        CRAP_BASE="$(pr "$e2e_root/cross")" step_in "$e2e_root/cross" "$CARGO_CRAP_OLD_BIN"
+        check "e2e: an unreadable TOML config stops the old binary before coverage" "1/1" \
+            "$step/$(grep -c 'cannot inspect .* for top or min' "$log")"
         rm "$e2e_root/cross/.cargo-crap.toml"
         CRAP_BASE="$(pr "$e2e_root/cross")" CRAP_ARGS="--min 5" step_in "$e2e_root/cross" "$CARGO_CRAP_OLD_BIN"
         check "e2e: a release without --all-rows still catches a min in args" "0/1/1" \
@@ -495,6 +458,13 @@ if [ -n "${CARGO_CRAP_TEST_BIN:-}" ]; then
     CRAP_BASE="$(pr "$e2e_root/signals")" CRAP_ARGS="--min 100" step_in "$e2e_root/signals" "$bin"
     check "e2e: a hidden signal regression is still counted" "1/0/2" \
         "$(output status)/$(output regressed)/$(output signal-regressions)"
+    base_json="$(dirname "$(output report)")/base.json"
+    sed 's/"signals": {/"signals":\
+{/' "$base_json" > "$e2e_root/signals/measured.json"
+    CRAP_BASELINE=measured.json step_in "$e2e_root/signals" "$bin"
+    check "e2e: multiline baseline signal objects are measured" "0/2" "$step/$(output signal-regressions)"
+    CRAP_BASELINE=measured.json CRAP_ARGS="--allow '*'" step_in "$e2e_root/signals" "$bin"
+    check "e2e: filtering every measured baseline row leaves no comparison" "0/" "$step/$(output signal-regressions)"
     # Recorded without the config, so without signals.
     (
         cd "$e2e_root/signals" && mv .cargo-crap.toml "$e2e_root/signals.toml" && git checkout -q HEAD~1 &&
@@ -507,6 +477,18 @@ if [ -n "${CARGO_CRAP_TEST_BIN:-}" ]; then
     printf '' > "$e2e_root/signals/.cargo-crap.toml"
     CRAP_BASE="$(pr "$e2e_root/signals")" step_in "$e2e_root/signals" "$bin"
     check "e2e: signals off counts none" "0/" "$(output status)/$(output signal-regressions)"
+
+    unset_inputs
+    mkdir "$e2e_root/config-directory"
+    CONFIG_LINK_DIR="$e2e_root/config-directory" fixture "$e2e_root/config-link" config-link
+    CRAP_BASE="$(pr "$e2e_root/config-link")" step_in "$e2e_root/config-link" "$bin"
+    check "e2e: replaces the base config directory link with the head file" "0/0" "$step/$(output status)"
+    check "e2e: the config link target stays empty" "" "$(ls -A "$e2e_root/config-directory")"
+    fixture "$e2e_root/nested/shop" steady
+    echo 'threshold = 10' > "$e2e_root/nested/.cargo-crap.toml"
+    CRAP_BASE="$(pr "$e2e_root/nested/shop")" step_in "$e2e_root/nested/shop" "$bin"
+    check "e2e: an inherited head config requires a supplied baseline" "1/1" \
+        "$step/$(grep -c 'above its Git root: give baseline' "$log")"
 
     # The caller's checkout survives the base run untouched.
     unset_inputs
@@ -568,18 +550,44 @@ if [ -n "${CARGO_CRAP_TEST_BIN:-}" ]; then
     # A working directory reached through a symlink, and a target directory
     # of the caller's.
     unset_inputs
-    fixture "$e2e_root/real" steady
+    fixture "$e2e_root/real" target-dir
+    mkdir "$e2e_root/real/.cargo"
+    printf '[build]\ntarget-dir = "../tgt"\n' > "$e2e_root/real/.cargo/config.toml"
     ln -s "$e2e_root/real" "$e2e_root/link"
-    CARGO_TARGET_DIR="$e2e_root/tgt" CRAP_BASE="$(pr "$e2e_root/real")" step_in "$e2e_root/link" "$bin"
-    check "e2e: through a symlink, with CARGO_TARGET_DIR" "0/0/0" "$step/$(output status)/$(output regressed)"
+    BASE_TARGET_LOG="$e2e_root/base-target" CRAP_BASE="$(pr "$e2e_root/real")" step_in "$e2e_root/link" "$bin"
+    check "e2e: discovers the head target-dir through a symlink" "0/0/0" "$step/$(output status)/$(output regressed)"
     check "e2e: both runs built in that target directory" "yes/no" \
-        "$(exists "$e2e_root/tgt/llvm-cov-target")/$(exists "$e2e_root/real/target")"
+        "$(exists "$e2e_root/tgt/llvm-cov-target")/$(exists "$e2e_root/real/target/llvm-cov-target")"
+
+    base_target="$(cat "$e2e_root/base-target")"
+    check "e2e: the base build script ran in the head target directory" "0" \
+        "$(inside_dir "$(cd "$base_target" && pwd -P)" "$e2e_root/tgt"; echo $?)"
 
     # Provider keys reach no build script and no test.
     unset_inputs
     fixture "$e2e_root/keys" key-probe
-    KEY_PROBE="$e2e_root/keys.seen" TYPESAFE_API_KEY=not-a-key OPENAI_API_KEY=not-a-key \
-        CRAP_BASE="$(pr "$e2e_root/keys")" step_in "$e2e_root/keys" "$bin"
+    mkdir "$e2e_root/probes"
+    cat > "$e2e_root/probes/git" <<'SH'
+#!/usr/bin/env bash
+if [[ $1 == worktree && $2 == add ]]; then
+    echo "worktree:${TypeSafe_Api_Key+set}${OpenAI_API_KEY+set}" >> "$KEY_PROBE"
+fi
+exec "$REAL_GIT" "$@"
+SH
+    cat > "$e2e_root/probes/score" <<'SH'
+#!/usr/bin/env bash
+case $1 in
+    --help | --version) echo "$1:${TypeSafe_Api_Key+set}${OpenAI_API_KEY+set}" >> "$KEY_PROBE" ;;
+esac
+exec "$CARGO_CRAP_TEST_BIN" "$@"
+SH
+    chmod +x "$e2e_root/probes/git" "$e2e_root/probes/score"
+    REAL_GIT="$(command -v git)" PATH="$e2e_root/probes:$PATH" KEY_PROBE="$e2e_root/keys.seen" \
+        TypeSafe_Api_Key=not-a-key OpenAI_API_KEY=not-a-key CRAP_BASE="$(pr "$e2e_root/keys")" \
+        step_in "$e2e_root/keys" "$e2e_root/probes/score"
+    for probe in --help --version worktree; do
+        check "e2e: $probe sees neither key" "1" "$(grep -c -- "^${probe}:$" "$e2e_root/keys.seen")"
+    done
     check "e2e: the key probe ran" "0" "$step"
     check "e2e: the project never saw a key" "0" "$(grep -c '^set$' "$e2e_root/keys.seen")"
     check "e2e: on both commits" "1" "$([ "$(grep -c '^unset$' "$e2e_root/keys.seen")" -ge 4 ] && echo 1)"

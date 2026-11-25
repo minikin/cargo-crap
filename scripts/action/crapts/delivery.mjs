@@ -8,12 +8,14 @@ export function jobSummary(report, settings) {
     "The crapts report is too large for the job summary. Read the `report` step output.\n";
 }
 
-// GraphQL can return a bot's login without the [bot] suffix the REST comment
-// carries. User names cannot contain brackets, so no person matches that branch.
-export function ownedBy(comment, login) {
-  const user = comment?.user;
-  if (!user || typeof login !== "string" || !login) return false;
-  return user.login === login || (user.type === "Bot" && user.login === login + "[bot]");
+export function ownedBy(comment, account) {
+  const author = comment?.user;
+  if (!author || !account?.login) return false;
+  if (account.id != null && author.id != null) return author.id === account.id;
+  const accountType = account.login.endsWith("[bot]") ? "Bot" : account.type;
+  if (accountType && author.type && author.type !== accountType) return false;
+  return author.login === account.login ||
+    (accountType === "Bot" && author.type === "Bot" && author.login === account.login + "[bot]");
 }
 
 // The rule @octokit/graphql uses: GitHub Enterprise Server serves REST under

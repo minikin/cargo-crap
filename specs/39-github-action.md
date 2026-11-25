@@ -348,7 +348,7 @@ property / acceptance), and, when it depends on earlier tasks, a
 `Needs:` naming them. A task with no `Needs:` is a root. A task whose
 needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
 
-- [x] **T1 — Install, cover and report on a push.** `action.yml` with its
+- [x] **T1 - Install, cover and report on a push.** `action.yml` with its
   inputs and outputs, an install script that maps the runner to a release
   archive (`version` or `latest`), the coverage step, and a push run that
   writes the markdown report to the job summary, sets `crappy` and
@@ -357,7 +357,7 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   installed_, _A given binary is used instead of a download_, _It runs on
   Linux, macOS and Windows runners_. Tests: shell
   (the runner-to-target mapping) + CI scenario jobs.
-- [x] **T2 — Compare a pull request with its base commit.** The base run in
+- [x] **T2 - Compare a pull request with its base commit.** The base run in
   place, under the pull request's config, with the provider keys cleared,
   the same `args` on both runs, the pr-comment report in the summary, the
   `regressed` output and the regression gate. Needs: T1. Scenarios: _A
@@ -365,36 +365,36 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
   regressions passes_, _The base-commit run uses the pull request's
   config_, _The base-commit run never pays for triage_, _Extra arguments
   reach cargo-crap_. Tests: CI scenario jobs on fixture repositories.
-- [x] **T3 — A given LCOV file or baseline.** `lcov` skips the coverage
+- [x] **T3 - A given LCOV file or baseline.** `lcov` skips the coverage
   run, and `baseline` skips the base-commit run. Needs: T2. Scenarios: _An
   existing LCOV file skips the coverage run_, _A given baseline file
   replaces the base-commit run_. Tests: CI scenario jobs.
-- [x] **T4 — The sticky comment.** Post or update by `comment-marker`
+- [x] **T4 - The sticky comment.** Post or update by `comment-marker`
   through the REST API, links at the head commit, and the job summary with
   one warning when the token cannot comment. Needs: T3. Scenarios: _A
   second run updates the comment instead of adding one_, _A fork's pull
   request gets the report in the job summary_, _Two comments with their own
   markers stay apart_. Tests: CI scenario jobs against a local stub of the
   API.
-- [x] **T5 — Release, demo and docs.** `action.yml`'s default version
+- [x] **T5 - Release, demo and docs.** `action.yml`'s default version
   follows `Cargo.toml`, held there by a test, the release workflow moves
   `v1`, the demo runs through `uses: ./` with its own marker, and the
   README, the CI guides and the CHANGELOG show the one-step setup. Needs: T4. No scenario: checked by the docs
   tests and the demo's comment.
-- [x] **T6 — The test seams work only here.** The Comment step reads
+- [x] **T6 - The test seams work only here.** The Comment step reads
   the test seams only when `github.repository` is minikin/cargo-crap, and
   the guide states the trust boundary. Needs: T5. Scenarios: _The test
   seams are ignored outside this repository_. Tests: a docs test over
   `action.yml`, since CI runs only in this repository.
-- [x] **T7 — The budget is spent once, and bad arguments fail.** The gate
+- [x] **T7 - The budget is spent once, and bad arguments fail.** The gate
   run clears the provider keys, and input that cannot be split into words
   fails the step. Needs: T6. Scenarios: _The triage budget is spent once
   per job_, _Arguments that cannot be split fail the step_. Tests: shell +
   CI scenario jobs.
-- [x] **T8 — Release checksums.** The release job publishes `SHA256SUMS`,
+- [x] **T8 - Release checksums.** The release job publishes `SHA256SUMS`,
   and install verifies the archive against it. Needs: T7. Scenarios: _An
   archive that does not match the release's sums is refused_. Tests: shell.
-- [x] **T9 — Hardening.** `--all-rows` in cargo-crap and on the base run,
+- [x] **T9 - Hardening.** `--all-rows` in cargo-crap and on the base run,
   the base commit in a worktree of its own, exit 1 read as a finished
   report, `signal-regressions`, the `args` rules, keyless project commands
   and probes, the binary copied under its own name, comments matched by the
@@ -507,7 +507,8 @@ triage skipped" warning is expected.
 there is something to compare with or the comment is posted, and
 `--format markdown` otherwise, to a file, appended to the job summary and
 named by `report`. A `--format json` run of the same inputs fills the
-outputs, and a `--format json --all-rows` run counts the gated signals. On
+outputs. With a baseline, `--print-signal-regressions` gives the full
+gated signal count from that comparison. On
 a pull request the links point at the pull request's head commit
 (`--commit-ref` with the head SHA), not the merge commit `GITHUB_SHA`
 names: GitHub deletes a pull request's merge ref when it closes, and keeps
@@ -520,8 +521,8 @@ comment never carries two. It is updated if the token's own account wrote
 it and created otherwise, through the REST API with `github-token`. The
 account is `github-actions[bot]` for the workflow token, else what `GET
 /user` or the GraphQL `viewer` says, and when neither answers the Action
-writes a new comment. A 401, 403, 404 or 422 there is a warning, and the
-run goes on. A body over 65,536 UTF-16 code units is replaced by the marker
+writes a new comment. HTTP 401 fails delivery because GitHub rejected the
+token. HTTP 403, 404 and 422 produce a warning and the run continues. A body over 65,536 UTF-16 code units is replaced by the marker
 and a pointer to the job summary. The marker is matched as the comment's
 exact first line, and an empty one, one with a line break and one with
 surrounding spaces are refused, so a comment written by someone else is
@@ -543,7 +544,7 @@ would, quotes and backslashes included, and nothing in them is executed.
 Input that cannot be split, such as a stray quote, fails the step naming
 the input, so no run goes ahead with arguments missing. The flags the
 Action sets are refused in `args`, naming the flag: `--lcov`, `--format`,
-`--output`, `--baseline`, `--commit-ref`, `--all-rows`, `-h`, `--help`,
+`--output`, `--baseline`, `--commit-ref`, `--all-rows`, `--print-signal-regressions`, `-h`, `--help`,
 `-V` and `--version`, in a short cluster or with `=` too.
 `--fail-above` and `--fail-regression` work as the inputs set to `true`,
 and the Action adds each once, since cargo-crap refuses a repeated switch.

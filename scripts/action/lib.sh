@@ -134,7 +134,14 @@ file_input() {
 # unpaid runs needs.
 keyless() {
     (
-        unset TYPESAFE_API_KEY OPENAI_API_KEY
+        local name
+        shopt -s nocasematch
+        while IFS= read -r name; do
+            case "$name" in
+                TYPESAFE_API_KEY | OPENAI_API_KEY) unset "$name" ;;
+            esac
+        done < <(compgen -e)
+        shopt -u nocasematch
         "$@"
     )
 }
@@ -148,19 +155,6 @@ report_run() {
     if [ "$status" -ge 2 ]; then
         return "$status"
     fi
-}
-
-# The gated structural signals that rose, from a `--format json --all-rows`
-# delta report `$1` compared with baseline `$2`: empty when no side was
-# measured with signals, else the count, `0` included. A `crap` reason is a
-# score regression, which `regressed` already counts.
-signal_regressions_in() {
-    if ! grep -q -E '^ *"signals": \{' "$1" || ! grep -q -E '"signals": ?\{' "$2"; then
-        return 0
-    fi
-    awk '/"signal": "/ { s = $0; sub(/.*"signal": "/, "", s); sub(/".*/, "", s) }
-         /"gating": true/ && s != "crap" { n++ }
-         END { print n + 0 }' "$1"
 }
 
 # What is wrong with comment marker `$1`, or nothing. The marker is matched
@@ -198,10 +192,14 @@ binary_name() {
 # Whether config file `$1` sets `top` or `min`, which a binary without
 # `--all-rows` cannot clear from a baseline run.
 config_limits() {
-    [ -f "$1" ] && awk '
-        /^[[:space:]]*\[/ { table = 1 }
-        !table && /^[[:space:]]*(top|min)[[:space:]]*=/ { found = 1 }
-        END { exit !found }' "$1"
+    python3 -I -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as source:
+    config = tomllib.load(source)
+print("true" if "top" in config or "min" in config else "false")' "$1" || {
+        echo "::error::cannot inspect $1 for top or min with Python 3.11+ tomllib: give baseline" >&2
+        return 1
+    }
 }
 
 # The flag a word of `args` sets that the Action sets itself, or nothing.
@@ -210,7 +208,7 @@ config_limits() {
 owned_flag() {
     local word="$1" i c
     case "${word%%=*}" in
-        --lcov | --format | --output | --baseline | --commit-ref | --all-rows | --help | --version)
+        --lcov | --format | --output | --baseline | --commit-ref | --all-rows | --print-signal-regressions | --help | --version)
             echo "${word%%=*}"
             return 0
             ;;
@@ -241,6 +239,7 @@ owned_flag() {
 # shellcheck disable=SC2034 # the caller reads what this sets
 partition_args() {
     common=()
+    operands=()
     limits=()
     report_only=()
     compared_only=()
@@ -257,6 +256,7 @@ partition_args() {
             return 1
         fi
         case "$word" in
+            --) operands=(-- "$@"); break ;;
             --fail-above) fold_fail_above=true ;;
             --fail-regression) fold_fail_regression=true ;;
             --summary) report_only+=("$word") ;;
@@ -264,7 +264,7 @@ partition_args() {
             --top=* | --min=*) limits+=("$word") ;;
             --top | --min)
                 limits+=("$word")
-                if [ "$#" -gt 0 ]; then
+                if [ "$#" -gt 0 ] && [ "$1" != -- ]; then
                     limits+=("$1")
                     shift
                 fi

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { firstLineMatches, graphqlUrl, ownedBy } from "./delivery.mjs";
 
-const DEFAULT_LOGIN = "github-actions[bot]";
+const DEFAULT_ACCOUNT = { login: "github-actions[bot]", type: "Bot" };
 
 async function failure(response, operation) {
   const status = operation + ": HTTP " + response.status;
@@ -28,15 +28,21 @@ async function lookup(response, operation, read) {
 }
 
 async function identity(env, request) {
-  if (env.CRAPTS_DEFAULT_TOKEN === "true") return DEFAULT_LOGIN;
-  const user = await lookup(await request(env.CRAPTS_API_URL + "/user"), "Identify the token", body => body?.login);
-  if (typeof user === "string" && user) return user;
+  if (env.CRAPTS_DEFAULT_TOKEN === "true") return DEFAULT_ACCOUNT;
+  const user = await lookup(await request(env.CRAPTS_API_URL + "/user"), "Identify the token", body => body);
+  if (typeof user?.login === "string" && user.login) return user;
   const viewer = await lookup(await request(graphqlUrl(env.CRAPTS_API_URL), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ query: "query { viewer { login } }" }),
-  }), "Identify the token", body => body?.data?.viewer?.login);
-  return typeof viewer === "string" && viewer ? viewer : null;
+    body: JSON.stringify({ query: "query { viewer { login databaseId __typename } }" }),
+  }), "Identify the token", body => body?.data?.viewer);
+  return typeof viewer?.login === "string" && viewer.login
+    ? {
+        id: viewer.databaseId ?? null,
+        login: viewer.login,
+        type: viewer.login.endsWith("[bot]") ? "Bot" : viewer.__typename,
+      }
+    : null;
 }
 
 async function deliver(env) {
@@ -49,7 +55,7 @@ async function deliver(env) {
   const marker = env.INPUT_COMMENT_MARKER;
   const body = readFileSync(env.REPORT, "utf8");
   // Undefined until the first marker comment, so a PR without one costs no lookup.
-  let login;
+  let account;
   let match;
   for (let page = 1; !match; page++) {
     const response = await request(collection + "?per_page=100&page=" + page);
@@ -57,16 +63,16 @@ async function deliver(env) {
     const comments = await response.json();
     for (const comment of comments) {
       if (!firstLineMatches(comment.body, marker)) continue;
-      if (login === undefined) login = await identity(env, request);
-      if (login === null) break;
-      if (ownedBy(comment, login)) {
+      if (account === undefined) account = await identity(env, request);
+      if (account === null) break;
+      if (ownedBy(comment, account)) {
         match = comment;
         break;
       }
     }
-    if (login === null || comments.length < 100) break;
+    if (account === null || comments.length < 100) break;
   }
-  if (login === null)
+  if (account === null)
     console.log("::notice::Could not identify the token's account: posting a new report comment instead of updating one");
   const response = await request(match ? root + "/issues/comments/" + match.id : collection, {
     method: match ? "PATCH" : "POST",

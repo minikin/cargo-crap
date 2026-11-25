@@ -114,6 +114,8 @@ runs:
       env:
         CRAPTS_TEMP: ${{ steps.install.outputs.temp }}
         CRAPTS_BINARY: ${{ steps.install.outputs.binary }}
+        CRAPTS_TRUSTED_TYPESAFE_BASE_URL: ${{ steps.install.outputs.TYPESAFE_BASE_URL }}
+        CRAPTS_TRUSTED_OPENAI_BASE_URL: ${{ steps.install.outputs.OPENAI_BASE_URL }}
         CRAPTS_PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && inputs.github-token == 'fixture-token' && env.CRAPTS_TEST_PR_NUMBER) || github.event.pull_request.number }}
         CRAPTS_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         INPUT_FAIL_REGRESSION: ${{ inputs.fail-regression }}

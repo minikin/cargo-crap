@@ -164,7 +164,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The GitHub Action records every function on the base commit, so a `top`
   or `min` in `.cargo-crap.toml` or `args` can no longer turn a regression
   into a new function and pass the gate. A `version` without `--all-rows`
-  fails the step when the config sets either.
+  fails the step when the config sets either (checked with Python 3.11+
+  `tomllib`), and an inherited config above the Git root fails with a
+  prompt to pass `baseline`.
 - The GitHub Action scores the base commit in a worktree of its own and
   never changes the checkout: the branch, the index and untracked files
   stay as the job left them.
@@ -176,8 +178,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `--summary`, and refuses a multi-line `comment-marker` or one with
   surrounding spaces.
 - The GitHub Action updates only a comment the token's own account wrote,
-  fits the comment to GitHub's limit, and warns on a 422. A custom marker
-  replaces the default one instead of adding a second marker line.
+  fails delivery on HTTP 401 (matching `crapts`), fits the comment to
+  GitHub's limit, and warns on a 422. A custom marker replaces the default
+  one instead of adding a second marker line.
+- `cargo-crap` adds hidden `--print-signal-regressions` so the Rust GitHub
+  Action exports the post-filter signal regression count across all
+  eligible rows without altering JSON report snapshots.
 - The GitHub Action unsets provider keys for coverage runs, the project's
   build scripts and tests, and every cargo-crap run but the report.
 - The GitHub Action copies `binary` under the name `cargo-crap`, so a

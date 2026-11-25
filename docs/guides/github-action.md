@@ -67,7 +67,8 @@ report is then in the job summary, the step warns once, and it still gates.
 A report of 1,000,000 bytes or more does not fit the job summary, which
 then holds one line pointing at the step's `report` output. A comment over
 GitHub's 65,536 characters is replaced by one that points at the job
-summary, and a comment GitHub refuses with a 422 is a warning.
+summary, and a comment GitHub refuses with a 422 is a warning. HTTP 401
+fails delivery because GitHub rejected the token.
 Keep the Action on `pull_request`. It runs the pull request's build
 scripts and tests in the job that holds the token, and nothing inside the
 Action can keep that code from the token. On `pull_request` a fork's token
@@ -86,7 +87,8 @@ commit that needs them to build fails the step: give `baseline` instead.
 
 A `version` without `--all-rows` (0.9.0 and older) cannot record every
 function on the base commit. The step then fails when `.cargo-crap.toml`
-sets `top` or `min`, rather than read a function that crossed `min` as new.
+sets `top` or `min`. Checking that config requires Python 3.11 or later.
+For a config inherited from above the Git root, supply `baseline`.
 
 ## Inputs
 
@@ -114,7 +116,8 @@ threshold and everything else come from `.cargo-crap.toml`, as on the
 command line.
 
 The Action sets `--lcov`, `--format`, `--output`, `--baseline`,
-`--commit-ref` and `--all-rows` itself, and refuses them in `args`, as it
+`--commit-ref`, `--all-rows` and `--print-signal-regressions` itself. It
+refuses them before the `--` delimiter in `args`, just as it
 refuses `--help` and `--version`. `--fail-above` and `--fail-regression`
 there work as the inputs set to `true`, and `--fail-regression` has no
 effect without something to compare with. `--summary` and

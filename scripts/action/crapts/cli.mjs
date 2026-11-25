@@ -79,4 +79,7 @@ export function writeReport(cwd, args, destination, label, { paid = null } = {})
 }
 
 if (process.argv[2] === "trusted-urls" && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  console.log(JSON.stringify(trustedUrls(process.env)));
+  for (const [name, value] of Object.entries(trustedUrls(process.env))) {
+    if (/[\r\n]/.test(value)) throw Error(name + " must be a single-line URL");
+    console.log(name + "=" + value);
+  }

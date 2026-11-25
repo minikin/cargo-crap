@@ -409,17 +409,13 @@ fn the_actions_keyless_runs_clear_every_providers_key() {
     // and tests, and let the base, badge and gate runs spend the triage
     // budget again.
     let lib = read("scripts/action/lib.sh");
-    let unset = lib
+    let key_pattern = lib
         .lines()
-        .skip_while(|l| !l.starts_with("keyless()"))
-        .find(|l| l.trim_start().starts_with("unset "))
-        .expect("the unset line of keyless");
+        .find_map(|line| line.trim().strip_suffix(") unset \"$name\" ;;"))
+        .expect("the provider key pattern");
     for id in ids() {
         let var = by_id(id).expect("a listed provider").key_var();
-        assert!(
-            unset.split_whitespace().any(|w| w == var),
-            "{var} in {unset}"
-        );
+        assert!(key_pattern.split(" | ").any(|key| key == var), "{var}");
     }
     // Every cargo-crap and coverage run but the report run is keyless.
     let score = read("scripts/action/score.sh");

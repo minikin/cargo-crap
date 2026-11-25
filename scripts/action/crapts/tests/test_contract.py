@@ -43,3 +43,6 @@ class ActionContract(unittest.TestCase):
         self.assertEqual(len(found["API_KEY_VAR"]), 2, found)
         self.assertEqual(set(exported("PROVIDER_KEYS")), found["API_KEY_VAR"])
         self.assertEqual(set(exported("PROVIDER_URLS")), found["BASE_URL_VAR"])
+        score_step = (ACTION / "action.yml").read_text().split("id: score")[1].split("- name:")[0]
+        for name in found["BASE_URL_VAR"]:
+            self.assertIn("CRAPTS_TRUSTED_" + name + ": ${{ steps.install.outputs." + name + " }}", score_step)

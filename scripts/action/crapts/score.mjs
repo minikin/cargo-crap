@@ -26,7 +26,8 @@ function score() {
   const path = name => join(env.CRAPTS_TEMP, name);
   const { coverage, base, baseline } = JSON.parse(readFileSync(path("prepared.json")));
   const args = dormant(JSON.parse(readFileSync(path("args.json"))), base, baseline);
-  const trusted = JSON.parse(readFileSync(path("trusted.json")));
+  const trusted = { TYPESAFE_BASE_URL: env.CRAPTS_TRUSTED_TYPESAFE_BASE_URL || undefined,
+    OPENAI_BASE_URL: env.CRAPTS_TRUSTED_OPENAI_BASE_URL || undefined };
   const options = coverage ? ["--coverage", coverage] : [];
   if (base) options.push("--base", base);
   if (baseline) options.push("--baseline", baseline);

@@ -166,31 +166,34 @@ done > coverage.info
 
     def test_only_the_report_run_carries_provider_keys(self):
         self.generated({"fee.ts": function("fee", 8)}, {"fresh.ts": function("fresh", 6)}, 1)
-        keys = dict(TYPESAFE_API_KEY="not-a-key", openAI_api_key="not-a-key", typesAfe_api_key="not-a-key")
         poisoned = dict(TYPESAFE_BASE_URL="http://written-to-github-env.invalid", openai_base_url="http://x.invalid")
-        (self.run_dir / "trusted.json").write_text(json.dumps({"TYPESAFE_BASE_URL": "http://install-time.invalid"}))
-        self.score(**keys, **poisoned)
-        calls = self.calls()
-        self.assertEqual(len(calls), 4)
-        self.assertIn("--all-rows", calls[0]["args"])
-        self.assertNotIn("--base", calls[0]["args"])
-        report = [call for call in calls if "pr-comment" in call["args"]]
-        self.assertEqual(len(report), 1)
-        self.assertEqual(report[0]["keys"], sorted(keys))
-        self.assertEqual(report[0]["urls"], {"TYPESAFE_BASE_URL": "http://install-time.invalid"})
-        for call in calls:
-            if call is not report[0]:
-                self.assertEqual(call["keys"], [], call["args"])
-        self.assertEqual(self.trace.read_text().splitlines(), [".", "."])
+        (self.run_dir / "trusted.json").write_text(json.dumps(poisoned))
+        for spelling in ["TYPESAFE_API_KEY", "typesAfe_api_key"]:
+            with self.subTest(spelling=spelling):
+                self.trace.unlink(missing_ok=True)
+                before = len(self.calls())
+                self.score(**{spelling: "not-a-key", "openAI_api_key": "not-a-key"}, **poisoned,
+                           CRAPTS_TRUSTED_TYPESAFE_BASE_URL="http://install-time.invalid")
+                calls = self.calls()[before:]
+                self.assertEqual(len(calls), 4)
+                self.assertIn("--all-rows", calls[0]["args"])
+                self.assertNotIn("--base", calls[0]["args"])
+                report = [call for call in calls if "pr-comment" in call["args"]]
+                self.assertEqual(len(report), 1)
+                self.assertCountEqual([name.upper() for name in report[0]["keys"]], ["TYPESAFE_API_KEY", "OPENAI_API_KEY"])
+                self.assertEqual(report[0]["urls"], {"TYPESAFE_BASE_URL": "http://install-time.invalid"})
+                for call in calls:
+                    if call is not report[0]:
+                        self.assertEqual(call["keys"], [], call["args"])
+                self.assertEqual(self.trace.read_text().splitlines(), [".", "."])
         self.assertNotIn("not-a-key", Path(self.env["ARG_TRACE"]).read_text())
 
     def test_trusted_urls_are_read_case_insensitively(self):
         result = self.command(["node", str(SCRIPTS / "cli.mjs"), "trusted-urls"],
                               openai_base_url="http://a.invalid", TYPESAFE_API_KEY="not-a-key")
-        expected = {"OPENAI_BASE_URL": "http://a.invalid"}
-        if "TYPESAFE_BASE_URL" in self.env:
-            expected["TYPESAFE_BASE_URL"] = self.env["TYPESAFE_BASE_URL"]
-        self.assertEqual(json.loads(result.stdout), expected)
+        outputs = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual(outputs["OPENAI_BASE_URL"], "http://a.invalid")
+        self.assertLessEqual(outputs.keys(), {"TYPESAFE_BASE_URL", "OPENAI_BASE_URL"})
 
     def test_a_signal_only_regression_fails_with_zero_counts(self):
         self.env.update(INPUT_BASE=scenarios.signals_history(self.project), INPUT_COVERAGE="",

@@ -18,7 +18,7 @@ pub(crate) fn threshold_count(
 pub(crate) struct GateInput {
     pub(crate) crappy: usize,
     pub(crate) regressed: usize,
-    pub(crate) gating_signals: usize,
+    pub(crate) gating_signals: Option<usize>,
     pub(crate) section_failures: usize,
     pub(crate) fail_above: bool,
     pub(crate) fail_regression: bool,
@@ -31,6 +31,8 @@ pub struct GateOutcome {
     pub crappy: usize,
     /// Score regressions in the whole baseline comparison.
     pub regressed: usize,
+    /// Gated structural signals that rose, when the filtered baseline supports comparison.
+    pub signal_regressions: Option<usize>,
     pub section_failures: usize,
     pub tripped: bool,
 }
@@ -39,11 +41,13 @@ impl GateOutcome {
     #[must_use]
     pub(crate) fn evaluate(input: GateInput) -> Self {
         let tripped = (input.fail_above && input.crappy > 0)
-            || (input.fail_regression && (input.regressed > 0 || input.gating_signals > 0))
+            || (input.fail_regression
+                && (input.regressed > 0 || input.gating_signals.unwrap_or_default() > 0))
             || (input.fail_sections && input.section_failures > 0);
         Self {
             crappy: input.crappy,
             regressed: input.regressed,
+            signal_regressions: input.gating_signals,
             section_failures: input.section_failures,
             tripped,
         }
@@ -117,12 +121,13 @@ mod tests {
             let outcome = GateOutcome::evaluate(super::GateInput {
                 crappy,
                 regressed,
-                gating_signals,
+                gating_signals: Some(gating_signals),
                 section_failures,
                 fail_above,
                 fail_regression,
                 fail_sections,
             });
+            assert_eq!(outcome.signal_regressions, Some(gating_signals));
             assert_eq!(
                 (outcome.crappy, outcome.regressed, outcome.section_failures),
                 (crappy, regressed, section_failures),

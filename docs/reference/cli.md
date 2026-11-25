@@ -10,6 +10,7 @@
 | `--min <SCORE>`                                                  | none          | Hide entries below this score.                                       |
 | `--top <N>`                                                      | none          | Show only the N worst offenders.                                     |
 | `--all-rows`                                                     | off           | Clear `--top` and `--min`, from the flags and from `.cargo-crap.toml`. |
+| `--print-signal-regressions` | off | With `--baseline` and `--output`, write the full gated signal count to stdout as JSON. An unavailable comparison yields `null`. |
 | `--sort {crap,file}`                                             | `crap`        | Final ordering of entries.                                           |
 | `--missing {pessimistic,optimistic,skip}`                        | `pessimistic` | How to score a function with no coverage data.                       |
 | `--exclude <GLOB>`                                               | none          | Skip files matching this pattern (repeatable).                       |

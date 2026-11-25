@@ -50,7 +50,7 @@ if [ "$comment" = true ] && [ -n "${CRAP_PR_NUMBER:-}" ]; then
     posting=true
 fi
 in_git=false
-if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+if keyless git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
     in_git=true
 fi
 head_dir="$(pwd)"
@@ -72,23 +72,18 @@ cover() {
     cargo llvm-cov --lcov --output-path "$1" ${coverage_args[@]+"${coverage_args[@]}"}
 }
 
-# The `.cargo-crap.toml` cargo-crap would read from here, up to the
-# repository's root and never past it, or nothing. Physical paths on both
-# sides, so a symlinked ancestor or Git Bash's /d/ spelling cannot hide the
-# root.
+# cargo-crap searches physical ancestors through the filesystem root.
 nearest_config() {
-    local dir top
+    local dir parent
     dir="$(pwd -P)"
-    top="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
     while :; do
-        if [ -f "$dir/.cargo-crap.toml" ]; then
+        if [ -e "$dir/.cargo-crap.toml" ]; then
             echo "$dir/.cargo-crap.toml"
             return 0
         fi
-        if [ "$dir" = "$top" ] || [ "$dir" = / ]; then
-            return 0
-        fi
-        dir="$(dirname "$dir")"
+        parent="$(dirname "$dir")"
+        [ "$parent" != "$dir" ] || return 0
+        dir="$parent"
     done
 }
 
@@ -99,7 +94,7 @@ target_dir() {
     local json
     json="$(keyless cargo metadata --no-deps --format-version 1 2> /dev/null)" || return 0
     if command -v node > /dev/null; then
-        printf '%s' "$json" | node -e '
+        printf '%s' "$json" | keyless node -e '
             let s = "";
             process.stdin.on("data", d => s += d).on("end", () => {
                 try {
@@ -108,7 +103,7 @@ target_dir() {
                 } catch {}
             });' 2> /dev/null || true
     elif command -v python3 > /dev/null; then
-        printf '%s' "$json" | python3 -I -c '
+        printf '%s' "$json" | keyless python3 -I -c '
 import json, sys
 try:
     t = json.load(sys.stdin).get("target_directory")
@@ -129,20 +124,20 @@ resolve_base() {
             exit 1
             ;;
     esac
-    if resolved="$(git rev-parse --verify --quiet --end-of-options "$base^{commit}")"; then
+    if resolved="$(keyless git rev-parse --verify --quiet --end-of-options "$base^{commit}")"; then
         base="$resolved"
     else
         # `origin/main` is the branch `main` on origin.
-        git fetch -q --no-tags --depth=1 origin --end-of-options "${base#origin/}"
-        base="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
+        keyless git fetch -q --no-tags --depth=1 origin --end-of-options "${base#origin/}"
+        base="$(keyless git rev-parse --verify "FETCH_HEAD^{commit}")"
     fi
 }
 
 # Whether the working directory exists at the base commit.
 base_has_workdir() {
     local prefix
-    prefix="$(git rev-parse --show-prefix)"
-    [ -z "$prefix" ] || git cat-file -e "$base:${prefix%/}" 2> /dev/null
+    prefix="$(keyless git rev-parse --show-prefix)"
+    [ -z "$prefix" ] || keyless git cat-file -e "$base:${prefix%/}" 2> /dev/null
 }
 
 # Refuse an absolute path in `args` or `coverage-args` that names the
@@ -150,8 +145,8 @@ base_has_workdir() {
 # name the pull request's files.
 refuse_checkout_paths() {
     local top word
-    top="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
-    for word in ${common[@]+"${common[@]}"}; do
+    top="$(cd "$(keyless git rev-parse --show-toplevel)" && pwd -P)"
+    for word in ${common[@]+"${common[@]}"} ${operands[@]+"${operands[@]}"}; do
         if names_checkout "$word" "$top"; then
             echo "::error::args: $word names the pull request's checkout, which the base-commit run does not score: use a path relative to working-directory"
             exit 1
@@ -169,7 +164,7 @@ base_tree=""
 # Remove the worktree this run added, and nothing else.
 remove_tree() {
     cd "$head_dir"
-    if [ -n "$base_tree" ] && ! git worktree remove --force "$base_tree" 2> /dev/null; then
+    if [ -n "$base_tree" ] && ! keyless git worktree remove --force "$base_tree" 2> /dev/null; then
         rm -rf "$base_tree"
         echo "::warning::git could not remove the base-commit worktree $base_tree: its record stays under .git/worktrees"
     fi
@@ -182,12 +177,24 @@ remove_tree() {
 # a condition, so any failure stops the run instead of comparing with the
 # wrong tree.
 score_base() {
-    local head_top prefix pr_config tree dir found destination target
-    head_top="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
-    prefix="$(git rev-parse --show-prefix)"
+    local head_top prefix pr_config tree dir ancestor config destination target limited
+    head_top="$(cd "$(keyless git rev-parse --show-toplevel)" && pwd -P)"
+    prefix="$(keyless git rev-parse --show-prefix)"
     pr_config="$(nearest_config)"
+    if [ -n "$pr_config" ] && ! inside_dir "$pr_config" "$head_top"; then
+        echo "::error::the head inherits $pr_config above its Git root: give baseline to compare with that config"
+        exit 1
+    fi
+    if [ -n "$pr_config" ] && [ ! -f "$pr_config" ]; then
+        echo "::error::$pr_config is not a regular file: give baseline"
+        exit 1
+    fi
     if [ "$supports_all_rows" = false ]; then
-        if [ -n "$pr_config" ] && config_limits "$pr_config"; then
+        limited=false
+        if [ -n "$pr_config" ]; then
+            limited="$(keyless config_limits "$pr_config")"
+        fi
+        if [ "$limited" = true ]; then
             echo "::error::$(keyless cargo-crap --version) has no --all-rows, and $pr_config sets top or min, so the base-commit run would leave functions out and a rise in their scores would pass: use cargo-crap 0.10.0 or later, or give baseline"
             exit 1
         fi
@@ -204,9 +211,9 @@ score_base() {
     tree="$(mktemp -d "$RUNNER_TEMP/cargo-crap-base.XXXXXX")"
     base_tree="$tree"
     trap remove_tree EXIT
-    git worktree add -q --detach "$tree" "$base"
+    keyless git worktree add -q --detach "$tree" "$base"
     tree="$(cd "$tree" && pwd -P)"
-    if [ -f "$tree/.gitmodules" ] && ! git -C "$tree" submodule update -q --init --recursive; then
+    if [ -f "$tree/.gitmodules" ] && ! keyless git -C "$tree" submodule update -q --init --recursive; then
         echo "::error::could not check out the base commit's submodules: see the error above, or give baseline"
         exit 1
     fi
@@ -219,16 +226,29 @@ score_base() {
         exit 1
     fi
     cd "$dir"
-    while found="$(nearest_config)" && [ -n "$found" ]; do
-        rm "$found"
+    ancestor="$dir"
+    while :; do
+        config="$ancestor/.cargo-crap.toml"
+        if [ -L "$config" ] || [ -f "$config" ]; then
+            rm -- "$config"
+        elif [ -e "$config" ]; then
+            echo "::error::$config in the base worktree is not a config file: give baseline"
+            exit 1
+        fi
+        [ "$ancestor" != "$tree" ] || break
+        ancestor="$(dirname "$ancestor")"
     done
     if [ -n "$pr_config" ]; then
         destination="$tree/${pr_config#"$head_top"/}"
-        if ! inside_dir "$(cd "$(dirname "$destination")" && pwd -P)" "$tree"; then
-            echo "::error::the pull request's config would land outside the base commit's worktree"
+        if ! inside_dir "$(cd "$(dirname "$destination")" && pwd -P)" "$tree" ||
+            [ -L "$destination" ] || [ -e "$destination" ]; then
+            echo "::error::cannot copy the pull request's config to $destination inside the base worktree: give baseline"
             exit 1
         fi
         cp "$work/pr-config.toml" "$destination"
+    elif [ -n "$(nearest_config)" ]; then
+        echo "::error::the base worktree inherits a config above its Git root: give baseline"
+        exit 1
     fi
     if [ -n "$target" ]; then
         CARGO_TARGET_DIR="$target" keyless cover "$work/base.lcov"
@@ -237,7 +257,7 @@ score_base() {
     fi
     report_run keyless cargo-crap --lcov "$work/base.lcov" \
         ${common[@]+"${common[@]}"} ${probed[@]+"${probed[@]}"} \
-        --format json --output "$work/base.json"
+        --format json --output "$work/base.json" ${operands[@]+"${operands[@]}"}
     if [ ! -s "$work/base.json" ]; then
         echo "::error::the base-commit run wrote no report"
         exit 1
@@ -269,7 +289,7 @@ elif [ -n "$base" ]; then
         score_base
         compared=(--baseline "$work/base.json")
     else
-        echo "::warning::$(git rev-parse --show-prefix) does not exist at the base commit, so there is nothing to compare with"
+        echo "::warning::$(keyless git rev-parse --show-prefix) does not exist at the base commit, so there is nothing to compare with"
     fi
 fi
 if [ "${#compared[@]}" -eq 0 ]; then
@@ -293,7 +313,7 @@ fi
 
 crap() {
     cargo-crap --lcov "$lcov" ${common[@]+"${common[@]}"} ${limits[@]+"${limits[@]}"} \
-        ${compared[@]+"${compared[@]}"} "$@"
+        ${compared[@]+"${compared[@]}"} "$@" ${operands[@]+"${operands[@]}"}
 }
 
 # Links at the pull request's own head, not the merge commit GITHUB_SHA
@@ -307,7 +327,7 @@ ref="${CRAP_HEAD_SHA:-${GITHUB_SHA:-}}"
 if [ -n "$ref" ]; then
     prefix=""
     if [ "$in_git" = true ]; then
-        prefix="$(git rev-parse --show-prefix)"
+        prefix="$(keyless git rev-parse --show-prefix)"
     fi
     links=(--commit-ref "$ref${prefix:+/$(url_path_encode "${prefix%/}")}")
 fi
@@ -363,8 +383,13 @@ fi
 if [ "${#compared[@]}" -gt 0 ] && [ "$fail_regression" = true ]; then
     gate+=(--fail-regression)
 fi
+count_signals=false
+if [ "${#compared[@]}" -gt 0 ] && grep -q -- '--print-signal-regressions' "$work/help.txt"; then
+    count_signals=true
+    gate+=(--print-signal-regressions)
+fi
 status=0
-keyless crap ${gate[@]+"${gate[@]}"} --format json --output "$work/result.json" 2> "$work/gate.err" || status=$?
+signal_regressions="$(keyless crap ${gate[@]+"${gate[@]}"} --format json --output "$work/result.json" 2> "$work/gate.err")" || status=$?
 grep -v -e '^warning: duplicate triage skipped' -e '^warning: the triage budget' "$work/gate.err" >&2 || true
 # 2 is cargo-crap failing to run, not a gate: nothing to count.
 if [ "$status" -ge 2 ]; then
@@ -376,16 +401,11 @@ if [ "${#compared[@]}" -gt 0 ]; then
         echo "::error::could not count the regressions in $work/result.json"
         exit 1
     fi
-    # The gate counts gated signals over every function, so the count reads
-    # a report of every row, not the rows `--top` and `--min` leave.
-    signal_regressions=""
-    if [ "$supports_all_rows" = true ]; then
-        if ! report_run keyless crap --all-rows --format json --output "$work/signals.json" 2> "$work/signals.err"; then
-            cat "$work/signals.err" >&2
-            echo "::error::cargo-crap could not count the gated signals that rose"
-            exit 1
-        fi
-        signal_regressions="$(signal_regressions_in "$work/signals.json" "${compared[1]}")"
+    if [ "$count_signals" = false ] || [ "$signal_regressions" = null ]; then
+        signal_regressions=""
+    elif ! is_count "$signal_regressions"; then
+        echo "::error::cargo-crap returned an invalid gated signal count"
+        exit 1
     fi
     {
         echo "regressed=$regressed"

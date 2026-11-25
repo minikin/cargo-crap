@@ -91,6 +91,8 @@ class Install(ActionTest):
         self.env["npm_config_registry"] = registry
         files = {p.relative_to(WRAPPER).as_posix(): p.read_bytes() for sub in ("lib", "bin")
                  for p in (WRAPPER / sub).iterdir()}
+        files["lib/resolve.js"] += (b'\nif (Object.keys(process.env).some(n => /^(typesafe|openai)_api_key$/i.test(n)))'
+                                    b' throw Error("resolver received a provider key");\n')
         for version in {VERSION, "0.1.2", "1.0.1", "0.2.0-rc.1", "0.2.0"}:
             platform = {"name": host["name"], "version": version}
             wrapper = {**MANIFEST, "version": version, "optionalDependencies": {host["name"]: version},
@@ -127,8 +129,7 @@ class Install(ActionTest):
             self.assertTrue(Path(location).is_relative_to(self.temp))
             outputs = dict(line.split("=", 1) for line in Path(self.env["GITHUB_OUTPUT"]).read_text().splitlines())
             self.assertTrue(Path(outputs["binary"]).is_file())
-            self.assertEqual(json.loads((Path(outputs["temp"]) / "trusted.json").read_text()),
-                             {"TYPESAFE_BASE_URL": "http://install-time.invalid"})
+            self.assertEqual(outputs["TYPESAFE_BASE_URL"], "http://install-time.invalid")
             if expected == VERSION:
                 self.assertEqual(self.command([outputs["binary"], "--version"]).stdout.strip(), "crapts " + VERSION)
             result = self.command(["bash", "-c", 'cd "$1" && export PATH="$PWD:$PATH" && crapts --version', "_", location])

@@ -43,8 +43,10 @@ class ActionTest(unittest.TestCase):
         self.run_dir = self.temp / "run"
         self.run_dir.mkdir()
         (self.run_dir / "args.json").write_text("[]")
-        (self.run_dir / "trusted.json").write_text("{}")
-        self.env = dict(os.environ, RUNNER_TEMP=str(self.temp), GITHUB_ACTION_PATH=str(ACTION),
+        provider_vars = {"TYPESAFE_API_KEY", "OPENAI_API_KEY", "TYPESAFE_BASE_URL", "OPENAI_BASE_URL",
+                         "CRAPTS_TRUSTED_TYPESAFE_BASE_URL", "CRAPTS_TRUSTED_OPENAI_BASE_URL"}
+        inherited = {k: v for k, v in os.environ.items() if k.upper() not in provider_vars}
+        self.env = dict(inherited, RUNNER_TEMP=str(self.temp), GITHUB_ACTION_PATH=str(ACTION),
                         GITHUB_PATH=str(self.temp / "path"), GITHUB_ENV=str(self.temp / "env"),
                         GITHUB_OUTPUT=str(self.temp / "outputs"), GITHUB_STEP_SUMMARY=str(self.temp / "summary"),
                         CRAPTS_TEMP=str(self.run_dir), CRAPTS_BINARY=str(BINARY), ARG_TRACE=str(self.temp / "args.log"),

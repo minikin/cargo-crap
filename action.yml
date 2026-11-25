@@ -144,7 +144,7 @@ runs:
           const marker = process.env.MARKER;
           const firstLine = text => (text || '').split('\n', 1)[0].replace(/\r$/, '');
           const { owner, repo } = context.repo;
-          const refused = status => [401, 403, 404, 422].includes(status);
+          const refused = status => [403, 404, 422].includes(status);
           let report = fs.readFileSync(process.env.REPORT, 'utf8');
           // The pr-comment report starts with the default marker: a custom
           // one takes its line, so a comment never carries two.
@@ -164,30 +164,45 @@ runs:
           }
           // Only a comment the token's own account wrote is updated. When
           // the account cannot be told, the Action writes a new one.
-          async function login() {
+          async function identity() {
             if (process.env.DEFAULT_TOKEN === 'true') {
-              return 'github-actions[bot]';
+              return { login: 'github-actions[bot]', type: 'Bot' };
             }
             try {
-              return (await github.rest.users.getAuthenticated()).data.login;
+              const { data } = await github.rest.users.getAuthenticated();
+              if (data?.login) return data;
             } catch (error) {
               if (!refused(error.status)) throw error;
             }
             try {
-              return (await github.graphql('query { viewer { login } }')).viewer.login;
+              const { viewer } = await github.graphql('query { viewer { login databaseId __typename } }');
+              if (viewer?.login) {
+                return {
+                  id: viewer.databaseId ?? null,
+                  login: viewer.login,
+                  type: viewer.login.endsWith('[bot]') ? 'Bot' : viewer.__typename,
+                };
+              }
             } catch (error) {
               if (error.status && !refused(error.status)) throw error;
             }
             return null;
           }
           try {
-            const me = await login();
+            const me = await identity();
             let existing;
             if (me) {
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner, repo, issue_number, per_page: 100,
               });
-              existing = comments.find(c => c.user?.login === me && firstLine(c.body) === marker);
+              existing = comments.find(({ user, body }) => {
+                if (!user || firstLine(body) !== marker) return false;
+                if (me.id != null && user.id != null) return user.id === me.id;
+                const meType = me.login.endsWith('[bot]') ? 'Bot' : me.type;
+                if (meType && user.type && meType !== user.type) return false;
+                return user.login === me.login ||
+                  (meType === 'Bot' && user.type === 'Bot' && user.login === me.login + '[bot]');
+              });
             } else {
               core.notice('Could not tell which account the token belongs to: writing a new comment rather than updating one.');
             }

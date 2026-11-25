@@ -1,4 +1,3 @@
-import json
 import os
 import subprocess
 import threading
@@ -31,9 +30,8 @@ class TriageBudget(ActionTest):
         self.assertEqual(len(scenarios.groups(BINARY, self.project)), 5)
         cache = self.temp / "cold cache"
         trace = self.temp / "project-commands"
-        (self.run_dir / "trusted.json").write_text(json.dumps({"TYPESAFE_BASE_URL": urls[0]}))
         self.env.update(INPUT_BASE=base, INPUT_COVERAGE_COMMAND="bash cover.sh", INPUT_COVERAGE_FILE="coverage.info",
-                        TRACE=str(trace), TYPESAFE_API_KEY="not-a-key", TYPESAFE_BASE_URL=urls[0], CRAPTS_PR_NUMBER="",
+                        TRACE=str(trace), TYPESAFE_API_KEY="not-a-key", CRAPTS_TRUSTED_TYPESAFE_BASE_URL=urls[0], CRAPTS_PR_NUMBER="",
                         HOME=str(cache), XDG_CACHE_HOME=str(cache), LOCALAPPDATA=str(cache))
         counts = []
         for stage in ["prepare", "baseline", "score"]:

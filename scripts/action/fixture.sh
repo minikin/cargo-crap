@@ -7,6 +7,8 @@
 # Usage: fixture.sh <dir> [change] [subdir]
 #   subdir       put the crate in <dir>/<subdir>, with the repository at <dir>
 #   regress      the pull request adds untested branches to `shipping`
+#   target-dir   the base build records its OUT_DIR in BASE_TARGET_LOG
+#   config-link  the head replaces a base config symlink with a regular file
 #   steady       the pull request only rewords a comment
 #   config-skew  the base commit's config excludes src/lib.rs, the pull
 #                request's does not
@@ -150,8 +152,10 @@ RUST
 probe_body() {
     cat <<'RUST'
         if let Ok(path) = std::env::var("KEY_PROBE") {
-            let set = std::env::var_os("TYPESAFE_API_KEY").is_some()
-                || std::env::var_os("OPENAI_API_KEY").is_some();
+            let set = std::env::vars_os().any(|(name, _)| {
+                let name = name.to_string_lossy();
+                name.eq_ignore_ascii_case("TYPESAFE_API_KEY") || name.eq_ignore_ascii_case("OPENAI_API_KEY")
+            });
             let line: &[u8] = if set { b"set\n" } else { b"unset\n" };
             let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
             std::io::Write::write_all(&mut file, line).unwrap();
@@ -168,6 +172,14 @@ probe() {
 }
 shipping > src/lib.rs
 case "$change" in
+    target-dir)
+        cat > build.rs <<'RUST'
+fn main() {
+    std::fs::write(std::env::var_os("BASE_TARGET_LOG").unwrap(), std::env::var("OUT_DIR").unwrap()).unwrap();
+}
+RUST
+        ;;
+    config-link) ln -s "$CONFIG_LINK_DIR" .cargo-crap.toml ;;
     broken-base) echo "pub fn broken() -> u32 { missing }" >> src/lib.rs ;;
     config-skew) printf 'exclude = ["src/lib.rs"]\n' > .cargo-crap.toml ;;
     extra) copy extra_one > src/extra.rs && echo "pub mod extra;" >> src/lib.rs ;;
@@ -186,6 +198,8 @@ esac
 commit base
 case "$change" in
     "") exit 0 ;;
+    target-dir) rm build.rs ;;
+    config-link) rm .cargo-crap.toml && echo 'threshold = 12' > .cargo-crap.toml ;;
     regress)
         python3 - <<'PY'
 import pathlib

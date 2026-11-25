@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { scanOnly, withoutProviderKeys } from "./cli.mjs";
 
 function git(args, quiet = false) {
-  const result = spawnSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", quiet ? "ignore" : "inherit"] });
+  const result = spawnSync("git", args, { env: withoutProviderKeys(process.env), encoding: "utf8", stdio: ["ignore", "pipe", quiet ? "ignore" : "inherit"] });
   if (result.error) throw result.error;
   return result;
 }

@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 from support import ActionTest, BINARY, SCRIPTS
 from test_baseline import function, coverage
 
-BOT = {"login": "github-actions[bot]", "type": "Bot"}
+BOT = {"id": 41898282, "login": "github-actions[bot]", "type": "Bot"}
 
 
 def owned(body, comment_id=None):
@@ -21,6 +21,7 @@ class Delivery(ActionTest):
         # user: GET /user answers. installation: only GraphQL viewer answers,
         # without the REST [bot] suffix. unknown: neither answers.
         self.identity = "user"
+        self.account = BOT
         owner = self
         class API(BaseHTTPRequestHandler):
             def handle_request(self):
@@ -33,10 +34,10 @@ class Delivery(ActionTest):
                 if self.headers.get("Authorization") != "Bearer fixture-token":
                     status = 401
                 elif parsed.path == "/user":
-                    status, reply = (200, BOT) if owner.identity == "user" else owner.lookup
+                    status, reply = (200, owner.account) if owner.identity == "user" else owner.lookup
                 elif parsed.path == "/graphql":
-                    assert body == {"query": "query { viewer { login } }"}, body
-                    status, reply = (200, {"data": {"viewer": {"login": "github-actions"}}}) \
+                    assert body == {"query": "query { viewer { login databaseId __typename } }"}, body
+                    status, reply = (200, {"data": {"viewer": {"login": "github-actions[bot]", "databaseId": 41898282, "__typename": "User"}}}) \
                         if owner.identity == "installation" else owner.lookup
                 elif self.command in owner.refusals:
                     status, reply = owner.refusals[self.command]
@@ -262,6 +263,13 @@ class Delivery(ActionTest):
                 self.assertNotIn("::warning::", result.stdout)
                 self.assertEqual(self.comments[129]["body"], marker + "\nold")
                 self.assertEqual(self.comments[-1]["body"], report)
+
+        with self.subTest("a user and an unrelated app share a name"):
+            self.identity, self.account = "user", {"login": "octo", "type": "User"}
+            self.comments[:] = [{"id": 1, "user": {"login": "octo[bot]", "type": "Bot"}, "body": marker}]
+            self.stage("comment")
+            self.assertEqual(paths()[-1], ("POST", "comments"))
+            self.assertEqual(self.comments[0]["body"], marker)
 
         with self.subTest("a rejected token"):
             self.identity, self.lookup = "unknown", (401, {"message": "Bad credentials"})

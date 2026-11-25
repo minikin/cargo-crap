@@ -164,6 +164,11 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     baseline: Option<PathBuf>,
 
+    /// With --output and --baseline, write the full gated signal count to stdout
+    /// as JSON. A null means no signal comparison was available.
+    #[arg(long, requires_all = ["output", "baseline"])]
+    print_signal_regressions: bool,
+
     /// Exit non-zero if any function's CRAP score increased since `--baseline`.
     /// Requires `--baseline`.
     #[arg(long)]
@@ -1874,7 +1879,6 @@ fn run() -> Result<ExitCode> {
         knobs,
         signals,
     } = parse_and_validate()?;
-    let try_weight = knobs.try_weight;
     let settings = resolve_settings(&cli, &config);
 
     let effective_exclude = effective_excludes(
@@ -1909,23 +1913,21 @@ fn run() -> Result<ExitCode> {
     pb.finish_and_clear();
 
     // --- Merge + filters ---
-    let merge_result = merge(fns, coverage, settings.missing_policy);
-    let diagnostics = merge_result.diagnostics;
-    warn_scope_mismatch(diagnostics.as_ref());
-    let mut entries = merge_result.entries;
-    assign_crate_names(&mut entries, &members);
+    let mut merge_result = merge(fns, coverage, settings.missing_policy);
+    warn_scope_mismatch(merge_result.diagnostics.as_ref());
+    assign_crate_names(&mut merge_result.entries, &members);
     let allow = AllowSet::compile(&effective_allow)?;
     let workspace_root = workspace_root(&roots);
     let raw = load_report_baseline(
         cli.baseline.as_ref(),
         workspace_root,
-        try_weight,
+        knobs.try_weight,
         signals.enabled,
     )?;
     let scope = CargoScope::new(&roots, member_scope);
     let analysis = run::Analysis {
-        entries,
-        diagnostics,
+        entries: merge_result.entries,
+        diagnostics: merge_result.diagnostics,
         scope: &scope,
         coverage_kind: None,
         notices: &[],
@@ -1969,9 +1971,12 @@ fn run() -> Result<ExitCode> {
         analysis,
         baseline.as_ref(),
         &[],
-        &duplicates.render_extras(try_weight),
+        &duplicates.render_extras(knobs.try_weight),
         out.as_mut(),
     )?;
+    if cli.print_signal_regressions {
+        serde_json::to_writer(io::stdout().lock(), &outcome.signal_regressions)?;
+    }
     Ok(outcome.exit_code())
 }
 

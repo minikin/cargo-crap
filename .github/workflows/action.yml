@@ -1028,7 +1028,7 @@ jobs:
         id: shop
         run: |
           scripts/action/fixture.sh "$RUNNER_TEMP/shop" regress
-          printf 'min = 5\n' > "$RUNNER_TEMP/shop/.cargo-crap.toml"
+          printf '"min" = 5\n' > "$RUNNER_TEMP/shop/.cargo-crap.toml"
           echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
       - uses: ./
         id: crap
@@ -1039,7 +1039,7 @@ jobs:
           base: ${{ steps.shop.outputs.base }}
           comment: false
       - uses: ./
-        id: old
+        id: pr-old-binary
         continue-on-error: true
         with:
           version: 0.9.0
@@ -1051,8 +1051,8 @@ jobs:
           OUTCOME: ${{ steps.crap.outcome }}
           REGRESSED: ${{ steps.crap.outputs.regressed }}
           REPORT: ${{ steps.crap.outputs.report }}
-          OLD: ${{ steps.old.outcome }}
-          OLD_REPORT: ${{ steps.old.outputs.report }}
+          OLD: ${{ steps.pr-old-binary.outcome }}
+          OLD_REPORT: ${{ steps.pr-old-binary.outputs.report }}
         run: |
           test "$OUTCOME" = failure
           test "$REGRESSED" = 1
@@ -1216,7 +1216,7 @@ jobs:
           git diff --cached | grep -q '^+// staged'
           test "$(tail -n 1 src/lib.rs)" = "// unstaged"
           test "$(cat src/old.rs)" = local
-          test "$(git worktree list | wc -l)" = 2
+          test "$(git worktree list | wc -l)" -eq 2
           test -f "$RUNNER_TEMP/sibling/src/lib.rs"
 
   pr-submodule:
@@ -1247,7 +1247,7 @@ jobs:
           OUTCOME: ${{ steps.crap.outcome }}
         run: |
           test "$OUTCOME" = failure
-          test "$(git -C "$RUNNER_TEMP/shop" worktree list | wc -l)" = 1
+          test "$(git -C "$RUNNER_TEMP/shop" worktree list | wc -l)" -eq 1
 
   args-owned:
     name: A flag the Action sets itself is refused in args
@@ -1320,10 +1320,12 @@ jobs:
       # A target directory of the job's own choosing, which the base run
       # must share, and a symlinked path to the crate on the runners that
       # have symlinks.
-      - name: A pull request that only rewords a comment
+      - name: A pull request with a head-only Cargo target directory
         id: shop
         run: |
-          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" target-dir
+          mkdir "$RUNNER_TEMP/shop/.cargo"
+          printf '[build]\ntarget-dir = "../target"\n' > "$RUNNER_TEMP/shop/.cargo/config.toml"
           echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
           dir="$RUNNER_TEMP/shop"
           if [ "$RUNNER_OS" != Windows ]; then
@@ -1334,7 +1336,7 @@ jobs:
       - uses: ./
         id: crap
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/target
+          BASE_TARGET_LOG: ${{ runner.temp }}/base-target
         with:
           binary: ${{ github.workspace }}/target/debug/cargo-crap${{ runner.os == 'Windows' && '.exe' || '' }}
           working-directory: ${{ steps.shop.outputs.dir }}
@@ -1347,10 +1349,17 @@ jobs:
         run: |
           grep -q 'No CRAP regressions' "$REPORT"
           test "$REGRESSED" = 0
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          temp = Path(os.environ["RUNNER_TEMP"])
+          base_out = Path((temp / "base-target").read_text()).resolve(strict=True)
+          assert base_out.is_relative_to((temp / "target").resolve()), base_out
+          PYTHON
           test -d "$RUNNER_TEMP/target/llvm-cov-target"
-          test ! -e "$RUNNER_TEMP/shop/target"
+          test ! -e "$RUNNER_TEMP/shop/target/llvm-cov-target"
           test "$(git -C "$RUNNER_TEMP/shop" log -1 --format=%s)" = pr
-          test "$(git -C "$RUNNER_TEMP/shop" worktree list | wc -l)" = 1
+          test "$(git -C "$RUNNER_TEMP/shop" worktree list | wc -l)" -eq 1
 
   mixed-comments:
     name: Both candidate Actions update their own comment

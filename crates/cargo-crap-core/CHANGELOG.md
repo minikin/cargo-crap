@@ -21,6 +21,9 @@ This project follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.
   `Format::carries_duplicates` identifies formats that show groups.
 - `cache_file` exposes atomic replacement and read retries.
   `duplicates::fnv` supplies stable 64-bit FNV-1a hashes.
+- `gate::GateOutcome.signal_regressions` reports the post-filter gated
+  structural signal regression count (`Option<usize>`) when signals and a
+  measured baseline are both present.
 - Shared coverage, complexity scoring, and report rendering.
 
 ### Changed
