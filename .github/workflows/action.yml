@@ -133,6 +133,7 @@ jobs:
         with:
           # A push run: the workflow's own pull request is not this one.
           base: ""
+          comment: false
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
       - name: Nothing was downloaded, and a copy of the built binary scored
@@ -536,7 +537,7 @@ jobs:
       - name: Two requests in the whole job, over five groups
         run: |
           test "$(grep -c '/v1/systemone' "$RUNNER_TEMP/api.log")" = 2
-          groups="$("$RUNNER_TEMP/bin/cargo-crap" --path "$RUNNER_TEMP/shop" --duplicates --format json 2> /dev/null \
+          groups="$(cargo-crap --path "$RUNNER_TEMP/shop" --duplicates --format json 2> /dev/null \
             | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["duplicate_groups"]))')"
           test "$groups" = 5
 
@@ -843,6 +844,7 @@ jobs:
         id: shop
         run: |
           scripts/action/fixture.sh "$GITHUB_WORKSPACE/selftest" steady
+          : > selftest/.cargo-crap.toml
           mkdir -p selftest/scripts
           cp action.yml selftest/
           cp -R scripts/action selftest/scripts/
@@ -1353,7 +1355,7 @@ jobs:
           import os
           from pathlib import Path
           temp = Path(os.environ["RUNNER_TEMP"])
-          base_out = Path((temp / "base-target").read_text()).resolve(strict=True)
+          base_out = Path((temp / "base-target").read_text().strip()).resolve()
           assert base_out.is_relative_to((temp / "target").resolve()), base_out
           PYTHON
           test -d "$RUNNER_TEMP/target/llvm-cov-target"

@@ -206,7 +206,7 @@ done > "$INPUT_COVERAGE_FILE"
         sentinel = self.outside()
         self.env["BASE"] = self.base
         install = ('test "$(git rev-parse HEAD)" = "$BASE" && '
-                   'cmd //c mklink /J coverage "$(cygpath -w "$OUTSIDE")" || true')
+                   'MSYS_NO_PATHCONV=1 cmd /c mklink /J coverage "$(cygpath -w "$OUTSIDE")" || true')
         self.refused("leaves the base run's directory", sentinel, INPUT_INSTALL_COMMAND=install)
 
     def test_cleanup_error_preserves_command_status(self):
