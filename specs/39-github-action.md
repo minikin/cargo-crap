@@ -226,6 +226,119 @@ Then  the step fails naming the archive
 And   no cargo-crap is put on `PATH`
 ```
 
+### Scenario: A rise across a min in config is a regression, not a new function
+
+```
+Given a `.cargo-crap.toml` with a `min` between a function's base and
+      pull-request scores
+When  the Action runs on the pull request
+Then  the base-commit run records that function
+And   the output `regressed` is 1 and the step fails
+And   a cargo-crap without `--all-rows` refuses the run instead of passing it
+```
+
+### Scenario: A gate in config or args still delivers the report
+
+```
+Given `fail-above = true` in `.cargo-crap.toml`, or `--fail-above` in `args`
+And   a function above the threshold on both commits
+When  the Action runs
+Then  the job summary, the outputs and the comment are written
+And   the step fails after them
+```
+
+### Scenario: A signal-only regression is counted, hidden rows included
+
+```
+Given `[signals]` on, and a pull request that raises a gated signal of a
+      function whose score does not move
+And   `args: --min 100`, which shows no row
+When  the Action runs on it
+Then  the output `regressed` is 0 and `signal-regressions` counts the
+      gated signals that rose
+And   the step fails
+```
+
+### Scenario: The base-commit run leaves the caller's checkout as it was
+
+```
+Given a checkout on a branch, with a staged edit, an unstaged edit, an
+      untracked file at a path only the base commit tracks, and a sibling
+      worktree
+When  the Action scores the base commit, and also when that run fails
+Then  the branch, the index, both edits, the untracked file and the
+      sibling worktree are as they were, and no worktree of its own is left
+```
+
+### Scenario: A base commit whose submodules cannot be fetched fails the step
+
+```
+Given a base commit with a submodule that cannot be fetched
+When  the Action scores it
+Then  the step fails naming the submodules, and leaves no worktree behind
+```
+
+### Scenario: Provider keys reach no build script and no test
+
+```
+Given a provider key in the step's environment
+When  the Action builds and tests both commits
+Then  neither the build scripts nor the tests see the key
+```
+
+### Scenario: A flag the Action sets itself is refused in args
+
+```
+Given `args: --format json`
+When  the Action runs
+Then  the step fails naming the flag, before anything is scored
+```
+
+### Scenario: A renamed binary is used, and not a sibling named cargo-crap
+
+```
+Given `binary` names a cargo-crap saved under another name, beside a file
+      named cargo-crap
+When  the Action runs
+Then  a copy of the named binary scores the crate
+```
+
+### Scenario: The comment updates only what the token's own account wrote
+
+```
+Given another bot's comment that starts with the marker, before the
+      Action's own
+When  the Action runs again
+Then  it updates its own comment and never the other bot's
+And   when the token's account cannot be told, it writes a new comment
+```
+
+### Scenario: A marker of more than one line, or with spaces around it, is refused
+
+```
+Given `comment-marker` with a line break, or with a trailing space
+When  the Action runs with `comment: true`
+Then  the step fails before anything is written to the pull request
+```
+
+### Scenario: A comment GitHub refuses as too large warns, and the gate decides
+
+```
+Given a report that GitHub refuses with a 422
+When  the Action comments
+Then  the step warns and the gate alone decides its outcome
+And   a body over 65,536 UTF-16 code units is replaced by a pointer to the
+      job summary before it is sent
+```
+
+### Scenario: Links reach a crate whose directory has a space
+
+```
+Given a crate under `crates/my shop`
+When  the Action writes the report
+Then  its links name `crates/my%20shop/`
+```
+
 ---
 
 ## Tasks
@@ -281,6 +394,24 @@ needs are all done is ready. `scripts/keeler-graph.sh` reads that graph.
 - [x] **T8 — Release checksums.** The release job publishes `SHA256SUMS`,
   and install verifies the archive against it. Needs: T7. Scenarios: _An
   archive that does not match the release's sums is refused_. Tests: shell.
+- [x] **T9 — Hardening.** `--all-rows` in cargo-crap and on the base run,
+  the base commit in a worktree of its own, exit 1 read as a finished
+  report, `signal-regressions`, the `args` rules, keyless project commands
+  and probes, the binary copied under its own name, comments matched by the
+  token's account and fitted to GitHub's limit, the seams behind the dummy
+  token, and the release candidate kept from `latest`. Needs: T8.
+  Scenarios: _A rise across a min in config is a regression, not a new
+  function_, _A gate in config or args still delivers the report_, _A
+  signal-only regression is counted, hidden rows included_, _The
+  base-commit run leaves the caller's checkout as it was_, _A base commit
+  whose submodules cannot be fetched fails the step_, _Provider keys reach
+  no build script and no test_, _A flag the Action sets itself is refused
+  in args_, _A renamed binary is used, and not a sibling named
+  cargo-crap_, _The comment updates only what the token's own account
+  wrote_, _A marker of more than one line, or with spaces around it, is
+  refused_, _A comment GitHub refuses as too large warns, and the gate
+  decides_, _Links reach a crate whose directory has a space_. Tests: unit
+  + property + acceptance (`tests/cli.rs`), shell, node, CI scenario jobs.
 
 ---
 
@@ -301,14 +432,14 @@ with the score step's status.
 | `version` | the release the Action was cut with | cargo-crap release to install, or `latest` |
 | `binary` | none | a cargo-crap binary to use instead of downloading one |
 | `working-directory` | `.` | where the crate is |
-| `args` | none | extra arguments for every cargo-crap run |
+| `args` | none | extra arguments for the cargo-crap runs, minus the flags the Action sets |
 | `lcov` | none | an existing LCOV file, used instead of a coverage run |
 | `coverage-args` | none | extra arguments for `cargo llvm-cov` |
 | `baseline` | none | a baseline JSON file, used instead of the base-commit run |
 | `base` | the pull request's base SHA | the commit to compare with |
 | `comment` | `true` | post or update the PR comment |
-| `comment-marker` | `<!-- cargo-crap-report -->` | the hidden line that finds the comment again |
-| `fail-regression` | `true` | fail when a score regressed |
+| `comment-marker` | `<!-- cargo-crap-report -->` | the hidden first line that finds the comment again, one line without surrounding spaces |
+| `fail-regression` | `true` | fail when a score or, with `[signals]` on, a gated signal regressed |
 | `fail-above` | `false` | fail when a function is above the threshold |
 | `github-token` | `${{ github.token }}` | token for the comment |
 
@@ -321,9 +452,11 @@ The default `version` is the release the Action's tag was cut with: the
 release pull request sets it in `action.yml` beside `Cargo.toml`, and a
 test fails when the two differ, so `@v1` installs the same cargo-crap until
 `v1` moves, and never drifts under a user. `latest` asks
-for the newest release on each run. **Outputs:** `crappy` (functions above the threshold),
-`regressed` (functions whose score rose, on a pull request), `report`
-(path to the markdown report).
+for the newest release on each run. **Outputs:** `crappy` (shown functions above the threshold),
+`regressed` (shown functions whose score rose, whenever there was something
+to compare with), `signal-regressions` (gated signals that rose over every
+function, empty when either side was measured without `[signals]`, `0`
+when none rose), `report` (path to the report).
 
 **Install.** The runner's target picks the release archive,
 `cargo-crap-{target}.tar.gz` or `.zip` on Windows, from the release tagged
@@ -341,45 +474,83 @@ with `coverage-args`, after `taiki-e/install-action` installs
 `cargo-llvm-cov` and `rustup` adds `llvm-tools-preview`.
 
 **Base commit.** On a pull request without `baseline`, the Action fetches
-`base` if it is missing, checks it out in place (detached), restores the
-pull request's `.cargo-crap.toml` over the base commit's when the pull
-request has one, runs coverage and `cargo crap --format json --output`
-with the same `args` from the same working directory, and checks the pull
-request's commit out again. One config for both runs keeps a changed
-threshold or duplicate setting from skewing the baseline, and the same
-paths on both sides keep the CRAP delta and the duplicate comparison
-exact. A run with duplicates on records them in the baseline as well. The base run clears every provider's key
-(`TYPESAFE_API_KEY=`, `OPENAI_API_KEY=`, which count as unset), so it never
-sends a triage request, and its one "duplicate triage skipped" warning is
-expected.
+`base` if it is missing (`origin/<branch>` names the branch on origin, and
+a `base` starting with `-` is refused) and adds a detached `git worktree`
+of it under `$RUNNER_TEMP`, outside the checkout. The checkout is never
+changed: its branch, index, edits and untracked files stay as the job left
+them. The worktree's submodules are checked out, and a failure there fails
+the step. The working directory's path there must stay inside the
+worktree, checked before anything is removed or run in it. There the
+Action removes the base commit's `.cargo-crap.toml` files and puts the pull
+request's in its place, runs coverage into the checkout's own target
+directory, read as JSON from `cargo metadata`, and runs `cargo crap
+--format json --output` with `args` minus `--top`, `--min` and the
+report-only flags, plus `--all-rows` and `--no-cache` when the binary has
+them and `args` does not. The base record then holds every function, so a
+function whose score rises across a `min` is a regression, not a new
+function. A cargo-crap without `--all-rows` gets the base `args` without
+`--top` and `--min`, and when the pull request's config sets `top` or
+`min` the step fails naming a release that has the flag or `baseline`. An
+absolute path in `args` or `coverage-args` that names the checkout is
+refused, since the base run would score the pull request's files through
+it. Last, the Action removes the worktree it added, and no other. One
+config for both runs keeps a changed threshold or duplicate setting from
+skewing the baseline, and paths written relative to the run keep the CRAP
+delta and the duplicate comparison exact. A run with duplicates on records
+them in the baseline as well. Coverage runs and every cargo-crap run but
+the report run have the provider keys unset (`TYPESAFE_API_KEY`,
+`OPENAI_API_KEY`), so neither the project's build scripts and tests nor a
+second run can spend the triage budget, and the base run's one "duplicate
+triage skipped" warning is expected.
 
-**Report and comment.** One run writes `--format pr-comment` (on a pull
-request) or `--format markdown` (on a push) to a file, appended to the job
-summary and named by `report`. A `--format json` run of the same inputs
-fills the outputs. On a pull request the links point at the pull request's
-head commit (`--commit-ref` with the head SHA), not the merge commit
-`GITHUB_SHA` names: GitHub deletes a pull request's merge ref when it
-closes, and keeps the head ref, so the links outlive the pull request. A
-line number can be off by a few lines when the base changed the same file
-after the branch point. The comment is found by `comment-marker`: the default is
-the marker the pr-comment format starts with, and any other marker is put
-on the comment's first line. It is updated if present and created
-otherwise, through the REST API with `github-token`. A 403 or 404 there is
-the fork case: one warning, and the run goes on. The marker is matched as
-the comment's whole first line, and an empty one is refused, so a comment
-written by someone else is never taken for the Action's.
+**Report and comment.** One run writes `--format pr-comment` whenever
+there is something to compare with or the comment is posted, and
+`--format markdown` otherwise, to a file, appended to the job summary and
+named by `report`. A `--format json` run of the same inputs fills the
+outputs, and a `--format json --all-rows` run counts the gated signals. On
+a pull request the links point at the pull request's head commit
+(`--commit-ref` with the head SHA), not the merge commit `GITHUB_SHA`
+names: GitHub deletes a pull request's merge ref when it closes, and keeps
+the head ref, so the links outlive the pull request. The working
+directory's path in the ref is percent-encoded. A line number can be off
+by a few lines when the base changed the same file after the branch point.
+The comment is found by `comment-marker`: the default is the marker the
+pr-comment format starts with, and a custom marker replaces that line, so a
+comment never carries two. It is updated if the token's own account wrote
+it and created otherwise, through the REST API with `github-token`. The
+account is `github-actions[bot]` for the workflow token, else what `GET
+/user` or the GraphQL `viewer` says, and when neither answers the Action
+writes a new comment. A 401, 403, 404 or 422 there is a warning, and the
+run goes on. A body over 65,536 UTF-16 code units is replaced by the marker
+and a pointer to the job summary. The marker is matched as the comment's
+exact first line, and an empty one, one with a line break and one with
+surrounding spaces are refused, so a comment written by someone else is
+never taken for the Action's. The pull request's number comes from the
+event on the Comment step, never from the score step, which runs the
+project's code.
 
 **Gate.** Last, after the comment: the gate run adds `--fail-regression`
-and `--fail-above` per the inputs, and its exit code is the step's. It
-clears every provider's key as the base run does, and so does the badge
-run: the report run has already spent the triage budget, and a second run
-with a key would spend it again on the groups the first one skipped. The
-gate counts score regressions, which need no verdict.
+and `--fail-above` per the inputs and `args`, and its exit code is the
+step's. Every earlier run that exits 1 has written its report, so only a
+status of 2 or more stops the step early, and a gate set in config gates
+through the gate run after the report is delivered. The gate run and the
+badge run have the provider keys unset as the base run does: the report
+run has already spent the triage budget. The gate counts score
+regressions, which need no verdict.
 
 **Arguments.** `args` and `coverage-args` are split into words as the shell
 would, quotes and backslashes included, and nothing in them is executed.
 Input that cannot be split, such as a stray quote, fails the step naming
-the input, so no run goes ahead with arguments missing.
+the input, so no run goes ahead with arguments missing. The flags the
+Action sets are refused in `args`, naming the flag: `--lcov`, `--format`,
+`--output`, `--baseline`, `--commit-ref`, `--all-rows`, `-h`, `--help`,
+`-V` and `--version`, in a short cluster or with `=` too.
+`--fail-above` and `--fail-regression` work as the inputs set to `true`,
+and the Action adds each once, since cargo-crap refuses a repeated switch.
+Without a comparison `--fail-regression` stays dormant, with a notice.
+`--summary` reaches only the report run, and `--show-unchanged` only the
+report run of a comparison. A `binary` is copied under the platform's
+cargo-crap name into a directory of its own.
 
 **Versioning.** `v1` is a moving tag on the commit of each 0.x release
 whose `action.yml` keeps the v1 inputs. The release workflow moves it to
@@ -397,8 +568,10 @@ HTTP server that stands in for the GitHub API and assert on the requests it
 received. GitHub does not let a step override `GITHUB_API_URL`, so the
 comment step reads two test seams first, `CARGO_CRAP_TEST_API_URL` and
 `CARGO_CRAP_TEST_PR_NUMBER`, and only when `github.repository` is
-minikin/cargo-crap, so no other repository's job, and no code that writes
-its environment, can point the token at another host through them.
+minikin/cargo-crap and `github-token` is the scenario jobs' dummy
+`fixture-token`. No other repository's job can use them, and code that
+writes the job's environment cannot point a real token at another host or
+another pull request through them.
 
 **Trust.** The Action runs the pull request's build scripts and tests in
 the job that holds the comment token, and code that runs there can reach

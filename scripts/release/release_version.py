@@ -6,6 +6,7 @@ import tomllib
 from pathlib import Path
 
 ACTION = Path("actions/crapts/action.yml")
+ROOT_ACTION = Path("action.yml")
 
 PLATFORMS = {
     "@minikin/crapts-" + suffix
@@ -48,7 +49,7 @@ def wrapper_at(version):
     return wrapper
 
 
-def action_at(text, version, replacement):
+def action_at(text, version, replacement, path=ACTION):
     lines = text.splitlines(keepends=True)
     inputs = version_input = False
     matches = 0
@@ -64,11 +65,11 @@ def action_at(text, version, replacement):
         elif version_input and key.startswith("    default:"):
             value = key.removeprefix("    default:").strip()
             if value not in (version, '"' + version + '"', "'" + version + "'"):
-                raise ValueError(f"{ACTION}: version pin {value} does not match {version}")
+                raise ValueError(f"{path}: version pin {value} does not match {version}")
             lines[i] = line.replace(version, replacement, 1)
             matches += 1
     if matches != 1:
-        raise ValueError(f"{ACTION}: expected one literal inputs.version.default pin")
+        raise ValueError(f"{path}: expected one literal inputs.version.default pin")
     return "".join(lines)
 
 
@@ -86,6 +87,8 @@ def check_tag(product, tag):
     if product == "crapts":
         wrapper_at(version)
         action_at(ACTION.read_text(), version, version)
+    else:
+        action_at(ROOT_ACTION.read_text(), version, version, ROOT_ACTION)
     output = (
         f"version={version}\nmajor={major}\nis_prerelease={str(prerelease).lower()}\n"
     )

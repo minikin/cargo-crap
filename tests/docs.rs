@@ -377,34 +377,75 @@ fn the_action_installs_this_release_by_default() {
 #[test]
 fn the_test_seams_are_ignored_outside_this_repository() {
     // The scenario jobs run only here, so the guard itself is what is
-    // checked: every read of a seam sits behind the repository test, and
-    // `github.api_url` and the event's pull request are the fallbacks.
+    // checked: every read of a seam sits behind the repository test and the
+    // scenario jobs' dummy token, so code that writes the job's environment
+    // cannot send a real token elsewhere, and `github.api_url` and the
+    // event's pull request are the fallbacks.
     let action = read("action.yml");
-    let guard = "github.repository == 'minikin/cargo-crap' && env.CARGO_CRAP_TEST_";
+    let guard = "github.repository == 'minikin/cargo-crap' && inputs.github-token == 'fixture-token' && env.CARGO_CRAP_TEST_";
     let reads = action.matches("env.CARGO_CRAP_TEST_").count();
-    assert_eq!(reads, 3, "the if, the pull request number and the API URL");
+    assert_eq!(
+        reads, 4,
+        "the score step's and the comment's pull request, the if and the API URL"
+    );
     assert_eq!(action.matches(guard).count(), reads, "an unguarded seam");
     assert!(action.contains("env.CARGO_CRAP_TEST_API_URL) || github.api_url"));
     assert_eq!(
         action
             .matches("env.CARGO_CRAP_TEST_PR_NUMBER) || github.event.pull_request.number")
             .count(),
-        2
+        3
+    );
+    assert!(
+        !action.contains("steps.score.outputs.pr"),
+        "the comment's pull request never comes from the step that runs the project's code"
     );
 }
 
 #[test]
-fn the_actions_unpaid_runs_clear_every_providers_key() {
+fn the_actions_keyless_runs_clear_every_providers_key() {
     use cargo_crap::duplicates::triage::provider::{by_id, ids};
-    // A provider whose key `unpaid` misses would let the base, badge and
-    // gate runs spend the triage budget again.
-    let score = read("scripts/action/score.sh");
-    let unpaid = score
+    // A provider whose key `keyless` misses would reach the project's build
+    // and tests, and let the base, badge and gate runs spend the triage
+    // budget again.
+    let lib = read("scripts/action/lib.sh");
+    let unset = lib
         .lines()
-        .find(|l| l.trim_start().ends_with("\"$@\"") && l.contains("=''"))
-        .expect("the unpaid line");
+        .skip_while(|l| !l.starts_with("keyless()"))
+        .find(|l| l.trim_start().starts_with("unset "))
+        .expect("the unset line of keyless");
     for id in ids() {
         let var = by_id(id).expect("a listed provider").key_var();
-        assert!(unpaid.contains(&format!("{var}=''")), "{var} in {unpaid}");
+        assert!(
+            unset.split_whitespace().any(|w| w == var),
+            "{var} in {unset}"
+        );
     }
+    // Every cargo-crap and coverage run but the report run is keyless.
+    let score = read("scripts/action/score.sh");
+    let runs: Vec<&str> = score
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| {
+            l.contains("cargo-crap --") || l.contains("crap --format") || l.contains(" cover \"")
+        })
+        // `crap` itself is defined once and called by the runs below.
+        .filter(|l| {
+            !l.starts_with('#')
+                && !l.starts_with("echo")
+                && !l.starts_with("cargo-crap --lcov \"$lcov\"")
+        })
+        .collect();
+    assert!(runs.len() >= 6, "{runs:#?}");
+    for line in runs {
+        let paid = line.starts_with("report_run crap ");
+        assert!(paid || line.contains("keyless "), "not keyless: {line}");
+    }
+    assert_eq!(
+        score.matches("report_run crap ").count(),
+        1,
+        "one run may spend the triage budget"
+    );
+    let install = read("scripts/action/install.sh");
+    assert!(install.contains("keyless \"$dir/$name\" --version"));
 }
