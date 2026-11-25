@@ -97,6 +97,7 @@ function generate(base, temp, bash) {
   } finally {
     try {
       git("worktree", "remove", "--force", worktree);
+      rmSync(worktree, { recursive: true, force: true });
     } catch (error) {
       if (!originalError) throw error;
       console.error("Could not remove base worktree: " + error.message);
