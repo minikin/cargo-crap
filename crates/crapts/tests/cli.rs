@@ -2540,13 +2540,16 @@ fn s13_invalid_duplicate_config_names_its_source_even_when_overridden() {
             format!("[{group}]\n{key}={value}"),
         )
         .unwrap();
-        let out = invoke(dir.path(), &["--output", "out", "--dup-threshold", "0.8"]);
-        check(&out, 2);
-        let err = String::from_utf8(out.stderr).unwrap();
-        assert!(
-            err.contains(".crapts.toml") && err.contains(key) && err.contains(reason),
-            "{err}"
-        );
+        for mode in [&["--print-config"][..], &["--output", "out"]] {
+            let args = [&["--dup-threshold", "0.8"][..], mode].concat();
+            let out = invoke(dir.path(), &args);
+            check(&out, 2);
+            let err = String::from_utf8(out.stderr).unwrap();
+            assert!(
+                err.contains(".crapts.toml") && err.contains(key) && err.contains(reason),
+                "{args:?}: {err}"
+            );
+        }
         assert!(!dir.path().join("out").exists());
     }
 }
@@ -2586,23 +2589,17 @@ fn s40_a_later_duplicate_threshold_cannot_hide_an_invalid_flag() {
         ("NaN", "a finite number"),
         ("inf", "a finite number"),
     ] {
-        let out = invoke(
-            dir.path(),
-            &[
-                "--dup-threshold",
-                value,
-                "--dup-threshold",
-                "0.8",
-                "--output",
-                "out",
-            ],
-        );
-        check(&out, 2);
-        let err = String::from_utf8(out.stderr).unwrap();
-        assert!(
-            err.contains(&format!("--dup-threshold must be {reason}, got {value}")),
-            "{err}"
-        );
+        for mode in [&["--print-config"][..], &["--output", "out"]] {
+            let flags = ["--dup-threshold", value, "--dup-threshold", "0.8"];
+            let args = [flags.as_slice(), mode].concat();
+            let out = invoke(dir.path(), &args);
+            check(&out, 2);
+            let err = String::from_utf8(out.stderr).unwrap();
+            assert!(
+                err.contains(&format!("--dup-threshold must be {reason}, got {value}")),
+                "{args:?}: {err}"
+            );
+        }
         assert!(!dir.path().join("out").exists());
     }
 }

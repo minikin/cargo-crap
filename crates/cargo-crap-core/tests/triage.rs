@@ -107,10 +107,10 @@ fn a_budgeted_run_prunes_expired_and_overflow_entries_and_warns_once_on_cleanup_
     let policy = cache::Retention {
         now,
         max_age: Duration::from_secs(30),
-        max_entries: 1,
+        max_entries: 2,
     };
     let key = |n| cache::CacheKey::from_digest([n; 32]);
-    for (n, age) in [(1, 30), (2, 2), (3, 1)] {
+    for (n, age) in [(1, 3), (2, 2), (3, 1)] {
         fs::File::create(dir.path().join(key(n).file_name()))
             .unwrap()
             .set_modified(now - Duration::from_secs(age))
@@ -154,6 +154,16 @@ fn a_budgeted_run_prunes_expired_and_overflow_entries_and_warns_once_on_cleanup_
     };
     assert_eq!(
         run(cache::Cache::new(dir.path()).with_retention(policy)),
+        Vec::<String>::new()
+    );
+    assert!(!dir.path().join(key(1).file_name()).exists());
+    assert!(dir.path().join(key(2).file_name()).is_file());
+    let later = cache::Retention {
+        now: now + Duration::from_secs(28),
+        ..policy
+    };
+    assert_eq!(
+        run(cache::Cache::new(dir.path()).with_retention(later)),
         Vec::<String>::new()
     );
     let kept = dir.path().join(key(3).file_name());
