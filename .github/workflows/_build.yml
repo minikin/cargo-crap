@@ -35,6 +35,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Isolate per-target caches so cross containers with older glibc
+          # never restore host-built proc-macros or build scripts.
+          prefix-key: v0-rust-${{ matrix.target }}
       - if: matrix.use_cross
         uses: taiki-e/install-action@v2
         with:

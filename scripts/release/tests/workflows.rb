@@ -216,6 +216,8 @@ class ReleaseWorkflows < Minitest::Test
     assert_equal %w[binary features package targets],w.fetch(true).fetch('workflow_call')['inputs'].keys.sort
     build = w.fetch('jobs').fetch('build')
     assert_equal '${{ matrix.os }}', build.fetch('runs-on')
+    cache = build.fetch('steps').find { |s| s['uses'] == 'Swatinem/rust-cache@v2' }
+    assert_includes cache.dig('with', 'prefix-key').to_s, 'matrix.target'
     install = build.fetch('steps').find { |s| s.dig('with', 'tool') == 'cross' }
     assert_equal 'matrix.use_cross', install.fetch('if')
     compile = build.fetch('steps').find { |s| s['name'] == 'Build' }
