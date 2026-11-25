@@ -1,4 +1,4 @@
-use crate::coverage::{Coverage, CoverageData, CoverageUnit, Point, Statement};
+use crate::coverage::{Coverage, CoverageUnit, Point, Statement};
 use crate::{FileAnalysis, Position, Row, SourceSpan};
 use cargo_crap_core::coverage::{FileCoverage, StrictLcovFile};
 use cargo_crap_core::entry::{CrapEntry, MissingCoveragePolicy, ScopeDiagnostics, StrayFiles};
@@ -354,16 +354,14 @@ pub fn attribute(
     let mut rows = Vec::new();
     let mut arrows = ArrowCandidates::default();
     for (file, bound) in files.iter().zip(&assignment.bindings) {
-        let evidence = match &coverage.0 {
-            CoverageData::Lines(line_files) => {
-                line_evidence(&file.rows, &merge_lines(line_files, bound))
-            },
-            CoverageData::Statements(statement_files) => statement_evidence(
-                &file.rows,
-                &merge_statements(statement_files, bound),
-                &mut arrows,
-            ),
-        };
+        let evidence = coverage
+            .measured(
+                |files| {
+                    statement_evidence(&file.rows, &merge_statements(files, bound), &mut arrows)
+                },
+                |files| line_evidence(&file.rows, &merge_lines(files, bound)),
+            )
+            .unwrap_or_else(|| vec![Evidence::default(); file.rows.len()]);
         rows.extend(
             file.rows
                 .iter()

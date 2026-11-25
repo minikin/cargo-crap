@@ -35,8 +35,8 @@
     },
     "coverage_kind": {
       "type": "string",
-      "enum": ["statements", "lines"],
-      "description": "Measured coverage unit."
+      "enum": ["statements", "lines", "none"],
+      "description": "Coverage unit, or none when no coverage was supplied."
     },
     "threshold": {
       "type": "number",
@@ -74,12 +74,127 @@
       "$ref": "https://raw.githubusercontent.com/minikin/cargo-crap/main/schemas/crapts/changed-v1.json",
       "description": "Optional changed-function section, present with --base."
     },
+    "duplicates": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "../duplicates-v1.json#/definitions/DuplicatePair"
+          },
+          {
+            "properties": {
+              "first_file": {
+                "$ref": "#/definitions/DeltaEntry/properties/file"
+              },
+              "second_file": {
+                "$ref": "#/definitions/DeltaEntry/properties/file"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "duplicate_groups": {
+      "description": "Every current group. Status compares its members to one recorded baseline group. A grown group includes its largest prior overlap in grown_from.",
+      "type": "array",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "../duplicates-v1.json#/definitions/DeltaDuplicateGroup"
+          },
+          {
+            "properties": {
+              "members": {
+                "items": {
+                  "properties": {
+                    "file": {
+                      "$ref": "#/definitions/DeltaEntry/properties/file"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "duplicate_context": {
+      "$ref": "#/definitions/DuplicateContext"
+    },
+    "untriaged_groups": {
+      "type": "integer",
+      "minimum": 1
+    },
     "diagnostics": {
       "$ref": "#/definitions/ScopeDiagnostics",
       "description": "Source and coverage scope overlap."
     }
   },
+  "dependencies": {
+    "duplicates": [
+      "duplicate_groups",
+      "duplicate_context"
+    ],
+    "duplicate_groups": [
+      "duplicates",
+      "duplicate_context"
+    ],
+    "duplicate_context": [
+      "duplicates",
+      "duplicate_groups"
+    ],
+    "untriaged_groups": [
+      "duplicates",
+      "duplicate_groups",
+      "duplicate_context"
+    ]
+  },
   "definitions": {
+    "DuplicateContext": {
+      "type": "object",
+      "properties": {
+        "repo_prefix": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^(?![A-Za-z]:/)(?:$|(?!\\.{1,2}(?:/|$))[^/\\\\]+(?:/(?!\\.{1,2}(?:/|$))[^/\\\\]+)*)$"
+        },
+        "families": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "$ref": "#/definitions/DeltaEntry/properties/file"
+              },
+              "stem": {
+                "type": "string"
+              },
+              "fingerprints": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "file",
+              "stem",
+              "fingerprints"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "repo_prefix",
+        "families"
+      ],
+      "additionalProperties": false
+    },
     "SemVer": {
       "type": "string",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$"

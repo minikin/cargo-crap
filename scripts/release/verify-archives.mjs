@@ -1,10 +1,25 @@
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { parseArgs } from "node:util";
 import resolver from "../../npm/crapts/lib/resolve.js";
 import { archiveName, extractBinary } from "./archives.mjs";
 
-function verify(dir, triple) {
+function compareStaged(archive, target, staged) {
+  const scratch = mkdtempSync(join(tmpdir(), "crapts-verify-"));
+  try {
+    const member = join(scratch, basename(target.binary));
+    extractBinary(archive, member, target);
+    const packaged = join(staged, basename(target.name), target.binary);
+    if (!readFileSync(member).equals(readFileSync(packaged)))
+      throw Error("staged binary differs for " + target.triple);
+  } finally {
+    rmSync(scratch, { force: true, recursive: true });
+  }
+}
+
+function verify(dir, triple, staged) {
   const expected = new Map(
     resolver.targets.map((target) => [archiveName(target), target]),
   );
@@ -26,12 +41,19 @@ function verify(dir, triple) {
     const path = join(dir, name);
     const hash = createHash("sha256").update(readFileSync(path)).digest("hex");
     if (sums.get(name) !== hash) throw Error("checksum mismatch: " + name);
+    if (staged) compareStaged(path, target, staged);
     if (triple) extractBinary(path, join(dir, basename(target.binary)), target);
   }
 }
 
 try {
-  verify(...process.argv.slice(2));
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
+    options: { staged: { type: "string" } },
+  });
+  if (positionals.length < 1 || positionals.length > 2)
+    throw Error("expected archive directory and optional target");
+  verify(positionals[0], positionals[1], values.staged);
 } catch (e) {
   console.error(e.message);
   process.exitCode = 1;

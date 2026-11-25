@@ -41,7 +41,7 @@ class ReleaseWorkflows < Minitest::Test
       product = name == 'release' ? 'cargo-crap' : 'crapts'
       assert_equal './.github/workflows/_build.yml', jobs['build']['uses']
       inputs = jobs['build']['with']
-      assert_equal [product, product, name == 'release' ? 'triage' : ''], inputs.values_at('package','binary','features')
+      assert_equal [product, product, 'triage'], inputs.values_at('package','binary','features')
       targets = JSON.parse(inputs.fetch('targets'))
       expected = %w[aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-msvc]
       expected << 'x86_64-unknown-linux-musl' if name == 'release-crapts'
@@ -101,6 +101,7 @@ class ReleaseWorkflows < Minitest::Test
     assert_includes commands(jobs['archive-smoke']), 'smoke.mjs'
     assert_includes commands(jobs['publish-npm']), 'verify-archives.mjs'
     assert_includes commands(jobs['publish-npm']), 'stage-npm.mjs'
+    assert_includes commands(jobs['publish-npm']), 'verify-archives.mjs artifacts --staged staged'
     assert_includes commands(jobs['publish-npm']), 'publish-npm.mjs'
     assert_equal %w[alpine macos ubuntu windows], jobs['npm-smoke']['strategy']['matrix']['include'].map { |row| row['host'] }.sort
     alpine = jobs['npm-smoke']['steps'].find { |s| s['if'] == "matrix.host == 'alpine'" }
@@ -185,11 +186,38 @@ class ReleaseWorkflows < Minitest::Test
       end
     end
   end
+  def test_pull_requests_link_and_inspect_both_linux_release_archives_before_tagging
+    jobs = workflow('ci').fetch('jobs')
+    build = jobs.fetch('crapts-cross')
+    assert_equal './.github/workflows/_build.yml', build.fetch('uses')
+    assert_equal ['changes'], edges(jobs, 'crapts-cross')
+    assert_includes build.fetch('if'), "github.event_name == 'pull_request'"
+    assert_includes build.fetch('if'), "needs.changes.outputs.rust == 'true'"
+    inputs = build.fetch('with')
+    assert_equal %w[crapts crapts triage], inputs.values_at('package', 'binary', 'features')
+    release = workflow('release-crapts').dig('jobs', 'build', 'with')
+    expected = JSON.parse(release.fetch('targets')).select { |row| row.fetch('use_cross') }
+    assert_equal %w[aarch64-unknown-linux-gnu x86_64-unknown-linux-musl], expected.map { |row| row.fetch('target') }.sort
+    assert_equal expected.sort_by { |row| row.fetch('target') }, JSON.parse(inputs.fetch('targets')).sort_by { |row| row.fetch('target') }
+    filters = jobs.dig('changes', 'steps').find { |s| s['id'] == 'filter' }.dig('with', 'filters')
+    rust = YAML.safe_load(filters).fetch('rust')
+    %w[crates/crapts/** crates/cargo-crap-core/** Cargo.toml **/Cargo.toml Cargo.lock .github/workflows/_build.yml .github/workflows/release-crapts.yml].each { |pattern| assert_includes rust, pattern }
+    inspection = workflow('_build').dig('jobs', 'build', 'steps').find { |s| s['name'] == 'Inspect Linux cross archive' }
+    assert_includes inspection.fetch('if'), 'matrix.use_cross'
+    %w[tar readelf AArch64 X86-64].each { |token| assert_includes inspection.fetch('run'), token }
+    inspect_script = inspection.fetch('run')
+    assert_includes inspect_script, 'if [[ "$TARGET" == x86_64-unknown-linux-musl ]]'
+    assert_includes inspect_script, 'readelf -d "$unpacked/$BINARY"'
+    assert_match(/if grep -q NEEDED .*?exit 1/m, inspect_script)
+    assert_includes commands(jobs.fetch('npm-wrapper')), 'cargo build --locked -p crapts --features triage'
+  end
   def test_reusable_build_and_ci_contract
     w = workflow('_build')
     assert_equal %w[binary features package targets],w.fetch(true).fetch('workflow_call')['inputs'].keys.sort
     build = w.fetch('jobs').fetch('build')
     assert_equal '${{ matrix.os }}', build.fetch('runs-on')
+    cache = build.fetch('steps').find { |s| s['uses'] == 'Swatinem/rust-cache@v2' }
+    assert_includes cache.dig('with', 'prefix-key').to_s, 'matrix.target'
     install = build.fetch('steps').find { |s| s.dig('with', 'tool') == 'cross' }
     assert_equal 'matrix.use_cross', install.fetch('if')
     compile = build.fetch('steps').find { |s| s['name'] == 'Build' }

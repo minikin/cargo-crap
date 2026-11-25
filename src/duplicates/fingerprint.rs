@@ -5,11 +5,7 @@
 //! similarity is computed over, so the set contains one entry per distinct
 //! shape appearing anywhere in the function — including the whole function.
 //!
-//! The hash is FNV-1a with the standard 64-bit parameters, written out here
-//! rather than taken from `DefaultHasher`, whose output std explicitly
-//! declines to guarantee across releases. A fingerprint that changed with the
-//! toolchain would make two runs of the same tool disagree about the same
-//! source.
+//! The shared 64-bit FNV-1a implementation keeps these hashes stable across toolchains.
 
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
@@ -18,36 +14,7 @@ use super::normalize::NormNode;
 
 pub use super::model::Fingerprint;
 
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// FNV-1a as a [`Hasher`], so the derived `Hash` impls do the walking.
-/// Shared with the triage cache, whose keys must be just as stable.
-pub(crate) struct Fnv1a {
-    state: u64,
-}
-
-impl Fnv1a {
-    pub(crate) fn new() -> Self {
-        Self { state: FNV_OFFSET }
-    }
-}
-
-impl Hasher for Fnv1a {
-    fn write(
-        &mut self,
-        bytes: &[u8],
-    ) {
-        for b in bytes {
-            self.state ^= u64::from(*b);
-            self.state = self.state.wrapping_mul(FNV_PRIME);
-        }
-    }
-
-    fn finish(&self) -> u64 {
-        self.state
-    }
-}
+pub(crate) use cargo_crap_core::duplicates::fnv::Fnv1a;
 
 /// The fingerprint of one subtree, folding in its children's fingerprints.
 ///
@@ -85,7 +52,7 @@ fn collect(
     node: &NormNode,
     out: &mut BTreeSet<Fingerprint>,
 ) -> Fingerprint {
-    let mut hasher = Fnv1a::new();
+    let mut hasher = Fnv1a::default();
     node.kind.hash(&mut hasher);
     for child in &node.children {
         hasher.write_u64(collect(child, out).0);

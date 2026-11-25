@@ -508,8 +508,12 @@ pub fn load_baseline_with_weight(
     parse_cargo_crap_baseline(&raw, path, tool)
 }
 
+mod duplicate_history;
+pub use duplicate_history::DuplicateHistory;
+
 #[derive(Debug, Clone)]
 pub struct CraptsBaseline {
+    pub duplicate_history: Option<DuplicateHistory>,
     pub(crate) entries: Vec<CrapEntry>,
     pub(crate) baseline_version: String,
     pub(crate) regression_gate_skipped: bool,
@@ -560,7 +564,7 @@ fn parse_crapts_baseline(
     let baseline_version =
         check_semver_field(obj.get("version").map(AsRef::as_ref), path, "version")?;
     let is_delta = obj.contains_key("regression_gate") || obj.contains_key("removed");
-    let entries = if is_delta {
+    let (entries, duplicate_history) = if is_delta {
         parse_crapts_delta_doc(path, raw)?
     } else {
         parse_crapts_absolute_doc(path, raw)?
@@ -573,6 +577,7 @@ fn parse_crapts_baseline(
         )
     });
     Ok(CraptsBaseline {
+        duplicate_history,
         entries,
         baseline_version,
         regression_gate_skipped,
@@ -913,19 +918,21 @@ fn check_coverage_kind(
     path: &Path,
     current_kind: CoverageKind,
 ) -> Result<()> {
-    let found = match obj.get("coverage_kind").and_then(|v| raw_str(v)).as_deref() {
-        Some("statements") => CoverageKind::Statements,
-        Some("lines") => CoverageKind::Lines,
-        _ => bail!(
-            "baseline {} has missing or invalid coverage_kind (expected \"statements\" or \"lines\")",
+    let Some(found) = obj
+        .get("coverage_kind")
+        .and_then(|v| raw_str(v))
+        .filter(|name| CoverageKind::is_valid_name(name))
+    else {
+        bail!(
+            "baseline {} has missing or invalid coverage_kind (expected \"statements\", \"lines\", or \"none\")",
             path.display()
-        ),
+        );
     };
-    if found != current_kind {
+    if found != current_kind.as_str() {
         bail!(
             "baseline {} has coverage_kind \"{}\" which does not match current \"{}\"",
             path.display(),
-            found.as_str(),
+            found,
             current_kind.as_str()
         );
     }
@@ -996,6 +1003,14 @@ fn decode_raw_object<T: serde::de::DeserializeOwned>(
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsAbsolute {
+    #[serde(default, deserialize_with = "present_raw")]
+    duplicates: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    duplicate_groups: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    duplicate_context: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    untriaged_groups: Option<Box<RawValue>>,
     #[serde(rename = "$schema", default, deserialize_with = "present_raw")]
     schema: Option<Box<RawValue>>,
     version: Box<RawValue>,
@@ -1014,6 +1029,14 @@ struct RawCraptsAbsolute {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCraptsDelta {
+    #[serde(default, deserialize_with = "present_raw")]
+    duplicates: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    duplicate_groups: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    duplicate_context: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present_raw")]
+    untriaged_groups: Option<Box<RawValue>>,
     #[serde(rename = "$schema", default, deserialize_with = "present_raw")]
     schema: Option<Box<RawValue>>,
     version: Box<RawValue>,
@@ -1190,7 +1213,7 @@ struct CommonOuter {
 fn parse_crapts_absolute_doc(
     path: &Path,
     raw_doc: &str,
-) -> Result<Vec<CrapEntry>> {
+) -> Result<(Vec<CrapEntry>, Option<DuplicateHistory>)> {
     let raw: RawCraptsAbsolute =
         serde_json::from_str(raw_doc).with_context(|| format!("baseline {}", path.display()))?;
     let _ = (
@@ -1211,13 +1234,23 @@ fn parse_crapts_absolute_doc(
         },
         false,
     )?;
-    parse_crapts_entries(path, &raw.entries, false)
+    crapts_entries_with_history(
+        path,
+        &raw.entries,
+        [
+            raw.duplicates.as_deref(),
+            raw.duplicate_groups.as_deref(),
+            raw.duplicate_context.as_deref(),
+            raw.untriaged_groups.as_deref(),
+        ],
+        false,
+    )
 }
 
 fn parse_crapts_delta_doc(
     path: &Path,
     raw_doc: &str,
-) -> Result<Vec<CrapEntry>> {
+) -> Result<(Vec<CrapEntry>, Option<DuplicateHistory>)> {
     let raw: RawCraptsDelta =
         serde_json::from_str(raw_doc).with_context(|| format!("baseline {}", path.display()))?;
     let _ = (
@@ -1240,7 +1273,27 @@ fn parse_crapts_delta_doc(
         },
         true,
     )?;
-    parse_crapts_entries(path, &raw.entries, true)
+    crapts_entries_with_history(
+        path,
+        &raw.entries,
+        [
+            raw.duplicates.as_deref(),
+            raw.duplicate_groups.as_deref(),
+            raw.duplicate_context.as_deref(),
+            raw.untriaged_groups.as_deref(),
+        ],
+        true,
+    )
+}
+
+fn crapts_entries_with_history(
+    path: &Path,
+    entries: &RawValue,
+    duplicate_fields: [Option<&RawValue>; 4],
+    is_delta: bool,
+) -> Result<(Vec<CrapEntry>, Option<DuplicateHistory>)> {
+    let history = duplicate_history::read(path, duplicate_fields, is_delta)?;
+    Ok((parse_crapts_entries(path, entries, is_delta)?, history))
 }
 
 fn validate_common_outer(
@@ -2042,7 +2095,7 @@ pub(crate) fn compare(
     }
 }
 
-fn stem(name: &str) -> &str {
+pub(crate) fn stem(name: &str) -> &str {
     match name.rsplit_once('#') {
         Some((head, digits))
             if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) =>
@@ -4472,7 +4525,7 @@ mod crapts_admission_tests {
                 d
             },
             CoverageKind::Lines,
-            "coverage_kind",
+            "missing or invalid coverage_kind",
         );
         assert_rejected(
             &{
@@ -4481,7 +4534,7 @@ mod crapts_admission_tests {
                 d
             },
             CoverageKind::Lines,
-            "statements",
+            r#"coverage_kind "statements" which does not match current "lines""#,
         );
         assert_rejected(
             &{

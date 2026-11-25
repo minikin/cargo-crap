@@ -37,10 +37,11 @@ An install that skips optional dependencies, such as `npm install --omit=optiona
 cargo binstall crapts
 ```
 
-Building from source needs a Rust toolchain. The minimum Rust version is `1.98`.
+Building from source needs a Rust toolchain. The minimum Rust version is `1.98`. Enable the
+`triage` feature to include the TypeSafe and OpenAI clients.
 
 ```bash
-cargo install --locked crapts
+cargo install --locked crapts --features triage
 ```
 
 Check the install:

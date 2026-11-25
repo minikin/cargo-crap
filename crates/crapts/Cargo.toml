@@ -36,6 +36,9 @@ toml = { workspace = true, features = ["parse"] }
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[features]
+triage = ["cargo-crap-core/triage"]
+
 [dev-dependencies]
 flate2 = { workspace = true, features = ["rust_backend"] }
 jsonschema.workspace = true

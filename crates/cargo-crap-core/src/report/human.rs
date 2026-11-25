@@ -665,6 +665,15 @@ mod tests {
     }
 
     #[test]
+    fn summary_propagates_write_errors_for_both_verdicts() {
+        for crappy in [0, 1] {
+            let mut sink = Refuses::new("function(s)");
+            let error = write_summary(&mut sink, crappy, 2, 15.0).unwrap_err();
+            assert_eq!(error.to_string(), "disk full");
+        }
+    }
+
+    #[test]
     fn human_output_mentions_every_function() {
         let mut buf = Vec::new();
         render(&sample(), &opts(30.0, Format::Human), &mut buf).unwrap();

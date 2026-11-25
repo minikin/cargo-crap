@@ -35,6 +35,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Isolate per-target caches so cross containers with older glibc
+          # never restore host-built proc-macros or build scripts.
+          prefix-key: v0-rust-${{ matrix.target }}
       - if: matrix.use_cross
         uses: taiki-e/install-action@v2
         with:
@@ -61,6 +65,29 @@ jobs:
           $archive = "$env:BINARY-$env:TARGET.zip"
           Compress-Archive -Path "target/$env:TARGET/release/$env:BINARY.exe" -DestinationPath $archive
           "ARCHIVE=$archive" >> $env:GITHUB_ENV
+      - name: Inspect Linux cross archive
+        if: matrix.use_cross && inputs.package == 'crapts'
+        shell: bash
+        run: |
+          unpacked="$(mktemp -d)"
+          tar -xzf "$ARCHIVE" -C "$unpacked" "$BINARY"
+          test -x "$unpacked/$BINARY"
+          case "$TARGET" in
+            aarch64-unknown-linux-gnu) machine=AArch64 ;;
+            x86_64-unknown-linux-musl) machine='Advanced Micro Devices X86-64' ;;
+            *) exit 1 ;;
+          esac
+          readelf -h "$unpacked/$BINARY" > "$unpacked/header"
+          grep -Eq 'Class:[[:space:]]+ELF64$' "$unpacked/header"
+          grep -Eq 'Type:[[:space:]]+(EXEC|DYN) ' "$unpacked/header"
+          grep -Eq "Machine:[[:space:]]+$machine$" "$unpacked/header"
+          if [[ "$TARGET" == x86_64-unknown-linux-musl ]]; then
+            readelf -d "$unpacked/$BINARY" > "$unpacked/dynamic"
+            if grep -q NEEDED "$unpacked/dynamic"; then
+              echo "The musl archive contains a binary with shared library dependencies" >&2
+              exit 1
+            fi
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}

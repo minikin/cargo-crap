@@ -163,7 +163,7 @@ test("wrapper forwards argv, stdio and exit codes 0, 1 and 2 without install scr
   );
   assert.ok(
     existsSync(binary),
-    "Set CRAPTS_BINARY to the executable or run cargo build -p crapts",
+    "Set CRAPTS_BINARY to the executable or run cargo build -p crapts --features triage",
   );
   const { dir, out } = fixture(t, { name: host.name, path: binary });
   const packed = ["crapts", host.name.split("/")[1]].map(
@@ -480,7 +480,10 @@ test("npm smoke waits for the wrapper and host package and bounds registry retri
         },
       },
     );
-  await smoke();
+  assert.match(
+    (await smoke()).stdout,
+    /0 default requests, 1 verdict from 1 request/,
+  );
   assert.deepEqual(lookups.slice(0, 4), [
     wrapper,
     wrapper,
@@ -511,9 +514,9 @@ test("archive smoke verifies all six checksums and exercises the selected native
   );
   assert.ok(
     existsSync(native),
-    "Set CRAPTS_BINARY or run cargo build -p crapts",
+    "Set CRAPTS_BINARY or run cargo build -p crapts --features triage",
   );
-  const { archives } = fixture(t, { name: host.name, path: native });
+  const { archives, out } = fixture(t, { name: host.name, path: native });
   const files = readdirSync(archives);
   const sums = files.map(
     (file) =>
@@ -531,6 +534,22 @@ test("archive smoke verifies all six checksums and exercises the selected native
       [join(release, "verify-archives.mjs"), archives, ...args],
       { stdio: "pipe" },
     );
+  verify("--staged", out);
+  for (const [triple, suffix, os] of rows) {
+    const bin = join(
+      out,
+      "crapts-" + suffix,
+      "bin",
+      os === "win32" ? "crapts.exe" : "crapts",
+    );
+    const original = readFileSync(bin);
+    writeFileSync(bin, "replaced after staging");
+    assert.throws(
+      () => verify("--staged", out),
+      new RegExp("staged binary differs for " + triple),
+    );
+    writeFileSync(bin, original);
+  }
   verify();
   assert.throws(
     () => verify("unknown-triple"),
@@ -542,13 +561,17 @@ test("archive smoke verifies all six checksums and exercises the selected native
   }
   writeFileSync(checksums, sums.join("\n"));
   verify(host.triple);
-  execFileSync(process.execPath, [
+  const result = execFileSync(process.execPath, [
     join(release, "smoke.mjs"),
     "--version",
     manifest(join(root, "npm/crapts")).version,
     "--binary",
     join(archives, windows ? "crapts.exe" : "crapts"),
   ]);
+  assert.match(
+    result.toString(),
+    /0 default requests, 1 verdict from 1 request/,
+  );
   writeFileSync(join(archives, files[0]), "damaged");
   assert.throws(verify, /checksum mismatch/);
   writeFileSync(checksums, sums.slice(1).join("\n"));

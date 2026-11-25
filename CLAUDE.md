@@ -95,11 +95,11 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
                      ├── compare.rs        pairwise Jaccard ──▶ Vec<DuplicatePair> (core)
                      ├── scan.rs           walk a tree and compare extracted functions
                      └── triage/           opt-in advisory verdicts (spec 30)
-                         ├── request.rs    one pair's state + the three questions
-                         ├── cache.rs      content-keyed verdicts under target/
-                         ├── budget.rs     the per-run request cap
-                         ├── provider/     TypeSafe and OpenAI, their keys and URLs
-                         └── client.rs     ureq client, retries (`triage` feature)
+                         ├── request.rs    Rust source excerpts and question text
+                         ├── cache.rs      content-keyed verdicts (core)
+                         ├── budget.rs     the per-run request cap (core)
+                         ├── provider/     TypeSafe and OpenAI wire formats (core)
+                         └── client.rs     ureq client and retries (core `triage` feature)
 ```
 
 **`core/score.rs`** holds the pure formula `CRAP(m) = comp(m)² × (1 − cov(m)/100)³ + comp(m)`. No I/O, no dependencies on other modules.
@@ -121,7 +121,7 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`core/delta.rs`** loads baselines and compares a run against one. `load_baseline` and `load_baseline_with_weight` decode cargo-crap JSON envelopes and reject any top-level `name_scheme` key with a tool-named diagnostic while preserving original parse errors on malformed or non-object input. `load_crapts_baseline` validates complete crapts v1 absolute or delta reports against the caller's `CoverageKind` and SemVer policy, recording a skip notice when major or minor versions differ. `compute_delta` preserves cargo-crap's default matching, while `compare` applies the caller's `PairPolicy`: `FileFunctionLine` matches by `(file, function, line)` before suffix and unique-name fallback, and `FileFunction` withholds changed-size `(file, stem)` groups, pairs by normalized file and full name before mutual unique longest path suffix and unique-name fallback, and classifies deltas rounded to six decimals. The `DeltaStatus` set is `Regressed / Improved / New / Unchanged / Moved`, and unpaired baseline functions land in `removed`.
 
-**`src/cache/`** is what is kept on disk between runs (spec 10). `target.rs` resolves the one target directory both caches use (`cargo metadata`'s `target_directory` in workspace mode; else `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, the analysed path's workspace root, the config's directory). `complexity.rs` is the per-file complexity cache (`complexity.json`): keyed by canonical path plus content length and FNV-1a hash, invalidated wholesale by the executable's identity and the try weight, and saved once per run replacing only the walked roots. `file.rs` holds the atomic write and the Windows read retry it shares with the triage verdict cache. `complexity::analyze_tree_cached` is the cache-aware walk; its output must equal `analyze_tree_weighted`'s (the property test `a_cached_analysis_equals_an_uncached_one` pins it). `--no-cache` / `cache = false` turn the analysis cache off and leave triage verdicts cached.
+**`src/cache/`** is what is kept on disk between runs (spec 10). `target.rs` resolves the one target directory both caches use (`cargo metadata`'s `target_directory` in workspace mode; else `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, the analysed path's workspace root, the config's directory). `complexity.rs` is the per-file complexity cache (`complexity.json`): keyed by canonical path plus content length and FNV-1a hash, invalidated wholesale by the executable's identity and the try weight, and saved once per run replacing only the walked roots. `file.rs` re-exports the atomic write and Windows read retry from `core/cache_file.rs`. `complexity::analyze_tree_cached` is the cache-aware walk; its output must equal `analyze_tree_weighted`'s (the property test `a_cached_analysis_equals_an_uncached_one` pins it). `--no-cache` / `cache = false` turn the analysis cache off and leave triage verdicts cached.
 
 **`src/config.rs`** loads the optional `.cargo-crap.toml`. It walks up from CWD until the file is found and returns `Config::default()` if absent. `#[serde(deny_unknown_fields)]` catches typos. CLI flags always override config values.
 
@@ -129,11 +129,11 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`src/tool.rs`** holds `CARGO_CRAP`, cargo-crap's `report::Tool`: the name, version, URLs, PR-comment marker and baseline hint its reports carry. It stays in cargo-crap so `env!("CARGO_PKG_VERSION")` expands to cargo-crap's version, not the core's.
 
-**`src/duplicates/`** is a second, opt-in pass over the same AST (`--duplicates`). Its `model`, `verdict`, `compare`, `group` and `novelty` submodules live in `core/duplicates/` and are re-exported here. `extract` collects one `FunctionPrint` per non-test function, `normalize` erases identifiers, literal values and field/path names while keeping control flow, operators, receiver shape and statement order, `fingerprint` hashes every normalized subtree into a `BTreeSet<Fingerprint>` (FNV-1a, not `DefaultHasher`, because the fingerprints must be stable across processes), and `compare` scores every pair by Jaccard similarity. The pass is quadratic in the number of functions, which is why it is off by default; functions below `duplicates.min-nodes` (default 20) are dropped before comparison. It reuses the complexity pass's test filter, so the two analyses cannot disagree about what counts as test code. Unlike the complexity pass, `extract` recurses into nested items, so a local `fn` is a duplicate candidate with no CRAP row. Its `triage/` submodule (spec 30) asks the configured provider (TypeSafe by default, or OpenAI, registered in `triage/provider/`) three typed questions about each reported group, through its most similar pair, and annotates the human, markdown, pr-comment and JSON output. `docs/guides/triage.md` is the user guide. Triage is opt-in twice: the HTTP client is behind the `triage` Cargo feature (off by default), and the run needs `[duplicates.triage] enabled = true` plus the provider's key, `TYPESAFE_API_KEY` or `OPENAI_API_KEY`. Any failure degrades to the untriaged report. `just dev` and CI test both builds.
+**`src/duplicates/`** is a second, opt-in pass over the same AST (`--duplicates`). Its `model`, `verdict`, `compare`, `group` and `novelty` submodules live in `core/duplicates/` and are re-exported here. `extract` collects one `FunctionPrint` per non-test function, `normalize` erases identifiers, literal values and field/path names while keeping control flow, operators, receiver shape and statement order, `fingerprint` hashes every normalized subtree into a `BTreeSet<Fingerprint>` with the stable FNV-1a implementation in `core/duplicates/fnv.rs`, and `compare` scores every pair by Jaccard similarity. The pass is quadratic in the number of functions, which is why it is off by default; functions below `duplicates.min-nodes` (default 20) are dropped before comparison. It reuses the complexity pass's test filter, so the two analyses cannot disagree about what counts as test code. Unlike the complexity pass, `extract` recurses into nested items, so a local `fn` is a duplicate candidate with no CRAP row. Its `triage/` submodule (spec 30) asks the configured provider (TypeSafe by default, or OpenAI, registered in `core/duplicates/triage/provider/`) three typed questions about each reported group, through its most similar pair, and annotates the human, markdown, pr-comment and JSON output. `docs/guides/triage.md` is the user guide. Triage is opt-in twice: the HTTP client is behind the `triage` Cargo feature (off by default), and the run needs `[duplicates.triage] enabled = true` plus the provider's key, `TYPESAFE_API_KEY` or `OPENAI_API_KEY`. Any failure degrades to the untriaged report. `just dev` and CI test both builds.
 
 **`src/main.rs`** builds the CLI with `clap`. It handles the `cargo crap` subcommand invocation by stripping the leading `crap` argument when detected. It resolves settings, runs analysis and coverage, prepares the baseline with the Cargo file scope, opens the destination and gathers duplicate data. It passes those inputs to `run::run` and returns the resulting gate exit code.
 
-**`core/run.rs`** owns `PreparedReport`, the `run::run` wrapper used by cargo-crap, and `BaselineFilter` (`prepare` for cargo-crap baselines, `prepare_crapts` for admitted crapts baselines with private version metadata and skip notice). `PreparedReport::new` selects rows according to `Tool.policy` and evaluates the gates. `PreparedReport::write` renders notices, `Placement::Lead` sections, the report body (`CargoCrapV1` or `CraptsV1` JSON, summary, or text and machine formats), duplicates, and `Placement::Trail` sections, then flushes before returning `GateOutcome`. In JSON mode, `CraptsV1` embeds a single validated `changed` section object and records `summary.changed_failures`, while `CargoCrapV1` refuses supplied sections before writing. **`core/report/section.rs`** defines `Section` and `Placement`. **`core/filter.rs`** compiles allow patterns and selects shown rows under `TieOrder::Stable` or `TieOrder::FileFunctionLine`. **`core/gate.rs`** maps threshold counts, full-delta counts (skipping the regression verdict across crapts minor versions), and section failures (`fail_sections`) to an exit code. **`core/policy.rs`** defines `EnvelopeKind`, `PairPolicy`, `TieOrder`, `Population`, `NoticeSpacing`, and `Policy`. cargo-crap supplies its values in `src/tool.rs`.
+**`core/run.rs`** owns `PreparedReport`, the `run::run` wrapper used by cargo-crap, and `BaselineFilter` (`prepare` for cargo-crap baselines, `prepare_crapts` for admitted crapts baselines with version metadata, a skip notice and scoped duplicate history). `PreparedReport::new` selects rows according to `Tool.policy` and evaluates the gates. `PreparedReport::write` renders notices, `Placement::Lead` sections, the report body (`CargoCrapV1` or `CraptsV1` JSON, summary, or text and machine formats), duplicates, and `Placement::Trail` sections, then flushes before returning `GateOutcome`. In JSON mode, `CraptsV1` embeds a single validated `changed` section object and records `summary.changed_failures`, while `CargoCrapV1` refuses supplied sections before writing. **`core/report/section.rs`** defines `Section` and `Placement`. **`core/filter.rs`** compiles allow patterns and selects shown rows under `TieOrder::Stable` or `TieOrder::FileFunctionLine`. **`core/gate.rs`** maps threshold counts, full-delta counts (skipping the regression verdict across crapts minor versions), and section failures (`fail_sections`) to an exit code. **`core/policy.rs`** defines `EnvelopeKind`, `PairPolicy`, `TieOrder`, `Population`, `NoticeSpacing`, and `Policy`. cargo-crap supplies its values in `src/tool.rs`.
 
 ### The crapts CLI
 
@@ -152,6 +152,13 @@ Each exclude or allow keeps its origin and base directory. Config patterns use
 the config directory. Flag patterns use the invocation directory. Discovery
 matches whole paths for exclusions. Core `AllowSet::compile_with_bases` matches
 file allows by component suffix and name allows against the full emitted name.
+
+`crates/crapts/src/duplicates/` builds normalized function prints from the
+scoring parse and groups matching functions across all files in scope. An
+explicit `--duplicates` admits a coverage-free scan for text, JSON, Markdown
+and PR comments. Scores then follow the missing-coverage policy.
+`cli/triage/` prepares JS and TS excerpts, provider settings and cache keys
+for the shared triage runner.
 
 Discovery emits unused exclusions before `coverage::read_coverage` reads the
 LCOV or Istanbul input. The command then analyzes each source in ordinary mode
@@ -176,7 +183,9 @@ JSON rows and visible path labels stay relative to the invocation.
 `--baseline <file>` is read after the coverage input and before any source is
 parsed. Core `delta::load_crapts_baseline` admits it against the measured
 coverage unit, and `BaselineFilter::prepare_crapts` drops rows outside
-`Discovery.scope` or matching an allow pattern. A failed scope lookup is an
+`Discovery.scope` or matching an allow pattern. It maps historical duplicate
+members into the current directory and applies file scope and exclusions.
+Only groups with at least two members in scope remain. A failed scope lookup is an
 input error, so a row that cannot be checked never vanishes unreported.
 `PreparedReport` evaluates `--fail-regression` before slicing the delta for display. A
 cross-minor baseline's notice appears in the text, markdown and pr-comment
@@ -200,8 +209,9 @@ changed-v1 order, and text for human, markdown, pr-comment and github.
 without `--base`. Rows carry `fingerprint`, which `CraptsV1` writes and
 `CargoCrapV1` drops. The report is rendered in memory before `--output`
 opens, and a pr-comment body is fitted to GitHub's 65,536 UTF-16 code units:
-complete, then with the core report summarized, then with fewer changed rows,
-or exit 2.
+complete report, score summary, fewer duplicate rows, then fewer changed rows.
+An explicit `--summary` reduces only duplicate rows. If the smallest body
+still exceeds the limit, the command exits 2.
 
 ## Key design decisions
 

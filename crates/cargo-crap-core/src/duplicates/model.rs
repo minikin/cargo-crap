@@ -32,3 +32,22 @@ pub struct FunctionPrint {
     /// Every distinct normalized subtree shape in the function.
     pub prints: BTreeSet<Fingerprint>,
 }
+
+/// Coordinates and row identities needed to compare crapts duplicate groups across runs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DuplicateContext {
+    // The wire format requires this key even when the producer has no Git root.
+    #[serde(deserialize_with = "serde::Deserialize::deserialize")]
+    pub repo_prefix: Option<String>,
+    pub families: Vec<Family>,
+}
+
+/// One family in source order, including rows below the duplicate size cutoff.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Family {
+    pub file: String,
+    pub stem: String,
+    pub fingerprints: Vec<String>,
+}

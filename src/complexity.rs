@@ -1575,6 +1575,24 @@ fn allowed() -> i32 { 42 }
     }
 
     #[test]
+    fn a_missing_source_produces_no_functions_or_cache_record() {
+        use crate::cache::complexity::{ComplexityCache, Executable, Header};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.rs");
+        let cache = ComplexityCache::empty(Header {
+            executable: Executable {
+                path: "/x".to_owned(),
+                len: 1,
+                mtime_ns: 1,
+            },
+            try_weight: 1.0,
+        });
+        let (functions, record) = analyze_file_cached(&path, Some(path.clone()), 1.0, &cache);
+        assert!(functions.is_empty());
+        assert!(record.is_none());
+    }
+
+    #[test]
     fn a_file_with_no_key_is_parsed_and_not_stored() {
         use crate::cache::complexity::{ComplexityCache, Executable, Header};
         let dir = tempfile::tempdir().expect("temp dir");

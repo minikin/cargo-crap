@@ -292,6 +292,15 @@ mod tests {
     }
 
     #[test]
+    fn summary_propagates_write_errors_for_both_verdicts() {
+        for crappy in [0, 1] {
+            let mut sink = Refuses::new("function(s)");
+            let error = write_markdown_absolute_summary(crappy, 2, 15.0, &mut sink).unwrap_err();
+            assert_eq!(error.to_string(), "disk full");
+        }
+    }
+
+    #[test]
     fn markdown_format_also_emits_links() {
         let entries = vec![CrapEntry {
             file: PathBuf::from("src/a.rs"),

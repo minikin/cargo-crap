@@ -1,6 +1,6 @@
 [package]
 name = "cargo-crap-core"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version = "1.88"
 authors.workspace = true
@@ -23,6 +23,12 @@ percent-encoding.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["float_roundtrip", "raw_value"] }
 unicode-width.workspace = true
+
+rayon = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true, features = ["rustls"] }
+
+[features]
+triage = ["dep:rayon", "dep:ureq"]
 
 [dev-dependencies]
 proptest.workspace = true

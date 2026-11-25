@@ -252,12 +252,11 @@ dependencies = [
  "tempfile",
  "toml",
  "unicode-width",
- "ureq",
 ]
 
 [[package]]
 name = "cargo-crap-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "comfy-table",
@@ -266,10 +265,12 @@ dependencies = [
  "owo-colors",
  "percent-encoding",
  "proptest",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",
  "unicode-width",
+ "ureq",
 ]
 
 [[package]]

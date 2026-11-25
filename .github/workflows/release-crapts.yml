@@ -29,7 +29,7 @@ jobs:
     with:
       package: crapts
       binary: crapts
-      features: ''
+      features: 'triage'
       targets: >-
         [{"target":"x86_64-unknown-linux-gnu","os":"ubuntu-latest","use_cross":false},
          {"target":"aarch64-unknown-linux-gnu","os":"ubuntu-latest","use_cross":true},
@@ -145,6 +145,7 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --dir artifacts -p SHA256SUMS -p 'crapts-*'
           node scripts/release/verify-archives.mjs artifacts
           node scripts/release/stage-npm.mjs --archives artifacts --out staged --version "$VERSION"
+          node scripts/release/verify-archives.mjs artifacts --staged staged
       - name: Publish with provenance
         run: |
           node scripts/release/publish-npm.mjs --staged-dir staged --version "$VERSION" \

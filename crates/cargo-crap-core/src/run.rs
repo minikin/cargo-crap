@@ -5,6 +5,7 @@ use crate::delta::{
     Baseline, CraptsBaseline, DeltaCounts, DeltaReport, attach_reasons, compare,
     gating_signal_count,
 };
+use crate::duplicates::model::{Family, Location};
 use crate::duplicates::{
     compare::DuplicatePair, group::DuplicateGroup, novelty::Comparison, verdict::Assessment,
 };
@@ -19,9 +20,19 @@ use crate::score::DEFAULT_TRY_WEIGHT;
 use crate::signals::SignalSettings;
 use anyhow::{Context, Result};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub trait Scope {
+    /// Map a producer's duplicate path into the invocation this scope checks.
+    /// Scopes without repository coordinates use the recorded relative spelling.
+    fn historical_path(
+        &self,
+        _repo_prefix: Option<&str>,
+        file: &Path,
+    ) -> PathBuf {
+        file.to_owned()
+    }
+
     fn keeps(
         &self,
         file: &Path,
@@ -73,18 +84,58 @@ impl<'a> BaselineFilter<'a> {
         mut baseline: CraptsBaseline,
     ) -> PreparedBaseline {
         self.filter_entries(&mut baseline.entries);
+        let (groups, families) = self.scoped_duplicates(baseline.duplicate_history);
         PreparedBaseline {
             baseline: Baseline {
                 entries: baseline.entries,
                 try_weight: DEFAULT_TRY_WEIGHT,
-                duplicate_groups: None,
+                duplicate_groups: groups,
             },
             crapts: Some(CraptsPreparedMeta {
+                duplicate_families: families,
                 baseline_version: baseline.baseline_version,
                 regression_gate_skipped: baseline.regression_gate_skipped,
                 notice: baseline.notice,
             }),
         }
+    }
+
+    fn scoped_duplicates(
+        &self,
+        history: Option<crate::delta::DuplicateHistory>,
+    ) -> (Option<Vec<Vec<Location>>>, Option<Vec<Family>>) {
+        history.map(|record| self.scope_history(record)).unzip()
+    }
+
+    fn scope_history(
+        &self,
+        history: crate::delta::DuplicateHistory,
+    ) -> (Vec<Vec<Location>>, Vec<Family>) {
+        let mut context = history.context;
+        let prefix = context.repo_prefix.as_deref();
+        let mut groups = history.groups;
+        for group in &mut groups {
+            for member in &mut *group {
+                member.file = self.scope.historical_path(prefix, &member.file);
+            }
+            group.retain(|m| self.scope.keeps(&m.file));
+        }
+        groups.retain(|g| g.len() >= 2);
+        let used: std::collections::BTreeSet<_> = groups
+            .iter()
+            .flatten()
+            .map(|m| (m.file.as_path(), crate::delta::stem(&m.name)))
+            .collect();
+        context.families.retain_mut(|f| {
+            let file = self.scope.historical_path(prefix, Path::new(&f.file));
+            if used.contains(&(file.as_path(), f.stem.as_str())) {
+                f.file = report::normalize_crapts_path(&file);
+                true
+            } else {
+                false
+            }
+        });
+        (groups, context.families)
     }
 
     fn filter_entries(
@@ -98,6 +149,7 @@ impl<'a> BaselineFilter<'a> {
 
 #[derive(Debug)]
 struct CraptsPreparedMeta {
+    duplicate_families: Option<Vec<Family>>,
     baseline_version: String,
     regression_gate_skipped: bool,
     notice: Option<String>,
@@ -110,6 +162,14 @@ pub struct PreparedBaseline {
 }
 
 impl PreparedBaseline {
+    #[must_use]
+    pub fn duplicate_record(&self) -> Option<(&[Vec<Location>], &[Family])> {
+        self.baseline
+            .duplicate_groups
+            .as_deref()
+            .zip(self.crapts.as_ref()?.duplicate_families.as_deref())
+    }
+
     #[must_use]
     pub fn as_baseline(&self) -> &Baseline {
         &self.baseline
@@ -190,6 +250,10 @@ pub struct Settings<'a> {
 }
 
 pub struct RenderExtras<'a> {
+    /// Producer coordinates and ordinal families for a crapts JSON duplicate record.
+    pub duplicate_context: Option<&'a crate::duplicates::model::DuplicateContext>,
+    /// Cap duplicate rows while fitting a PR comment, preserving group totals.
+    pub duplicate_row_limit: Option<usize>,
     /// Ordered duplicate pairs.
     pub duplicates: Option<&'a [DuplicatePair]>,
     /// Duplicate groups in report order.
@@ -205,7 +269,9 @@ pub struct RenderExtras<'a> {
 impl Default for RenderExtras<'_> {
     fn default() -> Self {
         Self {
+            duplicate_row_limit: None,
             duplicates: None,
+            duplicate_context: None,
             groups: None,
             novelty: None,
             triage: None,
@@ -357,6 +423,7 @@ impl<'a> PreparedReport<'a> {
             width: settings.width,
             cwd: settings.cwd,
             workspace_root: settings.workspace_root,
+            duplicate_row_limit: extras.duplicate_row_limit,
             duplicates: extras.duplicates,
             groups: extras.groups,
             novelty: extras.novelty,
@@ -380,7 +447,13 @@ impl<'a> PreparedReport<'a> {
         let options = self.options(extras);
         let staged = stage_sections(options.format, self.sections, pr_section_limit)?;
         let include_marker = write_prefix(&options, &self.notices, &staged, out)?;
-        self.write_body(summary, include_marker, &options, out)?;
+        self.write_body(
+            summary,
+            include_marker,
+            &options,
+            extras.duplicate_context,
+            out,
+        )?;
         report::render_duplicates(&options, out).context("writing duplicate report")?;
         write_suffix(options.format, &staged, out)?;
         out.flush().context("flushing output")?;
@@ -392,6 +465,7 @@ impl<'a> PreparedReport<'a> {
         summary: bool,
         include_marker: bool,
         options: &RenderOptions<'_>,
+        context: Option<&crate::duplicates::model::DuplicateContext>,
         out: &mut dyn Write,
     ) -> Result<()> {
         if self.tool.policy.use_summary(summary, options.format) {
@@ -402,7 +476,7 @@ impl<'a> PreparedReport<'a> {
         } else if options.format == Format::Json
             && self.tool.policy.envelope == EnvelopeKind::CraptsV1
         {
-            self.write_crapts_json(out)
+            self.write_crapts_json(options, context, out)
         } else if let Some(comparison) = &self.comparison {
             report::render_delta_inner(
                 &comparison.delta,
@@ -439,6 +513,8 @@ impl<'a> PreparedReport<'a> {
 
     fn write_crapts_json(
         &self,
+        options: &RenderOptions<'_>,
+        context: Option<&crate::duplicates::model::DuplicateContext>,
         out: &mut dyn Write,
     ) -> Result<()> {
         let coverage_kind = self
@@ -452,6 +528,7 @@ impl<'a> PreparedReport<'a> {
             .ok_or_else(|| anyhow::anyhow!("crapts JSON requires diagnostics"))?;
         let selection = report::CraptsSelection::from_limits(self.settings.top, self.settings.min)?;
         let ctx = report::CraptsJsonContext {
+            duplicates: context.map(|c| (options, c)),
             tool: self.tool,
             coverage_kind,
             threshold: self.settings.threshold,
@@ -770,6 +847,12 @@ mod tests {
     }
 
     #[test]
+    fn a_scope_without_repository_coordinates_keeps_the_recorded_spelling() {
+        let file = Path::new("../ui/read.ts");
+        assert_eq!(AllFiles.historical_path(Some("pkg"), file), file);
+    }
+
+    #[test]
     fn a_hidden_advisory_reason_preserves_a_passing_regression_gate() {
         use crate::report::test_support::{SECOND_TOOL, sample};
         use crate::signals::{Signal, Signals};
@@ -1022,6 +1105,7 @@ mod tests {
             duplicate_groups: None,
         });
         let prepared_crapts = filter.prepare_crapts(CraptsBaseline {
+            duplicate_history: None,
             entries: rows.clone(),
             baseline_version: "0.1.9".into(),
             regression_gate_skipped: true,
@@ -1032,6 +1116,7 @@ mod tests {
         let mut rows = rows;
         rows[0].signals = Some(crate::signals::Signals::default());
         let prepared_same_minor = filter.prepare_crapts(CraptsBaseline {
+            duplicate_history: None,
             entries: rows,
             baseline_version: "0.2.3-rc.1+build.7".into(),
             regression_gate_skipped: false,
@@ -1115,6 +1200,7 @@ mod tests {
         };
         let baseline = |entries| {
             BaselineFilter::new(&AllFiles, &allow).prepare_crapts(CraptsBaseline {
+                duplicate_history: None,
                 entries,
                 baseline_version: "0.2.3".into(),
                 regression_gate_skipped: false,
@@ -1242,6 +1328,7 @@ mod tests {
         assert!(err.contains("prepare_crapts") && out.is_empty(), "{err}");
 
         let cross_base = BaselineFilter::new(&AllFiles, &allow).prepare_crapts(CraptsBaseline {
+            duplicate_history: None,
             entries: Vec::new(),
             baseline_version: "0.1.9".into(),
             regression_gate_skipped: true,

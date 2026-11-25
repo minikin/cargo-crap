@@ -1,6 +1,6 @@
 # Command line
 
-[crapts](../README.md) scores the JavaScript and TypeScript sources under each path argument, `.` by default, against one coverage file.
+[crapts](../README.md) scores the JavaScript and TypeScript sources under each path argument, `.` by default, using the supplied coverage file. An explicit `--duplicates` scan can also run without coverage.
 
 ```bash
 crapts --coverage coverage/lcov.info
@@ -16,7 +16,9 @@ The thresholds, filters, row limits and gate switches can also come from [`.crap
 
 | Flag | Default | Description |
 |---|---|---|
-| `--coverage <file>` | none | LCOV or Istanbul `coverage-final.json` file to read. Required for a report. |
+| `--coverage <file>` | none | LCOV or Istanbul `coverage-final.json` file to read. Optional with an explicit `--duplicates` scan in text, JSON, markdown or PR-comment format. |
+| `--duplicates` | off | Report groups of structurally similar functions. |
+| `--dup-threshold <N>` | 0.82 | Minimum similarity for a pair, from 0 to 1 inclusive. |
 | `--threshold <N>` | 30 | A function scores as crappy when its CRAP is strictly above N. |
 | `--baseline <file>` | none | A saved crapts JSON report to compare with. |
 | `--epsilon <N>` | 0.01 | Score changes up to N count as unchanged against a baseline. |
@@ -50,6 +52,7 @@ The thresholds, filters, row limits and gate switches can also come from [`.crap
 Score JavaScript and TypeScript functions using cyclomatic complexity and test coverage.
 
 Usage: crapts [paths...] --coverage <file> [options]
+       crapts [paths...] --duplicates [options]
 
 Arguments:
   [paths]...
@@ -57,13 +60,16 @@ Arguments:
 
 Options:
       --coverage <file>
-          Read Istanbul or LCOV coverage from this file
+          Read Istanbul or LCOV coverage. Optional for --duplicates in text, JSON, markdown or pr-comment
 
       --threshold <N>
           Count scores strictly above this threshold
 
       --baseline <file>
           Select a baseline report for comparison
+
+      --dup-threshold <N>
+          Minimum similarity for a duplicate pair (0 to 1)
 
       --epsilon <N>
           Tolerance for comparing scores
@@ -103,6 +109,9 @@ Options:
 
       --comment-marker <text>
           Set the first line of a PR comment
+
+      --duplicates
+          Report structurally similar functions
 
       --fail-above
           Exit 1 when an eligible score exceeds the threshold

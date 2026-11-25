@@ -1,6 +1,9 @@
 //! Which duplicate groups a change made: each current group compared with
 //! the groups a baseline recorded, by the pairs of functions they share.
 
+mod crapts;
+pub use crapts::compare_crapts;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -100,9 +103,16 @@ pub fn compare(
                 .collect()
         })
         .collect();
-    let together: BTreeSet<(&Id, &Id)> = groups.iter().flat_map(|g| pairs(g)).collect();
+    classify(&groups, &then)
+}
+
+fn classify<T: Ord>(
+    groups: &[Vec<T>],
+    then: &[Vec<T>],
+) -> Comparison {
+    let together: BTreeSet<(&T, &T)> = groups.iter().flat_map(|g| pairs(g)).collect();
     Comparison {
-        novelty: groups.iter().map(|g| novelty(g, &then)).collect(),
+        novelty: groups.iter().map(|g| novelty(g, then)).collect(),
         resolved: then
             .iter()
             .filter(|g| pairs(g).iter().all(|p| !together.contains(p)))
@@ -124,9 +134,9 @@ fn distinct<'a>(functions: impl IntoIterator<Item = &'a Location>) -> Vec<&'a Lo
 
 /// What `group` is, judged by the baseline group that held the most of its
 /// members.
-fn novelty(
-    group: &[Id],
-    then: &[Vec<Id>],
+fn novelty<T: Ord>(
+    group: &[T],
+    then: &[Vec<T>],
 ) -> Novelty {
     let held = then
         .iter()
@@ -144,11 +154,11 @@ fn novelty(
 
 /// How many of `group`'s members `baseline` held: per identity, the fewer
 /// of the two counts.
-fn together_in(
-    group: &[Id],
-    baseline: &[Id],
+fn together_in<T: Ord>(
+    group: &[T],
+    baseline: &[T],
 ) -> usize {
-    let mut left: BTreeMap<&Id, usize> = BTreeMap::new();
+    let mut left: BTreeMap<&T, usize> = BTreeMap::new();
     for i in baseline {
         *left.entry(i).or_default() += 1;
     }
@@ -325,6 +335,33 @@ mod tests {
         baseline: &[Vec<Location>],
     ) -> Vec<Novelty> {
         compare(current, baseline).novelty
+    }
+
+    #[test]
+    fn crapts_self_comparison_and_singleton_families_match_the_shared_classifier() {
+        use crate::duplicates::model::Family;
+        let a = at("a.ts", "read", 1);
+        let b = at("b.ts", "read", 3);
+        let c = at("c.ts", "peer", 5);
+        let families = [&a, &b, &c].map(|m| Family {
+            file: m.file.display().to_string(),
+            stem: m.name.clone(),
+            fingerprints: vec!["digest".into()],
+        });
+        let now = [group(&[a.clone(), b.clone()])];
+        let old = vec![now[0].members.clone()];
+        let compare_ts =
+            |history: &[Vec<Location>]| compare_crapts(&now, &families, history, &families);
+        assert_eq!(
+            compare_ts(&old),
+            Comparison {
+                novelty: vec![Novelty::Unchanged],
+                resolved: 0
+            }
+        );
+        for history in [old, vec![vec![], vec![a.clone()]], vec![vec![a, c]]] {
+            assert_eq!(compare_ts(&history), compare(&now, &history));
+        }
     }
 
     #[test]

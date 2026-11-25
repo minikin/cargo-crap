@@ -8,7 +8,7 @@ pub const COMMANDS: [&str; 4] = [
     "npx @minikin/crapts",
     "npm install -D @minikin/crapts",
     "cargo binstall crapts",
-    "cargo install --locked crapts",
+    "cargo install --locked crapts --features triage",
 ];
 
 pub fn package_json() -> Value {

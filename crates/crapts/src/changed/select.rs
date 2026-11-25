@@ -4,8 +4,11 @@ use std::path::{Path, PathBuf};
 use cargo_crap_core::git::{Change, CommitId, GitError, Hunk, Mode, Repo, Side};
 
 use super::section::{Comparison, SkipReason, Skipped};
+use crate::analyze::{Capture, HeadAnalysis};
 use crate::discover::{DiscoveryScope, Placement};
 use crate::{FileAnalysis, InputError, Side as Version, analyze};
+
+type Heads = HashMap<PathBuf, HeadAnalysis>;
 
 #[derive(Debug)]
 pub(crate) enum FileEdits {
@@ -28,7 +31,7 @@ pub(crate) struct Selection {
     pub(crate) skipped: Vec<Skipped>,
     /// In display-path order.
     pub(crate) files: Vec<SelectedFile>,
-    pub(crate) heads: HashMap<PathBuf, FileAnalysis>,
+    pub(crate) heads: Heads,
     /// Changed files whose head side was skipped, a binary one among them:
     /// no pass may decode them.
     pub(crate) skipped_heads: BTreeSet<PathBuf>,
@@ -71,6 +74,7 @@ pub(crate) fn select(
     scope: &DiscoveryScope,
     cwd: &Path,
     rev: &str,
+    capture: Capture,
 ) -> Result<Selection, InputError> {
     let repo = Repo::open(cwd).map_err(|e| base_error(&e))?;
     // Discovery holds canonical paths, which on Windows carry a verbatim
@@ -115,7 +119,7 @@ pub(crate) fn select(
             .collect::<Vec<_>>()
     });
     let read = read_sides(&repo, &merge_base.commit, planned)?;
-    let (files, heads) = analyze_sides(read)?;
+    let (files, heads) = analyze_sides(read, capture)?;
     Ok(Selection {
         comparison: Comparison {
             rev: rev.to_owned(),
@@ -319,8 +323,9 @@ fn read_sides(
 }
 
 fn analyze_sides(
-    read: Vec<Read>
-) -> Result<(Vec<SelectedFile>, HashMap<PathBuf, FileAnalysis>), InputError> {
+    read: Vec<Read>,
+    capture: Capture,
+) -> Result<(Vec<SelectedFile>, Heads), InputError> {
     let mut files = Vec::with_capacity(read.len());
     let mut heads = HashMap::new();
     for read in read {
@@ -336,10 +341,11 @@ fn analyze_sides(
             .transpose()?;
         let head = match read.head {
             Some(side) => {
-                let analysis = analyze(
+                let analysis = HeadAnalysis::read(
                     &side.display,
-                    &side.bytes,
+                    side.bytes,
                     crate::Mode::Strict(Version::Head),
+                    capture,
                 )?;
                 heads.insert(side.display.clone(), analysis);
                 Some(side.display)

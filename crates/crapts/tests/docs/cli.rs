@@ -98,9 +98,13 @@ pub fn expected_defaults(
         .map(|option| {
             let setting = option.long.trim_start_matches("--").replace('-', "_");
             let expected = option.default.clone().unwrap_or_else(|| {
-                print_config["settings"]
-                    .get(&setting)
-                    .map_or_else(|| "off".to_owned(), |s| default_cell(&s["value"]))
+                let settings = &print_config["settings"];
+                let leaf = match setting.as_str() {
+                    "duplicates" => Some(&settings["duplicates"]["enabled"]),
+                    "dup_threshold" => Some(&settings["duplicates"]["min_similarity"]),
+                    key => settings.get(key),
+                };
+                leaf.map_or_else(|| "off".to_owned(), |s| default_cell(&s["value"]))
             });
             (option.long, expected)
         })

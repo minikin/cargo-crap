@@ -51,12 +51,12 @@ mod types;
 pub(crate) mod test_support;
 
 // Re-exports — the rest of the crate depends on these names being on `report`.
-pub use json::Envelope;
 pub(crate) use json::{
     CraptsChangedSection, CraptsJsonContext, CraptsSelection, SignalRegressions,
     extract_crapts_changed, reject_cargo_crap_json_sections, render_crapts_delta_json,
     render_crapts_json,
 };
+pub use json::{Envelope, normalize_crapts_path};
 pub use links::SourceLinks;
 pub use section::{Placement, Section, WriteResult};
 pub(crate) use summary::render_delta_summary_lines;
@@ -96,6 +96,17 @@ pub enum Format {
     /// embed it via `https://img.shields.io/endpoint?url=…`. `--baseline`
     /// is silently ignored: the badge always shows absolute current scores.
     Shields,
+}
+
+impl Format {
+    /// Whether the renderer can present structural duplicate groups.
+    #[must_use]
+    pub const fn carries_duplicates(self) -> bool {
+        matches!(
+            self,
+            Self::Human | Self::Json | Self::Markdown | Self::PrComment
+        )
+    }
 }
 
 /// Options shared by [`render`] and [`render_delta`], so their signatures
@@ -162,6 +173,8 @@ pub struct RenderOptions<'a> {
     /// its envelope, and by [`render_duplicates`], which appends the human,
     /// markdown and pr-comment sections.
     pub duplicates: Option<&'a [DuplicatePair]>,
+    /// Maximum duplicate rows in a PR comment. The standard cap still applies.
+    pub duplicate_row_limit: Option<usize>,
     /// The `?` weight the entries were analyzed under. Only the JSON
     /// renderers read it, recording it in the envelope when it is not
     /// [`DEFAULT_TRY_WEIGHT`](crate::score::DEFAULT_TRY_WEIGHT).
@@ -238,6 +251,7 @@ impl<'a> RenderOptions<'a> {
             show_unchanged: false,
             uncovered_hints: false,
             duplicates: None,
+            duplicate_row_limit: None,
             try_weight: crate::score::DEFAULT_TRY_WEIGHT,
             triage: None,
             sliced: false,
@@ -535,7 +549,13 @@ fn write_duplicate_section(
         Format::Markdown => duplicate_table(opts, None, out),
         // A comment with nothing to say about duplicates says nothing.
         Format::PrComment if nothing_new(groups, opts) => Ok(()),
-        Format::PrComment => duplicate_table(opts, Some(pr_comment::MAX_ROWS_PER_SECTION), out),
+        Format::PrComment => {
+            let cap = opts
+                .duplicate_row_limit
+                .unwrap_or(usize::MAX)
+                .min(pr_comment::MAX_ROWS_PER_SECTION);
+            duplicate_table(opts, Some(cap), out)
+        },
         Format::Json | Format::GitHub | Format::Sarif | Format::Shields => Ok(()),
     }
 }
@@ -601,6 +621,21 @@ pub fn crappy_count(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn only_formats_with_a_duplicate_section_carry_groups() {
+        for format in [
+            Format::Human,
+            Format::Json,
+            Format::Markdown,
+            Format::PrComment,
+        ] {
+            assert!(format.carries_duplicates(), "{format:?}");
+        }
+        for format in [Format::GitHub, Format::Sarif, Format::Shields] {
+            assert!(!format.carries_duplicates(), "{format:?}");
+        }
+    }
 
     #[test]
     fn new_options_carry_the_tool_and_every_other_default() {
@@ -1049,6 +1084,76 @@ mod tests {
                 second: at(10 * n + 5),
                 score: 0.9,
             }
+        }
+
+        #[test]
+        fn pr_duplicate_row_limit_keeps_totals_and_caps_only_comment_rows() {
+            let pairs: Vec<_> = (0..27).map(pair).collect();
+            let render = |format, limit| {
+                let opts = RenderOptions {
+                    format,
+                    duplicate_row_limit: limit,
+                    duplicates: Some(&pairs),
+                    ..RenderOptions::new(&test_support::CARGO_CRAP_FIXTURE)
+                };
+                let mut buf = Vec::new();
+                render_duplicates(&opts, &mut buf).unwrap();
+                String::from_utf8(buf).unwrap()
+            };
+            for (limit, shown) in [(None, 25), (Some(99), 25), (Some(2), 2), (Some(0), 0)] {
+                let body = render(Format::PrComment, limit);
+                assert!(body.contains("## 27 duplicate candidates"));
+                assert_eq!(
+                    body.lines().filter(|l| l.contains("<br><sub>")).count(),
+                    shown
+                );
+                assert_eq!(body.contains("| Pair | Similarity |"), shown != 0);
+                assert!(body.contains(&format!("and {} more", 27 - shown)));
+            }
+            for format in [Format::Human, Format::Markdown] {
+                assert_eq!(render(format, Some(0)), render(format, None));
+            }
+        }
+
+        #[test]
+        fn a_zero_cap_preserves_novelty_verdict_budget_and_credit() {
+            use crate::duplicates::{
+                novelty::{Comparison, Novelty},
+                verdict::Assessment,
+            };
+            let pairs: Vec<_> = (0..3).map(pair).collect();
+            let comparison = Comparison {
+                novelty: vec![Novelty::New, Novelty::New, Novelty::Unchanged],
+                resolved: 4,
+            };
+            let triage = [Some(Assessment::Uncertain { confidence: 0.3 }), None, None];
+            let opts = RenderOptions {
+                format: Format::PrComment,
+                duplicates: Some(&pairs),
+                triage: Some(&triage),
+                novelty: Some(&comparison),
+                duplicate_row_limit: Some(0),
+                untriaged: 1,
+                triaged_by: Some(TriagedBy {
+                    provider: "example",
+                    model: "testing",
+                }),
+                ..RenderOptions::new(&test_support::CARGO_CRAP_FIXTURE)
+            };
+            let mut buf = Vec::new();
+            render_duplicates(&opts, &mut buf).unwrap();
+            let body = String::from_utf8(buf).unwrap();
+            for part in [
+                "2 new duplicate candidates",
+                "and 2 more",
+                "1 existing candidate unchanged, 4 resolved",
+                "1 candidate was not triaged",
+                "Triaged by example",
+                "uncertain",
+            ] {
+                assert!(body.contains(part), "{part} in {body}");
+            }
+            assert!(!body.contains("| Pair |"));
         }
 
         #[test]

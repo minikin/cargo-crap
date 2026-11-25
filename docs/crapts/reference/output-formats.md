@@ -15,9 +15,39 @@ count gated reasons across all eligible functions.
 GitHub emits one annotation per gated structural reason at its first source
 range. JSON retains every range. PR comments show the first 25 reasons
 in the table and fold the rest. To fit GitHub's 65,536 UTF-16 code units,
-crapts first summarizes the core report, then removes changed rows from
-the end until the comment fits. Each candidate keeps the full counts and
-verdict. Shields keeps its CRAP badge even when a structural gate trips.
+crapts first summarizes the score report. It then removes duplicate rows
+one at a time, followed by changed rows, until the comment fits. The
+counts and gate verdict cover the full report. Shields keeps its CRAP badge
+even when a structural gate trips.
+
+Text, JSON, Markdown and PR comments carry duplicate groups when you pass
+`--duplicates`. Text names every member. Markdown lists every group, and PR
+comments show the first 25. Their tables name up to five members per group
+and count the rest. Source links point to the repository revision while the
+visible paths stay relative to the invocation directory. JSON includes all
+groups and pairs. GitHub annotations, SARIF and Shields skip detection and
+triage and print one warning when detection is enabled.
+
+A Git comparison still checks untouched files for copies. A saved JSON
+baseline supplies group history. Markdown and PR comments list new and
+grown groups and count unchanged and resolved groups. A summary keeps the
+duplicate section. An empty scan of the cart project produces this Markdown
+summary. A PR comment omits the empty section.
+
+<!-- crapts-output: --coverage coverage/lcov.info --duplicates --format markdown --summary -->
+```markdown
+<!-- crapts-report -->
+
+✗ Analyzed: 2 · Crappy: 1 (threshold 30) · Worst: checkout (CRAP 42.0)
+
+No candidate duplicates found.
+```
+
+When triage succeeds, JSON attaches the same `triage` object to the group
+and its pairs. At confidence 0.50 and a floor of 0.51, the object is
+`{"kind":"uncertain","confidence":0.5}`. Markdown and PR comments credit
+the provider and model under the table. Text and Markdown explain a spent
+budget. JSON counts those groups in `untriaged_groups`.
 
 ## text
 
@@ -122,7 +152,16 @@ A GitHub-flavored Markdown table of every displayed function, for a job summary 
 
 ## pr-comment
 
-A Markdown body sized for a pull request comment. It leads with the functions above the threshold and starts with the `--comment-marker` line, `<!-- crapts-report -->` by default, so a workflow can find and update its earlier comment. The body is fitted to GitHub's 65,536 UTF-16 code units: complete, then with the core report summarized, then with fewer changed rows. A body that still does not fit exits 2.
+A PR comment leads with the functions above the threshold. The first line
+is the `--comment-marker`, which defaults to `<!-- crapts-report -->`.
+Workflows can use it to find and update their earlier comment.
+
+crapts tries the complete report first. If it exceeds 65,536 UTF-16 code
+units, crapts summarizes the scores, then removes duplicate rows one at a
+time, then changed rows. With an explicit `--summary`, the changed section
+already occupies one line, so only duplicate rows can be removed. The counts
+include omitted groups. If the smallest comment exceeds the limit, crapts
+exits 2 and preserves the output file.
 
 <!-- crapts-output: --coverage coverage/lcov.info --format pr-comment -->
 ```markdown

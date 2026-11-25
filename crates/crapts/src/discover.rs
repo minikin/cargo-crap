@@ -119,6 +119,15 @@ pub struct DiscoveryScope {
 }
 
 impl DiscoveryScope {
+    pub(crate) fn cache_boundary(&self) -> &Path {
+        self.worktree.root.as_deref().unwrap_or(&self.cwd)
+    }
+
+    #[must_use]
+    pub(crate) fn anchored_prefix(&self) -> Option<&Path> {
+        self.worktree.root.as_ref().map(|_| self.repo_prefix())
+    }
+
     #[must_use]
     pub fn repo_prefix(&self) -> &Path {
         &self.worktree.prefix
@@ -161,6 +170,17 @@ impl DiscoveryScope {
             return Ok(false);
         }
         git_allows(&self.cwd, &name)
+    }
+
+    pub(crate) fn historical_path(
+        &self,
+        prefix: Option<&str>,
+        file: &Path,
+    ) -> PathBuf {
+        match (self.worktree.root.as_deref(), prefix) {
+            (Some(root), Some(prefix)) => self.display(&resolve(&root.join(prefix), file)),
+            _ => file.to_owned(),
+        }
     }
 
     pub(crate) fn display(

@@ -1,14 +1,25 @@
 mod istanbul;
 
 use crate::InputError;
-use cargo_crap_core::coverage::{StrictLcovFile, read_strict_lcov};
+use cargo_crap_core::coverage::{CoverageKind, StrictLcovFile, read_strict_lcov};
 use std::io;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoverageUnit {
+    Unmeasured,
     Statements,
     Lines,
+}
+
+impl From<CoverageUnit> for CoverageKind {
+    fn from(unit: CoverageUnit) -> Self {
+        match unit {
+            CoverageUnit::Unmeasured => Self::Unmeasured,
+            CoverageUnit::Statements => Self::Statements,
+            CoverageUnit::Lines => Self::Lines,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -28,6 +39,7 @@ type StatementFiles = Vec<(String, Vec<Statement>)>;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum CoverageData {
+    Unmeasured,
     Statements(StatementFiles),
     Lines(Vec<StrictLcovFile>),
 }
@@ -36,21 +48,36 @@ pub(crate) enum CoverageData {
 pub struct Coverage(pub(crate) CoverageData);
 
 impl Coverage {
+    pub(crate) fn unmeasured() -> Self {
+        Self(CoverageData::Unmeasured)
+    }
+
     #[must_use]
     pub fn unit(&self) -> CoverageUnit {
-        match &self.0 {
-            CoverageData::Statements(_) => CoverageUnit::Statements,
-            CoverageData::Lines(_) => CoverageUnit::Lines,
-        }
+        self.measured(|_| CoverageUnit::Statements, |_| CoverageUnit::Lines)
+            .unwrap_or(CoverageUnit::Unmeasured)
     }
 
     /// Keys retain their producer spellings and traversal order, including files with no observations.
     #[doc(hidden)]
     #[must_use]
     pub fn keys(&self) -> Vec<&str> {
+        self.measured(
+            |files| files.iter().map(|(key, _)| key.as_str()).collect(),
+            |files| files.iter().map(|file| file.key.as_str()).collect(),
+        )
+        .unwrap_or_default()
+    }
+
+    pub(crate) fn measured<'a, T>(
+        &'a self,
+        statements: impl FnOnce(&'a [(String, Vec<Statement>)]) -> T,
+        lines: impl FnOnce(&'a [StrictLcovFile]) -> T,
+    ) -> Option<T> {
         match &self.0 {
-            CoverageData::Statements(files) => files.iter().map(|(key, _)| key.as_str()).collect(),
-            CoverageData::Lines(files) => files.iter().map(|file| file.key.as_str()).collect(),
+            CoverageData::Unmeasured => None,
+            CoverageData::Statements(files) => Some(statements(files)),
+            CoverageData::Lines(files) => Some(lines(files)),
         }
     }
 }

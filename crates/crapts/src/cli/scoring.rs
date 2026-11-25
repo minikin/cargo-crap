@@ -1,4 +1,6 @@
-use super::{Effective, Format, InputError, Result, StdoutSink};
+use super::settings::DuplicateSettings;
+use super::{Choice, Effective, Format, InputError, Result, StdoutSink};
+use crate::analyze::{Capture, HeadAnalysis};
 use crate::attribute::{Attribution, attribute};
 use crate::changed::matching::{ChangedFile, classify};
 use crate::changed::section::{ChangedSection, PR_COMMENT_ROWS, Presentation, utf16_len};
@@ -6,10 +8,11 @@ use crate::changed::select::{FileEdits, Selection, select};
 use crate::changed::verdict::{Edits, Inputs, Threshold, evaluate};
 use crate::coverage::{Coverage, CoverageUnit, read_coverage};
 use crate::discover::{Worktree, discover_probed};
-use crate::{Discovery, DiscoveryScope, FileAnalysis, Mode, analyze};
+use crate::duplicates::Scan;
+use crate::{Discovery, DiscoveryScope, FileAnalysis, Mode};
 use cargo_crap_core::coverage::CoverageKind;
 use cargo_crap_core::delta::{CraptsBaseline, load_crapts_baseline};
-use cargo_crap_core::entry::{CrapEntry, ScopeDiagnostics};
+use cargo_crap_core::entry::{CrapEntry, MissingCoveragePolicy, ScopeDiagnostics};
 use cargo_crap_core::filter::AllowSet;
 use cargo_crap_core::gate::GateOutcome;
 use cargo_crap_core::policy::{
@@ -71,6 +74,13 @@ impl<'a> ScoringScope<'a> {
 }
 
 impl Scope for ScoringScope<'_> {
+    fn historical_path(
+        &self,
+        prefix: Option<&str>,
+        file: &Path,
+    ) -> PathBuf {
+        self.scope.historical_path(prefix, file)
+    }
     fn keeps(
         &self,
         file: &Path,
@@ -85,37 +95,40 @@ impl Scope for ScoringScope<'_> {
     }
 }
 
-fn coverage_kind(unit: CoverageUnit) -> CoverageKind {
-    match unit {
-        CoverageUnit::Lines => CoverageKind::Lines,
-        CoverageUnit::Statements => CoverageKind::Statements,
-    }
-}
-
-fn warn(
+pub(super) fn warn(
     err: &mut dyn Write,
     message: &str,
 ) -> Result<()> {
     writeln!(err, "warning: {message}").map_err(|e| InputError::at(Path::new("stderr"), e))
 }
 
+fn write_warnings(
+    err: &mut dyn Write,
+    messages: &[String],
+) -> Result<()> {
+    messages.iter().try_for_each(|message| warn(err, message))
+}
+
 fn read_inputs(
     cwd: &Path,
     settings: &Effective,
-    coverage: &Path,
+    coverage: Option<&Path>,
     discovery: &Discovery,
     err: &mut dyn Write,
 ) -> Result<(Coverage, Option<CraptsBaseline>)> {
     for rule in &discovery.unused_excludes {
         warn(err, &rule.unused_warning())?;
     }
-    let coverage = read_coverage(cwd, coverage)?;
+    let coverage = coverage
+        .map(|p| read_coverage(cwd, p))
+        .transpose()?
+        .unwrap_or_else(Coverage::unmeasured);
     let baseline = settings
         .baseline
         .value
         .as_deref()
         .map(|path| {
-            load_crapts_baseline(&cwd.join(path), &TOOL, coverage_kind(coverage.unit()))
+            load_crapts_baseline(&cwd.join(path), &TOOL, coverage.unit().into())
                 .map_err(|e| InputError::reported(path, format!("{e:#}")))
         })
         .transpose()?;
@@ -125,28 +138,48 @@ fn read_inputs(
 fn head_analysis(
     cwd: &Path,
     file: &Path,
-    strict: &mut HashMap<PathBuf, FileAnalysis>,
+    strict: &mut HashMap<PathBuf, HeadAnalysis>,
+    capture: Capture,
     err: &mut dyn Write,
-) -> Result<FileAnalysis> {
+) -> Result<HeadAnalysis> {
     if let Some(analysis) = strict.remove(file) {
         return Ok(analysis);
     }
     let bytes = fs::read(cwd.join(file)).map_err(|e| InputError::at(file, e))?;
-    let analysis = analyze(file, &bytes, Mode::Ordinary)?;
-    for message in &analysis.warnings {
-        warn(err, message)?;
-    }
+    let analysis = HeadAnalysis::read(file, bytes, Mode::Ordinary, capture)?;
+    write_warnings(err, &analysis.file.warnings)?;
     Ok(analysis)
+}
+
+struct Measurement {
+    files: Vec<FileAnalysis>,
+    result: Attribution,
+    scan: Option<Scan>,
+    sources: HashMap<PathBuf, Vec<u8>>,
+}
+
+fn capture(triage: Option<bool>) -> Capture {
+    match triage {
+        None => Capture::Scores,
+        #[cfg(feature = "triage")]
+        Some(true) => Capture::Excerpts,
+        Some(_) => Capture::Prints,
+    }
+}
+
+fn capture_for(duplicates: Option<&DuplicateSettings>) -> Capture {
+    capture(duplicates.map(|settings| settings.triage.enabled.value))
 }
 
 fn measure(
     cwd: &Path,
-    settings: &Effective,
+    missing: MissingCoveragePolicy,
+    duplicates: Option<&DuplicateSettings>,
     coverage: &Coverage,
     discovery: &Discovery,
     selection: Option<&mut Selection>,
     err: &mut dyn Write,
-) -> Result<(Vec<FileAnalysis>, Attribution)> {
+) -> Result<Measurement> {
     let (mut strict, skipped) = match selection {
         Some(selection) => (
             std::mem::take(&mut selection.heads),
@@ -155,17 +188,37 @@ fn measure(
         None => (HashMap::new(), None),
     };
     let mut files = Vec::with_capacity(discovery.files.len());
+    let mut prints = Vec::new();
+    let mut sources = HashMap::new();
+    let capture = capture_for(duplicates);
     for file in &discovery.files {
         if skipped.is_some_and(|skipped| skipped.contains(file)) {
             continue;
         }
-        files.push(head_analysis(cwd, file, &mut strict, err)?);
+        let head = head_analysis(cwd, file, &mut strict, capture, err)?;
+        if let Some(bytes) = head.source {
+            sources.insert(file.clone(), bytes);
+        }
+        files.push(head.file);
+        prints.extend(head.prints);
     }
-    let result = attribute(cwd, &files, coverage, settings.missing.value);
-    for message in &result.warnings {
-        warn(err, message)?;
-    }
-    Ok((files, result))
+    let result = attribute(cwd, &files, coverage, missing);
+    write_warnings(err, &result.warnings)?;
+    let scan = duplicates.map(|duplicates| {
+        Scan::collect(
+            prints,
+            &files,
+            duplicates.min_nodes.value,
+            duplicates.min_similarity.value,
+            discovery.scope.anchored_prefix(),
+        )
+    });
+    Ok(Measurement {
+        files,
+        result,
+        scan,
+        sources,
+    })
 }
 
 fn changed_section(
@@ -273,6 +326,74 @@ fn source_links(
     Some(SourceLinks::new(url.to_owned(), reference.to_owned()))
 }
 
+fn coverage_path(options: &Effective) -> Result<Option<&Path>> {
+    let path = options.coverage.value.as_deref();
+    if path.is_none()
+        && !(options.duplicates.enabled.origin == super::settings::Origin::Flag
+            && options.format.value.carries_duplicates())
+    {
+        return Err(InputError::message("--coverage <file> is required"));
+    }
+    Ok(path)
+}
+
+fn requested_duplicates<'a>(
+    options: &'a Effective,
+    err: &mut dyn Write,
+) -> Result<Option<&'a DuplicateSettings>> {
+    if !options.duplicates.enabled.value {
+        return Ok(None);
+    }
+    if options.format.value.carries_duplicates() {
+        return Ok(Some(&options.duplicates));
+    }
+    warn(
+        err,
+        "--duplicates has no effect with this format; use --format human, json, markdown or pr-comment",
+    )?;
+    Ok(None)
+}
+
+fn coverage_notices(
+    unit: CoverageUnit,
+    policy: &str,
+    err: &mut dyn Write,
+) -> Result<Vec<String>> {
+    if unit != CoverageUnit::Unmeasured {
+        return Ok(Vec::new());
+    }
+    let notice = format!("No coverage supplied. Scores use the {policy} missing policy.");
+    warn(err, &notice)?;
+    Ok(vec![notice])
+}
+
+fn prepare_history(
+    baseline: Option<CraptsBaseline>,
+    scope: &ScoringScope<'_>,
+    options: &Effective,
+    scan: Option<&mut Scan>,
+    err: &mut dyn Write,
+) -> Result<Option<PreparedBaseline>> {
+    let prepared = prepare(baseline, scope, &options.allow_set)?;
+    if let (Some(scan), Some(baseline)) = (scan, &prepared) {
+        if let Some((groups, families)) = baseline.duplicate_record() {
+            scan.comparison = Some(cargo_crap_core::duplicates::novelty::compare_crapts(
+                &scan.groups,
+                &scan.context.families,
+                groups,
+                families,
+            ));
+        } else if !scan.groups.is_empty() {
+            warn(
+                err,
+                "the baseline has no duplicate record, so the new duplicates cannot be told from the old. Record the baseline with --duplicates to tell them apart.",
+            )?;
+        }
+    }
+    warn_if_unmeasured(prepared.as_ref(), options.signals.settings.enabled, err)?;
+    Ok(prepared)
+}
+
 pub(super) fn score(
     cwd: &Path,
     worktree: Worktree,
@@ -281,11 +402,7 @@ pub(super) fn score(
     stdout: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<ExitCode> {
-    let coverage = options
-        .coverage
-        .value
-        .as_deref()
-        .ok_or_else(|| InputError::message("--coverage <file> is required"))?;
+    let coverage = coverage_path(options)?;
     let discovery = discover_probed(
         &options.paths.value,
         &options.discovery(cwd),
@@ -293,16 +410,39 @@ pub(super) fn score(
         worktree,
     )?;
     let (coverage, baseline) = read_inputs(cwd, options, coverage, &discovery, err)?;
+    let duplicates = requested_duplicates(options, err)?;
     let mut selection = options
         .base
         .value
         .as_deref()
-        .map(|rev| select(&discovery.scope, cwd, rev))
+        .map(|rev| select(&discovery.scope, cwd, rev, capture_for(duplicates)))
         .transpose()?;
-    let (files, result) = measure(cwd, options, &coverage, &discovery, selection.as_mut(), err)?;
+    let Measurement {
+        files,
+        result,
+        mut scan,
+        sources,
+    } = measure(
+        cwd,
+        options.missing.value,
+        duplicates,
+        &coverage,
+        &discovery,
+        selection.as_mut(),
+        err,
+    )?;
+    let notices = coverage_notices(result.unit, options.missing.value.label(), err)?;
     let scope = ScoringScope::new(&discovery.scope);
-    let prepared = prepare(baseline, &scope, &options.allow_set)?;
-    warn_if_unmeasured(prepared.as_ref(), options.signals.settings.enabled, err)?;
+    let prepared = prepare_history(baseline, &scope, options, scan.as_mut(), err)?;
+    super::triage::judge(
+        scan.as_mut(),
+        &options.duplicates.triage,
+        &files,
+        &sources,
+        discovery.scope.cache_boundary(),
+        err,
+    )?;
+    drop(sources);
     let links = source_links(
         options.repo_url.value.as_deref(),
         options.commit_ref.value.as_deref(),
@@ -338,15 +478,14 @@ pub(super) fn score(
             std::env::var_os("NO_COLOR").as_deref(),
             std::env::var_os("FORCE_COLOR").as_deref(),
         ),
-        unit: coverage_kind(result.unit),
+        notices: &notices,
+        scan: scan.as_ref(),
+        unit: result.unit.into(),
         scope: &scope,
         prepared: prepared.as_ref(),
         destination: output.unwrap_or(Path::new("stdout")),
     };
-    let (rendered, verdict) = render.fitted(entries, result.diagnostics, section.as_ref())?;
-    write_destination(cwd, output, stdout, &rendered)?;
-    machine_notice(err, options.format.value, prepared.as_ref())?;
-    Ok(verdict.exit_code())
+    render.finish(entries, result.diagnostics, section.as_ref(), stdout, err)
 }
 
 /// GitHub posts a comment body of at most this many UTF-16 code units.
@@ -355,6 +494,8 @@ const COMMENT_LIMIT: usize = 65_536;
 /// One run's report, which can be rendered more than once from the same
 /// inputs while a PR comment is fitted to [`COMMENT_LIMIT`].
 struct Render<'a> {
+    notices: &'a [String],
+    scan: Option<&'a Scan>,
     options: &'a Effective,
     cwd: &'a Path,
     links: Option<&'a SourceLinks>,
@@ -371,10 +512,30 @@ struct Render<'a> {
 enum Step {
     Complete,
     CoreSummarized,
+    DuplicateRows(usize),
     ChangedRows(usize),
 }
 
 impl Render<'_> {
+    fn finish(
+        &self,
+        entries: Vec<CrapEntry>,
+        diagnostics: ScopeDiagnostics,
+        section: Option<&ChangedSection>,
+        stdout: &mut dyn Write,
+        err: &mut dyn Write,
+    ) -> Result<ExitCode> {
+        let (body, verdict) = self.fitted(entries, diagnostics, section)?;
+        write_destination(
+            self.cwd,
+            self.options.output.value.as_deref(),
+            stdout,
+            &body,
+        )?;
+        machine_notice(err, self.options.format.value, self.prepared)?;
+        Ok(verdict.exit_code())
+    }
+
     fn analysis(
         &self,
         entries: Vec<CrapEntry>,
@@ -385,7 +546,7 @@ impl Render<'_> {
             diagnostics: Some(diagnostics),
             scope: self.scope,
             coverage_kind: Some(self.unit),
-            notices: &[],
+            notices: self.notices,
         }
     }
 
@@ -428,36 +589,47 @@ impl Render<'_> {
         let analysis = self.analysis(entries, diagnostics);
         let report = PreparedReport::new(&TOOL, &settings, analysis, self.prepared, &full)
             .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
-        let once = |summary, limit| {
+        let extras = self.scan.map_or_else(RenderExtras::default, Scan::extras);
+        let once = |core_summary, changed_limit, duplicate_row_limit| {
             let mut body = Vec::new();
+            let layout = RenderExtras {
+                duplicate_row_limit,
+                ..extras
+            };
             let verdict = report::with_color(self.color, || {
-                report.write(summary, limit, &RenderExtras::default(), &mut body)
+                report.write(core_summary, changed_limit, &layout, &mut body)
             })
             .map_err(|e| InputError::at(self.destination, format!("{e:#}")))?;
             Ok::<_, InputError>((body, verdict))
         };
-        if !comment || summary {
-            let (mut body, verdict) = once(summary, None)?;
-            if comment && section.is_some() {
-                body = summary_after_marker(body, &self.options.comment_marker.value);
-            }
-            return if !comment || fits(&body) {
-                Ok((body, verdict))
-            } else {
-                Err(too_long())
-            };
+        if !comment {
+            return once(summary, None, None);
         }
-        let rows = section.map_or(0, |s| s.shown_rows().min(PR_COMMENT_ROWS));
-        let body = fit(
-            rows,
+        let changed = section.map_or(0, ChangedSection::shown_rows);
+        let duplicates = self.scan.map_or(0, |s| {
+            s.comparison
+                .as_ref()
+                .map_or(s.groups.len(), |c| c.reported().count())
+        });
+        fit(
+            summary,
+            duplicates,
+            changed,
             |(body, _): &(Vec<u8>, GateOutcome)| fits(body),
-            |step| match step {
-                Step::Complete => once(false, None),
-                Step::CoreSummarized => once(true, None),
-                Step::ChangedRows(limit) => once(true, Some(limit)),
+            |step| {
+                let (mut body, verdict) = match step {
+                    Step::Complete => once(summary, None, None),
+                    Step::CoreSummarized => once(true, None, None),
+                    Step::DuplicateRows(n) => once(true, None, Some(n)),
+                    Step::ChangedRows(n) => once(true, Some(n), Some(0)),
+                }?;
+                if summary && section.is_some() {
+                    body = summary_after_marker(body, &self.options.comment_marker.value);
+                }
+                Ok((body, verdict))
             },
-        )?;
-        body.ok_or_else(too_long)
+        )?
+        .ok_or_else(too_long)
     }
 }
 
@@ -476,19 +648,38 @@ fn summary_after_marker(
 fn too_long() -> InputError {
     InputError::message(format!(
         "the PR comment needs more than {COMMENT_LIMIT} UTF-16 code units, GitHub's limit, \
-         even with the core report summarized and no changed rows"
+         even with the smallest summary and no duplicate or changed rows"
     ))
 }
 
+fn fit_steps(
+    summary: bool,
+    duplicates: usize,
+    changed: usize,
+) -> impl Iterator<Item = Step> {
+    let changed = if summary {
+        0
+    } else {
+        changed.min(PR_COMMENT_ROWS)
+    };
+    std::iter::once(Step::Complete)
+        .chain((!summary).then_some(Step::CoreSummarized))
+        .chain(
+            (0..duplicates.min(PR_COMMENT_ROWS))
+                .rev()
+                .map(Step::DuplicateRows),
+        )
+        .chain((0..changed).rev().map(Step::ChangedRows))
+}
+
 fn fit<T, E>(
-    rows: usize,
+    summary: bool,
+    duplicates: usize,
+    changed: usize,
     fits: impl Fn(&T) -> bool,
     mut render: impl FnMut(Step) -> Result<T, E>,
 ) -> Result<Option<T>, E> {
-    let steps = [Step::Complete, Step::CoreSummarized]
-        .into_iter()
-        .chain((0..rows).rev().map(Step::ChangedRows));
-    for step in steps {
+    for step in fit_steps(summary, duplicates, changed) {
         let body = render(step)?;
         if fits(&body) {
             return Ok(Some(body));
@@ -550,6 +741,7 @@ mod tests {
         match step {
             Step::Complete => 100,
             Step::CoreSummarized => 60,
+            Step::DuplicateRows(_) => unreachable!("no duplicate rows in this fixture"),
             Step::ChangedRows(rows) => 30 + 10 * rows,
         }
     }
@@ -560,6 +752,8 @@ mod tests {
     ) -> (Option<usize>, Vec<Step>) {
         let mut tried = Vec::new();
         let body = fit(
+            false,
+            0,
             rows,
             |size: &usize| *size <= budget,
             |step| {
@@ -596,6 +790,37 @@ mod tests {
             )
         );
         assert_eq!(fitted_at(29, 0).0, None);
+    }
+
+    #[test]
+    fn explicit_summary_only_reduces_duplicates_and_both_sections_start_at_the_comment_cap() {
+        let attempts = |summary, duplicates, changed| {
+            let mut tried = Vec::new();
+            let _ = fit(
+                summary,
+                duplicates,
+                changed,
+                |()| false,
+                |step| {
+                    tried.push(step);
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap();
+            tried
+        };
+        let mut expected = vec![Step::Complete];
+        expected.extend((0..25).rev().map(Step::DuplicateRows));
+        assert_eq!(attempts(true, 80, 90), expected);
+        assert_eq!(attempts(true, 0, 90), vec![Step::Complete]);
+        let mut expected = vec![
+            Step::Complete,
+            Step::CoreSummarized,
+            Step::DuplicateRows(1),
+            Step::DuplicateRows(0),
+        ];
+        expected.extend((0..25).rev().map(Step::ChangedRows));
+        assert_eq!(attempts(false, 2, 90), expected);
     }
 
     #[test]
@@ -664,31 +889,66 @@ mod tests {
     fn a_changed_head_uses_the_strict_snapshot_when_the_worktree_moves_on() {
         let temp = tempfile::tempdir().unwrap();
         let file = Path::new("changed.ts");
-        let strict = analyze(
+        let strict = HeadAnalysis::read(
             file,
-            b"function f() { debugger }",
+            b"function f() { debugger }".to_vec(),
             Mode::Strict(crate::Side::Head),
+            Capture::Excerpts,
         )
         .unwrap();
         let mut heads = HashMap::from([(file.to_path_buf(), strict)]);
         fs::write(temp.path().join(file), "function replacement() {}").unwrap();
         let mut warnings = Vec::new();
-        let cached = head_analysis(temp.path(), file, &mut heads, &mut warnings).unwrap();
-        assert_eq!(cached.rows[0].name, "f");
-        assert_eq!(cached.rows[0].measured.signals.stubs, 1);
-        let ordinary = head_analysis(temp.path(), file, &mut heads, &mut warnings).unwrap();
-        assert_eq!(ordinary.rows[0].name, "replacement");
-        assert_eq!(ordinary.rows[0].measured.signals.stubs, 0);
+        let cached = head_analysis(
+            temp.path(),
+            file,
+            &mut heads,
+            Capture::Excerpts,
+            &mut warnings,
+        )
+        .unwrap();
+        assert_eq!(cached.prints[0].location.name, "f");
+        assert_eq!(cached.file.rows[0].name, "f");
+        assert_eq!(cached.file.rows[0].measured.signals.stubs, 1);
+        assert_eq!(
+            cached.source.as_deref(),
+            Some(&b"function f() { debugger }"[..])
+        );
+        let ordinary = head_analysis(
+            temp.path(),
+            file,
+            &mut heads,
+            Capture::Scores,
+            &mut warnings,
+        )
+        .unwrap();
+        assert_eq!(ordinary.prints, []);
+        assert!(ordinary.source.is_none());
+        assert_eq!(ordinary.file.rows[0].name, "replacement");
+        assert_eq!(ordinary.file.rows[0].measured.signals.stubs, 0);
         assert_eq!(warnings, b"");
+    }
+
+    #[test]
+    fn scoring_and_detection_alone_do_not_keep_source_buffers() {
+        assert_eq!(capture(None), Capture::Scores);
+        assert_eq!(capture(Some(false)), Capture::Prints);
+        let expected = if cfg!(feature = "triage") {
+            Capture::Excerpts
+        } else {
+            Capture::Prints
+        };
+        assert_eq!(capture(Some(true)), expected);
     }
 
     #[test]
     fn the_measured_unit_is_preserved_even_without_rows() {
         for (unit, kind) in [
+            (CoverageUnit::Unmeasured, CoverageKind::Unmeasured),
             (CoverageUnit::Lines, CoverageKind::Lines),
             (CoverageUnit::Statements, CoverageKind::Statements),
         ] {
-            assert_eq!(coverage_kind(unit), kind);
+            assert_eq!(CoverageKind::from(unit), kind);
         }
     }
 }
