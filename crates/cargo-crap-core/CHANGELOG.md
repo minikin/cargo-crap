@@ -4,6 +4,13 @@ This project follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-25
+
+### Fixed
+
+- Exclude Windows reserved DOS device names (`con`, `prn`, `aux`, `nul`) from
+  the `filter::based_tests` path-segment property test generator.
+
 ## [0.2.0] - 2026-11-25
 
 ### Added
@@ -42,5 +49,6 @@ This project follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.
 - `Excerpts.locations` accepts explicit source locations for both sides.
   Set `locations: None` in existing literals to use the members' line ranges.
 
-[Unreleased]: https://github.com/minikin/cargo-crap/compare/cargo-crap-core-v0.2.0...HEAD
+[Unreleased]: https://github.com/minikin/cargo-crap/compare/cargo-crap-core-v0.2.1...HEAD
+[0.2.1]: https://github.com/minikin/cargo-crap/compare/cargo-crap-core-v0.2.0...cargo-crap-core-v0.2.1
 [0.2.0]: https://github.com/minikin/cargo-crap/releases/tag/cargo-crap-core-v0.2.0

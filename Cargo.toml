@@ -56,7 +56,7 @@ repository = "https://github.com/minikin/cargo-crap"
 homepage = "https://github.com/minikin/cargo-crap"
 
 [workspace.dependencies]
-cargo-crap-core = { path = "crates/cargo-crap-core", version = "=0.2.0" }
+cargo-crap-core = { path = "crates/cargo-crap-core", version = "=0.2.1" }
 anyhow = "1"
 clap = "4.4"
 comfy-table = "7"
