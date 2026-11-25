@@ -17,7 +17,8 @@ range. JSON retains every range. PR comments show the first 25 reasons
 in the table and fold the rest. To fit GitHub's 65,536 UTF-16 code units,
 crapts first summarizes the score report. It then removes duplicate rows
 one at a time, followed by changed rows, until the comment fits. The
-counts and gate verdict cover the full report. Shields keeps its CRAP badge even when a structural gate trips.
+counts and gate verdict cover the full report. Shields keeps its CRAP badge
+even when a structural gate trips.
 
 Text, JSON, Markdown and PR comments carry duplicate groups when you pass
 `--duplicates`. Text names every member. Markdown lists every group, and PR
@@ -151,7 +152,16 @@ A GitHub-flavored Markdown table of every displayed function, for a job summary 
 
 ## pr-comment
 
-The first line is the `--comment-marker`, which defaults to `<!-- crapts-report -->`. A workflow can use it to update an existing comment. With `--summary`, the changed section occupies one line. If the body is too long, crapts removes duplicate rows and counts the omitted groups. If the marker, summaries and counts alone exceed 65,536 UTF-16 units, the command exits 2 and preserves the output file.
+A PR comment leads with the functions above the threshold. The first line
+is the `--comment-marker`, which defaults to `<!-- crapts-report -->`.
+Workflows can use it to find and update their earlier comment.
+
+crapts tries the complete report first. If it exceeds 65,536 UTF-16 code
+units, crapts summarizes the scores, then removes duplicate rows one at a
+time, then changed rows. With an explicit `--summary`, the changed section
+already occupies one line, so only duplicate rows can be removed. The counts
+include omitted groups. If the smallest comment exceeds the limit, crapts
+exits 2 and preserves the output file.
 
 <!-- crapts-output: --coverage coverage/lcov.info --format pr-comment -->
 ```markdown

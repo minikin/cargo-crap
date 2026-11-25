@@ -163,7 +163,7 @@ test("wrapper forwards argv, stdio and exit codes 0, 1 and 2 without install scr
   );
   assert.ok(
     existsSync(binary),
-    "Set CRAPTS_BINARY to the executable or run cargo build -p crapts",
+    "Set CRAPTS_BINARY to the executable or run cargo build -p crapts --features triage",
   );
   const { dir, out } = fixture(t, { name: host.name, path: binary });
   const packed = ["crapts", host.name.split("/")[1]].map(
@@ -514,7 +514,7 @@ test("archive smoke verifies all six checksums and exercises the selected native
   );
   assert.ok(
     existsSync(native),
-    "Set CRAPTS_BINARY or run cargo build -p crapts",
+    "Set CRAPTS_BINARY or run cargo build -p crapts --features triage",
   );
   const { archives, out } = fixture(t, { name: host.name, path: native });
   const files = readdirSync(archives);

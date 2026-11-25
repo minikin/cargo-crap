@@ -424,3 +424,53 @@ fn delta_history_validates_growth_and_names_a_missing_delta_field() {
         );
     }
 }
+
+#[test]
+fn the_default_threshold_admits_a_pair_that_point_nine_excludes() {
+    let dir = project();
+    for (name, op) in [("first", "+"), ("second", "-")] {
+        fs::write(
+            dir.path().join(format!("{name}.ts")),
+            format!(
+                "function {name}(x){{const a={}x;return a{op}1}}",
+                "!".repeat(36)
+            ),
+        )
+        .unwrap();
+    }
+    let detected = report(dir.path(), &["--duplicates"]);
+    let pairs = detected["duplicates"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert!((0.82..0.9).contains(&pairs[0]["score"].as_f64().unwrap()));
+    assert_eq!(
+        report(dir.path(), &["--duplicates", "--dup-threshold", "0.9"])["duplicates"],
+        json!([])
+    );
+}
+
+#[test]
+fn recorded_ordinals_must_use_the_canonical_spelling_and_fit_the_family() {
+    let dir = project();
+    let mut doc = report(dir.path(), &["--duplicates"]);
+    let digest = doc["duplicate_context"]["families"][0]["fingerprints"][0].clone();
+    doc["duplicate_context"]["families"][0]["fingerprints"]
+        .as_array_mut()
+        .unwrap()
+        .push(digest);
+    for ordinal in ["2", "02", "0002", "184467440737095516160"] {
+        let name = format!("first#{ordinal}");
+        doc["duplicate_groups"][0]["members"][0]["function"] = json!(name);
+        fs::write(dir.path().join("history.json"), doc.to_string()).unwrap();
+        let out = invoke(dir.path(), &["--duplicates", "--baseline", "history.json"]);
+        if ordinal == "2" {
+            check(&out, 0);
+        } else {
+            check(&out, 2);
+            let msg = String::from_utf8(out.stderr).unwrap();
+            assert!(
+                msg.contains(&format!("invalid duplicate ordinal for first.ts::{name}")),
+                "{msg}"
+            );
+        }
+    }
+}

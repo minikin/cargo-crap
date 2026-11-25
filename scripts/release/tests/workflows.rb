@@ -205,6 +205,10 @@ class ReleaseWorkflows < Minitest::Test
     inspection = workflow('_build').dig('jobs', 'build', 'steps').find { |s| s['name'] == 'Inspect Linux cross archive' }
     assert_includes inspection.fetch('if'), 'matrix.use_cross'
     %w[tar readelf AArch64 X86-64].each { |token| assert_includes inspection.fetch('run'), token }
+    inspect_script = inspection.fetch('run')
+    assert_includes inspect_script, 'if [[ "$TARGET" == x86_64-unknown-linux-musl ]]'
+    assert_includes inspect_script, 'readelf -d "$unpacked/$BINARY"'
+    assert_match(/if grep -q NEEDED .*?exit 1/m, inspect_script)
     assert_includes commands(jobs.fetch('npm-wrapper')), 'cargo build --locked -p crapts --features triage'
   end
   def test_reusable_build_and_ci_contract

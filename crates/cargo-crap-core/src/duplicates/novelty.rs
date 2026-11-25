@@ -338,6 +338,33 @@ mod tests {
     }
 
     #[test]
+    fn crapts_self_comparison_and_singleton_families_match_the_shared_classifier() {
+        use crate::duplicates::model::Family;
+        let a = at("a.ts", "read", 1);
+        let b = at("b.ts", "read", 3);
+        let c = at("c.ts", "peer", 5);
+        let families = [&a, &b, &c].map(|m| Family {
+            file: m.file.display().to_string(),
+            stem: m.name.clone(),
+            fingerprints: vec!["digest".into()],
+        });
+        let now = [group(&[a.clone(), b.clone()])];
+        let old = vec![now[0].members.clone()];
+        let compare_ts =
+            |history: &[Vec<Location>]| compare_crapts(&now, &families, history, &families);
+        assert_eq!(
+            compare_ts(&old),
+            Comparison {
+                novelty: vec![Novelty::Unchanged],
+                resolved: 0
+            }
+        );
+        for history in [old, vec![vec![], vec![a.clone()]], vec![vec![a, c]]] {
+            assert_eq!(compare_ts(&history), compare(&now, &history));
+        }
+    }
+
+    #[test]
     fn only_a_grown_group_grew_from_anything() {
         assert_eq!(Novelty::Grown { from: 3 }.grown_from(), Some(3));
         assert_eq!(Novelty::New.grown_from(), None);

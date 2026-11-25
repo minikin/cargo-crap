@@ -125,6 +125,7 @@ pub fn compare_crapts(
         .collect();
     let then: Vec<Vec<_>> = baseline
         .iter()
+        .filter(|g| g.len() >= 2)
         .map(|g| g.iter().map(|m| Identity::Recorded(id(m))).collect())
         .collect();
     classify(&groups, &then)

@@ -156,7 +156,6 @@ mod tests {
         }
     }
 
-    /// A response carrying `answers` under the ids the encoded questions use.
     fn located(
         file: String,
         name: String,

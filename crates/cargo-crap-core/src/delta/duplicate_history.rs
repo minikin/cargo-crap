@@ -205,10 +205,15 @@ fn families(
         let key = (member.file.to_str().unwrap_or_default(), name);
         let count = index.get(&key).context("missing duplicate family")?;
         if name != member.name {
-            let ordinal: usize = member.name[name.len() + 1..].parse()?;
+            let suffix = &member.name[name.len() + 1..];
             ensure!(
-                (2..=*count).contains(&ordinal),
-                "duplicate ordinal outside family"
+                !suffix.starts_with('0')
+                    && suffix
+                        .parse::<usize>()
+                        .is_ok_and(|n| (2..=*count).contains(&n)),
+                "invalid duplicate ordinal for {}::{}",
+                member.file.display(),
+                member.name
             );
         }
         used.insert(key);

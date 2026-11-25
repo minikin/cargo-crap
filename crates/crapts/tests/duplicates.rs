@@ -612,3 +612,9 @@ fn excerpt_regions_follow_sorted_rows_and_preserve_disjoint_constructor_sources(
         ]
     );
 }
+
+#[test]
+fn an_empty_consequent_preserves_the_position_of_the_else_branch() {
+    assert_ne!(body("if (a); else b()"), body("if (a) b()"));
+    assert_eq!(body("if (a);"), body("if (a);;"));
+}

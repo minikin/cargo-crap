@@ -2478,25 +2478,76 @@ fn s12_duplicate_settings_keep_flags_and_provider_specific_default_origins() {
 #[test]
 fn s13_invalid_duplicate_config_names_its_source_even_when_overridden() {
     let dir = tempfile::tempdir().unwrap();
-    for (group, key, value) in [
-        ("duplicates", "min-similarity", "nan"),
-        ("duplicates", "min-similarity", "-0.01"),
-        ("duplicates", "min-nodes", "-1"),
-        ("duplicates", "min-lines", "1"),
-        ("duplicates.triage", "confidence-floor", "1.01"),
-        ("duplicates.triage", "max-requests", "-1"),
-        ("duplicates.triage", "max-requests", "4294967296"),
-        ("duplicates.triage", "provider", "'other'"),
+    for (group, key, value, reason) in [
+        (
+            "duplicates",
+            "min-similarity",
+            "nan",
+            "duplicates.min-similarity must be between 0 and 1, got NaN",
+        ),
+        (
+            "duplicates",
+            "min-similarity",
+            "-0.01",
+            "duplicates.min-similarity must be between 0 and 1, got -0.01",
+        ),
+        (
+            "duplicates",
+            "min-nodes",
+            "-1",
+            "invalid value: integer `-1`, expected usize",
+        ),
+        ("duplicates", "min-lines", "1", "unknown key min-lines"),
+        (
+            "duplicates.triage",
+            "confidence-floor",
+            "1.01",
+            "duplicates.triage.confidence-floor must be between 0 and 1, got 1.01",
+        ),
+        (
+            "duplicates.triage",
+            "max-requests",
+            "-1",
+            "invalid value: integer `-1`, expected u32",
+        ),
+        (
+            "duplicates.triage",
+            "max-requests",
+            "4294967296",
+            "invalid value: integer `4294967296`, expected u32",
+        ),
+        (
+            "duplicates.triage",
+            "model",
+            "''",
+            "duplicates.triage.model must not be blank",
+        ),
+        (
+            "duplicates.triage",
+            "model",
+            "'  '",
+            "duplicates.triage.model must not be blank",
+        ),
+        (
+            "duplicates.triage",
+            "provider",
+            "'other'",
+            "unknown duplicates.triage.provider other",
+        ),
     ] {
         fs::write(
             dir.path().join(".crapts.toml"),
             format!("[{group}]\n{key}={value}"),
         )
         .unwrap();
-        let out = invoke(dir.path(), &["--print-config", "--dup-threshold", "0.8"]);
+        let out = invoke(dir.path(), &["--output", "out", "--dup-threshold", "0.8"]);
         check(&out, 2);
         let err = String::from_utf8(out.stderr).unwrap();
-        assert!(err.contains(".crapts.toml") && err.contains(key), "{err}");
+        assert!(
+            err.contains(".crapts.toml") && err.contains(key) && err.contains(reason),
+            "{err}"
+        );
+        assert!(!dir.path().join("out").exists());
     }
 }
 
@@ -2529,7 +2580,12 @@ fn s39_duplicate_aliases_are_mutually_exclusive_and_accept_closed_boundaries() {
 #[test]
 fn s40_a_later_duplicate_threshold_cannot_hide_an_invalid_flag() {
     let dir = tempfile::tempdir().unwrap();
-    for value in ["1.1", "-0.1", "NaN", "inf"] {
+    for (value, reason) in [
+        ("1.1", "between 0 and 1"),
+        ("-0.1", "between 0 and 1"),
+        ("NaN", "a finite number"),
+        ("inf", "a finite number"),
+    ] {
         let out = invoke(
             dir.path(),
             &[
@@ -2537,14 +2593,33 @@ fn s40_a_later_duplicate_threshold_cannot_hide_an_invalid_flag() {
                 value,
                 "--dup-threshold",
                 "0.8",
-                "--print-config",
+                "--output",
+                "out",
             ],
         );
         check(&out, 2);
         let err = String::from_utf8(out.stderr).unwrap();
         assert!(
-            err.contains("--dup-threshold") && err.contains(value),
+            err.contains(&format!("--dup-threshold must be {reason}, got {value}")),
             "{err}"
         );
+        assert!(!dir.path().join("out").exists());
+    }
+}
+
+#[test]
+fn negative_zero_duplicate_settings_print_as_positive_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join(".crapts.toml"),
+        "[duplicates]\nmin-similarity=-0.0\n[duplicates.triage]\nconfidence-floor=-0.0",
+    )
+    .unwrap();
+    for args in [&[][..], &["--dup-threshold", "-0.0"]] {
+        let cfg = settings(dir.path(), args);
+        let dup = &cfg["settings"]["duplicates"];
+        for field in [&dup["min_similarity"], &dup["triage"]["confidence_floor"]] {
+            assert_eq!(field["value"].to_string(), "0.0");
+        }
     }
 }

@@ -204,7 +204,7 @@ comment.
 
 ## Duplicates, triaged
 
-*Since 0.6.0. OpenAI as a provider since 0.7.0. Rust only.*
+*Since 0.6.0. OpenAI as a provider since 0.7.0. This section shows cargo-crap. For crapts see the [duplicate guide](docs/crapts/guides/duplicates.md).*
 
 `--duplicates` lists functions with the same structure, and it needs no
 coverage. Functions that all resemble each other are one group, so thirty

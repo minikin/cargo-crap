@@ -4895,6 +4895,21 @@ mod duplicate_fitting {
                         && fitted.contains("changedOnly")
                         && fitted.contains("and 1 more, see CI artifact")
                 );
+                let third_row = short.lines().rfind(|l| l.contains("<br><sub>")).unwrap();
+                let shorter = &mark[..mark.len() - third_row.encode_utf16().count()];
+                let (code, three_rows, err) = render(&repo, shorter, flags);
+                assert_eq!(code, ExitCode::from(1), "{err}");
+                assert_eq!(
+                    three_rows
+                        .lines()
+                        .filter(|l| l.contains("<br><sub>"))
+                        .count(),
+                    3
+                );
+                assert!(three_rows.contains("changedOnly"));
+                assert!(!three_rows.contains("| CRAP | CC |"));
+                let body = three_rows.strip_prefix(shorter).unwrap();
+                assert!(body.encode_utf16().count() + mark.len() > 65_536);
                 assert!(!fitted.contains("| CRAP | CC |"));
             }
         }
@@ -4923,6 +4938,10 @@ mod duplicate_fitting {
         let (code, stdout, err) = render(&repo, &format!("{mark}x"), &output);
         assert_eq!(code, ExitCode::from(2));
         assert!(err.contains("65536") || err.contains("65,536"), "{err}");
+        assert!(
+            err.contains("even with the smallest summary and no duplicate or changed rows"),
+            "{err}"
+        );
         assert_eq!(stdout, "");
         assert_eq!(repo.read("out.md"), "keep me");
     }

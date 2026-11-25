@@ -404,10 +404,23 @@ impl<'a> Visit<'a> for Shapes<'_> {
         self.close();
     }
 
+    fn visit_statements(
+        &mut self,
+        statements: &oxc_allocator::Vec<'a, ast::Statement<'a>>,
+    ) {
+        for statement in statements {
+            if !matches!(statement, ast::Statement::EmptyStatement(_)) {
+                self.visit_statement(statement);
+            }
+        }
+    }
+
     fn visit_empty_statement(
         &mut self,
         _: &ast::EmptyStatement,
     ) {
+        // Outside a statement list the empty body occupies a branch or loop slot.
+        self.leaf("hole");
     }
     fn visit_jsx_closing_element(
         &mut self,

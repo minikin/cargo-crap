@@ -10,8 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `crapts --duplicates` finds matching JavaScript and TypeScript functions without a coverage file. A saved JSON baseline identifies new and grown groups. Release binaries and the npm launcher include optional TypeSafe and OpenAI triage with cached verdicts and a per-run request budget.
-
+- `crapts --duplicates` finds matching JavaScript and TypeScript functions
+  without a coverage file. A saved JSON baseline identifies new and grown
+  groups. Release binaries and the npm launcher include TypeSafe and OpenAI
+  triage with cached verdicts and a per-run request budget.
 - Enable structural signals in `.crapts.toml` to compare JS and TS functions
   against a saved baseline.
 - `cargo_crap_core::run::PreparedReport` lets a front end render several
@@ -27,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   observation counts and diagnostics. The new required `crapts::Row::is_arrow`
   field identifies arrow functions. Set it in row literals and add it or `..` to
   exhaustive patterns.
-- The language-neutral modules live in the new `cargo-crap-core` 0.1.0
+- The language-neutral modules live in the new `cargo-crap-core` 0.2.0
   library, with their existing public items: `score`, `entry`, `paths`,
   `coverage`, `signals::{model, config}`,
   `duplicates::{model, compare, group, novelty, verdict}`, `delta`,
@@ -41,16 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalize, scan, triage}`. Every existing `cargo_crap::` path still
   resolves to the same type, so a row, tool or policy value passes between
   the two crates' APIs without conversion. No item's visibility was
-  widened. cargo-crap depends on `cargo-crap-core = "=0.1.0"`, which is not
+  widened. cargo-crap depends on `cargo-crap-core = "=0.2.0"`, which is not
   on crates.io yet: cargo-crap cannot be published there until the core is.
-
 - Library callers can use `run::run` to write and flush a report and
   receive its `gate::GateOutcome`. The `filter` module selects report
   rows, and `policy` lets each tool choose its summary formats and
   which rows count toward the threshold gate. Use `Population::All` to
   count every eligible row, including rows hidden by the display limits.
   Cargo-crap uses `Population::Shown` to count the displayed rows.
-
 - Structural maintainability signals (spec 43), opt-in with
   `[signals] enabled = true`. Each function gets `nesting`, `lines`,
   `bumps`, `bool_ops`, `stubs` and `panics`, measured in the same pass
@@ -69,6 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking library API.** Construct `QuestionSet` with `QuestionSet::new`.
+  Its fields are private. Providers can read the questions through `kind()`,
+  `worth()` and `divergence()`.
+- **Breaking library API.** `CoverageKind` is now `#[non_exhaustive]` and
+  includes `Unmeasured`. Add a wildcard arm to downstream matches.
+- **Breaking library API.** Set `RenderExtras::duplicate_context`,
+  `RenderExtras::duplicate_row_limit` and `RenderOptions::duplicate_row_limit`
+  to `None` in full literals to keep the default rendering.
+- **Breaking crapts library API.** Supply `crapts::Row::excerpt_regions` in
+  row literals and `duplicates` in `crapts::config::Config` literals.
+  Printed settings now include `settings.duplicates`. The `crapts::duplicates`
+  module exposes the structural scan.
 - **Breaking (crapts library):** `crapts::Row` gains `fingerprint: crapts::fingerprint::Fingerprint`.
   Set it in row literals or use `..` in exhaustive patterns. crapts JSON rows
   now carry `fingerprint`, and `crapts --base <rev>` with `--fail-changed`
@@ -76,8 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git` module. cargo-crap output is unchanged.
 - crapts PR comments now fit GitHub's limit of 65,536 UTF-16 code units. A
   longer body is written with the core report in its summary form, then with
-  fewer changed rows, and a body that cannot fit exits 2 before the output
-  opens.
+  fewer duplicate rows and then fewer changed rows. If the smallest body
+  exceeds the limit, the command exits 2 before opening the output.
 - `crapts::Row::measured` holds the six signal counts and their source ranges.
   Set it in row literals and add it or `..` to exhaustive patterns.
 - Set `Policy::signal_slice_hint` to the text shown when display limits hide

@@ -133,7 +133,7 @@ syn (Rust AST)  ──▶  src/duplicates/       second pass, only on --duplicat
 
 **`src/main.rs`** builds the CLI with `clap`. It handles the `cargo crap` subcommand invocation by stripping the leading `crap` argument when detected. It resolves settings, runs analysis and coverage, prepares the baseline with the Cargo file scope, opens the destination and gathers duplicate data. It passes those inputs to `run::run` and returns the resulting gate exit code.
 
-**`core/run.rs`** owns `PreparedReport`, the `run::run` wrapper used by cargo-crap, and `BaselineFilter` (`prepare` for cargo-crap baselines, `prepare_crapts` for admitted crapts baselines with private version metadata and skip notice). `PreparedReport::new` selects rows according to `Tool.policy` and evaluates the gates. `PreparedReport::write` renders notices, `Placement::Lead` sections, the report body (`CargoCrapV1` or `CraptsV1` JSON, summary, or text and machine formats), duplicates, and `Placement::Trail` sections, then flushes before returning `GateOutcome`. In JSON mode, `CraptsV1` embeds a single validated `changed` section object and records `summary.changed_failures`, while `CargoCrapV1` refuses supplied sections before writing. **`core/report/section.rs`** defines `Section` and `Placement`. **`core/filter.rs`** compiles allow patterns and selects shown rows under `TieOrder::Stable` or `TieOrder::FileFunctionLine`. **`core/gate.rs`** maps threshold counts, full-delta counts (skipping the regression verdict across crapts minor versions), and section failures (`fail_sections`) to an exit code. **`core/policy.rs`** defines `EnvelopeKind`, `PairPolicy`, `TieOrder`, `Population`, `NoticeSpacing`, and `Policy`. cargo-crap supplies its values in `src/tool.rs`.
+**`core/run.rs`** owns `PreparedReport`, the `run::run` wrapper used by cargo-crap, and `BaselineFilter` (`prepare` for cargo-crap baselines, `prepare_crapts` for admitted crapts baselines with version metadata, a skip notice and scoped duplicate history). `PreparedReport::new` selects rows according to `Tool.policy` and evaluates the gates. `PreparedReport::write` renders notices, `Placement::Lead` sections, the report body (`CargoCrapV1` or `CraptsV1` JSON, summary, or text and machine formats), duplicates, and `Placement::Trail` sections, then flushes before returning `GateOutcome`. In JSON mode, `CraptsV1` embeds a single validated `changed` section object and records `summary.changed_failures`, while `CargoCrapV1` refuses supplied sections before writing. **`core/report/section.rs`** defines `Section` and `Placement`. **`core/filter.rs`** compiles allow patterns and selects shown rows under `TieOrder::Stable` or `TieOrder::FileFunctionLine`. **`core/gate.rs`** maps threshold counts, full-delta counts (skipping the regression verdict across crapts minor versions), and section failures (`fail_sections`) to an exit code. **`core/policy.rs`** defines `EnvelopeKind`, `PairPolicy`, `TieOrder`, `Population`, `NoticeSpacing`, and `Policy`. cargo-crap supplies its values in `src/tool.rs`.
 
 ### The crapts CLI
 
@@ -152,6 +152,13 @@ Each exclude or allow keeps its origin and base directory. Config patterns use
 the config directory. Flag patterns use the invocation directory. Discovery
 matches whole paths for exclusions. Core `AllowSet::compile_with_bases` matches
 file allows by component suffix and name allows against the full emitted name.
+
+`crates/crapts/src/duplicates/` builds normalized function prints from the
+scoring parse and groups matching functions across all files in scope. An
+explicit `--duplicates` admits a coverage-free scan for text, JSON, Markdown
+and PR comments. Scores then follow the missing-coverage policy.
+`cli/triage/` prepares JS and TS excerpts, provider settings and cache keys
+for the shared triage runner.
 
 Discovery emits unused exclusions before `coverage::read_coverage` reads the
 LCOV or Istanbul input. The command then analyzes each source in ordinary mode
@@ -176,7 +183,9 @@ JSON rows and visible path labels stay relative to the invocation.
 `--baseline <file>` is read after the coverage input and before any source is
 parsed. Core `delta::load_crapts_baseline` admits it against the measured
 coverage unit, and `BaselineFilter::prepare_crapts` drops rows outside
-`Discovery.scope` or matching an allow pattern. A failed scope lookup is an
+`Discovery.scope` or matching an allow pattern. It maps historical duplicate
+members into the current directory and applies file scope and exclusions.
+Only groups with at least two members in scope remain. A failed scope lookup is an
 input error, so a row that cannot be checked never vanishes unreported.
 `PreparedReport` evaluates `--fail-regression` before slicing the delta for display. A
 cross-minor baseline's notice appears in the text, markdown and pr-comment
@@ -200,8 +209,9 @@ changed-v1 order, and text for human, markdown, pr-comment and github.
 without `--base`. Rows carry `fingerprint`, which `CraptsV1` writes and
 `CargoCrapV1` drops. The report is rendered in memory before `--output`
 opens, and a pr-comment body is fitted to GitHub's 65,536 UTF-16 code units:
-complete, then with the core report summarized, then with fewer changed rows,
-or exit 2.
+complete report, score summary, fewer duplicate rows, then fewer changed rows.
+An explicit `--summary` reduces only duplicate rows. If the smallest body
+still exceeds the limit, the command exits 2.
 
 ## Key design decisions
 

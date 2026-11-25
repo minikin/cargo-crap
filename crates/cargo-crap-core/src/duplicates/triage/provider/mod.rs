@@ -72,6 +72,21 @@ pub struct QuestionSet {
 }
 
 impl QuestionSet {
+    #[must_use]
+    pub const fn kind(&self) -> &ChoiceQuestion {
+        &self.kind
+    }
+
+    #[must_use]
+    pub const fn worth(&self) -> &ScoreQuestion {
+        &self.worth
+    }
+
+    #[must_use]
+    pub const fn divergence(&self) -> &BinaryQuestion {
+        &self.divergence
+    }
+
     /// Supply language-specific wording. Kind rubrics follow [`Kind::ALL`] order.
     #[must_use]
     pub const fn new(
@@ -129,7 +144,12 @@ pub struct ChoiceQuestion {
 }
 
 impl ChoiceQuestion {
-    fn options(&self) -> impl Iterator<Item = (Kind, &'static str)> {
+    #[must_use]
+    pub const fn id(&self) -> &'static str {
+        self.id
+    }
+
+    pub fn options(&self) -> impl Iterator<Item = (Kind, &'static str)> {
         Kind::ALL.into_iter().zip(self.rubrics)
     }
 }
@@ -152,6 +172,25 @@ pub struct BinaryQuestion {
     pub if_true: &'static str,
     /// What "false" means.
     pub if_false: &'static str,
+}
+
+impl ScoreQuestion {
+    #[must_use]
+    pub const fn id(&self) -> &'static str {
+        self.id
+    }
+
+    #[must_use]
+    pub const fn levels(&self) -> &'static [(&'static str, &'static str)] {
+        self.levels
+    }
+}
+
+impl BinaryQuestion {
+    #[must_use]
+    pub const fn id(&self) -> &'static str {
+        self.id
+    }
 }
 
 pub use crate::duplicates::verdict::Answers;

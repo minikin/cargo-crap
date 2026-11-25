@@ -139,7 +139,7 @@ struct Lookup<const N: usize> {
 pub struct Excerpts<const N: usize> {
     pub first: String,
     pub second: String,
-    /// Front-end source locations when a side spans disjoint regions.
+    /// Explicit locations for the submitted excerpts. Without them the request uses each member's line range.
     pub locations: Option<[String; 2]>,
     pub key: CacheKey<N>,
 }
@@ -236,7 +236,7 @@ impl Run<'_> {
         Ok(verdict)
     }
 
-    /// Cache `verdict`; on the first failure, say so once and carry on.
+    /// Keep the first write failure for the calling thread to report after the run.
     fn remember<const N: usize>(
         &self,
         key: CacheKey<N>,

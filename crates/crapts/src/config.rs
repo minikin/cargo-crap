@@ -63,13 +63,14 @@ impl Config {
         path: &Path,
         source: &str,
     ) -> Result<Self, InputError> {
-        let settings: Self = toml::from_str(source).map_err(|error| field_error(path, &error))?;
+        let mut settings: Self =
+            toml::from_str(source).map_err(|error| field_error(path, &error))?;
         settings.validate(path)?;
         Ok(settings)
     }
 
     fn validate(
-        &self,
+        &mut self,
         path: &Path,
     ) -> Result<(), InputError> {
         for (name, value) in [

@@ -53,24 +53,35 @@ impl<'de> Deserialize<'de> for ProviderChoice {
 
 impl DuplicatesConfig {
     pub(super) fn validate(
-        &self,
+        &mut self,
         path: &Path,
     ) -> Result<(), InputError> {
         for (key, value) in [
-            ("duplicates.min-similarity", self.min_similarity),
+            ("duplicates.min-similarity", &mut self.min_similarity),
             (
                 "duplicates.triage.confidence-floor",
-                self.triage.confidence_floor,
+                &mut self.triage.confidence_floor,
             ),
         ] {
-            if let Some(n) = value
-                && !(0.0..=1.0).contains(&n)
-            {
+            let Some(n) = value else { continue };
+            if !(0.0..=1.0).contains(n) {
                 return Err(InputError::at(
                     path,
                     format!("{key} must be between 0 and 1, got {n}"),
                 ));
             }
+            *n += 0.0;
+        }
+        if self
+            .triage
+            .model
+            .as_ref()
+            .is_some_and(|model| model.trim().is_empty())
+        {
+            return Err(InputError::at(
+                path,
+                "duplicates.triage.model must not be blank",
+            ));
         }
         Ok(())
     }

@@ -212,7 +212,9 @@ try {
     if (argv[0] === "--version")
       assert.equal(result.stdout.trim(), "crapts " + values.version);
   }
-  await smokeTriage(command);
+  await smokeTriage(values.npm
+    ? [process.execPath, join(dir, "node_modules", "@minikin", "crapts", "bin", "crapts.js")]
+    : command);
 } finally {
   rmSync(dir, { force: true, recursive: true });
 }

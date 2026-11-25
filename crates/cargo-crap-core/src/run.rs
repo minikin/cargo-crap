@@ -246,6 +246,7 @@ pub struct Settings<'a> {
 }
 
 pub struct RenderExtras<'a> {
+    /// Producer coordinates and ordinal families for a crapts JSON duplicate record.
     pub duplicate_context: Option<&'a crate::duplicates::model::DuplicateContext>,
     /// Cap duplicate rows while fitting a PR comment, preserving group totals.
     pub duplicate_row_limit: Option<usize>,

@@ -76,6 +76,21 @@ fn statuses(doc: &Value) -> Vec<String> {
         .collect()
 }
 
+fn history_markdown(
+    cwd: &Path,
+    args: &[&str],
+) -> String {
+    rendering(
+        cwd,
+        "markdown",
+        &[
+            &["--missing", "skip", "--baseline", "history.json"][..],
+            args,
+        ]
+        .concat(),
+    )
+}
+
 #[test]
 fn s19_two_checkouts_map_prefixes_before_scope_and_identity_matching() {
     let producer = project(true);
@@ -92,8 +107,13 @@ fn s19_two_checkouts_map_prefixes_before_scope_and_identity_matching() {
     assert_eq!(old["duplicate_context"]["repo_prefix"], "pkg");
     let (doc, _) = compare(consumer.path(), &old, &["pkg"]);
     assert_eq!(statuses(&doc), ["unchanged"]);
+    assert!(
+        history_markdown(consumer.path(), &["pkg"]).contains("1 existing candidate unchanged.")
+    );
     let (excluded, _) = compare(consumer.path(), &old, &["pkg", "--exclude", "pkg/db/**"]);
     assert_eq!(excluded["duplicate_groups"], json!([]));
+    let excluded = history_markdown(consumer.path(), &["pkg", "--exclude", "pkg/db/**"]);
+    assert!(!excluded.contains(" resolved."), "{excluded}");
     let old_root = absolute(producer.path());
     assert_eq!(
         statuses(&compare(&consumer.path().join("pkg"), &old_root, &[]).0),
@@ -138,6 +158,13 @@ fn s45_relocated_files_need_mutual_unique_suffixes_or_a_unique_function_name() {
             statuses(&compare(new.path(), &absolute(old.path()), &[]).0),
             [expected]
         );
+        let credit = if expected == "unchanged" {
+            "1 existing candidate unchanged."
+        } else {
+            "0 existing candidates unchanged, 1 resolved."
+        };
+        let body = history_markdown(new.path(), &[]);
+        assert!(body.contains(credit), "{body}");
     }
 }
 
@@ -155,6 +182,8 @@ fn s46_only_a_unique_fingerprint_preserves_a_shifted_callback_ordinal() {
         "hook(x=>x());hook(x=>!x);hook(x=>x+1);",
     );
     assert_eq!(statuses(&compare(cwd, &old, &[]).0), ["unchanged"]);
+    let body = history_markdown(cwd, &[]);
+    assert!(body.contains("1 existing candidate unchanged."), "{body}");
     write(
         cwd,
         "callbacks.ts",

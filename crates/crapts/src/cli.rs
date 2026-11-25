@@ -160,10 +160,13 @@ fn number(
     if name == "epsilon" && n < 0.0 {
         return Err(format!("--epsilon must be at least 0, got {value}"));
     }
-    if name == "dup-threshold" && !(0.0..=1.0).contains(&n) {
-        return Err(format!(
-            "--dup-threshold must be between 0 and 1, got {value}"
-        ));
+    if name == "dup-threshold" {
+        if !(0.0..=1.0).contains(&n) {
+            return Err(format!(
+                "--dup-threshold must be between 0 and 1, got {value}"
+            ));
+        }
+        return Ok(n + 0.0);
     }
     Ok(n)
 }

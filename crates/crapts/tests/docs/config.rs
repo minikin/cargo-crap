@@ -383,8 +383,7 @@ fn check_alias(
             row.key
         )
     })?;
-    // Every aliased value here is a boolean, integer or string list with
-    // the same literal syntax in TOML and JSON.
+    // These fixture values use the same literal syntax in TOML and JSON.
     let literal = serde_json::to_string(value).map_err(|e| e.to_string())?;
     let aliased = format!("{alias} = {literal}\n");
     let config = with_config(repo, &aliased)

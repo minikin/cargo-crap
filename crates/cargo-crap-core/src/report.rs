@@ -623,6 +623,21 @@ pub fn crappy_count(
 mod tests {
 
     #[test]
+    fn only_formats_with_a_duplicate_section_carry_groups() {
+        for format in [
+            Format::Human,
+            Format::Json,
+            Format::Markdown,
+            Format::PrComment,
+        ] {
+            assert!(format.carries_duplicates(), "{format:?}");
+        }
+        for format in [Format::GitHub, Format::Sarif, Format::Shields] {
+            assert!(!format.carries_duplicates(), "{format:?}");
+        }
+    }
+
+    #[test]
     fn new_options_carry_the_tool_and_every_other_default() {
         let opts = RenderOptions::new(&test_support::SECOND_TOOL);
         assert_eq!(*opts.tool, test_support::SECOND_TOOL);

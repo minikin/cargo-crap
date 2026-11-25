@@ -661,7 +661,7 @@ fn summary_after_marker(
 fn too_long() -> InputError {
     InputError::message(format!(
         "the PR comment needs more than {COMMENT_LIMIT} UTF-16 code units, GitHub's limit, \
-         even with the core report summarized and no changed rows"
+         even with the smallest summary and no duplicate or changed rows"
     ))
 }
 

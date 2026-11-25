@@ -37,6 +37,7 @@ pub struct FunctionPrint {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DuplicateContext {
+    // The wire format requires this key even when the producer has no Git root.
     #[serde(deserialize_with = "serde::Deserialize::deserialize")]
     pub repo_prefix: Option<String>,
     pub families: Vec<Family>,

@@ -30,6 +30,13 @@ crapts --duplicates --coverage coverage/lcov.info --baseline crapts-baseline.jso
 
 If `north` and `south` matched on main and the branch adds a third copy, the group has `status: "grown"` and `grown_from: 2`. Markdown and PR comments list new and grown groups and count unchanged and resolved groups. JSON keeps every current group and qualifying pair. A baseline without a duplicate record has no group history. A baseline with an empty `duplicate_groups` array records a scan that found none.
 
+If inserting or removing a numbered callback shifts its siblings, crapts can
+match a fingerprint that occurs once in each family. If the family size stays
+the same, crapts matches by ordinal, even after a reorder. A repeated
+fingerprint or an ambiguous file move can leave the old group resolved and
+the current group new. When either scan runs outside Git, start both from
+equivalent directories in their checkouts.
+
 Use the same coverage kind on both revisions. For Istanbul, pass each revision's `coverage-final.json`. Two coverage-free reports can also be compared. To see which functions a branch touched alongside the current duplicate groups, run the Git comparison.
 
 ```bash
@@ -40,7 +47,7 @@ crapts --duplicates --coverage coverage/lcov.info --base main --format json
 
 ## Ask a provider
 
-The release binary and npm launcher include the triage client. For a Cargo install, use `cargo install crapts --features triage`. Detection and provider calls are opt-in. To judge up to three groups, put this in `.crapts.toml` and pass `--duplicates`.
+The release binary and npm launcher include the triage client. For a Cargo install, use `cargo install --locked crapts --features triage`. Detection and provider calls are opt-in. To judge up to three groups, put this in `.crapts.toml` and pass `--duplicates`.
 
 ```toml
 [duplicates.triage]
