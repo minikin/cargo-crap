@@ -6,11 +6,17 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 source "$here/lib.sh"
 
+name="$(binary_name "$RUNNER_OS")"
 if [ -n "${BINARY:-}" ]; then
     file_input binary "$BINARY"
+    # A copy under the name the later steps call, in a directory of its own:
+    # a renamed artifact still runs, a sibling named cargo-crap does not, and
+    # a binary inside the checkout cannot change while the Action runs.
+    dir="$(mktemp -d "$RUNNER_TEMP/cargo-crap-given.XXXXXX")"
+    dir="$(cd "$dir" && pwd)"
+    cp "$BINARY" "$dir/$name"
     # An uploaded artifact loses its execute bit on the way down.
-    chmod +x "$BINARY"
-    dir="$(cd "$(dirname "$BINARY")" && pwd)"
+    chmod +x "$dir/$name"
 else
     target="$(target_for "$RUNNER_OS" "$RUNNER_ARCH")"
     archive="$(archive_for "$target")"
@@ -42,4 +48,5 @@ if command -v cygpath > /dev/null; then
 else
     echo "$dir" >> "$GITHUB_PATH"
 fi
-"$dir/cargo-crap" --version
+# The first run of the binary, and it needs no provider key.
+keyless "$dir/$name" --version

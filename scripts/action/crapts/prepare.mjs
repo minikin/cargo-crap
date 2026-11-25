@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scanOnly, withoutProviderKeys } from "./cli.mjs";
 
 function git(args, quiet = false) {
-  const result = spawnSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", quiet ? "ignore" : "inherit"] });
+  const result = spawnSync("git", args, { env: withoutProviderKeys(process.env), encoding: "utf8", stdio: ["ignore", "pipe", quiet ? "ignore" : "inherit"] });
   if (result.error) throw result.error;
   return result;
 }
@@ -36,7 +37,7 @@ function resolveBase(revision) {
 }
 
 function projectCommand(command, label, cwd, bash, coverageFile) {
-  const env = { ...process.env, INPUT_COVERAGE_FILE: coverageFile };
+  const env = { ...withoutProviderKeys(process.env), INPUT_COVERAGE_FILE: coverageFile };
   const result = spawnSync(bash, ["-c", command], { cwd, env, stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw Error(label + " failed with status " + (result.status ?? result.signal));
@@ -47,22 +48,30 @@ function file(path, label) {
   return path;
 }
 
-export function generateCoverage(cwd, label, bash, name = process.env.INPUT_COVERAGE_FILE) {
+// `guard` runs after the install command, before the stale file is unlinked,
+// and again before the result is read: the commands can move what the path names.
+export function generateCoverage(cwd, label, bash, name = process.env.INPUT_COVERAGE_FILE, guard = () => {}, hint = "") {
   const { INPUT_INSTALL_COMMAND: install, INPUT_COVERAGE_COMMAND: command } = process.env;
   const path = resolve(cwd, name);
   if (install) projectCommand(install, label + " install command", cwd, bash, name);
+  guard(path);
   rmSync(path, { force: true });
   projectCommand(command, label + " coverage command", cwd, bash, name);
-  return file(path, label + " coverage command did not produce coverage-file " + name);
+  guard(path, true);
+  return file(path, label + " coverage command did not produce coverage-file " + name + hint);
 }
 
 function prepare() {
   const { INPUT_BASE, INPUT_COVERAGE, INPUT_COVERAGE_COMMAND, CRAPTS_TEMP } = process.env;
   const base = resolveBase(INPUT_BASE);
-  if (!INPUT_COVERAGE && !INPUT_COVERAGE_COMMAND) throw Error("set coverage and coverage-command inputs to supply or generate coverage");
-  const source = INPUT_COVERAGE ? file(INPUT_COVERAGE, "coverage") : generateCoverage(process.cwd(), "head", process.argv[2]);
-  const coverage = join(CRAPTS_TEMP, "head.coverage");
-  copyFileSync(source, coverage);
+  let coverage = "";
+  if (INPUT_COVERAGE || INPUT_COVERAGE_COMMAND) {
+    const source = INPUT_COVERAGE ? file(INPUT_COVERAGE, "coverage") : generateCoverage(process.cwd(), "head", process.argv[2]);
+    coverage = join(CRAPTS_TEMP, "head.coverage");
+    copyFileSync(source, coverage);
+  } else if (!scanOnly(JSON.parse(readFileSync(join(CRAPTS_TEMP, "args.json"))))) {
+    throw Error("set coverage or coverage-command inputs to supply or generate coverage");
+  }
   writeFileSync(join(CRAPTS_TEMP, "prepared.json"), JSON.stringify({ base, coverage }));
 }
 

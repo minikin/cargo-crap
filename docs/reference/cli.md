@@ -9,6 +9,8 @@
 | `--threshold <N>`                                                | `30`          | Score above which a function is flagged.                             |
 | `--min <SCORE>`                                                  | none          | Hide entries below this score.                                       |
 | `--top <N>`                                                      | none          | Show only the N worst offenders.                                     |
+| `--all-rows`                                                     | off           | Clear `--top` and `--min`, from the flags and from `.cargo-crap.toml`. |
+| `--print-signal-regressions` | off | With `--baseline` and `--output`, write the full gated signal count to stdout as JSON. An unavailable comparison yields `null`. |
 | `--sort {crap,file}`                                             | `crap`        | Final ordering of entries.                                           |
 | `--missing {pessimistic,optimistic,skip}`                        | `pessimistic` | How to score a function with no coverage data.                       |
 | `--exclude <GLOB>`                                               | none          | Skip files matching this pattern (repeatable).                       |
@@ -58,6 +60,10 @@ The `human` table shows every function above the threshold and only the 10
 highest-scoring below it. `--top` or `--min` turns that cap off, and so does
 `--show-unchanged` with `--baseline`. See
 [The human table's cap](output-formats.md#the-human-tables-cap).
+
+`--all-rows` is for a `--format json` baseline, which has to hold every
+function: one missing from it reads as new, so a rise in its score is never
+compared. The human table keeps its cap below the threshold.
 
 With `--baseline`, `--top` and `--min` choose only the rows shown: the
 comparison, the Removed list, the summary line and `--fail-regression`

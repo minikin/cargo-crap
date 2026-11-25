@@ -44,7 +44,7 @@ use std::time::Duration;
 )]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "the bools come from clap-derived `--flag` switches (--workspace, --summary, --fail-above, --fail-regression, --no-default-excludes, --show-unchanged); not a struct-design smell"
+    reason = "the bools come from clap-derived `--flag` switches (--workspace, --summary, --fail-above, --fail-regression, --no-default-excludes, --show-unchanged, --all-rows); not a struct-design smell"
 )]
 struct Cli {
     /// Path to an LCOV coverage file (e.g. from `cargo llvm-cov --lcov --output-path lcov.info`).
@@ -120,6 +120,13 @@ struct Cli {
     #[arg(long, value_name = "N")]
     top: Option<usize>,
 
+    /// Clear `--top` and `--min`, from the flags and from `.cargo-crap.toml`.
+    /// Meant for a `--format json` baseline, which has to hold every
+    /// function: a function missing from it reads as new, so a rise in its
+    /// score is never compared. The human table keeps its cap.
+    #[arg(long)]
+    all_rows: bool,
+
     /// How to handle functions with complexity data but no coverage data.
     /// Falls back to `.cargo-crap.toml` → built-in default (pessimistic).
     #[arg(long, value_enum)]
@@ -156,6 +163,11 @@ struct Cli {
     /// report shows per-function deltas (regressions, improvements, new).
     #[arg(long, value_name = "FILE")]
     baseline: Option<PathBuf>,
+
+    /// With --output and --baseline, write the full gated signal count to stdout
+    /// as JSON. A null means no signal comparison was available.
+    #[arg(long, requires_all = ["output", "baseline"])]
+    print_signal_regressions: bool,
 
     /// Exit non-zero if any function's CRAP score increased since `--baseline`.
     /// Requires `--baseline`.
@@ -1137,6 +1149,20 @@ fn resolve_missing(
         .unwrap_or(MissingCoveragePolicy::Pessimistic)
 }
 
+/// The `(min, top)` display limits: the flag over the config, or neither
+/// with `--all-rows`.
+fn display_limits(
+    all_rows: bool,
+    cli: (Option<f64>, Option<usize>),
+    config: (Option<f64>, Option<usize>),
+) -> (Option<f64>, Option<usize>) {
+    if all_rows {
+        (None, None)
+    } else {
+        (cli.0.or(config.0), cli.1.or(config.1))
+    }
+}
+
 /// Bail when `flag` is set but `--baseline` is absent. Keeps the per-flag
 /// `&& baseline.is_none()` checks out of [`validate_args`].
 fn require_baseline(
@@ -1811,6 +1837,8 @@ fn parse_and_validate() -> Result<LoadedArgs> {
 )]
 struct Settings {
     threshold: f64,
+    min: Option<f64>,
+    top: Option<usize>,
     missing_policy: MissingCoveragePolicy,
     fail_above: bool,
     fail_regression: bool,
@@ -1823,11 +1851,14 @@ fn resolve_settings(
     cli: &Cli,
     config: &cargo_crap::config::Config,
 ) -> Settings {
+    let (min, top) = display_limits(cli.all_rows, (cli.min, cli.top), (config.min, config.top));
     Settings {
         threshold: cli
             .threshold
             .or(config.threshold)
             .unwrap_or(DEFAULT_THRESHOLD),
+        min,
+        top,
         missing_policy: resolve_missing(cli.missing, config.missing),
         fail_above: resolve_bool(cli.fail_above, config.fail_above),
         fail_regression: resolve_bool(cli.fail_regression, config.fail_regression),
@@ -1848,7 +1879,6 @@ fn run() -> Result<ExitCode> {
         knobs,
         signals,
     } = parse_and_validate()?;
-    let try_weight = knobs.try_weight;
     let settings = resolve_settings(&cli, &config);
 
     let effective_exclude = effective_excludes(
@@ -1883,23 +1913,21 @@ fn run() -> Result<ExitCode> {
     pb.finish_and_clear();
 
     // --- Merge + filters ---
-    let merge_result = merge(fns, coverage, settings.missing_policy);
-    let diagnostics = merge_result.diagnostics;
-    warn_scope_mismatch(diagnostics.as_ref());
-    let mut entries = merge_result.entries;
-    assign_crate_names(&mut entries, &members);
+    let mut merge_result = merge(fns, coverage, settings.missing_policy);
+    warn_scope_mismatch(merge_result.diagnostics.as_ref());
+    assign_crate_names(&mut merge_result.entries, &members);
     let allow = AllowSet::compile(&effective_allow)?;
     let workspace_root = workspace_root(&roots);
     let raw = load_report_baseline(
         cli.baseline.as_ref(),
         workspace_root,
-        try_weight,
+        knobs.try_weight,
         signals.enabled,
     )?;
     let scope = CargoScope::new(&roots, member_scope);
     let analysis = run::Analysis {
-        entries,
-        diagnostics,
+        entries: merge_result.entries,
+        diagnostics: merge_result.diagnostics,
         scope: &scope,
         coverage_kind: None,
         notices: &[],
@@ -1917,8 +1945,8 @@ fn run() -> Result<ExitCode> {
     );
     let report = run::Settings {
         allow: &allow,
-        min: cli.min.or(config.min),
-        top: cli.top.or(config.top),
+        min: settings.min,
+        top: settings.top,
         sort: settings.sort_order,
         threshold: settings.threshold,
         epsilon,
@@ -1943,9 +1971,12 @@ fn run() -> Result<ExitCode> {
         analysis,
         baseline.as_ref(),
         &[],
-        &duplicates.render_extras(try_weight),
+        &duplicates.render_extras(knobs.try_weight),
         out.as_mut(),
     )?;
+    if cli.print_signal_regressions {
+        serde_json::to_writer(io::stdout().lock(), &outcome.signal_regressions)?;
+    }
     Ok(outcome.exit_code())
 }
 
@@ -2292,6 +2323,47 @@ mod tests {
             nested_member_excludes(Path::new("/ws/parent/nested"), &discovered).is_empty(),
             "a member never excludes itself"
         );
+    }
+
+    #[test]
+    fn display_limits_take_the_flag_over_the_config_unless_all_rows() {
+        let none = (None, None);
+        assert_eq!(display_limits(false, none, none), none);
+        assert_eq!(
+            display_limits(false, (Some(1.0), None), (Some(2.0), Some(3))),
+            (Some(1.0), Some(3))
+        );
+        assert_eq!(
+            display_limits(false, (None, Some(4)), (Some(2.0), Some(3))),
+            (Some(2.0), Some(4))
+        );
+        assert_eq!(
+            display_limits(true, (Some(1.0), Some(4)), (Some(2.0), Some(3))),
+            none
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn all_rows_clears_every_limit_and_otherwise_the_flag_wins(
+            all_rows: bool,
+            cli_min in proptest::option::of(0u32..100),
+            cli_top in proptest::option::of(1usize..10),
+            cfg_min in proptest::option::of(0u32..100),
+            cfg_top in proptest::option::of(1usize..10),
+        ) {
+            let (min, top) = display_limits(
+                all_rows,
+                (cli_min.map(f64::from), cli_top),
+                (cfg_min.map(f64::from), cfg_top),
+            );
+            if all_rows {
+                proptest::prop_assert_eq!((min, top), (None, None));
+            } else {
+                proptest::prop_assert_eq!(min, cli_min.or(cfg_min).map(f64::from));
+                proptest::prop_assert_eq!(top, cli_top.or(cfg_top));
+            }
+        }
     }
 
     #[test]

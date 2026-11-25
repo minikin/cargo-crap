@@ -16,7 +16,7 @@ inputs:
     description: Where the crate is.
     default: "."
   args:
-    description: Extra arguments for every cargo-crap run, as shell words.
+    description: Extra arguments for every cargo-crap run, as shell words. The flags the Action sets itself are refused here.
     default: ""
   coverage-args:
     description: Extra arguments for `cargo llvm-cov`, as shell words.
@@ -31,7 +31,7 @@ inputs:
     description: The commit to compare with. The pull request's base commit by default, and nothing on a push. Ignored when baseline is given.
     default: ${{ github.event.pull_request.base.sha }}
   fail-regression:
-    description: Fail when a function's score rose, whenever there is something to compare with (a pull request, or a given baseline).
+    description: Fail when a function's score rose, or with `[signals]` on a gated signal rose, whenever there is something to compare with (a pull request, or a given baseline).
     default: "true"
   fail-above:
     description: Fail when a function scores above the threshold.
@@ -40,7 +40,7 @@ inputs:
     description: On a pull request, post the report as a comment, or update the one posted before. true or false.
     default: "true"
   comment-marker:
-    description: The hidden line that finds the comment again. Give each Action step that comments on one pull request its own.
+    description: The hidden first line that finds the comment again, one line without surrounding spaces. Give each Action step that comments on one pull request its own.
     default: "<!-- cargo-crap-report -->"
   github-token:
     description: The token that writes the comment.
@@ -48,13 +48,16 @@ inputs:
 
 outputs:
   crappy:
-    description: How many functions score above the threshold.
+    description: How many shown functions score above the threshold.
     value: ${{ steps.score.outputs.crappy }}
   regressed:
-    description: On a pull request, how many functions' scores rose.
+    description: How many shown functions' scores rose, whenever there was something to compare with.
     value: ${{ steps.score.outputs.regressed }}
+  signal-regressions:
+    description: How many gated structural signals rose over every function, whenever there was something to compare with. Empty when either side was measured without `[signals]`.
+    value: ${{ steps.score.outputs.signal-regressions }}
   report:
-    description: The path of the markdown report.
+    description: The path of the report, in the markdown or the pr-comment format.
     value: ${{ steps.score.outputs.report }}
 
 runs:
@@ -103,26 +106,34 @@ runs:
         CRAP_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         CRAP_COMMENT: ${{ inputs.comment }}
         CRAP_COMMENT_MARKER: ${{ inputs.comment-marker }}
+        CRAP_PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && inputs.github-token == 'fixture-token' && env.CARGO_CRAP_TEST_PR_NUMBER) || github.event.pull_request.number }}
 
     # A fork's read-only token cannot write: one warning, and the report is
     # already in the job summary. CARGO_CRAP_TEST_API_URL and
     # CARGO_CRAP_TEST_PR_NUMBER are this repository's test seams: GitHub does
     # not let a step override GITHUB_API_URL, so its scenario jobs point the
-    # comment at a local stand-in through them. Every other repository's job
-    # ignores them, so nothing that writes its environment can point the
-    # token at another host through them.
+    # comment at a local stand-in through them. They are read only in this
+    # repository and only with the scenario jobs' dummy token, so code that
+    # writes the job's environment cannot send a real token elsewhere. The
+    # pull request comes from the event here, never from the score step,
+    # which runs the project's code.
     - name: Comment
-      if: steps.score.outputs.comment == 'true' && ((github.repository == 'minikin/cargo-crap' && env.CARGO_CRAP_TEST_PR_NUMBER) || github.event.pull_request.number)
+      if: steps.score.outputs.comment == 'true' && ((github.repository == 'minikin/cargo-crap' && inputs.github-token == 'fixture-token' && env.CARGO_CRAP_TEST_PR_NUMBER) || github.event.pull_request.number)
       uses: actions/github-script@v8
       env:
         REPORT: ${{ steps.score.outputs.report }}
         MARKER: ${{ inputs.comment-marker }}
-        PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && env.CARGO_CRAP_TEST_PR_NUMBER) || github.event.pull_request.number }}
+        PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && inputs.github-token == 'fixture-token' && env.CARGO_CRAP_TEST_PR_NUMBER) || github.event.pull_request.number }}
+        DEFAULT_TOKEN: ${{ inputs.github-token == github.token }}
       with:
         github-token: ${{ inputs.github-token }}
-        base-url: ${{ (github.repository == 'minikin/cargo-crap' && env.CARGO_CRAP_TEST_API_URL) || github.api_url }}
+        base-url: ${{ (github.repository == 'minikin/cargo-crap' && inputs.github-token == 'fixture-token' && env.CARGO_CRAP_TEST_API_URL) || github.api_url }}
         script: |
           const fs = require('fs');
+          // GitHub refuses a comment longer than this, in UTF-16 code units,
+          // which is what a JavaScript string's length counts.
+          const LIMIT = 65536;
+          const DEFAULT_MARKER = '<!-- cargo-crap-report -->';
           const issue_number = Number(process.env.PR_NUMBER);
           if (!issue_number) {
             core.notice('No pull request to comment on: the report is in the job summary.');
@@ -131,24 +142,77 @@ runs:
           // The marker is the comment's whole first line, never a prefix of
           // it, so no other comment can be taken for this one.
           const marker = process.env.MARKER;
-          const firstLine = text => (text || '').split('\n', 1)[0].trim();
-          let body = fs.readFileSync(process.env.REPORT, 'utf8');
-          if (firstLine(body) !== marker) {
-            body = `${marker}\n${body}`;
-          }
+          const firstLine = text => (text || '').split('\n', 1)[0].replace(/\r$/, '');
           const { owner, repo } = context.repo;
+          const refused = status => [403, 404, 422].includes(status);
+          let report = fs.readFileSync(process.env.REPORT, 'utf8');
+          // The pr-comment report starts with the default marker: a custom
+          // one takes its line, so a comment never carries two.
+          if ([DEFAULT_MARKER, marker].includes(firstLine(report))) {
+            const end = report.indexOf('\n');
+            report = end < 0 ? '' : report.slice(end + 1);
+          }
+          let body = `${marker}\n${report}`;
+          if (body.length > LIMIT) {
+            const run = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            body = `${marker}\nThe cargo-crap report is too large for a comment. It is in the job summary of ${run}.`;
+            if (body.length > LIMIT) {
+              core.warning('comment-marker leaves no room for a comment: the report is in the job summary.');
+              return;
+            }
+            core.warning('The report is too large for a comment: the comment points at the job summary.');
+          }
+          // Only a comment the token's own account wrote is updated. When
+          // the account cannot be told, the Action writes a new one.
+          async function identity() {
+            if (process.env.DEFAULT_TOKEN === 'true') {
+              return { login: 'github-actions[bot]', type: 'Bot' };
+            }
+            try {
+              const { data } = await github.rest.users.getAuthenticated();
+              if (data?.login) return data;
+            } catch (error) {
+              if (!refused(error.status)) throw error;
+            }
+            try {
+              const { viewer } = await github.graphql('query { viewer { login databaseId __typename } }');
+              if (viewer?.login) {
+                return {
+                  id: viewer.databaseId ?? null,
+                  login: viewer.login,
+                  type: viewer.login.endsWith('[bot]') ? 'Bot' : viewer.__typename,
+                };
+              }
+            } catch (error) {
+              if (error.status && !refused(error.status)) throw error;
+            }
+            return null;
+          }
           try {
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner, repo, issue_number, per_page: 100,
-            });
-            const existing = comments.find(c => firstLine(c.body) === marker);
+            const me = await identity();
+            let existing;
+            if (me) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number, per_page: 100,
+              });
+              existing = comments.find(({ user, body }) => {
+                if (!user || firstLine(body) !== marker) return false;
+                if (me.id != null && user.id != null) return user.id === me.id;
+                const meType = me.login.endsWith('[bot]') ? 'Bot' : me.type;
+                if (meType && user.type && meType !== user.type) return false;
+                return user.login === me.login ||
+                  (meType === 'Bot' && user.type === 'Bot' && user.login === me.login + '[bot]');
+              });
+            } else {
+              core.notice('Could not tell which account the token belongs to: writing a new comment rather than updating one.');
+            }
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
           } catch (error) {
-            if (error.status === 403 || error.status === 404) {
+            if (refused(error.status)) {
               core.warning(`Could not comment on the pull request (${error.status}): the report is in the job summary.`);
             } else {
               throw error;

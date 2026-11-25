@@ -6,11 +6,22 @@ from urllib.parse import parse_qs, urlparse
 from support import ActionTest, BINARY, SCRIPTS
 from test_baseline import function, coverage
 
+BOT = {"id": 41898282, "login": "github-actions[bot]", "type": "Bot"}
+
+
+def owned(body, comment_id=None):
+    comment = {"body": body, "user": BOT}
+    return comment if comment_id is None else {"id": comment_id, **comment}
+
 
 class Delivery(ActionTest):
     def setUp(self):
         super().setUp()
         self.requests, self.comments, self.refusals = [], [], {}
+        # user: GET /user answers. installation: only GraphQL viewer answers,
+        # without the REST [bot] suffix. unknown: neither answers.
+        self.identity = "user"
+        self.account = BOT
         owner = self
         class API(BaseHTTPRequestHandler):
             def handle_request(self):
@@ -22,6 +33,12 @@ class Delivery(ActionTest):
                 status, reply = 200, {}
                 if self.headers.get("Authorization") != "Bearer fixture-token":
                     status = 401
+                elif parsed.path == "/user":
+                    status, reply = (200, owner.account) if owner.identity == "user" else owner.lookup
+                elif parsed.path == "/graphql":
+                    assert body == {"query": "query { viewer { login databaseId __typename } }"}, body
+                    status, reply = (200, {"data": {"viewer": {"login": "github-actions[bot]", "databaseId": 41898282, "__typename": "User"}}}) \
+                        if owner.identity == "installation" else owner.lookup
                 elif self.command in owner.refusals:
                     status, reply = owner.refusals[self.command]
                 elif self.command == "GET" and parsed.path == collection:
@@ -29,7 +46,7 @@ class Delivery(ActionTest):
                     assert query["per_page"] == ["100"]
                     reply = owner.comments[100 * (page - 1):100 * page]
                 elif self.command == "POST" and parsed.path == collection:
-                    owner.comments.append({"id": len(owner.comments) + 1, **body})
+                    owner.comments.append({"id": len(owner.comments) + 1, "user": BOT, **body})
                     status = 201
                 elif self.command == "PATCH" and parsed.path.startswith("/repos/minikin/cargo-crap/issues/comments/"):
                     owner.comments[int(parsed.path.split("/")[-1]) - 1].update(body)
@@ -48,6 +65,7 @@ class Delivery(ActionTest):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
+        self.lookup = (403, {"message": "Resource not accessible by integration"})
         self.env.update(CRAPTS_PR_NUMBER="42", CRAPTS_API_URL=f"http://127.0.0.1:{server.server_port}",
                         CRAPTS_TOKEN="fixture-token", GITHUB_REPOSITORY="minikin/cargo-crap",
                         GITHUB_SERVER_URL="https://github.com", CRAPTS_REVISION="pr-head",
@@ -77,7 +95,7 @@ class Delivery(ActionTest):
         report = Path(out["report"]).read_text()
         for name in ["fee", "one", "two"]:
             self.assertIn(name, report)
-        self.assertEqual(self.comments, [{"id": 1, "body": report}])
+        self.assertEqual(self.comments, [{"id": 1, "user": BOT, "body": report}])
         self.assertEqual([r[0] for r in self.requests], ["GET", "POST"])
         for call in self.calls()[-2:]:
             self.assertIn("--base", call["args"])
@@ -101,12 +119,13 @@ class Delivery(ActionTest):
             for status in [403, 404]:
                 for method in ["GET", "POST", "PATCH"]:
                     self.refusals = {method: (status, {"message": "permission denied"})}
-                    self.comments[:] = [{"id": 1, "body": report}] if method == "PATCH" else []
+                    self.comments[:] = [owned(report, 1)] if method == "PATCH" else []
                     self.requests.clear()
                     result = self.stage("comment")
                     self.assertEqual(result.stdout.count("::warning::"), 1)
                     self.assertRegex(result.stdout, f"{status}.*job summary")
-                    self.assertEqual([r[0] for r in self.requests], ["GET"] if method == "GET" else ["GET", method])
+                    expected = {"GET": ["GET"], "POST": ["GET", "POST"], "PATCH": ["GET", "GET", "PATCH"]}[method]
+                    self.assertEqual([r[0] for r in self.requests], expected)
                     self.assertEqual(out, self.outputs())
                     self.command(["bash", "-c", 'exit "$STATUS"'], int(fail), STATUS=out["status"])
         (self.project / ".crapts.toml").write_text("fail-above=false\n")
@@ -165,13 +184,16 @@ class Delivery(ActionTest):
             if mode == "exact":
                 self.assertEqual(units(report), 65536)
             self.assertLessEqual(units(report), 65536)
-            self.comments[:] = [{"id": i, "body": "unrelated"} for i in range(1, 151)]
+            self.comments[:] = [owned("unrelated", i) for i in range(1, 151)]
             self.comments[0]["body"], self.comments[1]["body"] = mark + "x\n", "quoted\n" + mark
             if existing:
                 self.comments[119]["body"] = mark + "\nold"
             self.requests.clear()
             self.stage("comment", INPUT_COMMENT_MARKER=mark)
-            self.assertEqual([r[0] for r in self.requests], ["GET", "GET", "PATCH" if existing else "POST"])
+            lookup = [("GET", "/user")] if existing else []
+            self.assertEqual([(r[0], r[1].rsplit("/", 1)[-1]) for r in self.requests],
+                             [("GET", "comments"), ("GET", "comments")] + [(m, p[1:]) for m, p in lookup] +
+                             [("PATCH", "120") if existing else ("POST", "comments")])
             self.assertEqual([r[2]["page"][0] for r in self.requests[:2]], ["1", "2"])
             if existing:
                 self.assertTrue(self.requests[-1][1].endswith("/120"))
@@ -179,3 +201,79 @@ class Delivery(ActionTest):
             self.assertEqual(self.requests[-1][3]["body"], report)
             self.assertTrue(report.startswith(mark + "\n"))
             self.assertEqual(report.splitlines().count(mark), 1)
+
+    def test_only_the_tokens_own_comment_is_updated(self):
+        self.history({"fee.ts": function("fee", 2)}, {})
+        (self.project / "hits.info").write_text(coverage({"fee": 1}))
+        self.prepare()
+        self.stage("baseline")
+        self.stage("score")
+        report = Path(self.env["REPORT"]).read_text()
+        marker = self.env["INPUT_COMMENT_MARKER"]
+        person = {"login": "someone", "type": "User"}
+        other_bot = {"login": "renovate[bot]", "type": "Bot"}
+
+        def seed():
+            # A person's and another bot's marker comment, both before this token's own on page two.
+            self.comments[:] = [{"id": i, "user": BOT, "body": "unrelated"} for i in range(1, 151)]
+            self.comments[2].update(user=person, body=marker + "\nquoted by a person")
+            self.comments[3].update(user=other_bot, body=marker + "\nanother bot")
+            self.comments[129]["body"] = marker + "\nold"
+            self.requests.clear()
+
+        def paths():
+            return [(r[0], r[1].rsplit("/", 1)[-1]) for r in self.requests]
+
+        foreign = [(3, person, marker + "\nquoted by a person"), (4, other_bot, marker + "\nanother bot")]
+        for identity, lookups in [("user", [("GET", "user")]),
+                                  ("installation", [("GET", "user"), ("POST", "graphql")])]:
+            with self.subTest(identity=identity):
+                self.identity = identity
+                seed()
+                self.stage("comment")
+                self.assertEqual(paths(), [("GET", "comments")] + lookups + [("GET", "comments"), ("PATCH", "130")])
+                self.assertEqual(self.comments[129]["body"], report)
+                for comment_id, user, body in foreign:
+                    self.assertEqual(self.comments[comment_id - 1], {"id": comment_id, "user": user, "body": body})
+
+        with self.subTest("the default token needs no lookup"):
+            self.identity = "unknown"
+            seed()
+            self.stage("comment", CRAPTS_DEFAULT_TOKEN="true")
+            self.assertEqual(paths(), [("GET", "comments"), ("GET", "comments"), ("PATCH", "130")])
+
+        with self.subTest("only foreign marker comments"):
+            self.identity = "user"
+            seed()
+            self.comments[129]["body"] = "unrelated"
+            self.stage("comment")
+            self.assertEqual(paths()[-1], ("POST", "comments"))
+            self.assertEqual(len(self.comments), 151)
+            for comment_id, user, body in foreign:
+                self.assertEqual(self.comments[comment_id - 1]["body"], body)
+
+        for status in [403, 404]:
+            with self.subTest("unknown identity", status=status):
+                self.identity, self.lookup = "unknown", (status, {"message": "no"})
+                seed()
+                result = self.stage("comment")
+                self.assertEqual(paths(), [("GET", "comments"), ("GET", "user"), ("POST", "graphql"),
+                                           ("POST", "comments")])
+                self.assertEqual(result.stdout.count("::notice::"), 1)
+                self.assertNotIn("::warning::", result.stdout)
+                self.assertEqual(self.comments[129]["body"], marker + "\nold")
+                self.assertEqual(self.comments[-1]["body"], report)
+
+        with self.subTest("a user and an unrelated app share a name"):
+            self.identity, self.account = "user", {"login": "octo", "type": "User"}
+            self.comments[:] = [{"id": 1, "user": {"login": "octo[bot]", "type": "Bot"}, "body": marker}]
+            self.stage("comment")
+            self.assertEqual(paths()[-1], ("POST", "comments"))
+            self.assertEqual(self.comments[0]["body"], marker)
+
+        with self.subTest("a rejected token"):
+            self.identity, self.lookup = "unknown", (401, {"message": "Bad credentials"})
+            seed()
+            result = self.stage("comment", 1)
+            self.assertIn("Identify the token: HTTP 401: Bad credentials", result.stderr)
+            self.assertEqual(paths(), [("GET", "comments"), ("GET", "user")])

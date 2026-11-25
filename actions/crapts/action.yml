@@ -32,7 +32,7 @@ inputs:
     description: Git revision for changed-function comparison.
     default: "${{ github.event.pull_request.base.sha }}"
   fail-regression:
-    description: Fail on score regressions with a baseline.
+    description: Fail on score or gated structural-signal regressions with a baseline.
     default: "true"
   fail-changed:
     description: Fail on changed-function violations with a Git base.
@@ -59,6 +59,9 @@ outputs:
   changed:
     description: Changed-function failures when comparing a Git base.
     value: ${{ steps.score.outputs.changed }}
+  signal-regressions:
+    description: Gated structural-signal regressions when comparing a baseline with signals enabled.
+    value: ${{ steps.score.outputs.signal-regressions }}
   report:
     description: Path to the rendered Markdown report.
     value: ${{ steps.score.outputs.report }}
@@ -101,6 +104,9 @@ runs:
         INPUT_COVERAGE_COMMAND: ${{ inputs.coverage-command }}
         INPUT_COVERAGE_FILE: ${{ inputs.coverage-file }}
       run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/baseline.mjs" "$BASH"
+    # CRAPTS_TEST_PR_NUMBER and CRAPTS_TEST_API_URL are this repository's test
+    # seams. A project command can write them to $GITHUB_ENV, so they also need
+    # the fixture jobs' dummy token: a real token never reaches a seam's host.
     - name: Render report and count gate results
       id: score
       shell: bash
@@ -108,7 +114,9 @@ runs:
       env:
         CRAPTS_TEMP: ${{ steps.install.outputs.temp }}
         CRAPTS_BINARY: ${{ steps.install.outputs.binary }}
-        CRAPTS_PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && env.CRAPTS_TEST_PR_NUMBER) || github.event.pull_request.number }}
+        CRAPTS_TRUSTED_TYPESAFE_BASE_URL: ${{ steps.install.outputs.TYPESAFE_BASE_URL }}
+        CRAPTS_TRUSTED_OPENAI_BASE_URL: ${{ steps.install.outputs.OPENAI_BASE_URL }}
+        CRAPTS_PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && inputs.github-token == 'fixture-token' && env.CRAPTS_TEST_PR_NUMBER) || github.event.pull_request.number }}
         CRAPTS_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         INPUT_FAIL_REGRESSION: ${{ inputs.fail-regression }}
         INPUT_FAIL_CHANGED: ${{ inputs.fail-changed }}
@@ -121,9 +129,10 @@ runs:
         INPUT_COMMENT: ${{ inputs.comment }}
         INPUT_COMMENT_MARKER: ${{ inputs.comment-marker }}
         CRAPTS_TOKEN: ${{ inputs.github-token }}
+        CRAPTS_DEFAULT_TOKEN: ${{ inputs.github-token == github.token }}
         REPORT: ${{ steps.score.outputs.report }}
-        CRAPTS_PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && env.CRAPTS_TEST_PR_NUMBER) || github.event.pull_request.number }}
-        CRAPTS_API_URL: ${{ (github.repository == 'minikin/cargo-crap' && env.CRAPTS_TEST_API_URL) || github.api_url }}
+        CRAPTS_PR_NUMBER: ${{ (github.repository == 'minikin/cargo-crap' && inputs.github-token == 'fixture-token' && env.CRAPTS_TEST_PR_NUMBER) || github.event.pull_request.number }}
+        CRAPTS_API_URL: ${{ (github.repository == 'minikin/cargo-crap' && inputs.github-token == 'fixture-token' && env.CRAPTS_TEST_API_URL) || github.api_url }}
       run: node "$GITHUB_ACTION_PATH/../../scripts/action/crapts/comment.mjs"
     - name: Return gate status
       shell: bash

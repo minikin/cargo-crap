@@ -19,6 +19,7 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.tag.outputs.version }}
+      is_prerelease: ${{ steps.tag.outputs.is_prerelease }}
     steps:
       - uses: actions/checkout@v6
       - id: tag
@@ -42,7 +43,7 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -59,10 +60,14 @@ jobs:
         working-directory: artifacts
         run: sha256sum cargo-crap-* > SHA256SUMS
 
+      # A release candidate is a prerelease and never the latest release,
+      # which `version: latest` in the Action installs.
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
           generate_release_notes: true
+          prerelease: ${{ needs.preflight.outputs.is_prerelease }}
+          make_latest: ${{ needs.preflight.outputs.is_prerelease == 'false' }}
 
   action-smoke:
     name: Action with this release (${{ matrix.os }})

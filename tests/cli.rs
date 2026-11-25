@@ -57,6 +57,43 @@ fn help_flag_exits_successfully() {
 }
 
 #[test]
+fn signal_count_uses_the_filtered_baseline_before_display_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = dir.path().join("base.json");
+    std::fs::write(
+        dir.path().join(".cargo-crap.toml"),
+        "[signals]\nenabled = true",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("lib.rs"), "pub fn f() {}").unwrap();
+    cmd()
+        .current_dir(&dir)
+        .args(["--format", "json", "--output"])
+        .arg(&baseline)
+        .assert()
+        .success();
+    for (extra, expected) in [("--min=999", "0"), ("--allow=f", "null")] {
+        cmd()
+            .current_dir(&dir)
+            .args(["--print-signal-regressions", "--baseline"])
+            .arg(&baseline)
+            .args(["--output", "out.json", "--format", "json", extra])
+            .assert()
+            .success()
+            .stdout(expected);
+    }
+    std::fs::write(dir.path().join("lib.rs"), "").unwrap();
+    cmd()
+        .current_dir(&dir)
+        .args(["--print-signal-regressions", "--baseline"])
+        .arg(&baseline)
+        .args(["--output", "out.json"])
+        .assert()
+        .success()
+        .stdout("0");
+}
+
+#[test]
 fn version_flag_exits_successfully() {
     cmd()
         .arg("--version")
@@ -590,6 +627,117 @@ fn top_limits_output_rows() {
         entries.as_array().map(Vec::len),
         Some(1),
         "--top 1 must return exactly 1 entry"
+    );
+}
+
+// --- --all-rows ---
+
+fn entry_count(stdout: &[u8]) -> Option<usize> {
+    let stdout = String::from_utf8(stdout.to_vec()).expect("utf8");
+    parse_entries(&stdout).as_array().map(Vec::len)
+}
+
+#[test]
+fn all_rows_clears_top_and_min_from_flags() {
+    let output = cmd()
+        .args(["--path", fixture_src(), "--lcov", fixture_lcov()])
+        .args([
+            "--format",
+            "json",
+            "--top",
+            "1",
+            "--min",
+            "100",
+            "--all-rows",
+        ])
+        .output()
+        .expect("run");
+    assert!(output.status.success());
+    assert_eq!(entry_count(&output.stdout), Some(3));
+}
+
+#[test]
+fn all_rows_clears_top_and_min_from_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(".cargo-crap.toml"), "top = 1\nmin = 100\n")
+        .expect("write config");
+    let src = std::fs::canonicalize(fixture_src()).expect("canonicalize fixture");
+    let lcov = std::fs::canonicalize(fixture_lcov()).expect("canonicalize lcov");
+    let run = |all_rows: bool| {
+        let mut command = cmd();
+        command
+            .current_dir(dir.path())
+            .arg("--path")
+            .arg(&src)
+            .arg("--lcov")
+            .arg(&lcov)
+            .args(["--format", "json"]);
+        if all_rows {
+            command.arg("--all-rows");
+        }
+        entry_count(&command.output().expect("run").stdout)
+    };
+    assert_eq!(
+        run(false),
+        Some(1),
+        "the config's top and min apply without the flag"
+    );
+    assert_eq!(run(true), Some(3));
+}
+
+#[test]
+fn a_baseline_written_with_all_rows_catches_a_rise_across_min() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let lib = dir.path().join("lib.rs");
+    std::fs::write(
+        &lib,
+        "pub fn shipping(g: u32) -> u32 {\n    if g > 1 { 2 } else { 1 }\n}\n",
+    )
+    .expect("write base");
+    let baseline = |extra: &[&str]| {
+        let out = dir.path().join(format!("base{}.json", extra.len()));
+        cmd()
+            .arg("--path")
+            .arg(dir.path())
+            .args(["--min", "10", "--format", "json", "--output"])
+            .arg(&out)
+            .args(extra)
+            .assert()
+            .success();
+        out
+    };
+    let complete = baseline(&["--all-rows"]);
+    let filtered = baseline(&[]);
+    std::fs::write(
+        &lib,
+        "pub fn shipping(g: u32) -> u32 {\n    if g > 4 { 5 } else if g > 3 { 4 } else if g > 2 { 3 } else if g > 1 { 2 } else { 1 }\n}\n",
+    )
+    .expect("write head");
+    let compare = |base: &std::path::Path| {
+        cmd()
+            .arg("--path")
+            .arg(dir.path())
+            .args([
+                "--min",
+                "10",
+                "--fail-regression",
+                "--format",
+                "json",
+                "--baseline",
+            ])
+            .arg(base)
+            .output()
+            .expect("run")
+    };
+    let caught = compare(&complete);
+    assert_eq!(caught.status.code(), Some(1));
+    let stdout = String::from_utf8(caught.stdout).expect("utf8");
+    assert_eq!(parse_entries(&stdout)[0]["status"], "regressed", "{stdout}");
+    let masked = compare(&filtered);
+    assert_eq!(
+        masked.status.code(),
+        Some(0),
+        "a filtered baseline reads the rise as new"
     );
 }
 

@@ -4,9 +4,11 @@
 # a pull request. Prints nothing. The base commit is `HEAD~1` when there is a
 # change, `HEAD` otherwise.
 #
-# Usage: fixture.sh <dir> [regress|steady|config-skew|extra|lone-copy|five-groups] [subdir]
+# Usage: fixture.sh <dir> [change] [subdir]
 #   subdir       put the crate in <dir>/<subdir>, with the repository at <dir>
 #   regress      the pull request adds untested branches to `shipping`
+#   target-dir   the base build records its OUT_DIR in BASE_TARGET_LOG
+#   config-link  the head replaces a base config symlink with a regular file
 #   steady       the pull request only rewords a comment
 #   config-skew  the base commit's config excludes src/lib.rs, the pull
 #                request's does not
@@ -15,6 +17,13 @@
 #                deletes one of the two and adds a pair of its own
 #   broken-base  the base commit does not compile, the pull request fixes it
 #   five-groups  the pull request adds five duplicate pairs, none like another
+#   signal       the pull request nests a branch deeper and adds none, so only
+#                structural signals rise
+#   base-only    the base commit holds src/old.rs, the pull request deletes it
+#   key-probe    as steady, with a build script and a test that append `set`
+#                or `unset` to the file KEY_PROBE names, for a provider key
+#   submodule    the base commit holds a submodule nobody can fetch, the pull
+#                request removes it
 set -euo pipefail
 dir="$1"
 change="${2:-}"
@@ -138,16 +147,59 @@ pub fn trim_$1(v: &mut Vec<u8>) -> usize {
 }
 RUST
 }
+# The statements that append `set` or `unset` to the file KEY_PROBE names,
+# for whether a provider key is in the environment.
+probe_body() {
+    cat <<'RUST'
+        if let Ok(path) = std::env::var("KEY_PROBE") {
+            let set = std::env::vars_os().any(|(name, _)| {
+                let name = name.to_string_lossy();
+                name.eq_ignore_ascii_case("TYPESAFE_API_KEY") || name.eq_ignore_ascii_case("OPENAI_API_KEY")
+            });
+            let line: &[u8] = if set { b"set\n" } else { b"unset\n" };
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+            std::io::Write::write_all(&mut file, line).unwrap();
+        }
+RUST
+}
+probe() {
+    echo "fn main() {"
+    echo '    println!("cargo:rerun-if-env-changed=KEY_PROBE");'
+    echo '    println!("cargo:rerun-if-env-changed=TYPESAFE_API_KEY");'
+    echo '    println!("cargo:rerun-if-env-changed=OPENAI_API_KEY");'
+    probe_body
+    echo "}"
+}
 shipping > src/lib.rs
 case "$change" in
+    target-dir)
+        cat > build.rs <<'RUST'
+fn main() {
+    std::fs::write(std::env::var_os("BASE_TARGET_LOG").unwrap(), std::env::var("OUT_DIR").unwrap()).unwrap();
+}
+RUST
+        ;;
+    config-link) ln -s "$CONFIG_LINK_DIR" .cargo-crap.toml ;;
     broken-base) echo "pub fn broken() -> u32 { missing }" >> src/lib.rs ;;
     config-skew) printf 'exclude = ["src/lib.rs"]\n' > .cargo-crap.toml ;;
     extra) copy extra_one > src/extra.rs && echo "pub mod extra;" >> src/lib.rs ;;
     lone-copy) { copy one; copy two; } > src/copies.rs && echo "pub mod copies;" >> src/lib.rs ;;
+    base-only) echo "pub fn old() -> u32 { 1 }" > src/old.rs && echo "pub mod old;" >> src/lib.rs ;;
+    key-probe)
+        probe > build.rs
+        { echo "#[cfg(test)]"; echo "mod probe {"; echo "    #[test]"; echo "    fn key() {"; probe_body; echo "    }"; echo "}"; } >> src/lib.rs
+        ;;
+    submodule)
+        printf '[submodule "vendor/gone"]\n\tpath = vendor/gone\n\turl = https://127.0.0.1:9/gone.git\n' > .gitmodules
+        mkdir -p vendor/gone
+        git update-index --add --cacheinfo 160000,1111111111111111111111111111111111111111,vendor/gone
+        ;;
 esac
 commit base
 case "$change" in
     "") exit 0 ;;
+    target-dir) rm build.rs ;;
+    config-link) rm .cargo-crap.toml && echo 'threshold = 12' > .cargo-crap.toml ;;
     regress)
         python3 - <<'PY'
 import pathlib
@@ -162,6 +214,17 @@ PY
     lone-copy) { copy one; tally keep_a; tally keep_b; } > src/copies.rs ;;
     broken-base) shipping > src/lib.rs ;;
     five-groups) { five a; five b; } > src/groups.rs && echo "pub mod groups;" >> src/lib.rs ;;
+    signal)
+        python3 - <<'PY'
+import pathlib
+p = pathlib.Path("src/lib.rs"); s = p.read_text()
+s = s.replace("    } else if grams > 2_000 {\n        450\n    } else {\n        250\n    }\n", "    } else {\n        if grams > 2_000 {\n            450\n        } else {\n            250\n        }\n    }\n", 1)
+p.write_text(s)
+PY
+        ;;
+    base-only) rm src/old.rs && sed -i.bak '/^pub mod old;$/d' src/lib.rs && rm src/lib.rs.bak ;;
+    key-probe) sed -i.bak 's|/// Shipping in cents by parcel weight in grams.|/// Shipping in cents, by weight in grams.|' src/lib.rs && rm src/lib.rs.bak ;;
+    submodule) git rm -q --cached vendor/gone && rm -rf vendor .gitmodules ;;
     *) echo "unknown change: $change" >&2 && exit 1 ;;
 esac
 commit pr

@@ -377,8 +377,7 @@ impl<'a> PreparedReport<'a> {
                 .map_or(0, |comparison| comparison.counts.regressed),
             gating_signals: comparison
                 .as_ref()
-                .and_then(|comparison| comparison.signal_gates)
-                .unwrap_or_default(),
+                .and_then(|comparison| comparison.signal_gates),
             section_failures,
             fail_above: settings.fail_above,
             fail_regression: settings.fail_regression

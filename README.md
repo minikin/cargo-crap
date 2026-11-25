@@ -197,7 +197,8 @@ baseline, and SARIF upload for GitHub Code Scanning is there too.
 
 For TypeScript and JavaScript, the GitHub step is
 `minikin/cargo-crap/actions/crapts@crapts-v1`. It installs crapts from npm and
-gates the pull request's changed functions. See its
+gates the pull request's changed functions. Its scripts need Node.js 24 or
+later, so run `actions/setup-node` with `node-version: 24` before it. See its
 [GitHub Action guide](docs/crapts/guides/github-action.md). A repository with
 both languages runs both Actions in one workflow, and each posts its own
 comment.

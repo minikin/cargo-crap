@@ -1,6 +1,14 @@
+import json
+import re
+import subprocess
 import unittest
 
-from support import ACTION, SCRIPTS
+from support import ACTION, ROOT, SCRIPTS
+
+
+def exported(name):
+    source = f'import("{(SCRIPTS / "cli.mjs").as_uri()}").then(m => console.log(JSON.stringify(m.{name})))'
+    return json.loads(subprocess.check_output(["node", "-e", source], text=True))
 
 
 class ActionContract(unittest.TestCase):
@@ -12,9 +20,12 @@ class ActionContract(unittest.TestCase):
         }
         expected = []
         for name in ["PR_NUMBER", "PR_NUMBER", "API_URL"]:
-            expression = "(github.repository == 'minikin/cargo-crap' && env.CRAPTS_TEST_" + name + ")"
+            expression = ("(github.repository == 'minikin/cargo-crap' && inputs.github-token == 'fixture-token'"
+                          " && env.CRAPTS_TEST_" + name + ")")
             expected.append("CRAPTS_" + name + ": ${{ " + expression + " || " + overrides[name] + " }}")
-        self.assertCountEqual([line.strip() for line in manifest.splitlines() if "CRAPTS_TEST_" in line], expected)
+        self.assertCountEqual([line.strip() for line in manifest.splitlines() if "env.CRAPTS_TEST_" in line], expected)
+        self.assertIn("CRAPTS_DEFAULT_TOKEN: ${{ inputs.github-token == github.token }}",
+                      [line.strip() for line in manifest.split("Comment on the pull request")[1].splitlines()])
 
         for path in SCRIPTS.rglob("*"):
             if not path.is_file() or "__pycache__" in path.parts:
@@ -22,3 +33,16 @@ class ActionContract(unittest.TestCase):
             source = path.read_bytes()
             for name in overrides:
                 self.assertNotIn(("CRAPTS_TEST_" + name).encode(), source, str(path))
+
+    def test_every_provider_variable_is_withheld_or_pinned(self):
+        providers = ROOT / "crates/cargo-crap-core/src/duplicates/triage/provider"
+        found = {"API_KEY_VAR": set(), "BASE_URL_VAR": set()}
+        for path in providers.rglob("*.rs"):
+            for kind, value in re.findall(r'pub const (API_KEY_VAR|BASE_URL_VAR): &str = "(\w+)"', path.read_text()):
+                found[kind].add(value)
+        self.assertEqual(len(found["API_KEY_VAR"]), 2, found)
+        self.assertEqual(set(exported("PROVIDER_KEYS")), found["API_KEY_VAR"])
+        self.assertEqual(set(exported("PROVIDER_URLS")), found["BASE_URL_VAR"])
+        score_step = (ACTION / "action.yml").read_text().split("id: score")[1].split("- name:")[0]
+        for name in found["BASE_URL_VAR"]:
+            self.assertIn("CRAPTS_TRUSTED_" + name + ": ${{ steps.install.outputs." + name + " }}", score_step)

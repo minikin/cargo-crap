@@ -23,6 +23,18 @@ class ReleaseWorkflows < Minitest::Test
   def edges(jobs, name)
     Array(jobs.fetch(name)['needs'])
   end
+  # The value of a workflow expression made of one output, or one output
+  # compared with a literal. Anything else fails, so a richer expression
+  # needs this evaluator extended before it can pass.
+  def evaluate(value, outputs)
+    expression = value.to_s[/\A\$\{\{\s*(.*?)\s*\}\}\z/, 1] or flunk("not an expression: #{value}")
+    case expression
+    when /\A([\w.-]+)\z/ then outputs.fetch($1)
+    when /\A([\w.-]+) == '([^']*)'\z/ then (outputs.fetch($1) == $2).to_s
+    when /\A([\w.-]+) != '([^']*)'\z/ then (outputs.fetch($1) != $2).to_s
+    else flunk("cannot evaluate: #{expression}")
+    end
+  end
   def ancestors(jobs, name)
     edges(jobs, name).flat_map { |dep| [dep] + ancestors(jobs, dep) }.uniq
   end
@@ -53,7 +65,13 @@ class ReleaseWorkflows < Minitest::Test
       assert_includes commands(jobs['release']), 'SHA256SUMS'
       release = jobs['release']['steps'].find { |s| s['uses'].to_s.include?('action-gh-release') }.fetch('with')
       if name == 'release'
-        refute_equal 'false',release['make_latest'].to_s
+        assert_includes jobs['preflight']['outputs'].keys, 'is_prerelease'
+        assert_includes edges(jobs, 'release'), 'preflight'
+        {'true' => %w[true false], 'false' => %w[false true]}.each do |rc, (prerelease, latest)|
+          outputs = {'needs.preflight.outputs.is_prerelease' => rc}
+          assert_equal prerelease, evaluate(release['prerelease'], outputs), "prerelease for is_prerelease=#{rc}"
+          assert_equal latest, evaluate(release['make_latest'], outputs), "make_latest for is_prerelease=#{rc}"
+        end
         assert_equal ['release'],edges(jobs, 'action-smoke')
         assert_equal ['action-smoke'],edges(jobs, 'move-v1')
         refute_includes ancestors(jobs,'move-v1'), 'publish'

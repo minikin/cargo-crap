@@ -84,6 +84,7 @@ jobs:
         with:
           # A push run: the workflow's own pull request is not this one.
           base: ""
+          comment: false
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
       - name: The report, the summary and the outputs
@@ -132,12 +133,43 @@ jobs:
         with:
           # A push run: the workflow's own pull request is not this one.
           base: ""
+          comment: false
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
-      - name: Nothing was downloaded, and the built binary scored
+      - name: Nothing was downloaded, and a copy of the built binary scored
         run: |
           test ! -e "$RUNNER_TEMP/cargo-crap-bin"
-          test "$(command -v cargo-crap)" = "$RUNNER_TEMP/bin/cargo-crap"
+          used="$(command -v cargo-crap)"
+          case "$used" in "$RUNNER_TEMP"/cargo-crap-given.*/cargo-crap) ;; *) exit 1 ;; esac
+          cmp "$used" "$RUNNER_TEMP/bin/cargo-crap"
+
+  binary-renamed:
+    name: A renamed binary is used, and not a sibling named cargo-crap
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: The binary under another name, beside a decoy
+        run: |
+          mv "$RUNNER_TEMP/bin/cargo-crap" "$RUNNER_TEMP/bin/crap-under-test"
+          printf '#!/bin/sh\nexit 3\n' > "$RUNNER_TEMP/bin/cargo-crap"
+          chmod +x "$RUNNER_TEMP/bin/cargo-crap"
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop"
+      - uses: ./
+        id: crap
+        with:
+          base: ""
+          comment: false
+          binary: ${{ runner.temp }}/bin/crap-under-test
+          working-directory: ${{ runner.temp }}/shop
+      - name: The renamed binary scored
+        env:
+          CRAPPY: ${{ steps.crap.outputs.crappy }}
+        run: test "$CRAPPY" = 0
 
   fail-above:
     name: The fail-above gate fails the step after the outputs are set
@@ -505,7 +537,7 @@ jobs:
       - name: Two requests in the whole job, over five groups
         run: |
           test "$(grep -c '/v1/systemone' "$RUNNER_TEMP/api.log")" = 2
-          groups="$("$RUNNER_TEMP/bin/cargo-crap" --path "$RUNNER_TEMP/shop" --duplicates --format json 2> /dev/null \
+          groups="$(cargo-crap --path "$RUNNER_TEMP/shop" --duplicates --format json 2> /dev/null \
             | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["duplicate_groups"]))')"
           test "$groups" = 5
 
@@ -595,6 +627,7 @@ jobs:
           scripts/action/fixture.sh "$RUNNER_TEMP/shop" regress
           scripts/action/prepared.sh "$RUNNER_TEMP/shop" "$RUNNER_TEMP/bin/cargo-crap"
           python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github \
+            --foreign-bot $'<!-- cargo-crap-report -->\nanother bot\'s report' \
             --existing $'<!-- cargo-crap-report -->\nan earlier report' &
           sleep 1
       - uses: ./
@@ -604,14 +637,16 @@ jobs:
           working-directory: ${{ runner.temp }}/shop
           lcov: lcov.info
           baseline: base.json
+          github-token: fixture-token
           fail-regression: false
-      - name: The earlier comment was updated, and none was added
+      - name: The earlier comment was updated, not the other bot's, and none was added
         env:
           REPORT: ${{ steps.crap.outputs.report }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           grep -q '"method": "PATCH", "path": "/repos/[^/]*/[^/]*/issues/comments/7"' "$RUNNER_TEMP/api.log"
-          if grep -q '"method": "POST"' "$RUNNER_TEMP/api.log"; then exit 1; fi
+          if grep -q '"method": "PATCH", "path": "/repos/[^/]*/[^/]*/issues/comments/6"' "$RUNNER_TEMP/api.log"; then exit 1; fi
+          if grep -q '"method": "POST", "path": "/repos/' "$RUNNER_TEMP/api.log"; then exit 1; fi
           # The links name the pull request's head, or the pushed commit.
           grep -q "/blob/${HEAD_SHA:-$GITHUB_SHA}/" "$REPORT"
 
@@ -642,6 +677,7 @@ jobs:
           working-directory: ${{ runner.temp }}/shop
           lcov: lcov.info
           baseline: base.json
+          github-token: fixture-token
       # Without the gate, a refused comment alone must not fail the step:
       # it warns, it does not crash.
       - uses: ./
@@ -651,6 +687,7 @@ jobs:
           working-directory: ${{ runner.temp }}/shop
           lcov: lcov.info
           baseline: base.json
+          github-token: fixture-token
           fail-regression: false
       - name: Refused, summarised, and still gated
         env:
@@ -686,12 +723,14 @@ jobs:
           working-directory: ${{ runner.temp }}/shop
           lcov: lcov.info
           baseline: base.json
+          github-token: fixture-token
       - uses: ./
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           lcov: lcov.info
           baseline: base.json
+          github-token: fixture-token
           comment-marker: "<!-- cargo-crap-report-demo -->"
       - uses: ./
         with:
@@ -699,12 +738,14 @@ jobs:
           working-directory: ${{ runner.temp }}/shop
           lcov: lcov.info
           baseline: base.json
+          github-token: fixture-token
       - uses: ./
         with:
           binary: ${{ runner.temp }}/bin/cargo-crap
           working-directory: ${{ runner.temp }}/shop
           lcov: lcov.info
           baseline: base.json
+          github-token: fixture-token
           comment-marker: "<!-- cargo-crap-report-demo -->"
       - name: Two comments, each updated by its own step
         run: |
@@ -717,6 +758,8 @@ jobs:
           assert first == ["<!-- cargo-crap-report -->", "<!-- cargo-crap-report-demo -->"], first
           updated = [(i, b.splitlines()[0]) for i, b in patches]
           assert updated == [("100", "<!-- cargo-crap-report -->"), ("101", "<!-- cargo-crap-report-demo -->")], updated
+          demo = [b for i, b in patches if i == "101"]
+          assert all("<!-- cargo-crap-report -->" not in b for b in demo), demo
           PY
 
   comment-empty-marker:
@@ -747,6 +790,7 @@ jobs:
           working-directory: ${{ runner.temp }}/shop
           lcov: lcov.info
           baseline: base.json
+          github-token: fixture-token
           comment-marker: ""
       - name: Refused, and the other comment untouched
         env:
@@ -800,6 +844,7 @@ jobs:
         id: shop
         run: |
           scripts/action/fixture.sh "$GITHUB_WORKSPACE/selftest" steady
+          : > selftest/.cargo-crap.toml
           mkdir -p selftest/scripts
           cp action.yml selftest/
           cp -R scripts/action selftest/scripts/
@@ -853,6 +898,470 @@ jobs:
         run: |
           grep -q 'No CRAP regressions' "$REPORT"
           test "$(git -C "$RUNNER_TEMP/shop" log -1 --format=%s)" = pr
+
+  comment-anonymous:
+    name: A token whose account cannot be told writes a new comment
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
+      CARGO_CRAP_TEST_PR_NUMBER: "42"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A bot comment with the marker, and an API that will not say who the token is
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          scripts/action/prepared.sh "$RUNNER_TEMP/shop" "$RUNNER_TEMP/bin/cargo-crap"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github --anonymous \
+            --foreign-bot $'<!-- cargo-crap-report -->\nanother bot\'s report' &
+          sleep 1
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          lcov: lcov.info
+          baseline: base.json
+          github-token: fixture-token
+      - name: A new comment, and the bot's untouched
+        run: |
+          grep -q '"method": "POST", "path": "/repos/' "$RUNNER_TEMP/api.log"
+          if grep -q '"method": "PATCH"' "$RUNNER_TEMP/api.log"; then exit 1; fi
+
+  comment-refused:
+    name: A comment GitHub refuses as too large warns, and the gate decides
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
+      CARGO_CRAP_TEST_PR_NUMBER: "42"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: An API that refuses every body over ten characters
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          scripts/action/prepared.sh "$RUNNER_TEMP/shop" "$RUNNER_TEMP/bin/cargo-crap"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github --reject-over 10 &
+          sleep 1
+      - uses: ./
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          lcov: lcov.info
+          baseline: base.json
+          github-token: fixture-token
+      - name: Passed, after the write was tried
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+        run: |
+          test "$OUTCOME" = success
+          grep -q '"method": "POST", "path": "/repos/' "$RUNNER_TEMP/api.log"
+
+  comment-marker-lines:
+    name: A marker of more than one line, or with spaces around it, is refused
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
+      CARGO_CRAP_TEST_PR_NUMBER: "42"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request, and a stand-in GitHub API
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          scripts/action/prepared.sh "$RUNNER_TEMP/shop" "$RUNNER_TEMP/bin/cargo-crap"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github &
+          sleep 1
+      - uses: ./
+        id: two-lines
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          lcov: lcov.info
+          baseline: base.json
+          github-token: fixture-token
+          comment-marker: |
+            <!-- one -->
+            <!-- two -->
+      - uses: ./
+        id: spaced
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          lcov: lcov.info
+          baseline: base.json
+          github-token: fixture-token
+          comment-marker: "<!-- spaced --> "
+      - name: Both refused, and nothing written
+        env:
+          TWO_LINES: ${{ steps.two-lines.outcome }}
+          SPACED: ${{ steps.spaced.outcome }}
+        run: |
+          test "$TWO_LINES" = failure
+          test "$SPACED" = failure
+          if grep -q -e '"method": "POST"' -e '"method": "PATCH"' "$RUNNER_TEMP/api.log"; then exit 1; fi
+
+  pr-filtered-baseline:
+    name: A rise across a min in config is a regression, not a new function
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      # `shipping` scores 3.2 at the base and 6.2 in the pull request.
+      - name: A pull request whose regression crosses the config's min
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" regress
+          printf '"min" = 5\n' > "$RUNNER_TEMP/shop/.cargo-crap.toml"
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+      - uses: ./
+        id: crap
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          comment: false
+      - uses: ./
+        id: pr-old-binary
+        continue-on-error: true
+        with:
+          version: 0.9.0
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          comment: false
+      - name: Caught, and the release without --all-rows refuses rather than passes
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+          REGRESSED: ${{ steps.crap.outputs.regressed }}
+          REPORT: ${{ steps.crap.outputs.report }}
+          OLD: ${{ steps.pr-old-binary.outcome }}
+          OLD_REPORT: ${{ steps.pr-old-binary.outputs.report }}
+        run: |
+          test "$OUTCOME" = failure
+          test "$REGRESSED" = 1
+          grep -q '"shipping"' "$(dirname "$REPORT")/base.json"
+          test "$OLD" = failure
+          test -z "$OLD_REPORT"
+
+  config-gates:
+    name: A gate in config or args still delivers the report
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CARGO_CRAP_TEST_API_URL: http://127.0.0.1:8765
+      CARGO_CRAP_TEST_PR_NUMBER: "42"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A config that gates on a threshold both commits cross
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" steady
+          printf 'fail-above = true\nthreshold = 2\n' > "$RUNNER_TEMP/shop/.cargo-crap.toml"
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          python3 scripts/action/stub.py 8765 "$RUNNER_TEMP/api.log" github &
+          sleep 1
+      - uses: ./
+        id: config
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          github-token: fixture-token
+      - uses: ./
+        id: args
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ""
+          comment: false
+          args: --threshold 2 --fail-above
+          fail-above: true
+      - name: Both failed, after the outputs, the summary and the comment
+        env:
+          CONFIG: ${{ steps.config.outcome }}
+          CONFIG_CRAPPY: ${{ steps.config.outputs.crappy }}
+          CONFIG_REPORT: ${{ steps.config.outputs.report }}
+          ARGS: ${{ steps.args.outcome }}
+          ARGS_CRAPPY: ${{ steps.args.outputs.crappy }}
+        run: |
+          test "$CONFIG" = failure
+          test "$CONFIG_CRAPPY" = 1
+          grep -q '`shipping`' "$(dirname "$CONFIG_REPORT")/summary.md"
+          grep -q '"method": "POST", "path": "/repos/' "$RUNNER_TEMP/api.log"
+          test "$ARGS" = failure
+          test "$ARGS_CRAPPY" = 1
+
+  pr-signals:
+    name: A signal-only regression is counted, hidden rows included
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request that nests a branch deeper, signals on
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" signal
+          printf '[signals]\nenabled = true\n' > "$RUNNER_TEMP/shop/.cargo-crap.toml"
+          scripts/action/prepared.sh "$RUNNER_TEMP/shop" "$RUNNER_TEMP/bin/cargo-crap"
+      - uses: ./
+        id: crap
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          lcov: lcov.info
+          baseline: base.json
+          comment: false
+          # Hides every row: the signal count covers them all the same.
+          args: --min 100
+      - name: Failed with no score regression and two gated signals
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+          REGRESSED: ${{ steps.crap.outputs.regressed }}
+          SIGNALS: ${{ steps.crap.outputs.signal-regressions }}
+        run: |
+          test "$OUTCOME" = failure
+          test "$REGRESSED" = 0
+          test "$SIGNALS" = 2
+
+  pr-keys:
+    name: Provider keys reach no build script and no test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A pull request whose build script and test record what they see
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" key-probe
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+      - uses: ./
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          comment: false
+        env:
+          KEY_PROBE: ${{ runner.temp }}/seen
+          TYPESAFE_API_KEY: not-a-key
+          OPENAI_API_KEY: not-a-key
+      - name: No key on either commit
+        run: |
+          test "$(grep -c '^unset$' "$RUNNER_TEMP/seen")" -ge 4
+          if grep -q '^set$' "$RUNNER_TEMP/seen"; then exit 1; fi
+
+  pr-checkout-state:
+    name: The base-commit run leaves the caller's checkout as it was
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A branch, a staged and an unstaged edit, an untracked file the base tracks, a sibling worktree
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" base-only
+          cd "$RUNNER_TEMP/shop"
+          echo "base=$(git rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          git switch -q -c feature
+          echo "// staged" >> src/lib.rs
+          git add src/lib.rs
+          echo "// unstaged" >> src/lib.rs
+          echo local > src/old.rs
+          git worktree add -q --detach "$RUNNER_TEMP/sibling" HEAD
+      - uses: ./
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          comment: false
+      - name: Everything kept, and only the sibling worktree left
+        run: |
+          cd "$RUNNER_TEMP/shop"
+          test "$(git symbolic-ref --short HEAD)" = feature
+          git diff --cached | grep -q '^+// staged'
+          test "$(tail -n 1 src/lib.rs)" = "// unstaged"
+          test "$(cat src/old.rs)" = local
+          test "$(git worktree list | wc -l)" -eq 2
+          test -f "$RUNNER_TEMP/sibling/src/lib.rs"
+
+  pr-submodule:
+    name: A base commit whose submodules cannot be fetched fails the step
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A base commit with a submodule nobody can fetch
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" submodule
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+      - uses: ./
+        id: crap
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ${{ steps.shop.outputs.base }}
+          comment: false
+      - name: Failed, with no worktree left behind
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+        run: |
+          test "$OUTCOME" = failure
+          test "$(git -C "$RUNNER_TEMP/shop" worktree list | wc -l)" -eq 1
+
+  args-owned:
+    name: A flag the Action sets itself is refused in args
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A small tested crate
+        run: scripts/action/fixture.sh "$RUNNER_TEMP/shop"
+      - uses: ./
+        id: crap
+        continue-on-error: true
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/shop
+          base: ""
+          comment: false
+          args: --format json
+      - name: Failed before anything was scored
+        env:
+          OUTCOME: ${{ steps.crap.outcome }}
+          REPORT: ${{ steps.crap.outputs.report }}
+        run: |
+          test "$OUTCOME" = failure
+          test -z "$REPORT"
+
+  links-with-spaces:
+    name: Links reach a crate whose directory has a space
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-crap-under-test
+          path: ${{ runner.temp }}/bin
+      - name: A crate under "crates/my shop"
+        run: scripts/action/fixture.sh "$RUNNER_TEMP/repo" "" "crates/my shop"
+      - uses: ./
+        id: crap
+        with:
+          binary: ${{ runner.temp }}/bin/cargo-crap
+          working-directory: ${{ runner.temp }}/repo/crates/my shop
+          base: ""
+          comment: false
+      - name: The link encodes the space
+        env:
+          REPORT: ${{ steps.crap.outputs.report }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: grep -q "/blob/${HEAD_SHA:-$GITHUB_SHA}/crates/my%20shop/" "$REPORT"
+
+  platforms-candidate:
+    name: The candidate compares a pull request on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p cargo-crap
+      # A target directory of the job's own choosing, which the base run
+      # must share, and a symlinked path to the crate on the runners that
+      # have symlinks.
+      - name: A pull request with a head-only Cargo target directory
+        id: shop
+        run: |
+          scripts/action/fixture.sh "$RUNNER_TEMP/shop" target-dir
+          mkdir "$RUNNER_TEMP/shop/.cargo"
+          printf '[build]\ntarget-dir = "../target"\n' > "$RUNNER_TEMP/shop/.cargo/config.toml"
+          echo "base=$(git -C "$RUNNER_TEMP/shop" rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          dir="$RUNNER_TEMP/shop"
+          if [ "$RUNNER_OS" != Windows ]; then
+            ln -s "$RUNNER_TEMP/shop" "$RUNNER_TEMP/link"
+            dir="$RUNNER_TEMP/link"
+          fi
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+      - uses: ./
+        id: crap
+        env:
+          BASE_TARGET_LOG: ${{ runner.temp }}/base-target
+        with:
+          binary: ${{ github.workspace }}/target/debug/cargo-crap${{ runner.os == 'Windows' && '.exe' || '' }}
+          working-directory: ${{ steps.shop.outputs.dir }}
+          base: ${{ steps.shop.outputs.base }}
+          comment: false
+      - name: Compared, in the job's target directory, back on the pull request
+        env:
+          REPORT: ${{ steps.crap.outputs.report }}
+          REGRESSED: ${{ steps.crap.outputs.regressed }}
+        run: |
+          grep -q 'No CRAP regressions' "$REPORT"
+          test "$REGRESSED" = 0
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          temp = Path(os.environ["RUNNER_TEMP"])
+          base_out = Path((temp / "base-target").read_text().strip()).resolve()
+          assert base_out.is_relative_to((temp / "target").resolve()), base_out
+          PYTHON
+          test -d "$RUNNER_TEMP/target/llvm-cov-target"
+          test ! -e "$RUNNER_TEMP/shop/target/llvm-cov-target"
+          test "$(git -C "$RUNNER_TEMP/shop" log -1 --format=%s)" = pr
+          test "$(git -C "$RUNNER_TEMP/shop" worktree list | wc -l)" -eq 1
 
   mixed-comments:
     name: Both candidate Actions update their own comment
@@ -928,12 +1437,14 @@ jobs:
         with:
           node-version: '24'
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked -p crapts
+      - run: cargo build --locked -p crapts --features triage
       - run: bash scripts/action/crapts/test.sh
+        env:
+          CRAPTS_REQUIRE_TRIAGE: '1'
       - run: bash scripts/action/crapts/registry.sh "$RUNNER_TEMP/crapts-smoke"
       - name: Prepare push and shallow PR
         id: fixture
-        run: python scripts/action/crapts/tests/smoke.py setup "$RUNNER_TEMP/crapts-smoke"
+        run: bash scripts/action/crapts/python.sh scripts/action/crapts/tests/smoke.py setup "$RUNNER_TEMP/crapts-smoke"
       - uses: ./actions/crapts
         id: push-score
         if: github.event_name == 'push'
@@ -952,7 +1463,7 @@ jobs:
           CHANGED: ${{ steps.push-score.outputs.changed }}
           REPORT: ${{ steps.push-score.outputs.report }}
           OUTCOME: ${{ steps.push-score.outcome }}
-        run: LAUNCHER_VERSION="$(crapts --version)" python scripts/action/crapts/tests/smoke.py push "$RUNNER_TEMP/crapts-smoke"
+        run: LAUNCHER_VERSION="$(crapts --version)" bash scripts/action/crapts/python.sh scripts/action/crapts/tests/smoke.py push "$RUNNER_TEMP/crapts-smoke"
       - uses: ./actions/crapts
         id: pr-score
         continue-on-error: true
@@ -975,4 +1486,104 @@ jobs:
           CHANGED: ${{ steps.pr-score.outputs.changed }}
           REPORT: ${{ steps.pr-score.outputs.report }}
           OUTCOME: ${{ steps.pr-score.outcome }}
-        run: python scripts/action/crapts/tests/smoke.py pr "$RUNNER_TEMP/crapts-smoke"
+        run: bash scripts/action/crapts/python.sh scripts/action/crapts/tests/smoke.py pr "$RUNNER_TEMP/crapts-smoke"
+
+  crapts-scenarios:
+    name: crapts Action budget, signals and coverage-free duplicates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p crapts --features triage
+      - run: bash scripts/action/crapts/registry.sh "$RUNNER_TEMP/scenarios"
+      - name: Five new groups, a pair only the base holds, a budget of two
+        id: budget
+        run: |
+          dir="$RUNNER_TEMP/scenarios"
+          python3 scripts/action/crapts/tests/scenarios.py budget-setup "$dir/budget"
+          python3 scripts/action/crapts/tests/scenarios.py triage-stub "$dir" > "$dir/stub.log" 2>&1 &
+          for _ in $(seq 50); do [[ -s $dir/triage-url ]] && break; sleep 0.2; done
+          echo "url=$(cat "$dir/triage-url")" >> "$GITHUB_OUTPUT"
+          echo "base=$(git -C "$dir/budget" rev-parse base)" >> "$GITHUB_OUTPUT"
+      - uses: ./actions/crapts
+        env:
+          TYPESAFE_API_KEY: not-a-key
+          TYPESAFE_BASE_URL: ${{ steps.budget.outputs.url }}
+          XDG_CACHE_HOME: ${{ runner.temp }}/scenarios/cold-cache
+          TRACE: ${{ runner.temp }}/scenarios/budget-trace
+        with:
+          working-directory: ${{ runner.temp }}/scenarios/budget
+          package: ${{ runner.temp }}/scenarios/candidate wrapper.tgz
+          base: ${{ steps.budget.outputs.base }}
+          coverage-command: bash cover.sh
+          coverage-file: coverage.info
+          comment: 'false'
+          github-token: fixture-token
+      - name: Two requests in the whole job, none about the base pair, no key in project commands
+        run: python3 scripts/action/crapts/tests/scenarios.py budget-check "$RUNNER_TEMP/scenarios"
+      - name: A debugger added to a covered function
+        id: signals
+        run: |
+          python3 scripts/action/crapts/tests/scenarios.py signals-setup "$RUNNER_TEMP/scenarios/signals"
+          echo "base=$(git -C "$RUNNER_TEMP/scenarios/signals" rev-parse base)" >> "$GITHUB_OUTPUT"
+      - uses: ./actions/crapts
+        id: signal-score
+        continue-on-error: true
+        with:
+          working-directory: ${{ runner.temp }}/scenarios/signals
+          package: ${{ runner.temp }}/scenarios/candidate wrapper.tgz
+          base: ${{ steps.signals.outputs.base }}
+          coverage-command: bash cover.sh
+          coverage-file: coverage.info
+          comment: 'false'
+          github-token: fixture-token
+      - name: Only the signal count explains the failure
+        env:
+          OUTCOME: ${{ steps.signal-score.outcome }}
+          CRAPPY: ${{ steps.signal-score.outputs.crappy }}
+          REGRESSED: ${{ steps.signal-score.outputs.regressed }}
+          CHANGED: ${{ steps.signal-score.outputs.changed }}
+          SIGNALS: ${{ steps.signal-score.outputs.signal-regressions }}
+        run: test "$OUTCOME $CRAPPY $REGRESSED $CHANGED $SIGNALS" = "failure 0 0 0 1"
+      - name: A matching pair and no coverage input
+        id: dups
+        run: |
+          python3 scripts/action/crapts/tests/scenarios.py duplicates-setup "$RUNNER_TEMP/scenarios/dups"
+          echo "base=$(git -C "$RUNNER_TEMP/scenarios/dups" rev-parse base)" >> "$GITHUB_OUTPUT"
+      - uses: ./actions/crapts
+        id: dup-score
+        with:
+          working-directory: ${{ runner.temp }}/scenarios/dups
+          package: ${{ runner.temp }}/scenarios/candidate wrapper.tgz
+          base: ${{ steps.dups.outputs.base }}
+          args: --duplicates
+          comment: 'false'
+          github-token: fixture-token
+      - name: The scan ran without coverage
+        env:
+          REPORT: ${{ steps.dup-score.outputs.report }}
+          CHANGED: ${{ steps.dup-score.outputs.changed }}
+        run: |
+          grep -q 'No coverage supplied' "$REPORT"
+          python3 scripts/action/crapts/tests/scenarios.py duplicates-check "$REPORT"
+          test "$CHANGED" = 0
+      - uses: ./actions/crapts
+        id: no-coverage
+        continue-on-error: true
+        with:
+          working-directory: ${{ runner.temp }}/scenarios/dups
+          package: ${{ runner.temp }}/scenarios/candidate wrapper.tgz
+          base: ${{ steps.dups.outputs.base }}
+          comment: 'false'
+          github-token: fixture-token
+      - name: Without --duplicates the same project needs coverage
+        env:
+          OUTCOME: ${{ steps.no-coverage.outcome }}
+          CRAPPY: ${{ steps.no-coverage.outputs.crappy }}
+        run: test "$OUTCOME:$CRAPPY" = "failure:"

@@ -21,14 +21,14 @@ The reviewer gets the report before a failing gate ends the step. A mixed Rust a
 | `version` | Literal default in `actions/crapts/action.yml` | `tests/workspace.rs` and `scripts/release/check-tag.sh crapts` require equality with `npm/crapts/package.json`. An explicit `latest` resolves once to an exact version. |
 | `package` | Empty | Local wrapper tarball (.tgz). Takes precedence over `version`. |
 | `working-directory` | `.` | Project directory. Relative file inputs and coverage commands start here. |
-| `args` | Empty | Extra crapts arguments, split as quoted shell words without evaluation or glob expansion. S06 lists the Action-owned flags rejected here. |
+| `args` | Empty | Extra crapts arguments, split as quoted shell words without evaluation or glob expansion. S06 lists the flags rejected before `--`. Arguments after `--` are paths and pass unchecked. S38 lists the comparison flags dropped when their comparison is absent. |
 | `coverage` | Empty | Existing head Istanbul JSON or LCOV file. |
 | `coverage-command` | Empty | Bash command that writes fresh coverage. Also enables a base coverage run when a base exists and no baseline was supplied. |
 | `coverage-file` | `coverage/coverage-final.json` | Output expected from the coverage command in each tree. |
 | `install-command` | Empty | Bash command for project dependency setup immediately before each coverage command. |
 | `baseline` | Empty | Complete crapts JSON report for score comparison on any event. Replaces generating a baseline at the base commit. |
 | `base` | PR base SHA, empty on push | Git revision for the changed-function comparison. An explicitly empty input disables it. |
-| `fail-regression` | `true` | Add `--fail-regression` when a score baseline is available. |
+| `fail-regression` | `true` | Add `--fail-regression` when a score baseline is available. It covers score regressions and gated structural-signal regressions. |
 | `fail-changed` | `true` | Add `--fail-changed` when a Git base is available. |
 | `fail-above` | `false` | Add `--fail-above` for the absolute threshold gate. |
 | `comment` | `true` | Post or update the report on a PR. |
@@ -40,6 +40,7 @@ The reviewer gets the report before a failing gate ends the step. A mixed Rust a
 | `crappy` | Decimal `summary.crappy`, the number of eligible head functions strictly above the threshold. |
 | `regressed` | Decimal `summary.regressed`, empty if no baseline was compared. |
 | `changed` | Decimal `summary.changed_failures`, empty if no Git base was compared. |
+| `signal-regressions` | Decimal `summary.signal_regressions`, empty when signals are off or no baseline was compared. |
 | `report` | Path to the rendered Markdown file, readable by later steps in the job. |
 
 A JSON null count maps to an empty output. A measured zero maps to the string `0`. The JSON gate's status is internal to the composite. Exit 0 passes, exit 1 delivers a complete report with a tripped gate, and exit 2 denotes a setup, input or analysis error.
@@ -110,6 +111,7 @@ And the coverage command sees no previous output file and the prepared head cove
 Given <condition>
 When the Action tries to score the project
 Then it exits 2 and names <detail> before publishing any counts or posting a comment
+And args "--top 3 -- --base --coverage -hV" is accepted with the four words after -- passed verbatim
 
 Examples:
 | condition                             | detail                               |
@@ -122,6 +124,11 @@ Examples:
 | args contains --comment-marker custom | args and --comment-marker            |
 | args contains --commit-ref=main       | args and --commit-ref                |
 | args contains --all-rows              | args and --all-rows                  |
+| args contains --coverage=x.info       | args, --coverage and the coverage input |
+| args contains --print-config          | args and --print-config              |
+| args contains --help or -h            | args and that flag                   |
+| args contains --version or -V         | args and that flag                   |
+| args contains the cluster -hV or -qh  | args, -h or -V and the cluster       |
 | comment-marker is empty               | comment-marker and one nonempty line |
 | comment-marker contains a CR          | comment-marker and one nonempty line |
 | comment-marker contains an LF         | comment-marker and one nonempty line |
@@ -212,7 +219,7 @@ Given fee, steady and probe live in separate files, and the PR changes the lockf
 And the base config excludes fee, the head has <config>, and args sets top to 1
 When baseline is empty, coverage-file is "coverage/coverage-final.json" and coverage is <head input>
 Then install-command followed by coverage-command runs in <trees>, using each tree's own lockfile and the detached worktree at the specified base commit
-And the base invocation uses the head scoring args with --format json --all-rows and no comparison or gate flags
+And the base invocation uses the head scoring args with --format json --all-rows and no comparison, gate or --show-unchanged flags
 And its JSON has null selection and exactly <base rows>, and the prepared head coverage still scores fee at 72
 And comparing those files with the CLI at the PR head and its Git base yields summary.regressed 1 and summary.changed_failures 0
 
@@ -255,7 +262,7 @@ Given a PR with a saved baseline, a Git base, one CC 8 function dropping from fu
 And the caller sets any valid top or min display limit, including top 1 or min 200
 When the Action renders the report and executes its single head JSON gate run
 Then the JSON invocation includes --all-rows, selection is null and all three eligible functions appear in the gate JSON
-And the four public outputs are "3", "1", "2" and a readable PR Markdown path, even when the display hides every row
+And crappy, regressed, changed and report are "3", "1", "2" and a readable PR Markdown path, even when the display hides every row
 ```
 
 ### Scenario Outline: S16 Gate switches control the exit independently of the counts
@@ -282,7 +289,7 @@ Given a PR with base explicitly empty, no baseline, one uncovered CC 6 function 
 When the report renderer and JSON gate both return 1 with complete reports
 Then the score step sets crappy to "1", regressed and changed to empty, and report to the PR Markdown file
 And the comment API receives that file's body and the job summary includes the report before the final step exits 1
-And a following workflow step that runs on failure can read the four outputs
+And a following workflow step that runs on failure can read the five outputs
 ```
 
 ### Scenario: S18 An analysis error stops reporting
@@ -321,9 +328,9 @@ And the posted body equals the rendered file byte for byte, with exactly one ope
 
 Examples:
 | match                                         | marker                     | report                                            | write              | total |
-| comment 120 starts with the exact marker line | default marker             | a short report                                    | update ID 120 only | 150   |
-| comment 120 starts with the exact marker line | 60-character custom marker | a report at the 65536-unit boundary               | update ID 120 only | 150   |
-| comment 120 starts with the exact marker line | 60-character custom marker | a report exceeding the budget by a surrogate pair | update ID 120 only | 150   |
+| the token's comment 120 starts with the exact marker line | default marker             | a short report                                    | update ID 120 only | 150   |
+| the token's comment 120 starts with the exact marker line | 60-character custom marker | a report at the 65536-unit boundary               | update ID 120 only | 150   |
+| the token's comment 120 starts with the exact marker line | 60-character custom marker | a report exceeding the budget by a surrogate pair | update ID 120 only | 150   |
 | no exact first-line match                     | default marker             | a short report                                    | create one comment | 151   |
 ```
 
@@ -472,7 +479,8 @@ Then it exits 2, names <detail>, and publishes no counts or comment
 
 Examples:
 | condition                                              | detail                                 |
-| coverage and coverage-command are both empty           | coverage and coverage-command          |
+| coverage and coverage-command are both empty and args has no --duplicates before -- | coverage or coverage-command |
+| the same, with [duplicates] enabled only in .crapts.toml | coverage or coverage-command          |
 | coverage is missing.info, even with a command supplied | coverage and missing.info              |
 | coverage-command exits 7 at the head                   | the head coverage command and status 7 |
 | coverage-command succeeds without writing out/new.json | coverage-file and out/new.json         |
@@ -492,6 +500,76 @@ Then it receives three extra arguments in order, the literal "two words", the li
 Given any valid single-line marker M, one comment starting with M alone on line one, another with an extra character on that line, and a third quoting M only on line two
 When the matcher selects a comment for M
 Then it selects only the first comment
+```
+
+### Scenario: S33 An explicit duplicate scan runs without coverage
+
+```gherkin
+Given a PR that adds two matching functions, a Git base, and neither coverage nor coverage-command
+When args is "--duplicates"
+Then no crapts invocation carries --coverage, the report lists the pair and the missing-coverage notice
+And status, crappy and changed are "0", regressed is empty and the gate JSON records coverage_kind "none"
+```
+
+### Scenario Outline: S34 Update only a comment the token's account wrote
+
+```gherkin
+Given page one holds marker comments by a person and by another bot, and page two holds the token's own marker comment
+When the comment step runs with <identity>
+Then the API records <requests> and the person's and the other bot's comments are unchanged
+
+Examples:
+| identity                                   | requests                                                       |
+| the default token                          | list, list, update the token's comment                          |
+| a token GET /user identifies               | list, GET /user, list, update the token's comment               |
+| a token only GraphQL viewer identifies     | list, GET /user, GraphQL, list, update the token's comment      |
+| a token neither lookup identifies (403/404)| list, GET /user, GraphQL, create a comment, with one notice     |
+| a token GET /user rejects with 401         | list, GET /user, then the step fails naming HTTP 401            |
+```
+
+### Scenario: S35 One triage budget per job and no provider key in project code
+
+```gherkin
+Given the base holds one duplicate pair the head removes, the head adds five uncached groups, triage is enabled with max-requests 2 and a provider key is set
+When the composite prepares coverage, generates the base baseline and scores the head
+Then the provider stub records 0 requests after preparation, 0 after the base run and exactly 2 after scoring, none naming the base pair
+And only the head report invocation carries a provider key, the version check, install-command and coverage-command see none in any letter case
+And the report invocation uses the provider URLs present when the Action started, not values written later
+```
+
+### Scenario Outline: S36 The base run never writes outside its own directories
+
+```gherkin
+Given a generated baseline and <setup>
+When the base coverage run executes
+Then <outcome> and the head checkout and any file outside the worktree keep their bytes
+
+Examples:
+| setup                                                          | outcome                                                        |
+| coverage-file is an absolute path outside the project          | the command writes a private INPUT_COVERAGE_FILE and the baseline scores fee at 8 |
+| coverage-file is a relative path leaving the worktree           | the command writes a private INPUT_COVERAGE_FILE                |
+| the install command links coverage/ to an outside directory     | it exits 2 naming the directory it leaves through               |
+| the install command replaces the private directory with a link  | it exits 2 naming the directory it leaves through               |
+| the coverage command leaves a symbolic link as its result       | it exits 2 naming the symbolic link                             |
+| on Windows, the install command makes coverage/ a junction out  | it exits 2 naming the directory it leaves through               |
+```
+
+### Scenario Outline: S37 A signal-only regression explains the failure
+
+```gherkin
+Given [signals] enabled in both commits and a covered function that gains a debugger statement
+When the Action compares against the generated baseline
+Then status is "1", crappy, regressed and changed are "0", and signal-regressions is "1"
+And with signals on and no baseline, or with signals off, signal-regressions is empty
+```
+
+### Scenario: S38 Comparison flags in args wait for their comparison
+
+```gherkin
+Given args holds --show-unchanged, --fail-regression and --fail-changed before --, and a path named --show-unchanged after it
+When a push runs without baseline or base
+Then each of the three flags is dropped with one notice naming what it needs, the path after -- reaches crapts verbatim and status is "0"
+And with a baseline, --show-unchanged reaches every head invocation without a notice
 ```
 
 ### Scenario Outline: S32 Select the supplied baseline without a base coverage run
@@ -516,17 +594,19 @@ After the first stable promotion of `crapts-v1`, run a mixed-language PR in a co
 - [x] **T1 - Define the composite interface and verify package selection.** Scenarios: S01, S02, S03, S06, S30. Test manifest defaults, argument validation and splitting in `scripts/action/crapts/test.sh`, and exercise registry and tarball installs.
 - [x] **T2 - Resolve head coverage and Git history.** Needs: T1. Scenarios: S04, S05, S07, S08, S29. Check the prepared coverage file with the CLI and compare the fetch log and merge base against a full clone of the fixture.
 - [x] **T3 - Select and produce score baselines.** Needs: T2. Scenarios: S12, S13, S28, S32. Exercise baseline preparation directly. Inspect its files, command arguments, lockfiles and worktree state on success and failure.
-- [x] **T4 - Render reports and publish gate results.** Needs: T3. Scenarios: S09, S11, S14, S15, S16, S18. Check real CLI results, the readable report, config gates, display limits and the four Action outputs.
+- [x] **T4 - Render reports and publish gate results.** Needs: T3. Scenarios: S09, S11, S14, S15, S16, S18. Check real CLI results, the readable report, config gates, display limits and the four Action outputs (five after T9).
 - [x] **T5 - Deliver PR comments and exercise both Actions.** Needs: T4. Scenarios: S10, S17, S19, S20, S21, S22, S23, S31. Run the candidate fixtures against the local API. Check request order, bodies, IDs, summary size and final status. Exercise the any-valid-marker property in `scripts/action/crapts/test.sh`.
 - [x] **T6 - Wire the candidate suite into CI and preserve root package coverage.** Needs: T5. Scenario: S24. In `.github/workflows/action.yml`, run `actions/setup-node` with `node-version: 24` before each candidate Action job's fixtures (the Node 22 rejection uses an isolated override). Run the three-OS matrix with locally packaged candidate binaries. Check both shell suites, ShellCheck, six-workflow actionlint, the two golden test modules and the `tests/workspace.rs` package listing.
 - [x] **T7 - Carry the npm pin through release prep and preflight.** Needs: T1. Scenario: S25. Extend the Spec 57 prep and tag fixtures in `scripts/release/test.sh` and the version-sync assertion in `tests/workspace.rs`. The nested Action manifest is the one additional file prep may edit relative to Spec 57.
 - [x] **T8 - Smoke each tagged Action and test both promotions.** Needs: T6, T7. Scenarios: S26, S27. In `scripts/release/test.sh`, extend the Spec 57 workflow-contract test to require the additive `needs: crapts-action-smoke` edge on `promote-npm`, plus the tag job's prerequisites, permissions and eligibility. Exercise `scripts/release/move-tag.sh` against a temporary Git remote and check all seven npm dist-tags in a fixture registry. Before release, run the tagged-checkout smoke fixtures on all three systems against exact-version packages published to the fixture registry.
 
+- [ ] **T9 - Harden the composite after the pre-release review.** Needs: T8. Scenarios: S06, S12, S20, S29, S33, S34, S35, S36, S37, S38. Withhold provider keys from every run but the head report, pin provider URLs at install, admit the coverage-free scan, export `signal-regressions`, guard the base output, check comment authorship, drop dormant comparison flags, and gate the test seams on the fixture token. Run the budget, signals and coverage-free scenarios in the Action workflow with a `triage` build.
+
 ## Implementation Notes
 
 - Resolve helpers under `scripts/action/crapts/` relative to the nested Action's own `GITHUB_ACTION_PATH`. A downstream project's checkout need not contain these scripts. Use a per-invocation temporary directory for reports and coverage copies so a second invocation in the job cannot overwrite the first report. Export a runner-native executable path on Windows.
 - Use the Action runner's Node 24 or later and npm to install the wrapper and read JSON. The runner prerequisite applies to this composite. Spec 57 defines the standalone npm wrapper's engine range. For local tarball tests, make the matching exact-version platform package available from the fixture registry, using the candidate native binary. This exercises the wrapper's real optional dependency before either package has been published.
-- Pass Action inputs as environment values. Run `install-command` and `coverage-command` in Bash on every runner, including Windows. The candidate workflow uses read-only permissions, a dummy token and the local API on PRs and pushes to main. In S21 point both Actions' API and PR-number test inputs at the same stub store. Honor `CRAPTS_TEST_API_URL` and `CRAPTS_TEST_PR_NUMBER` only in the owning repository `minikin/cargo-crap`. Consumer jobs use the event's PR number and GitHub API URL.
+- Pass Action inputs as environment values. Run `install-command` and `coverage-command` in Bash on every runner, including Windows. The candidate workflow uses read-only permissions, a dummy token and the local API on PRs and pushes to main. In S21 point both Actions' API and PR-number test inputs at the same stub store. Honor `CRAPTS_TEST_API_URL` and `CRAPTS_TEST_PR_NUMBER` only in the owning repository `minikin/cargo-crap` and only with the dummy token `fixture-token`, since a project command can write them to `$GITHUB_ENV`. Consumer jobs use the event's PR number and GitHub API URL.
 - Resolve a missing base from origin, then check `git merge-base` before head or base coverage runs. While the clone is shallow, deepen both relevant histories by 50, 200 and 1000, then unshallow if needed. Check after every fetch and stop at the first common ancestor. Exercise the actual PR head or merge ref as well as the base in the depth-1 fixtures. Diagnose an unresolvable base or a failed fetch with the revision and exit 2. The CLI consumes the merge base for changed functions. A generated score baseline uses the specified base commit.
 - Preserve head coverage before preparing the base. In the detached worktree, use the base project's dependencies with the effective head config at the equivalent path, clearing any config visible only at the base. Discard stale command output before generation in each tree. The base run receives only the scoring arguments and the controls for complete JSON output (`--format json --all-rows`). Omit `--base`, `--baseline` and every `--fail-*` flag from that invocation. Use the resulting file as `--baseline` alongside `--base` for both head reports. An explicit baseline bypasses base generation on every event.
 - Obtain settings, render the human-readable report, then collect counts and status in one `--format json --all-rows` head invocation. A valid exit-1 report from any scoring pass, including the base, can be consumed. Propagate a CLI error immediately. Read the three summary fields by name. Write outputs and summary, finish the comment attempt, then return the saved gate status. The `report` output points to the rendered file throughout.

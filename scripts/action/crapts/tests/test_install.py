@@ -21,7 +21,7 @@ class Install(ActionTest):
                          "github-token": "${{ github.token }}"})
         self.assertEqual({key: value.strip('"') for key, value in inputs.items()}, expected)
         self.assertEqual(re.findall(r'^  ([\w-]+):$', text.split("outputs:")[1].split("runs:")[0], re.M),
-                         ["crappy", "regressed", "changed", "report"])
+                         ["crappy", "regressed", "changed", "signal-regressions", "report"])
 
     def test_args(self):
         (self.project / "a.ts").touch()
@@ -30,10 +30,17 @@ class Install(ActionTest):
         for value, message in [("'unfinished", "quotes"), ("--format=json", "--format"),
                                ("--output other.md", "--output"), ("--base other", "--base"),
                                ("--baseline=old", "--baseline"), ("--comment-marker custom", "--comment-marker"),
-                               ("--commit-ref=main", "--commit-ref"), ("--all-rows", "--all-rows")]:
+                               ("--commit-ref=main", "--commit-ref"), ("--all-rows", "--all-rows"),
+                               ("--coverage x.info", "--coverage: use the coverage"),
+                               ("--coverage=x.info", "--coverage: use the coverage"),
+                               ("--print-config", "--print-config"), ("--help", "--help"), ("-h", "-h"),
+                               ("--version", "--version"), ("-V", "-V"), ("-hV", "-h (in -hV)"),
+                               ("-Vh", "-V (in -Vh)"), ("--top 3 -qh", "-h (in -qh)")]:
             result = self.install(2, INPUT_ARGS=value)
             self.assertIn("args", result.stderr)
             self.assertIn(message, result.stderr)
+        result = self.command(["node", str(SCRIPTS / "inputs.mjs")], INPUT_ARGS="--top 3 -- --base --coverage -hV")
+        self.assertEqual(json.loads(result.stdout), ["--top", "3", "--", "--base", "--coverage", "-hV"])
         for value in ["", "a\rb", "a\nb"]:
             self.assertIn("one nonempty line", self.install(2, INPUT_COMMENT_MARKER=value).stderr)
         self.assertRegex(self.install(2, INPUT_FAIL_CHANGED="yes").stderr, "fail-changed.*true or false.*yes")
@@ -84,13 +91,18 @@ class Install(ActionTest):
         self.env["npm_config_registry"] = registry
         files = {p.relative_to(WRAPPER).as_posix(): p.read_bytes() for sub in ("lib", "bin")
                  for p in (WRAPPER / sub).iterdir()}
+        files["lib/resolve.js"] += (b'\nif (Object.keys(process.env).some(n => /^(typesafe|openai)_api_key$/i.test(n)))'
+                                    b' throw Error("resolver received a provider key");\n')
         for version in {VERSION, "0.1.2", "1.0.1", "0.2.0-rc.1", "0.2.0"}:
             platform = {"name": host["name"], "version": version}
             wrapper = {**MANIFEST, "version": version, "optionalDependencies": {host["name"]: version},
                        "scripts": {"postinstall": "node -e \"process.exit(7)\""}}
             wrapper_files = files.copy()
             if version != VERSION:
-                wrapper_files["bin/crapts.js"] = f'#!/usr/bin/env node\nconsole.log("crapts {version}")\n'.encode()
+                # A launcher that reports a provider key in its environment fails the version check.
+                wrapper_files["bin/crapts.js"] = ("#!/usr/bin/env node\nconst leaked = Object.keys(process.env)"
+                                                  ".filter(n => /^(typesafe|openai)_api_key$/i.test(n));\n"
+                                                  f'console.log(leaked.length ? "crapts leaked " + leaked : "crapts {version}")\n').encode()
             for pkg, content in [(platform, {host["binary"]: BINARY.read_bytes()}), (wrapper, wrapper_files)]:
                 filename = pkg["name"].split("/")[1] + "-" + version + ".tgz"
                 archives[filename] = tarball(pkg, content)
@@ -111,11 +123,13 @@ class Install(ActionTest):
             if selection == "latest":
                 metadata[MANIFEST["name"]]["dist-tags"]["latest"] = "1.0.1"
             requests.clear()
-            self.install(INPUT_VERSION=selection, INPUT_PACKAGE=package)
+            self.install(INPUT_VERSION=selection, INPUT_PACKAGE=package, TYPESAFE_API_KEY="not-a-key",
+                         OpenAI_Api_Key="not-a-key", TYPESAFE_BASE_URL="http://install-time.invalid")
             location = Path(self.env["GITHUB_PATH"]).read_text().splitlines()[-1]
             self.assertTrue(Path(location).is_relative_to(self.temp))
             outputs = dict(line.split("=", 1) for line in Path(self.env["GITHUB_OUTPUT"]).read_text().splitlines())
             self.assertTrue(Path(outputs["binary"]).is_file())
+            self.assertEqual(outputs["TYPESAFE_BASE_URL"], "http://install-time.invalid")
             if expected == VERSION:
                 self.assertEqual(self.command([outputs["binary"], "--version"]).stdout.strip(), "crapts " + VERSION)
             result = self.command(["bash", "-c", 'cd "$1" && export PATH="$PWD:$PATH" && crapts --version', "_", location])

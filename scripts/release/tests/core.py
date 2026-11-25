@@ -358,8 +358,16 @@ class CoreRelease(unittest.TestCase):
         self,
     ):
         self.write("Cargo.toml", '[package]\nversion="0.9.0"\n')
+        self.write("action.yml", 'inputs:\n  version:\n    default: "0.9.0"\n')
         self.helper("check-tag", "cargo-crap", "v0.9.0", message="version=0.9.0")
         self.helper("check-tag", "cargo-crap", "v0.9.1", code=1, message="Cargo.toml")
+        self.write("Cargo.toml", '[package]\nversion="0.10.0-rc.1"\n')
+        self.helper("check-tag", "cargo-crap", "v0.10.0-rc.1", code=1, message="action.yml: version pin")
+        self.write("action.yml", 'inputs:\n  version:\n    default: "0.10.0-rc.1"\n')
+        result = self.helper("check-tag", "cargo-crap", "v0.10.0-rc.1")
+        self.assertIn("is_prerelease=true", result.splitlines())
+        self.write("action.yml", "inputs:\n  other:\n    default: x\n")
+        self.helper("check-tag", "cargo-crap", "v0.10.0-rc.1", code=1, message="action.yml: expected one")
         for version in ["0.1.0-rc.1", "0.1.0", "1.0.0", "2.0.0", "1.0.0-alpha-1"]:
             self.write("crates/crapts/Cargo.toml", f'[package]\nversion="{version}"\n')
             pkg = {

@@ -42,16 +42,21 @@ there, and a push compares and gates like a pull request. A `base` with
 `fail-regression` is `false`.
 
 On a **pull request**, it first scores the pull request's base commit in
-the same job: it checks that commit out in place, runs the tests and
-records a baseline, then checks the pull request out again. The comparison
-is exact and needs no workflow on `main`, no stored artifact and no extra
-permission. The cost is a second test run. Then it:
+the same job: it adds a temporary worktree of that commit outside your
+checkout, runs the tests there and records a baseline of every function,
+whatever `top` or `min` say. The comparison is exact and needs no workflow
+on `main`, no stored artifact and no extra permission. The cost is a second
+test run, built in your checkout's target directory. Then it:
 
 1. writes the delta report to the job summary,
 2. posts it as a comment on the pull request, or updates the one it posted
    before,
 3. fails the step when a function's score rose, or with `[signals]` on
-   when a gated signal rose, after commenting.
+   when a gated signal rose (*since 0.10.0*), after commenting.
+
+A gate set in `.cargo-crap.toml`, such as `fail-above = true`, applies on
+every run, and the step still writes the summary, the outputs and the
+comment before it fails.
 
 The links in the report name the pull request's head commit, which GitHub
 keeps after the pull request closes. A line number can be a few lines off
@@ -60,7 +65,10 @@ when the base branch changed the same file after the branch point.
 A pull request from a fork has a read-only token, which cannot comment. The
 report is then in the job summary, the step warns once, and it still gates.
 A report of 1,000,000 bytes or more does not fit the job summary, which
-then holds one line pointing at the step's `report` output.
+then holds one line pointing at the step's `report` output. A comment over
+GitHub's 65,536 characters is replaced by one that points at the job
+summary, and a comment GitHub refuses with a 422 is a warning. HTTP 401
+fails delivery because GitHub rejected the token.
 Keep the Action on `pull_request`. It runs the pull request's build
 scripts and tests in the job that holds the token, and nothing inside the
 Action can keep that code from the token. On `pull_request` a fork's token
@@ -70,9 +78,17 @@ there hands that code a write token.
 
 The base-commit run uses the pull request's `.cargo-crap.toml`, so a pull
 request that changes the threshold or the duplicate settings is compared
-under one set of rules. Local edits a step made to tracked files before the
-Action ran are kept, and the pull request is checked out again even when
-the base commit fails to build.
+under one set of rules. Your checkout is never changed: its branch, its
+index, local edits and untracked files stay as the job left them, whether
+the base commit builds or not. The worktree holds only what the base commit
+tracks. Its submodules are checked out, and a failure there fails the step.
+Files a previous step generated in your checkout are not there, so a base
+commit that needs them to build fails the step: give `baseline` instead.
+
+A `version` without `--all-rows` (0.9.0 and older) cannot record every
+function on the base commit. The step then fails when `.cargo-crap.toml`
+sets `top` or `min`. Checking that config requires Python 3.11 or later.
+For a config inherited from above the Git root, supply `baseline`.
 
 ## Inputs
 
@@ -87,16 +103,28 @@ the base commit fails to build.
 | `baseline` | none | a baseline JSON file, used instead of the base-commit run |
 | `base` | the pull request's base commit | the commit to compare with, ignored when `baseline` is given |
 | `comment` | `true` | post or update the PR comment |
-| `comment-marker` | `<!-- cargo-crap-report -->` | the hidden first line that finds the comment again |
-| `fail-regression` | `true` | fail when a score or a gated signal rose, whenever there is something to compare with |
+| `comment-marker` | `<!-- cargo-crap-report -->` | the hidden first line that finds the comment again, one line without surrounding spaces |
+| `fail-regression` | `true` | fail when a score or, *since 0.10.0*, a gated signal rose, whenever there is something to compare with |
 | `fail-above` | `false` | fail when a shown function scores above the threshold |
 | `github-token` | `${{ github.token }}` | the token that writes the comment |
 
 `binary`, `lcov` and `baseline` are relative to `working-directory`.
-`args` and `coverage-args` are split as the shell would split them, and a
-stray quote fails the step rather than dropping the arguments. The
+`binary` is copied under the name `cargo-crap` first, so any file name
+works. `args` and `coverage-args` are split as the shell would split them,
+and a stray quote fails the step rather than dropping the arguments. The
 threshold and everything else come from `.cargo-crap.toml`, as on the
-command line. `lcov` on a pull request leaves the base commit with no
+command line.
+
+The Action sets `--lcov`, `--format`, `--output`, `--baseline`,
+`--commit-ref`, `--all-rows` and `--print-signal-regressions` itself. It
+refuses them before the `--` delimiter in `args`, just as it
+refuses `--help` and `--version`. `--fail-above` and `--fail-regression`
+there work as the inputs set to `true`, and `--fail-regression` has no
+effect without something to compare with. `--summary` and
+`--show-unchanged` reach only the report. When the base commit is scored,
+an absolute path in `args` or `coverage-args` that points into your
+checkout fails the step, since the base run would read your files through
+it: give it relative to `working-directory`. `lcov` on a pull request leaves the base commit with no
 coverage to score, so give `baseline` with it, or set `fail-regression` to
 `false`.
 
@@ -106,18 +134,32 @@ coverage to score, so give `baseline` with it, or set `fail-regression` to
 |---|---|
 | `crappy` | how many shown functions score above the threshold |
 | `regressed` | how many shown functions' scores rose, when there was something to compare with |
-| `report` | the path of the markdown report |
+| `signal-regressions` | *since 0.10.0*, how many gated signals rose over every function, when there was something to compare with |
+| `report` | the path of the report |
 
-Both counts cover the rows the report shows, so `--top` or `--min` in
-`args` can leave `regressed` at `0` on a job the regression gate failed.
+`crappy` and `regressed` cover the rows the report shows, so `--top` or
+`--min` can leave `regressed` at `0` on a job the regression gate failed.
+`signal-regressions` covers every function, as the gate does. It is empty
+when either side was measured without `[signals]`, and `0` when signals
+were compared and none rose. With `[signals]` on, the gate can fail with
+`regressed` at `0`: `signal-regressions` then says why.
+
+The report is the pr-comment format whenever there is something to compare
+with or the comment is posted, and the exhaustive markdown format
+otherwise.
 
 ## One comment per pull request
 
 The default marker is the hidden line `--format pr-comment` starts with, and
 the one the hand-written workflow in [PR comment bot](pr-comment.md) looks
 for. Keep one of the two on a repository, or give the Action its own
-`comment-marker`. Two Action steps that comment on one pull request need a
-marker each.
+`comment-marker`, which takes the default's line. Two Action steps that
+comment on one pull request need a marker each.
+
+The Action updates only a comment the token's own account wrote: the
+workflow token's `github-actions[bot]`, or the account GitHub names for
+another token. When GitHub does not say which account a token belongs to,
+the Action writes a new comment.
 
 ## Duplicates and triage
 
@@ -133,8 +175,12 @@ base's (see [Finding duplicates](duplicates.md)). For
 ```
 
 Only the run that writes the report sends triage requests. The other
-cargo-crap runs in the job clear every provider key, so `max-requests` is
-spent once per job.
+cargo-crap runs in the job, the coverage runs and the project's build
+scripts and tests run with every provider key unset, so `max-requests` is
+spent once per job. Code that runs in the job can still read the step's
+environment by other means, so give a key only to a workflow that runs
+code you trust, such as a push to `main`, or to a job of its own that
+scores with `lcov` and `baseline` prepared by another.
 
 ## Versions
 

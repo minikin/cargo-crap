@@ -66,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded without signals warns and compares none. The repository's
   own gate now runs with signals on. The complexity cache moves to
   format 2, so the first run after upgrading re-analyses every file.
+- `--all-rows` clears `--top` and `--min`, from the flags and from
+  `.cargo-crap.toml`, for a JSON baseline that has to hold every function.
+- The GitHub Action's `signal-regressions` output counts the gated
+  structural signals that rose over every function. It is empty when
+  either side was measured without `[signals]`.
 
 ### Changed
 
@@ -156,6 +161,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkout no longer needs re-recording for the duplicate comparison,
   only for the baseline exclude filter and `-p` scoping, which still
   expect one root (spec 42).
+- The GitHub Action records every function on the base commit, so a `top`
+  or `min` in `.cargo-crap.toml` or `args` can no longer turn a regression
+  into a new function and pass the gate. A `version` without `--all-rows`
+  fails the step when the config sets either (checked with Python 3.11+
+  `tomllib`), and an inherited config above the Git root fails with a
+  prompt to pass `baseline`.
+- The GitHub Action scores the base commit in a worktree of its own and
+  never changes the checkout: the branch, the index and untracked files
+  stay as the job left them.
+- A gate set in `.cargo-crap.toml` or in `args` no longer stops the GitHub
+  Action before the summary, the outputs and the comment. `--fail-above`
+  in `args` beside `fail-above: true` no longer fails as a repeated flag.
+- The GitHub Action refuses the flags it sets itself in `args`, keeps
+  `--summary` and `--show-unchanged` to the report, so `crappy` is counted
+  with `--summary`, and refuses a multi-line `comment-marker` or one with
+  surrounding spaces.
+- The GitHub Action updates only a comment the token's own account wrote,
+  fails delivery on HTTP 401 (matching `crapts`), fits the comment to
+  GitHub's limit, and warns on a 422. A custom marker replaces the default
+  one instead of adding a second marker line.
+- `cargo-crap` adds hidden `--print-signal-regressions` so the Rust GitHub
+  Action exports the post-filter signal regression count across all
+  eligible rows without altering JSON report snapshots.
+- The GitHub Action unsets provider keys for coverage runs, the project's
+  build scripts and tests, and every cargo-crap run but the report.
+- The GitHub Action copies `binary` under the name `cargo-crap`, so a
+  renamed binary runs and a sibling named `cargo-crap` does not, and
+  percent-encodes the working directory in source links.
+- A cargo-crap release candidate is a GitHub prerelease and never becomes
+  the latest release. The tag check also compares `action.yml`'s default
+  version with the tag.
 
 
 ## [0.9.0] - 2026-10-17
