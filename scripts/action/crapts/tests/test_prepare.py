@@ -33,7 +33,7 @@ class HeadCoverage(ActionTest):
         self.assertEqual(json.loads(result.stdout)["entries"][0]["crap"], 2)
 
     def test_head_errors(self):
-        for env, expected in [({}, "coverage and coverage-command"),
+        for env, expected in [({}, "set coverage or coverage-command"),
                               ({"INPUT_COVERAGE": "missing.info", "INPUT_COVERAGE_COMMAND": "exit 7"}, "coverage.*missing.info"),
                               ({"INPUT_COVERAGE_COMMAND": "exit 7"}, "head.*coverage command.*status 7"),
                               ({"INPUT_COVERAGE_COMMAND": "true", "INPUT_COVERAGE_FILE": "out/new.json"},
@@ -41,6 +41,21 @@ class HeadCoverage(ActionTest):
             with self.subTest(env=env):
                 self.assertRegex(self.prepare(2, **env).stderr, expected)
                 self.assertFalse((self.run_dir / "prepared.json").exists())
+
+    def test_duplicates_alone_needs_no_coverage(self):
+        for args, config, status in [(["--duplicates"], "", 0), (["--top", "2", "--duplicates"], "", 0),
+                                     (["--", "--duplicates"], "", 2), ([], "[duplicates]\nenabled = true\n", 2)]:
+            with self.subTest(args=args, config=config):
+                (self.project / ".crapts.toml").write_text(config)
+                (self.run_dir / "args.json").write_text(json.dumps(args))
+                (self.run_dir / "prepared.json").unlink(missing_ok=True)
+                result = self.prepare(status, INPUT_COVERAGE_FILE="never.json", INPUT_INSTALL_COMMAND="touch ran")
+                self.assertFalse((self.project / "ran").exists())
+                if status:
+                    self.assertIn("set coverage or coverage-command", result.stderr)
+                    self.assertFalse((self.run_dir / "prepared.json").exists())
+                else:
+                    self.assertEqual(self.prepared(), {"base": "", "coverage": ""})
 
 
 def remote_at(path, depth, merge=False, disjoint=False):

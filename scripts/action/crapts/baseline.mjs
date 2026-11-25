@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { generateCoverage } from "./prepare.mjs";
-import { withOptions, writeReport } from "./cli.mjs";
+import { withOptions, withoutOptions, writeReport } from "./cli.mjs";
 
 function git(...args) {
   return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trimEnd();
@@ -26,13 +26,35 @@ function realDirectory(path) {
   }
 }
 
-function baseOutput(name, root, worktree) {
-  if (!isAbsolute(name)) return name;
-  // Clearing stale coverage unlinks the directory entry, even when the file itself is a symlink.
-  const path = join(realDirectory(dirname(name)), basename(name));
+function inside(path, root) {
   const part = relative(root, path);
-  if (isAbsolute(part) || part === ".." || part.startsWith(".." + sep)) return name;
-  return join(worktree, part);
+  return !isAbsolute(part) && part !== ".." && !part.startsWith(".." + sep);
+}
+
+// The base run never writes outside its own trees. A path in the head checkout
+// moves into the worktree, and anything else, such as a shared runner-temp file,
+// goes to a directory only this run uses.
+function baseTarget(name, cwd, root, worktree, privateDir) {
+  let path = isAbsolute(name) ? null : resolve(cwd, name);
+  if (isAbsolute(name)) {
+    // Clearing stale coverage unlinks the directory entry, even when the file itself is a symlink.
+    const real = join(realDirectory(dirname(name)), basename(name));
+    if (inside(real, root)) path = join(worktree, relative(root, real));
+  }
+  if (path && inside(path, worktree)) return { path, within: worktree };
+  return { path: join(privateDir, basename(name)), within: privateDir };
+}
+
+// Both roots are resolved before any project command runs, so a command that
+// swaps a directory for a symlink cannot move the root the check compares with.
+function outputGuard(name, label, realWithin) {
+  return (path, produced) => {
+    const parent = realDirectory(dirname(path));
+    if (parent !== realWithin && !parent.startsWith(realWithin + sep))
+      throw Error(label + " coverage-file " + name + " leaves the base run's directory through " + parent);
+    if (produced && lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink())
+      throw Error(label + " coverage-file " + name + " is a symbolic link");
+  };
 }
 
 function generate(base, temp, bash) {
@@ -55,12 +77,17 @@ function generate(base, temp, bash) {
     for (const path of configPaths(realTree, realCwd)) rmSync(path, { force: true });
     if (config) copyFileSync(config, join(worktree, relative(root, config)));
     const name = process.env.INPUT_COVERAGE_FILE;
-    const output = baseOutput(name, root, worktree);
-    const coverage = generateCoverage(cwd, "base " + base, bash, output);
+    const privateDir = join(temp, "base-output");
+    rmSync(privateDir, { recursive: true, force: true });
+    mkdirSync(privateDir);
+    const target = baseTarget(name, cwd, root, worktree, privateDir);
+    const realWithin = target.within === worktree ? realTree : realpathSync.native(privateDir);
+    const label = "base " + base;
+    const hint = target.within === privateDir ? ": write the path in $INPUT_COVERAGE_FILE" : "";
+    const output = target.within === worktree && !isAbsolute(name) ? name : target.path;
+    const coverage = generateCoverage(cwd, label, bash, output, outputGuard(name, label, realWithin), hint);
     const args = JSON.parse(readFileSync(join(temp, "args.json")));
-    const flags = new Set(["--fail-above", "--fail-regression", "--fail-changed"]);
-    const end = args.includes("--") ? args.indexOf("--") : args.length;
-    const scoring = args.filter((arg, i) => i >= end || !flags.has(arg));
+    const scoring = withoutOptions(args, ["--fail-above", "--fail-regression", "--fail-changed", "--show-unchanged"]);
     const report = join(temp, "baseline.json");
     writeReport(cwd, withOptions(scoring, ["--coverage", coverage, "--format", "json", "--all-rows"]), report, "base " + base);
     return report;

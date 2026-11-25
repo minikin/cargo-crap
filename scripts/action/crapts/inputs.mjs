@@ -1,8 +1,9 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { optionsEnd } from "./cli.mjs";
 
-const owned = new Set(["--format", "--output", "--base", "--baseline",
-  "--comment-marker", "--commit-ref", "--all-rows"]);
+const owned = new Set(["--format", "--output", "--base", "--baseline", "--comment-marker", "--commit-ref",
+  "--all-rows", "--coverage", "--print-config", "--help", "-h", "--version", "-V"]);
 
 function words(input) {
   const result = [];
@@ -36,9 +37,13 @@ export function argumentsFrom(env) {
   if (!env.INPUT_COMMENT_MARKER || /[\r\n]/.test(env.INPUT_COMMENT_MARKER))
     throw Error("comment-marker must be one nonempty line");
   const args = words(env.INPUT_ARGS || "");
-  for (const word of args) {
+  for (const word of args.slice(0, optionsEnd(args))) {
     const flag = word.split("=")[0];
+    if (flag === "--coverage") throw Error("args cannot set --coverage: use the coverage or coverage-command input");
     if (owned.has(flag)) throw Error("args cannot set " + flag);
+    // clap reads -qh as -q -h, so a cluster can print help or the version instead of a report.
+    const cluster = /^-[^-]/.test(word) && word.slice(1).match(/[hV]/);
+    if (cluster) throw Error("args cannot set -" + cluster[0] + " (in " + word + ")");
   }
   return args;
 }

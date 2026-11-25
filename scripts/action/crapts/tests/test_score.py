@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from support import ActionTest, BINARY, SCRIPTS, VERSION
 from test_baseline import function, coverage
+import scenarios
 
 
 class Scores(ActionTest):
@@ -148,3 +149,96 @@ class Scores(ActionTest):
         self.assertRegex(result.stderr.lower(), "not a complete baseline")
         self.assertFalse(Path(self.env["GITHUB_OUTPUT"]).exists())
         self.assertFalse(Path(self.env["GITHUB_STEP_SUMMARY"]).exists())
+
+    def generated(self, base_files, head_changes, lines, **env):
+        """A PR whose base is scored by a real base run of the coverage command."""
+        self.env["INPUT_BASE"] = self.history(base_files, head_changes)
+        self.trace = self.temp / "commands"
+        names = " ".join(sorted({Path(name).stem for name in {**base_files, **head_changes}}))
+        # ${VAR+key} prints a marker, never the value.
+        self.env.update(INPUT_COVERAGE="", INPUT_COVERAGE_FILE="coverage.info", TRACE=str(self.trace), **env,
+                        INPUT_COVERAGE_COMMAND=f"""
+echo "${{TYPESAFE_API_KEY+key}}${{typesAfe_api_key+key}}${{OPENAI_API_KEY+key}}${{OpenAI_Api_Key+key}}." >> "$TRACE"
+for name in {names}; do
+  printf 'SF:%s.ts\\n' "$name"; for line in $(seq 1 {lines}); do printf 'DA:%s,1\\n' "$line"; done; echo end_of_record
+done > coverage.info
+""")
+
+    def test_only_the_report_run_carries_provider_keys(self):
+        self.generated({"fee.ts": function("fee", 8)}, {"fresh.ts": function("fresh", 6)}, 1)
+        keys = dict(TYPESAFE_API_KEY="not-a-key", openAI_api_key="not-a-key", typesAfe_api_key="not-a-key")
+        poisoned = dict(TYPESAFE_BASE_URL="http://written-to-github-env.invalid", openai_base_url="http://x.invalid")
+        (self.run_dir / "trusted.json").write_text(json.dumps({"TYPESAFE_BASE_URL": "http://install-time.invalid"}))
+        self.score(**keys, **poisoned)
+        calls = self.calls()
+        self.assertEqual(len(calls), 4)
+        self.assertIn("--all-rows", calls[0]["args"])
+        self.assertNotIn("--base", calls[0]["args"])
+        report = [call for call in calls if "pr-comment" in call["args"]]
+        self.assertEqual(len(report), 1)
+        self.assertEqual(report[0]["keys"], sorted(keys))
+        self.assertEqual(report[0]["urls"], {"TYPESAFE_BASE_URL": "http://install-time.invalid"})
+        for call in calls:
+            if call is not report[0]:
+                self.assertEqual(call["keys"], [], call["args"])
+        self.assertEqual(self.trace.read_text().splitlines(), [".", "."])
+        self.assertNotIn("not-a-key", Path(self.env["ARG_TRACE"]).read_text())
+
+    def test_trusted_urls_are_read_case_insensitively(self):
+        result = self.command(["node", str(SCRIPTS / "cli.mjs"), "trusted-urls"],
+                              openai_base_url="http://a.invalid", TYPESAFE_API_KEY="not-a-key")
+        expected = {"OPENAI_BASE_URL": "http://a.invalid"}
+        if "TYPESAFE_BASE_URL" in self.env:
+            expected["TYPESAFE_BASE_URL"] = self.env["TYPESAFE_BASE_URL"]
+        self.assertEqual(json.loads(result.stdout), expected)
+
+    def test_a_signal_only_regression_fails_with_zero_counts(self):
+        self.env.update(INPUT_BASE=scenarios.signals_history(self.project), INPUT_COVERAGE="",
+                        INPUT_COVERAGE_COMMAND="bash cover.sh", INPUT_COVERAGE_FILE="coverage.info")
+        out, report, doc, _ = self.score()
+        self.assertEqual([out[k] for k in ["status", "crappy", "regressed", "changed", "signal-regressions"]],
+                         ["1", "0", "0", "0", "1"])
+        self.assertEqual(doc["summary"]["signal_regressions"], 1)
+        self.assertIn("`f`", report)
+        for signals, baseline, label in [(True, False, "unavailable"), (False, True, "off")]:
+            with self.subTest(label):
+                (self.project / ".crapts.toml").write_text("[signals]\nenabled = true\n" if signals else "")
+                env = {} if baseline else {"INPUT_COVERAGE_COMMAND": "", "INPUT_COVERAGE": "coverage.info"}
+                out, _, doc, _ = self.score(**env)
+                self.assertEqual(out["signal-regressions"], "")
+                if signals:
+                    self.assertIsNone(doc["summary"]["signal_regressions"])
+                else:
+                    self.assertNotIn("signal_regressions", doc["summary"])
+
+    def test_coverage_free_duplicate_scan(self):
+        self.env.update(INPUT_COVERAGE="", INPUT_BASE=scenarios.duplicates_history(self.project))
+        out, report, doc, _ = self.score(["--duplicates"])
+        self.assertEqual([out[k] for k in ["status", "crappy", "regressed", "changed"]], ["0", "0", "", "0"])
+        self.assertEqual(doc["coverage_kind"], "none")
+        self.assertEqual(len(doc["duplicate_groups"]), 1)
+        self.assertIn("No coverage supplied", report)
+        scenarios.main("duplicates-check", out["report"])
+        for call in self.calls():
+            self.assertNotIn("--coverage", call["args"])
+            self.assertIn("--base", call["args"])
+
+    def test_comparison_flags_without_their_comparison_stay_dormant(self):
+        self.history({"fee.ts": function("fee", 2), "--show-unchanged/odd.ts": function("odd", 2)}, {})
+        (self.project / "hits.info").write_text(coverage({"fee": 0}))
+        args = ["fee.ts", "--show-unchanged", "--fail-regression", "--fail-changed", "--", "--show-unchanged"]
+        out, _, _, log = self.score(args, CRAPTS_PR_NUMBER="")
+        self.assertEqual(out["status"], "0")
+        for flag, needs in [("--show-unchanged", "a baseline"), ("--fail-regression", "a baseline"),
+                            ("--fail-changed", "a base")]:
+            self.assertIn(f"::notice::args: {flag} needs {needs}, and this run has none", log)
+        for call in self.calls():
+            # Only the positional path after -- survives.
+            self.assertEqual(call["args"][call["args"].index("--"):], ["--", "--show-unchanged"])
+            self.assertEqual(call["args"].count("--show-unchanged"), 1)
+        self.baseline(["fee"])
+        before = len(self.calls())
+        _, _, _, log = self.score(["fee.ts", "--show-unchanged"], CRAPTS_PR_NUMBER="")
+        self.assertNotIn("::notice::args:", log)
+        for call in self.calls()[before:]:
+            self.assertIn("--show-unchanged", call["args"])

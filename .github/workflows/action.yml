@@ -1426,12 +1426,14 @@ jobs:
         with:
           node-version: '24'
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked -p crapts
+      - run: cargo build --locked -p crapts --features triage
       - run: bash scripts/action/crapts/test.sh
+        env:
+          CRAPTS_REQUIRE_TRIAGE: '1'
       - run: bash scripts/action/crapts/registry.sh "$RUNNER_TEMP/crapts-smoke"
       - name: Prepare push and shallow PR
         id: fixture
-        run: python scripts/action/crapts/tests/smoke.py setup "$RUNNER_TEMP/crapts-smoke"
+        run: bash scripts/action/crapts/python.sh scripts/action/crapts/tests/smoke.py setup "$RUNNER_TEMP/crapts-smoke"
       - uses: ./actions/crapts
         id: push-score
         if: github.event_name == 'push'
@@ -1450,7 +1452,7 @@ jobs:
           CHANGED: ${{ steps.push-score.outputs.changed }}
           REPORT: ${{ steps.push-score.outputs.report }}
           OUTCOME: ${{ steps.push-score.outcome }}
-        run: LAUNCHER_VERSION="$(crapts --version)" python scripts/action/crapts/tests/smoke.py push "$RUNNER_TEMP/crapts-smoke"
+        run: LAUNCHER_VERSION="$(crapts --version)" bash scripts/action/crapts/python.sh scripts/action/crapts/tests/smoke.py push "$RUNNER_TEMP/crapts-smoke"
       - uses: ./actions/crapts
         id: pr-score
         continue-on-error: true
@@ -1473,4 +1475,104 @@ jobs:
           CHANGED: ${{ steps.pr-score.outputs.changed }}
           REPORT: ${{ steps.pr-score.outputs.report }}
           OUTCOME: ${{ steps.pr-score.outcome }}
-        run: python scripts/action/crapts/tests/smoke.py pr "$RUNNER_TEMP/crapts-smoke"
+        run: bash scripts/action/crapts/python.sh scripts/action/crapts/tests/smoke.py pr "$RUNNER_TEMP/crapts-smoke"
+
+  crapts-scenarios:
+    name: crapts Action budget, signals and coverage-free duplicates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p crapts --features triage
+      - run: bash scripts/action/crapts/registry.sh "$RUNNER_TEMP/scenarios"
+      - name: Five new groups, a pair only the base holds, a budget of two
+        id: budget
+        run: |
+          dir="$RUNNER_TEMP/scenarios"
+          python3 scripts/action/crapts/tests/scenarios.py budget-setup "$dir/budget"
+          python3 scripts/action/crapts/tests/scenarios.py triage-stub "$dir" > "$dir/stub.log" 2>&1 &
+          for _ in $(seq 50); do [[ -s $dir/triage-url ]] && break; sleep 0.2; done
+          echo "url=$(cat "$dir/triage-url")" >> "$GITHUB_OUTPUT"
+          echo "base=$(git -C "$dir/budget" rev-parse base)" >> "$GITHUB_OUTPUT"
+      - uses: ./actions/crapts
+        env:
+          TYPESAFE_API_KEY: not-a-key
+          TYPESAFE_BASE_URL: ${{ steps.budget.outputs.url }}
+          XDG_CACHE_HOME: ${{ runner.temp }}/scenarios/cold-cache
+          TRACE: ${{ runner.temp }}/scenarios/budget-trace
+        with:
+          working-directory: ${{ runner.temp }}/scenarios/budget
+          package: ${{ runner.temp }}/scenarios/candidate wrapper.tgz
+          base: ${{ steps.budget.outputs.base }}
+          coverage-command: bash cover.sh
+          coverage-file: coverage.info
+          comment: 'false'
+          github-token: fixture-token
+      - name: Two requests in the whole job, none about the base pair, no key in project commands
+        run: python3 scripts/action/crapts/tests/scenarios.py budget-check "$RUNNER_TEMP/scenarios"
+      - name: A debugger added to a covered function
+        id: signals
+        run: |
+          python3 scripts/action/crapts/tests/scenarios.py signals-setup "$RUNNER_TEMP/scenarios/signals"
+          echo "base=$(git -C "$RUNNER_TEMP/scenarios/signals" rev-parse base)" >> "$GITHUB_OUTPUT"
+      - uses: ./actions/crapts
+        id: signal-score
+        continue-on-error: true
+        with:
+          working-directory: ${{ runner.temp }}/scenarios/signals
+          package: ${{ runner.temp }}/scenarios/candidate wrapper.tgz
+          base: ${{ steps.signals.outputs.base }}
+          coverage-command: bash cover.sh
+          coverage-file: coverage.info
+          comment: 'false'
+          github-token: fixture-token
+      - name: Only the signal count explains the failure
+        env:
+          OUTCOME: ${{ steps.signal-score.outcome }}
+          CRAPPY: ${{ steps.signal-score.outputs.crappy }}
+          REGRESSED: ${{ steps.signal-score.outputs.regressed }}
+          CHANGED: ${{ steps.signal-score.outputs.changed }}
+          SIGNALS: ${{ steps.signal-score.outputs.signal-regressions }}
+        run: test "$OUTCOME $CRAPPY $REGRESSED $CHANGED $SIGNALS" = "failure 0 0 0 1"
+      - name: A matching pair and no coverage input
+        id: dups
+        run: |
+          python3 scripts/action/crapts/tests/scenarios.py duplicates-setup "$RUNNER_TEMP/scenarios/dups"
+          echo "base=$(git -C "$RUNNER_TEMP/scenarios/dups" rev-parse base)" >> "$GITHUB_OUTPUT"
+      - uses: ./actions/crapts
+        id: dup-score
+        with:
+          working-directory: ${{ runner.temp }}/scenarios/dups
+          package: ${{ runner.temp }}/scenarios/candidate wrapper.tgz
+          base: ${{ steps.dups.outputs.base }}
+          args: --duplicates
+          comment: 'false'
+          github-token: fixture-token
+      - name: The scan ran without coverage
+        env:
+          REPORT: ${{ steps.dup-score.outputs.report }}
+          CHANGED: ${{ steps.dup-score.outputs.changed }}
+        run: |
+          grep -q 'No coverage supplied' "$REPORT"
+          python3 scripts/action/crapts/tests/scenarios.py duplicates-check "$REPORT"
+          test "$CHANGED" = 0
+      - uses: ./actions/crapts
+        id: no-coverage
+        continue-on-error: true
+        with:
+          working-directory: ${{ runner.temp }}/scenarios/dups
+          package: ${{ runner.temp }}/scenarios/candidate wrapper.tgz
+          base: ${{ steps.dups.outputs.base }}
+          comment: 'false'
+          github-token: fixture-token
+      - name: Without --duplicates the same project needs coverage
+        env:
+          OUTCOME: ${{ steps.no-coverage.outcome }}
+          CRAPPY: ${{ steps.no-coverage.outputs.crappy }}
+        run: test "$OUTCOME:$CRAPPY" = "failure:"

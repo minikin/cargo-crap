@@ -207,7 +207,7 @@ jobs:
           node-version: '24'
       - name: Prepare push and shallow PR
         id: fixture
-        run: python scripts/action/crapts/tests/smoke.py setup "$RUNNER_TEMP/crapts-smoke"
+        run: bash scripts/action/crapts/python.sh scripts/action/crapts/tests/smoke.py setup "$RUNNER_TEMP/crapts-smoke"
       - uses: ./actions/crapts
         id: push-score
         with:
@@ -223,7 +223,7 @@ jobs:
           CHANGED: ${{ steps.push-score.outputs.changed }}
           REPORT: ${{ steps.push-score.outputs.report }}
           OUTCOME: ${{ steps.push-score.outcome }}
-        run: LAUNCHER_VERSION="$(crapts --version)" python scripts/action/crapts/tests/smoke.py push "$RUNNER_TEMP/crapts-smoke"
+        run: LAUNCHER_VERSION="$(crapts --version)" bash scripts/action/crapts/python.sh scripts/action/crapts/tests/smoke.py push "$RUNNER_TEMP/crapts-smoke"
       - uses: ./actions/crapts
         id: pr-score
         continue-on-error: true
@@ -245,7 +245,7 @@ jobs:
           CHANGED: ${{ steps.pr-score.outputs.changed }}
           REPORT: ${{ steps.pr-score.outputs.report }}
           OUTCOME: ${{ steps.pr-score.outcome }}
-        run: python scripts/action/crapts/tests/smoke.py pr "$RUNNER_TEMP/crapts-smoke"
+        run: bash scripts/action/crapts/python.sh scripts/action/crapts/tests/smoke.py pr "$RUNNER_TEMP/crapts-smoke"
 
   promote-npm:
     needs: [preflight, npm-smoke, crapts-action-smoke]

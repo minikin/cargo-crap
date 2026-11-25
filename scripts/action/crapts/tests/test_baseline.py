@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import unittest
 from pathlib import Path
 from support import ActionTest, BINARY
 
@@ -57,7 +58,7 @@ done > coverage/coverage-final.json
             self.env["INPUT_COVERAGE"] = ""
         head = self.git("rev-parse", "HEAD")
         git_state = self.git("worktree", "list", "--porcelain")
-        args = ["--top", "1", "--fail-above", "--fail-changed", "--fail-regression"]
+        args = ["--top", "1", "--fail-above", "--fail-changed", "--fail-regression", "--show-unchanged"]
         (self.run_dir / "args.json").write_text(json.dumps(args))
         self.prepare()
         self.stage("baseline")
@@ -73,6 +74,7 @@ done > coverage/coverage-final.json
         self.assertNotIn("--base", calls[0]["args"])
         self.assertNotIn("--baseline", calls[0]["args"])
         self.assertFalse(any(arg.startswith("--fail-") for arg in calls[0]["args"]))
+        self.assertNotIn("--show-unchanged", calls[0]["args"])
         for arg in ["--top", "1", "--all-rows", "--format", "json"]:
             self.assertIn(arg, calls[0]["args"])
         self.assertFalse(Path(calls[0]["cwd"]).exists())
@@ -128,6 +130,84 @@ done > coverage/coverage-final.json
             self.assertFalse((self.project / "not-created").exists())
             doc = json.loads(Path(self.prepared()["baseline"]).read_text())
             self.assertEqual(next(r["crap"] for r in doc["entries"] if r["function"] == "fee"), 8)
+
+    def outside(self):
+        outside = self.temp / "outside"
+        outside.mkdir(exist_ok=True)
+        sentinel = outside / "coverage-final.json"
+        sentinel.write_text("shared")
+        self.env["OUTSIDE"] = str(outside)
+        return sentinel
+
+    def refused(self, diagnostic, sentinel, **env):
+        self.prepare()
+        before = self.git("worktree", "list", "--porcelain")
+        result = self.stage("baseline", 2, **env)
+        self.assertIn(diagnostic, result.stderr)
+        self.assertIn(self.base, result.stderr)
+        self.assertEqual(sentinel.read_text(), "shared")
+        self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
+        self.assertFalse((self.run_dir / "base-worktree").exists())
+        return result
+
+    def test_external_absolute_coverage_file_is_private_at_base(self):
+        self.project_pair()
+        for name in [self.temp / "shared/cov.info", Path("../../../outside.info")]:
+            with self.subTest(name=str(name)):
+                shared = name if name.is_absolute() else (self.project / name).resolve()
+                shared.parent.mkdir(exist_ok=True)
+                self.env.update(INPUT_COVERAGE_FILE=str(name), INPUT_COVERAGE="", INPUT_COVERAGE_COMMAND="""
+set -eu
+echo "$INPUT_COVERAGE_FILE" >> "$TRACE"
+if test -f tests/fee.test.ts; then hits=1; else hits=0; fi
+for name in fee steady probe; do
+  if test "$name" = fee; then count=$hits; else count=1; fi
+  printf 'SF:%s.ts\nDA:1,%s\nend_of_record\n' "$name" "$count"
+done > "$INPUT_COVERAGE_FILE"
+""")
+                self.trace.unlink(missing_ok=True)
+                self.prepare()
+                head = shared.read_bytes()
+                self.stage("baseline")
+                self.assertEqual(shared.read_bytes(), head)
+                written = [line for line in self.trace.read_text().splitlines() if not line.startswith(("install", "cover"))]
+                self.assertEqual(Path(written[-1]), self.run_dir / "base-output" / name.name)
+                doc = json.loads(Path(self.prepared()["baseline"]).read_text())
+                self.assertEqual(next(row["crap"] for row in doc["entries"] if row["function"] == "fee"), 8)
+        result = self.stage("baseline", 2, INPUT_COVERAGE_COMMAND="echo SF:fee.ts > " + str(self.temp / "shared/cov.info"),
+                            INPUT_COVERAGE_FILE=str(self.temp / "shared/cov.info"))
+        self.assertIn("write the path in $INPUT_COVERAGE_FILE", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "Git Bash ln -s copies instead of linking")
+    def test_symlinks_cannot_lead_the_base_output_outside(self):
+        self.project_pair()
+        sentinel = self.outside()
+        at_base = 'test "$(git rev-parse HEAD)" = "$BASE" && '
+        self.env["BASE"] = self.base
+        cases = [
+            ("a tracked or installed parent", {"INPUT_INSTALL_COMMAND": at_base + 'ln -s "$OUTSIDE" coverage || true'},
+             "leaves the base run's directory"),
+            ("a replaced private directory", {
+                "INPUT_COVERAGE_FILE": str(self.temp / "shared/coverage-final.json"),
+                "INPUT_INSTALL_COMMAND": at_base + 'rm -rf "$(dirname "$INPUT_COVERAGE_FILE")" && '
+                                         'ln -s "$OUTSIDE" "$(dirname "$INPUT_COVERAGE_FILE")" || true'},
+             "leaves the base run's directory"),
+            ("a symlinked result", {"INPUT_COVERAGE_COMMAND": 'mkdir -p coverage && ln -s "$OUTSIDE/coverage-final.json" '
+                                                              'coverage/coverage-final.json'},
+             "is a symbolic link")]
+        for label, env, diagnostic in cases:
+            with self.subTest(label):
+                self.refused(diagnostic, sentinel, **env)
+                self.assertTrue(sentinel.parent.is_dir())
+
+    @unittest.skipIf(os.name != "nt", "junctions are Windows only")
+    def test_a_junction_out_of_the_project_is_refused(self):
+        self.project_pair()
+        sentinel = self.outside()
+        self.env["BASE"] = self.base
+        install = ('test "$(git rev-parse HEAD)" = "$BASE" && '
+                   'cmd //c mklink /J coverage "$(cygpath -w "$OUTSIDE")" || true')
+        self.refused("leaves the base run's directory", sentinel, INPUT_INSTALL_COMMAND=install)
 
     def test_cleanup_error_preserves_command_status(self):
         self.project_pair()
