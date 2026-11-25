@@ -5,8 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-
 ## [Unreleased]
+
+
+## [0.10.0] - 2026-11-25
+
+With structural signals enabled, `cargo crap --baseline` reports where
+nesting or other gated signals increased, even when the CRAP score stayed
+the same. Use `--all-rows` to save a baseline that includes every function
+regardless of display limits. The GitHub Action scores the base commit in
+a separate worktree and reports the number of signal regressions.
+`cargo-crap-core` 0.2.0 now provides the scoring and reporting code that
+cargo-crap shares with the JavaScript and TypeScript analyzer, `crapts`.
 
 ### Added
 
@@ -43,8 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalize, scan, triage}`. Every existing `cargo_crap::` path still
   resolves to the same type, so a row, tool or policy value passes between
   the two crates' APIs without conversion. No item's visibility was
-  widened. cargo-crap depends on `cargo-crap-core = "=0.2.0"`, which is not
-  on crates.io yet: cargo-crap cannot be published there until the core is.
+  widened. The release workflow publishes `cargo-crap-core` before
+  cargo-crap, which depends on that exact version.
 - Library callers can use `run::run` to write and flush a report and
   receive its `gate::GateOutcome`. The `filter` module selects report
   rows, and `policy` lets each tool choose its summary formats and
@@ -1122,7 +1132,8 @@ output points at v2.
 
 <!-- Version links -->
 
-[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/minikin/cargo-crap/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/minikin/cargo-crap/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/minikin/cargo-crap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/minikin/cargo-crap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/minikin/cargo-crap/compare/v0.6.1...v0.7.0

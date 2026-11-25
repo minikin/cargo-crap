@@ -1,6 +1,6 @@
 # Spec 56: crapts: corpus check
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `.github/workflows/corpus.yml`, `.github/workflows/ci.yml`, `.gitattributes`, `crates/crapts/{Cargo.toml,tests/corpus.rs}`, `crates/crapts/tests/fixtures/corpus/excalidraw/{pin.txt,coverage-final.json.gz,coverage-meta.json,golden.json,golden.stderr}`, `scripts/corpus/{checkout.sh,coverage.sh}`, `Cargo.toml`, `Cargo.lock`
 **Needs:** Spec 53 (`specs/53-crapts-cli-config-and-absolute-gates.md`), including the Spec 50 analyzer, Spec 51 envelope, and Spec 52 coverage reader and attribution.

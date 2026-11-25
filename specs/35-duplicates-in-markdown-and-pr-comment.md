@@ -1,6 +1,6 @@
 # Spec 35: Duplicate candidates in markdown and pr-comment
 
-**Status:** Approved
+**Status:** Implemented
 **Effort:** Medium
 **Module:** `src/report/duplicates.rs`, `src/report/markdown.rs`, `src/report/pr_comment.rs`, `src/report.rs`, `src/main.rs`
 
