@@ -1,0 +1,45 @@
+name: Full Mutation Tests
+
+on:
+  schedule:
+    # Weekly Sunday 03:00 UTC full workspace sweep (too large for a single 6h job on every main push).
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutants-full-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  mutants:
+    name: Mutation shard ${{ matrix.shard }}/12
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants,cargo-nextest
+      - name: Run mutation tests (shard ${{ matrix.shard }}/12)
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: cargo mutants --workspace --shard "$SHARD/12" --sharding round-robin
+      - name: Upload mutants output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-out-shard-${{ matrix.shard }}
+          path: mutants.out/

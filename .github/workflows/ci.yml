@@ -75,9 +75,10 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/_build.yml'
               - '.github/workflows/release-crapts.yml'
-              # tests/golden/gates.rs reads the Action workflow's paths.
+              # tests/golden/gates.rs reads the Action and full-mutants workflows.
               - '.github/workflows/action.yml'
               - '.github/workflows/corpus.yml'
+              - '.github/workflows/mutants-full.yml'
             src:
               - 'src/**/*.rs'
               - 'crates/*/src/**/*.rs'
@@ -105,6 +106,7 @@ jobs:
               - '.github/workflows/release-crapts.yml'
               - '.github/workflows/action.yml'
               - '.github/workflows/demo.yml'
+              - '.github/workflows/mutants-full.yml'
               - 'crates/crapts/Cargo.toml'
               - 'crates/crapts/CHANGELOG.md'
               - 'crates/cargo-crap-core/CHANGELOG.md'
@@ -139,7 +141,7 @@ jobs:
       - name: Actionlint
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
-          ./actionlint -ignore SC2016 .github/workflows/_build.yml .github/workflows/release.yml .github/workflows/release-crapts.yml .github/workflows/ci.yml .github/workflows/action.yml .github/workflows/demo.yml
+          ./actionlint -ignore SC2016 .github/workflows/_build.yml .github/workflows/release.yml .github/workflows/release-crapts.yml .github/workflows/ci.yml .github/workflows/action.yml .github/workflows/demo.yml .github/workflows/mutants-full.yml
 
   crapts-cross:
     name: Link Linux release binaries
@@ -339,16 +341,24 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants,cargo-nextest
-      # A pull request mutates only the lines it changed, as `just
-      # mutants-diff` does locally. The full run on main measures the rest.
+      # Pull requests and main pushes mutate only changed lines (`just
+      # mutants-diff`). Full workspace sweeps run sharded in mutants-full.yml
+      # so a single runner never hits GitHub's 6-hour job timeout.
       - name: Run mutation tests (changed lines only, PRs)
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
         run: bash scripts/gates/mutants-diff.sh --base "origin/$BASE_REF"
-      - name: Run mutation tests (full, main)
+      - name: Run mutation tests (changed lines only, main)
         if: github.event_name == 'push'
-        run: cargo mutants --workspace
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git rev-parse -q --verify "$BEFORE_SHA^{commit}" > /dev/null; then
+            bash scripts/gates/mutants-diff.sh --base "$BEFORE_SHA"
+          else
+            bash scripts/gates/mutants-diff.sh --base HEAD~1
+          fi
       - name: Upload mutants output
         if: always()
         uses: actions/upload-artifact@v4
