@@ -15,7 +15,7 @@ const triples = [
 test("wrapper selects the platform package for every supported target", () => {
   for (const [platform, arch, libc, suffix] of triples) {
     const target = resolveTarget(platform, arch, libc);
-    assert.equal(target.name, "@minikin/crapts-" + suffix);
+    assert.equal(target.name, "@minikin_/crapts-" + suffix);
     assert.equal(
       target.binary,
       platform === "win32" ? "bin/crapts.exe" : "bin/crapts",
@@ -75,7 +75,7 @@ test("wrapper diagnoses unsupported platforms, unknown libc, missing packages an
       "darwin",
       "arm64",
       "none",
-      /@minikin\/crapts-darwin-arm64.*optional dependencies/i,
+      /@minikin_\/crapts-darwin-arm64.*optional dependencies/i,
     ],
     ["darwin", "x64", "none", /path to binary.*EACCES/i, "EACCES"],
     ["darwin", "x64", "none", /path to binary.*ENOENT/i, "ENOENT"],

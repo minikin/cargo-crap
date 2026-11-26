@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 pub const INSTALL: &str = "docs/crapts/install.md";
 
 pub const COMMANDS: [&str; 4] = [
-    "npx @minikin/crapts",
-    "npm install -D @minikin/crapts",
+    "npx @minikin_/crapts",
+    "npm install -D @minikin_/crapts",
     "cargo binstall crapts",
     "cargo install --locked crapts --features triage",
 ];

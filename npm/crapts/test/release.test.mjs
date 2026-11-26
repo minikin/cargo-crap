@@ -33,7 +33,7 @@ const rows = [
   ["x86_64-pc-windows-msvc", "win32-x64-msvc", "win32", "x64"],
 ];
 const version = "0.1.0-rc.1";
-const name = (suffix) => "@minikin/crapts-" + suffix;
+const name = (suffix) => "@minikin_/crapts-" + suffix;
 const manifest = (dir) => JSON.parse(readFileSync(join(dir, "package.json")));
 const windows = process.platform === "win32";
 
@@ -195,7 +195,7 @@ test("wrapper forwards argv, stdio and exit codes 0, 1 and 2 without install scr
     join(dir, "coverage.info"),
     "SF:with spaces.ts\nDA:1,0\nend_of_record\n",
   );
-  const cli = join(dir, "node_modules/@minikin/crapts/bin/crapts.js");
+  const cli = join(dir, "node_modules/@minikin_/crapts/bin/crapts.js");
   const cases = [
     [["--version"], 0],
     [["--coverage", "coverage.info", "--", "with spaces.ts"], 0],
@@ -346,8 +346,8 @@ test("npm publish retry verifies integrity and provenance before skipping existi
     );
   await run();
   assert.equal(uploaded.length, 7);
-  assert.equal(uploaded.pop(), "@minikin/crapts");
-  existing.delete("@minikin/crapts");
+  assert.equal(uploaded.pop(), "@minikin_/crapts");
+  existing.delete("@minikin_/crapts");
   const first = existing.get(uploaded[1]);
   for (const [field, wrong, error] of [
     ["integrity", "changed", /integrity/i],
@@ -381,7 +381,7 @@ test("npm publish retry verifies integrity and provenance before skipping existi
   rejectSignature = false;
   existing.delete(first.name);
   await run();
-  assert.deepEqual(uploaded, [first.name, "@minikin/crapts"]);
+  assert.deepEqual(uploaded, [first.name, "@minikin_/crapts"]);
 });
 
 test("the release verifier rejects a malformed Sigstore bundle", async (t) => {
@@ -414,7 +414,7 @@ test("npm smoke waits for the wrapper and host package and bounds registry retri
       join(root, "target/debug", windows ? "crapts.exe" : "crapts"),
   );
   const { dir, out } = fixture(t, { name: host.name, path: native }, current);
-  const wrapper = "@minikin/crapts";
+  const wrapper = "@minikin_/crapts";
   const packages = new Map();
   const tarballs = new Map();
   const lookups = [];

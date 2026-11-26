@@ -33,7 +33,7 @@ pub(super) fn judge(
         let _ = (scan, files, sources, boundary);
         warn(
             err,
-            "[duplicates.triage] is enabled, but this crapts was built without the triage client. Use @minikin/crapts or cargo install crapts --features triage.",
+            "[duplicates.triage] is enabled, but this crapts was built without the triage client. Use @minikin_/crapts or cargo install crapts --features triage.",
         )
     }
 }

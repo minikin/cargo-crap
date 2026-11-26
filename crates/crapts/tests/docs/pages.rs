@@ -396,7 +396,7 @@ pub fn command_lines(page: &Page) -> Vec<(usize, String)> {
 
 pub fn crapts_arguments(line: &str) -> Result<Option<Vec<String>>, String> {
     let is_crapts =
-        line == "crapts" || line.starts_with("crapts ") || line.starts_with("npx @minikin/crapts");
+        line == "crapts" || line.starts_with("crapts ") || line.starts_with("npx @minikin_/crapts");
     if !is_crapts {
         return Ok(None);
     }
@@ -405,7 +405,7 @@ pub fn crapts_arguments(line: &str) -> Result<Option<Vec<String>>, String> {
         [first, ..] if first == "crapts" => 1,
         [npx, package, ..]
             if npx == "npx"
-                && (package == "@minikin/crapts" || package.starts_with("@minikin/crapts@")) =>
+                && (package == "@minikin_/crapts" || package.starts_with("@minikin_/crapts@")) =>
         {
             2
         },
