@@ -354,7 +354,7 @@ Record all results in the final task's review record (`reviews/57-crapts-release
   Scenarios: _workflows separate triggers, enforce job order and permissions, execute all six archives, cover manifest-only CI changes and lint cleanly_.
   Tests: `actionlint -ignore SC2016`, `shellcheck`, `scripts/release/test.sh` workflow-contract and prerequisite-failure graph checks, `tests/golden/config.rs`, `tests/golden/gates.rs`, and cross-OS npm wrapper tests in CI.
 
-- [ ] **T6 - Verify crates.io setup, bootstrap npm trusted publishing and rehearse `crapts-v0.1.0-rc.1`.**
+- [x] **T6 - Verify crates.io setup, bootstrap npm trusted publishing and rehearse `crapts-v0.1.0-rc.1`.**
   Needs: T5. Execute the three one-time checks (crates.io availability/ownership/token check, seven-package npm bootstrap and trusted-publisher verification for both publish and dist-tag, and `crapts-v0.1.0-rc.1` rehearsal including exact-RC `cargo install --locked`, archive-only `cargo binstall` on tarball and Windows ZIP layouts, and seven-package npm provenance verification) and record the run IDs and verification outputs in the review record.
   Scenarios: one-time checks on the implementation.
   Tests: live `release-crapts.yml` workflow run, live HTTP check on `releases/latest/download/cargo-crap-x86_64-unknown-linux-gnu.tar.gz`, `npm view` dist-tag and provenance verification for all seven packages, crates.io API verification, exact-RC `cargo install --locked` smoke, and archive-only `cargo binstall` smokes on Unix and Windows.

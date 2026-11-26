@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "crapts"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "cargo-crap-core",
  "clap",

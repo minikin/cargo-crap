@@ -3,7 +3,7 @@ description: Score JavaScript and TypeScript functions using project coverage.
 inputs:
   version:
     description: Exact npm package version or latest.
-    default: "0.1.0-rc.1"
+    default: "0.1.0"
   package:
     description: Local wrapper tarball to install.
     default: ""

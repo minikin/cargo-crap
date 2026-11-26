@@ -741,4 +741,55 @@ mod tests {
         assert_eq!(data("50%\r\n:,"), "50%25%0D%0A:,");
         assert_eq!(property("a:b,c%"), "a%3Ab%2Cc%25");
     }
+
+    #[test]
+    fn github_annotations_sort_failures_and_respect_fail_changed() {
+        let rows = analyze(
+            Path::new("src/a.ts"),
+            b"function first() {}\nfunction second() {}\nfunction ok() {}\n",
+            Mode::Strict(Side::Head),
+        )
+        .unwrap()
+        .rows;
+        let entries = [
+            entry(&rows[1], Verdict::Fail),
+            entry(&rows[2], Verdict::Pass),
+            entry(&rows[0], Verdict::Fail),
+        ];
+        let shown: Vec<&Entry<'_>> = entries.iter().collect();
+        let counts = Counts {
+            touched: 3,
+            fail: 2,
+            ..Counts::default()
+        };
+        for (fail_changed, prefix) in [(true, "::error "), (false, "::warning ")] {
+            let report = Text::new(&TextInputs {
+                fail_changed,
+                ..inputs(&shown, counts)
+            });
+            let mut out = Vec::new();
+            report.github(&mut out).unwrap();
+            let lines: Vec<String> = String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(lines.len(), 2, "{lines:?}");
+            assert!(
+                lines[0].starts_with(prefix)
+                    && lines[0].contains("line=1")
+                    && lines[0].contains("first")
+            );
+            assert!(
+                lines[1].starts_with(prefix)
+                    && lines[1].contains("line=2")
+                    && lines[1].contains("second")
+            );
+            let mut empty = [0u8; 0];
+            assert_eq!(
+                report.github(&mut empty.as_mut_slice()).unwrap_err().kind(),
+                io::ErrorKind::WriteZero
+            );
+        }
+    }
 }
