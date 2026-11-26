@@ -64,7 +64,7 @@ Windows steps.
 crapts ships as an npm package with a prebuilt binary:
 
 ```bash
-npm install -D @minikin/crapts
+npm install -D @minikin_/crapts
 ```
 
 [Installing crapts](docs/crapts/install.md#npm) also covers `cargo binstall`
@@ -109,26 +109,26 @@ nyc or c8 writes, and shares cargo-crap's report formats and baseline gate.
 The npm package needs no install step:
 
 ```bash
-npx @minikin/crapts
+npx @minikin_/crapts
 ```
 
 Without arguments it exits 2. To score with coverage, pass the LCOV file.
 
 ```bash
-npx @minikin/crapts --coverage coverage/lcov.info
+npx @minikin_/crapts --coverage coverage/lcov.info
 ```
 
 On a branch, it also gates the functions the branch changed against `main`,
 with no saved baseline:
 
 ```bash
-npx @minikin/crapts --coverage coverage/lcov.info --base main --fail-changed
+npx @minikin_/crapts --coverage coverage/lcov.info --base main --fail-changed
 ```
 
 It exits 1 when the branch adds a function above the threshold or makes one
 above it more complex. [The changed-function
 gate](docs/crapts/guides/changed-gate.md) explains how functions are paired.
-Run `npx @minikin/crapts --duplicates` for a coverage-free scan. The
+Run `npx @minikin_/crapts --duplicates` for a coverage-free scan. The
 [duplicate guide](docs/crapts/guides/duplicates.md) shows how to compare a
 branch with a saved report and budget TypeSafe or OpenAI requests.
 

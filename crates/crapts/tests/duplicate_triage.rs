@@ -126,7 +126,7 @@ fn s34_a_missing_client_or_selected_credential_preserves_the_score_gate() {
     if cfg!(feature = "triage") {
         assert!(err.contains("TYPESAFE_API_KEY"), "{err}");
     } else {
-        for word in ["@minikin/crapts", "cargo install crapts --features triage"] {
+        for word in ["@minikin_/crapts", "cargo install crapts --features triage"] {
             assert!(err.contains(word), "{err}");
         }
     }

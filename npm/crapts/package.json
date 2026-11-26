@@ -1,5 +1,5 @@
 {
-  "name": "@minikin/crapts",
+  "name": "@minikin_/crapts",
   "version": "0.1.0-rc.1",
   "description": "Change Risk Anti-Patterns metric for JavaScript and TypeScript",
   "license": "MIT",
@@ -21,11 +21,11 @@
     "access": "public"
   },
   "optionalDependencies": {
-    "@minikin/crapts-darwin-arm64": "0.1.0-rc.1",
-    "@minikin/crapts-darwin-x64": "0.1.0-rc.1",
-    "@minikin/crapts-linux-x64-gnu": "0.1.0-rc.1",
-    "@minikin/crapts-linux-arm64-gnu": "0.1.0-rc.1",
-    "@minikin/crapts-linux-x64-musl": "0.1.0-rc.1",
-    "@minikin/crapts-win32-x64-msvc": "0.1.0-rc.1"
+    "@minikin_/crapts-darwin-arm64": "0.1.0-rc.1",
+    "@minikin_/crapts-darwin-x64": "0.1.0-rc.1",
+    "@minikin_/crapts-linux-x64-gnu": "0.1.0-rc.1",
+    "@minikin_/crapts-linux-arm64-gnu": "0.1.0-rc.1",
+    "@minikin_/crapts-linux-x64-musl": "0.1.0-rc.1",
+    "@minikin_/crapts-win32-x64-msvc": "0.1.0-rc.1"
   }
 }

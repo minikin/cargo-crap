@@ -87,7 +87,7 @@ export async function publishRelease(
   try {
     for (const name of [
       ...resolver.targets.map((t) => t.name),
-      "@minikin/crapts",
+      "@minikin_/crapts",
     ]) {
       try {
         const dir = resolve(stagedDir, basename(name));

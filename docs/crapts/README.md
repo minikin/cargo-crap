@@ -18,7 +18,7 @@ Write a coverage report with your test runner, then point crapts at it:
 
 ```bash
 npx vitest run --coverage --coverage.reporter=lcov
-npx @minikin/crapts --coverage coverage/lcov.info
+npx @minikin_/crapts --coverage coverage/lcov.info
 ```
 
 On a project with a `checkout` with five `if` branches that no test reaches and a covered one-line `total`, the report reads:

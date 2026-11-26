@@ -625,7 +625,7 @@ fn the_splitter_groups_quotes_and_stops_at_shell_operators() {
 fn documented_command_lines_are_selected_joined_and_stripped() {
     let page = Page::new(
         "docs/crapts/x.md",
-        "```bash\n$ crapts --coverage a \\\n    --top 3\nnpx @minikin/crapts@1.2.3 --summary\nnpx @minikin/crapts-linux-x64\ncraptsy --x\nnpm install -D @minikin/crapts\n```\n\n```toml\ncrapts --nope\n```\n",
+        "```bash\n$ crapts --coverage a \\\n    --top 3\nnpx @minikin_/crapts@1.2.3 --summary\nnpx @minikin_/crapts-linux-x64\ncraptsy --x\nnpm install -D @minikin_/crapts\n```\n\n```toml\ncrapts --nope\n```\n",
     );
     let lines = pages::command_lines(&page);
     assert_eq!(lines[0], (2, "crapts --coverage a --top 3".to_owned()));
@@ -638,7 +638,7 @@ fn documented_command_lines_are_selected_joined_and_stripped() {
         [vec!["--coverage", "a", "--top", "3"], vec!["--summary"]]
     );
     assert_eq!(
-        pages::crapts_arguments("npx @minikin/crapts").unwrap(),
+        pages::crapts_arguments("npx @minikin_/crapts").unwrap(),
         Some(vec![])
     );
     let runs = |line: &str| pages::command_runs(&pages::crapts_arguments(line).unwrap().unwrap());
@@ -1106,7 +1106,7 @@ fn the_install_page_matches_the_published_package_metadata() {
     let package = install::package_json();
     let rust = install::rust_version();
     install::check_install(&page, &package, &rust).unwrap_or_else(|e| panic!("{e}"));
-    let musl = "`@minikin/crapts-linux-x64-musl`";
+    let musl = "`@minikin_/crapts-linux-x64-musl`";
     let row = page
         .text
         .lines()
@@ -1115,17 +1115,17 @@ fn the_install_page_matches_the_published_package_metadata() {
     let removed = page.with(&format!("{row}\n"), "");
     assert_names(
         &err(install::check_install(&removed, &package, &rust)),
-        &[install::INSTALL, "@minikin/crapts-linux-x64-musl"],
+        &[install::INSTALL, "@minikin_/crapts-linux-x64-musl"],
     );
     assert_names(
         &err(install::check_install(&page, &package, "1.0")),
         &[install::INSTALL, "1.0", &rust],
     );
     let mut renamed = package.clone();
-    renamed["name"] = "@minikin/other".into();
+    renamed["name"] = "@minikin_/other".into();
     assert_names(
         &err(install::check_install(&page, &renamed, &rust)),
-        &["@minikin/crapts", "@minikin/other"],
+        &["@minikin_/crapts", "@minikin_/other"],
     );
     for command in install::COMMANDS {
         let line = page
@@ -1906,11 +1906,11 @@ fn the_readme_introduces_crapts_in_one_section() {
             "docs/crapts/install.md",
         ),
         (
-            "npx @minikin/crapts --coverage",
-            "npm install -g @minikin/crapts --coverage",
+            "npx @minikin_/crapts --coverage",
+            "npm install -g @minikin_/crapts --coverage",
             "npm install",
         ),
-        ("```bash\nnpx @minikin/crapts\n```\n", "", "install line"),
+        ("```bash\nnpx @minikin_/crapts\n```\n", "", "install line"),
     ] {
         let drifted = readme.with(from, to);
         assert_names(&err(index::check_readme_section(&drifted)), &[name]);

@@ -12,7 +12,7 @@ const targets = [
   platform,
   arch,
   libc,
-  name: "@minikin/crapts-" + suffix,
+  name: "@minikin_/crapts-" + suffix,
   triple,
   binary: platform === "win32" ? "bin/crapts.exe" : "bin/crapts",
 }));

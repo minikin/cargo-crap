@@ -181,7 +181,7 @@ jobs:
       - if: matrix.host == 'alpine'
         run: |
           docker run --rm -v "$PWD:/source:ro" node:24-alpine node /source/scripts/release/smoke.mjs \
-            --npm --version "$VERSION" --expect-package @minikin/crapts-linux-x64-musl
+            --npm --version "$VERSION" --expect-package @minikin_/crapts-linux-x64-musl
 
   crapts-action-smoke:
     name: Tagged crapts Action (${{ matrix.os }})
@@ -265,7 +265,7 @@ jobs:
       - name: Promote all verified packages
         run: |
           packages=$(node -p 'Object.keys(require("./npm/crapts/package.json").optionalDependencies).join(" ")')
-          for package in $packages @minikin/crapts; do
+          for package in $packages @minikin_/crapts; do
             npm dist-tag add "$package@$VERSION" latest
           done
 

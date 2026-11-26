@@ -124,7 +124,7 @@ class ReleaseWorkflows < Minitest::Test
     assert_equal %w[alpine macos ubuntu windows], jobs['npm-smoke']['strategy']['matrix']['include'].map { |row| row['host'] }.sort
     alpine = jobs['npm-smoke']['steps'].find { |s| s['if'] == "matrix.host == 'alpine'" }
     assert_includes alpine.fetch('run'), 'node:24-alpine'
-    assert_includes alpine.fetch('run'), '--expect-package @minikin/crapts-linux-x64-musl'
+    assert_includes alpine.fetch('run'), '--expect-package @minikin_/crapts-linux-x64-musl'
     assert_includes commands(jobs['promote-npm']), 'npm dist-tag add'
   end
   def test_tagged_action_smokes_gate_both_promotions

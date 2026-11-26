@@ -19,9 +19,9 @@ if [[ -n $INPUT_PACKAGE ]]; then
 else
     expected=$INPUT_VERSION
     if [[ $expected == latest ]]; then
-        expected=$(cd "$temp" && keyless npm view @minikin/crapts@latest version) || fail "version: cannot resolve latest"
+        expected=$(cd "$temp" && keyless npm view @minikin_/crapts@latest version) || fail "version: cannot resolve latest"
     fi
-    package="@minikin/crapts@$expected"
+    package="@minikin_/crapts@$expected"
 fi
 [[ $expected =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || fail "expected an exact package version, got $expected"
 cd "$temp"
@@ -32,7 +32,7 @@ actual=$(keyless "$bin/crapts" --version) || fail "could not verify crapts from 
 keyless node -e '
   const fs = require("node:fs"), path = require("node:path");
   fs.appendFileSync(process.env.GITHUB_PATH, path.resolve("node_modules/.bin") + "\n");
-  const local = require("node:module").createRequire(require.resolve("@minikin/crapts/package.json"));
+  const local = require("node:module").createRequire(require.resolve("@minikin_/crapts/package.json"));
   const {detectLibc, resolveTarget} = local("./lib/resolve.js");
   const target = resolveTarget(process.platform, process.arch, process.platform === "linux" ? detectLibc() : "none");
   const binary = local.resolve(target.name + "/" + target.binary);

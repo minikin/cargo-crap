@@ -10,7 +10,7 @@ With the V8 or Istanbul provider, the `lcov` reporter writes `coverage/lcov.info
 
 ```bash
 npx vitest run --coverage --coverage.reporter=lcov
-npx @minikin/crapts --coverage coverage/lcov.info
+npx @minikin_/crapts --coverage coverage/lcov.info
 ```
 
 ## Jest
@@ -19,7 +19,7 @@ The `json` reporter writes `coverage/coverage-final.json`:
 
 ```bash
 npx jest --coverage --coverageReporters=json
-npx @minikin/crapts --coverage coverage/coverage-final.json
+npx @minikin_/crapts --coverage coverage/coverage-final.json
 ```
 
 ## Istanbul
@@ -28,7 +28,7 @@ nyc wraps any test command. Its `json` reporter writes `coverage/coverage-final.
 
 ```bash
 npx nyc --reporter=json --report-dir=coverage npm test
-npx @minikin/crapts --coverage coverage/coverage-final.json
+npx @minikin_/crapts --coverage coverage/coverage-final.json
 ```
 
 ## LCOV
@@ -37,7 +37,7 @@ Any tool that writes LCOV works. c8 with the `lcov` reporter writes `coverage/lc
 
 ```bash
 npx c8 --reporter=lcov npm test
-npx @minikin/crapts --coverage coverage/lcov.info
+npx @minikin_/crapts --coverage coverage/lcov.info
 ```
 
 ## The same project in both formats

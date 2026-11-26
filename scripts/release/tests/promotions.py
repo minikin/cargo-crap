@@ -69,7 +69,7 @@ class Promotions(unittest.TestCase):
         repo, remote = directory / "work", directory / "origin.git"
         repo.mkdir()
         config = directory / "fixture.npmrc"
-        config.write_text(f"registry={url}/\n@minikin:registry={url}/\n//127.0.0.1:{server.server_port}/:_authToken=fixture\n")
+        config.write_text(f"registry={url}/\n@minikin_:registry={url}/\n//127.0.0.1:{server.server_port}/:_authToken=fixture\n")
         env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
                    npm_config_registry=url, npm_config_userconfig=str(config),
                    npm_config_cache=str(directory / "cache"), npm_config_fetch_retries="0",

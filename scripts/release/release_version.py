@@ -9,7 +9,7 @@ ACTION = Path("actions/crapts/action.yml")
 ROOT_ACTION = Path("action.yml")
 
 PLATFORMS = {
-    "@minikin/crapts-" + suffix
+    "@minikin_/crapts-" + suffix
     for suffix in (
         "darwin-arm64",
         "darwin-x64",

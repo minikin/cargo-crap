@@ -795,7 +795,7 @@ fn wrapper_version_stays_synchronized_with_crates_crapts() {
         "linux-x64-musl",
         "win32-x64-msvc",
     ] {
-        assert_eq!(deps[&format!("@minikin/crapts-{suffix}")], version);
+        assert_eq!(deps[&format!("@minikin_/crapts-{suffix}")], version);
     }
     for script in ["preinstall", "install", "postinstall", "prepare"] {
         assert!(wrapper["scripts"].get(script).is_none());

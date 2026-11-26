@@ -71,17 +71,17 @@ pub fn check_readme_section(readme: &Page) -> Result<(), String> {
         .into_iter()
         .filter(|(_, l)| ["npx ", "npm ", "cargo "].iter().any(|p| l.starts_with(p)))
         .collect();
-    if !installs.iter().any(|(_, l)| l == "npx @minikin/crapts") {
+    if !installs.iter().any(|(_, l)| l == "npx @minikin_/crapts") {
         return Err(format!(
-            "{}: the crapts section has no install line `npx @minikin/crapts`",
+            "{}: the crapts section has no install line `npx @minikin_/crapts`",
             readme.path
         ));
     }
     for (line, text) in installs {
-        let npx = text == "npx @minikin/crapts" || text.starts_with("npx @minikin/crapts ");
+        let npx = text == "npx @minikin_/crapts" || text.starts_with("npx @minikin_/crapts ");
         if !npx {
             return Err(format!(
-                "{}: the install line `{text}` is not npx @minikin/crapts",
+                "{}: the install line `{text}` is not npx @minikin_/crapts",
                 section.at(line)
             ));
         }

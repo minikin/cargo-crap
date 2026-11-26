@@ -148,10 +148,10 @@ try {
   let command;
   if (values.npm) {
     writeFileSync(join(dir, "package.json"), '{"private":true}');
-    const spec = "@minikin/crapts@" + values.version;
+    const spec = "@minikin_/crapts@" + values.version;
     const libc = process.platform === "linux" ? resolver.detectLibc() : "none";
     const host = resolver.resolveTarget(process.platform, process.arch, libc);
-    await waitForPackage("@minikin/crapts", values.version);
+    await waitForPackage("@minikin_/crapts", values.version);
     await waitForPackage(host.name, values.version);
     const [npm, ...args] = npmCommand("npm");
     execFileSync(
@@ -169,7 +169,7 @@ try {
     );
     if (values["expect-package"]) {
       const local = createRequire(join(dir, "package.json"));
-      const { resolveTarget } = local("@minikin/crapts/lib/resolve.js");
+      const { resolveTarget } = local("@minikin_/crapts/lib/resolve.js");
       const installed = resolveTarget(process.platform, process.arch, libc);
       assert.equal(installed.name, values["expect-package"]);
       local.resolve(installed.name + "/" + installed.binary);
@@ -213,7 +213,7 @@ try {
       assert.equal(result.stdout.trim(), "crapts " + values.version);
   }
   await smokeTriage(values.npm
-    ? [process.execPath, join(dir, "node_modules", "@minikin", "crapts", "bin", "crapts.js")]
+    ? [process.execPath, join(dir, "node_modules", "@minikin_", "crapts", "bin", "crapts.js")]
     : command);
 } finally {
   rmSync(dir, { force: true, recursive: true });
