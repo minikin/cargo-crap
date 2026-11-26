@@ -477,6 +477,8 @@ test("npm smoke waits for the wrapper and host package and bounds registry retri
           npm_config_registry: registry,
           npm_config_cache: join(dir, mode),
           npm_config_fetch_retries: "0",
+          CRAPTS_SMOKE_ATTEMPTS: "3",
+          CRAPTS_SMOKE_DELAY_MS: "50",
         },
       },
     );

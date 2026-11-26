@@ -27,10 +27,20 @@ function npmCommand(tool) {
   ];
 }
 
+function positiveIntEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  if (!/^[1-9]\d*$/.test(raw)) throw Error("invalid " + name + ": " + raw);
+  return Number(raw);
+}
+
 async function waitForPackage(name, version) {
   const spec = name + "@" + version;
   const [npm, ...args] = npmCommand("npm");
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // Newly published scoped packages can lag across npm CDN edges.
+  const maxAttempts = positiveIntEnv("CRAPTS_SMOKE_ATTEMPTS", 12);
+  const baseDelayMs = positiveIntEnv("CRAPTS_SMOKE_DELAY_MS", 3000);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const result = spawnSync(
       npm,
       [
@@ -47,14 +57,15 @@ async function waitForPackage(name, version) {
     if (result.error) throw result.error;
     if (result.status === 0 && result.stdout.trim() === version) return;
     if (
-      attempt === 3 ||
+      attempt === maxAttempts ||
       (result.status !== 0 && !/\b(E404|ETARGET)\b/.test(result.stderr))
     )
       throw Error(
         spec + ": " + (result.stderr.trim() || "version unavailable"),
       );
-    await delay(3000 * attempt);
+    await delay(Math.min(15000, baseDelayMs * attempt));
   }
+  throw Error(spec + ": version unavailable");
 }
 
 async function smokeTriage(command) {

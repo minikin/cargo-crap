@@ -4,9 +4,16 @@ This project follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-26
+
 ### Added
 
-- Find structural duplicates in JavaScript and TypeScript with `--duplicates`,
-  with or without coverage. Compare groups against a saved report and set a
-  request budget for TypeSafe or OpenAI triage.
-- Native JavaScript and TypeScript complexity and coverage analysis.
+- Native JavaScript and TypeScript complexity and LCOV coverage analysis, with
+  `--base` regression gating and saved baselines.
+- Structural duplicate detection with `--duplicates`, with or without coverage,
+  plus report comparison and budgeted TypeSafe or OpenAI triage.
+- Prebuilt release archives, `@minikin_/crapts` npm packages, and the
+  `minikin/cargo-crap/actions/crapts` GitHub Action.
+
+[Unreleased]: https://github.com/minikin/cargo-crap/compare/crapts-v0.1.0...HEAD
+[0.1.0]: https://github.com/minikin/cargo-crap/releases/tag/crapts-v0.1.0
