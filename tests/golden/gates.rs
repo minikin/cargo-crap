@@ -433,7 +433,7 @@ fn cis_mutants_job_runs_the_shared_diff_script() {
     let job = steps(&block(&lines(&ci), "  mutants:"));
 
     let pull_request = step(&job, "Run mutation tests (changed lines only, PRs)");
-    let push = step(&job, "Run mutation tests (full, main)");
+    let push = step(&job, "Run mutation tests (changed lines only, main)");
 
     assert_eq!(pull_request.env, ["BASE_REF: ${{ github.base_ref }}"]);
     assert_eq!(
@@ -442,12 +442,44 @@ fn cis_mutants_job_runs_the_shared_diff_script() {
         "{:?}",
         pull_request.run
     );
-    assert_eq!(push.run, ["cargo mutants --workspace"]);
+    assert_eq!(push.env, ["BEFORE_SHA: ${{ github.event.before }}"]);
+    assert!(
+        push.run
+            .iter()
+            .any(|line| line.contains(r#"bash scripts/gates/mutants-diff.sh --base "$BEFORE_SHA""#)),
+        "{:?}",
+        push.run
+    );
+    assert!(
+        push.run
+            .iter()
+            .any(|line| line.contains("bash scripts/gates/mutants-diff.sh --base HEAD~1")),
+        "{:?}",
+        push.run
+    );
     assert_eq!(
         pull_request.condition,
         "github.event_name == 'pull_request'"
     );
     assert_eq!(push.condition, "github.event_name == 'push'");
+
+    let full = read(".github/workflows/mutants-full.yml");
+    let full_job = steps(&block(&lines(&full), "  mutants:"));
+    let shard = step(
+        &full_job,
+        "Run mutation tests (shard ${{ matrix.shard }}/12)",
+    );
+    assert_eq!(shard.env, ["SHARD: ${{ matrix.shard }}"]);
+    assert_eq!(
+        shard.run,
+        [r#"cargo mutants --workspace --shard "$SHARD/12" --sharding round-robin"#],
+        "{:?}",
+        shard.run
+    );
+    assert!(
+        full.contains("shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]"),
+        "mutants-full.yml must enumerate all 12 0-based shards"
+    );
 }
 
 #[test]

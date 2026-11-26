@@ -250,7 +250,7 @@ class ReleaseWorkflows < Minitest::Test
     assert_includes commands(ci['npm-wrapper']), 'node --test'
     [ci['release-scripts'], workflow('action')['jobs']['scripts']].each do |job|
       line = commands(job).lines.find { |l| l.include?('./actionlint -ignore SC2016') }
-      %w[_build release release-crapts ci action demo].each { |file| assert_includes line, ".github/workflows/#{file}.yml" }
+      %w[_build release release-crapts ci action demo mutants-full].each { |file| assert_includes line, ".github/workflows/#{file}.yml" }
     end
   end
 end
