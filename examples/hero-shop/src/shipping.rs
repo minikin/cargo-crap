@@ -21,8 +21,17 @@ pub fn shipping_fee(parcel: &Parcel, zone: &Zone, express: bool) -> u64 {
     if parcel.volume_cm3 > 50_000 {
         fee += 500;
     }
+    if parcel.weight_grams > 20_000 && matches!(zone, Zone::World) {
+        fee += 2_500;
+    }
     if express {
         fee *= 2;
+        if matches!(zone, Zone::Domestic) {
+            fee -= 200;
+        }
+    }
+    if fee > 9_000 {
+        fee = 9_000;
     }
     fee
 }
